@@ -6,7 +6,7 @@ members = ["crates/*", "utils/create_font"]
 authors = ["Nils Hasenbanck <nils@hasenbanck.de>"]
 edition = "2024"
 license = "BSD-3-Clause"
-rust-version = "1.93"
+rust-version = "1.94"
 
 [workspace.dependencies]
 # Internal dependencies
@@ -38,6 +38,9 @@ rust-version.workspace = true
 
 [features]
 tracing = []
+sdl3-build-from-source = ["sdl3/build-from-source"]
+sdl3-use-pkg-config = ["sdl3/use-pkg-config"]
+sdl3-use-vcpkg = ["sdl3/use-vcpkg"]
 
 [dependencies]
 audio_engine = { workspace = true }
