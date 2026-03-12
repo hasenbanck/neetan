@@ -1,0 +1,79 @@
+name-template: "v$RESOLVED_VERSION"
+tag-template: "v$RESOLVED_VERSION"
+
+template: |
+  ## What's Changed
+
+  $CHANGES
+
+  **Full Changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
+
+categories:
+  - title: "New Features"
+    labels:
+      - "feature"
+      - "feat"
+  - title: "Bug Fixes"
+    labels:
+      - "fix"
+  - title: "Performance"
+    labels:
+      - "performance"
+      - "perf"
+  - title: "Documentation"
+    labels:
+      - "documentation"
+      - "docs"
+  - title: "Maintenance"
+    labels:
+      - "chore"
+      - "refactor"
+      - "ci"
+      - "test"
+
+autolabeler:
+  - label: "feature"
+    title:
+      - '/^feat(\(.+\))?!?:/'
+  - label: "fix"
+    title:
+      - '/^fix(\(.+\))?!?:/'
+  - label: "documentation"
+    title:
+      - '/^docs(\(.+\))?!?:/'
+  - label: "performance"
+    title:
+      - '/^perf(\(.+\))?!?:/'
+  - label: "refactor"
+    title:
+      - '/^refactor(\(.+\))?!?:/'
+  - label: "chore"
+    title:
+      - '/^chore(\(.+\))?!?:/'
+  - label: "ci"
+    title:
+      - '/^ci(\(.+\))?!?:/'
+  - label: "test"
+    title:
+      - '/^test(\(.+\))?!?:/'
+
+version-resolver:
+  major:
+    labels:
+      - "major"
+  minor:
+    labels:
+      - "feature"
+  patch:
+    labels:
+      - "fix"
+      - "performance"
+      - "refactor"
+      - "chore"
+      - "ci"
+      - "documentation"
+      - "test"
+  default: patch
+
+exclude-labels:
+  - "skip-changelog"

@@ -321,7 +321,7 @@ fn pit_mirror_ports() {
     let low = bus.io_read_byte(0x71);
     let high = bus.io_read_byte(0x71);
     let count = (high as u16) << 8 | low as u16;
-    assert!(count <= 1000 && count >= 990, "count was {count}");
+    assert!((990..=1000).contains(&count), "count was {count}");
 
     // Channel 1 via mirror.
     bus.io_write_byte(0x3FDF, 0x74); // ch1: word, mode 2
@@ -333,7 +333,7 @@ fn pit_mirror_ports() {
     let low = bus.io_read_byte(0x3FDB);
     let high = bus.io_read_byte(0x3FDB);
     let count = (high as u16) << 8 | low as u16;
-    assert!(count <= 200 && count >= 190, "count was {count}");
+    assert!((190..=200).contains(&count), "count was {count}");
 }
 
 #[test]

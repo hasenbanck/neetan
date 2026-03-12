@@ -1457,8 +1457,8 @@ impl<T: Tracing> Pc9801Bus<T> {
         // NP21W computes degpal values then writes to ports. Port 0xA8..0xAE
         // map to digital[0..3], with reversed indexing vs NP21W's degpal.
         let mut col = [0u8; 4];
-        for i in 0..4 {
-            col[i] = self.read_byte_direct(src_base + 4 + i as u32);
+        for (i, col_byte) in col.iter_mut().enumerate() {
+            *col_byte = self.read_byte_direct(src_base + 4 + i as u32);
         }
         self.palette.state.digital[0] = ((col[2] & 0x0F) << 4) | (col[0] & 0x0F);
         self.palette.state.digital[1] = ((col[3] & 0x0F) << 4) | (col[1] & 0x0F);
@@ -1767,8 +1767,8 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         // Read 8 bytes of GBMDOTI pattern and bit-reverse each.
         let mut pat = [0u8; 8];
-        for i in 0..8 {
-            pat[i] = reverse_bits(self.read_byte_direct(ucw_base + 0x20 + i as u32));
+        for (i, pat_byte) in pat.iter_mut().enumerate() {
+            *pat_byte = reverse_bits(self.read_byte_direct(ucw_base + 0x20 + i as u32));
         }
 
         // Height (DC+1 scan lines) and width from GBLNG1/GBLNG2.
@@ -2348,8 +2348,8 @@ impl<T: Tracing> Pc9801Bus<T> {
                 let mut current_r = r;
                 for _ in 0..sector_count {
                     let mut data = vec![0u8; sector_size];
-                    for j in 0..sector_size {
-                        data[j] = self.read_byte_direct(buf_addr + offset + j as u32);
+                    for (j, data_byte) in data.iter_mut().enumerate() {
+                        *data_byte = self.read_byte_direct(buf_addr + offset + j as u32);
                     }
                     if !self.floppy.write_sector_data(
                         drive,
@@ -2712,8 +2712,8 @@ impl<T: Tracing> Pc9801Bus<T> {
         let src_base = (u32::from(src_seg) << 4).wrapping_add(u32::from(src_off));
 
         let mut buf = [0u8; 6];
-        for i in 0..6 {
-            buf[i] = self.read_byte_direct(src_base + i as u32);
+        for (i, buf_byte) in buf.iter_mut().enumerate() {
+            *buf_byte = self.read_byte_direct(src_base + i as u32);
         }
 
         // Store year in Memory Switch 8 (text VRAM offset 0x3FFE).

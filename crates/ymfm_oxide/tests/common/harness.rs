@@ -216,8 +216,8 @@ pub fn add_ssg_bg_2608(chip: &mut Ym2608<impl Ym2608Callbacks>) {
 
 pub fn create_adpcm_rom() -> Vec<u8> {
     let mut data = vec![0u8; 256 * 1024];
-    for i in 0..0x2000 {
-        data[i] = if i % 2 == 0 { 0x77 } else { 0x17 };
+    for (i, byte) in data.iter_mut().take(0x2000).enumerate() {
+        *byte = if i % 2 == 0 { 0x77 } else { 0x17 };
     }
     for i in 0..1024 {
         data[0x2000 + i] = ((i * 3) & 0xFF) as u8;
@@ -614,8 +614,8 @@ impl AdpcmTester {
 
 pub fn create_y8950_adpcm_data() -> Vec<u8> {
     let mut data = vec![0u8; 256 * 1024];
-    for i in 0..0x2000 {
-        data[i] = if i % 2 == 0 { 0x77 } else { 0x17 };
+    for (i, byte) in data.iter_mut().take(0x2000).enumerate() {
+        *byte = if i % 2 == 0 { 0x77 } else { 0x17 };
     }
     for i in 0..1024 {
         data[0x2000 + i] = ((i * 3) & 0xFF) as u8;

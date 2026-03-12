@@ -94,7 +94,7 @@ fn four_op_algorithms() {
         let mut chip = setup_ymf262();
         write_reg_opl3_hi(&mut chip, 0x04, 0x01);
         let ch0_algo = algo & 0x01;
-        write_reg_opl3(&mut chip, 0xC0, (0 << 1) | ch0_algo | 0x30);
+        write_reg_opl3(&mut chip, 0xC0, ch0_algo | 0x30);
         let ch3_algo = (algo >> 1) & 0x01;
         write_reg_opl3(&mut chip, 0xC3, ch3_algo | 0x30);
         for op in 0..2u8 {

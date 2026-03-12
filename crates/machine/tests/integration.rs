@@ -224,7 +224,7 @@ fn pit_timer_eoi_in_handler_allows_repeated_refire() {
 
     let counter = machine.bus.read_word(0x00500);
     assert!(
-        counter >= 10 && counter <= 30,
+        (10..=30).contains(&counter),
         "Expected 10-30 interrupts, got counter={counter}"
     );
 }

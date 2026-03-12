@@ -1,0 +1,142 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  SLANG_VERSION: "2026.4.2"
+
+jobs:
+  build:
+    name: Build (Windows x86_64)
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install system dependencies (Windows)
+        shell: pwsh
+        run: |
+          $ver = (Invoke-RestMethod -Uri "https://vulkan.lunarg.com/sdk/latest/windows.txt").Trim()
+          $installer = "$env:RUNNER_TEMP\vulkan_sdk.exe"
+          Invoke-WebRequest -Uri "https://sdk.lunarg.com/sdk/download/$ver/windows/vulkan_sdk.exe" -OutFile $installer
+          Start-Process -FilePath $installer -ArgumentList "--accept-licenses --default-answer --confirm-command install" -Wait
+          echo "VULKAN_SDK=C:\VulkanSDK\$ver" >> $env:GITHUB_ENV
+          echo "C:\VulkanSDK\$ver\Bin" >> $env:GITHUB_PATH
+
+      - name: Verify Vulkan SDK
+        shell: bash
+        run: echo "VULKAN_SDK=$VULKAN_SDK"
+
+      - name: Install slangc
+        shell: pwsh
+        run: |
+          $url = "https://github.com/shader-slang/slang/releases/download/v$env:SLANG_VERSION/slang-$env:SLANG_VERSION-windows-x86_64.zip"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\slang.zip"
+          Expand-Archive "$env:RUNNER_TEMP\slang.zip" -DestinationPath "$env:RUNNER_TEMP\slang"
+          echo "$env:RUNNER_TEMP\slang\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Verify slangc
+        shell: bash
+        run: slangc -version
+
+      - name: Build release
+        run: cargo build --release --features sdl3-build-from-source
+
+      - name: Locate SDL3 shared library
+        id: sdl3
+        shell: bash
+        run: |
+          SDL3_LIB=$(find target/release/build -path "*sdl3-sys*" \
+            -name "SDL3.dll" \
+            -not -name "*.a" \
+            -not -name "*.lib" \
+            -not -type l \
+            | head -1)
+          if [ -z "$SDL3_LIB" ]; then
+            echo "::error::Could not find SDL3 shared library"
+            find target/release/build -path "*sdl3*" -ls
+            exit 1
+          fi
+          echo "path=$SDL3_LIB" >> "$GITHUB_OUTPUT"
+          echo "Found SDL3 library: $SDL3_LIB"
+
+      - name: Prepare archive
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ARCHIVE_NAME="neetan-${VERSION}-x86_64-pc-windows-msvc"
+          mkdir -p "staging/${ARCHIVE_NAME}"
+          cp "target/release/neetan.exe" "staging/${ARCHIVE_NAME}/"
+          cp "${{ steps.sdl3.outputs.path }}" "staging/${ARCHIVE_NAME}/"
+          cp -r licenses/ "staging/${ARCHIVE_NAME}/"
+          echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> "$GITHUB_ENV"
+
+      - name: Create archive
+        shell: pwsh
+        run: |
+          cd staging
+          Compress-Archive -Path $env:ARCHIVE_NAME -DestinationPath "$env:ARCHIVE_NAME.zip"
+          echo "ARCHIVE_FILE=staging/$env:ARCHIVE_NAME.zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_NAME }}
+          path: ${{ env.ARCHIVE_FILE }}
+
+  release:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Update release draft and publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+
+          # Find the draft release created by release-drafter.
+          DRAFT_ID=$(gh api repos/${GH_REPO}/releases \
+            --jq '.[] | select(.draft == true) | .id' \
+            | head -1)
+
+          if [ -n "$DRAFT_ID" ]; then
+            # Update the draft: set the tag, name, and publish it.
+            gh api -X PATCH "repos/${GH_REPO}/releases/${DRAFT_ID}" \
+              -f tag_name="${TAG}" \
+              -f name="${TAG}" \
+              -F draft=false
+            RELEASE_ID="$DRAFT_ID"
+            echo "Published existing draft release (id=${RELEASE_ID})"
+          else
+            # No draft found — create a new release with auto-generated notes.
+            RELEASE_ID=$(gh api repos/${GH_REPO}/releases \
+              -f tag_name="${TAG}" \
+              -f name="${TAG}" \
+              -F generate_release_notes=true \
+              -F draft=false \
+              --jq '.id')
+            echo "Created new release (id=${RELEASE_ID})"
+          fi
+
+          # Upload all artifacts to the release.
+          for FILE in artifacts/*; do
+            echo "Uploading ${FILE}..."
+            gh release upload "${TAG}" "${FILE}" --clobber
+          done

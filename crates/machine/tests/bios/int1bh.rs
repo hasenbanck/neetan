@@ -76,7 +76,7 @@ fn make_standard_2hd_disk(write_protected: bool) -> FloppyImage {
         (7, &s7),
         (8, &s8),
     ];
-    let tracks: Vec<(u8, u8, &[(u8, &[u8])])> = vec![(0, 0, &sectors)];
+    let tracks = vec![(0u8, 0u8, sectors.as_slice())];
     let d88_bytes = build_2hd_d88(&tracks, write_protected);
     FloppyImage::from_d88_bytes(&d88_bytes).expect("floppy image parse failed")
 }
@@ -1494,7 +1494,10 @@ fn int1bh_fdd_format_uses_chrn_n_vx() {
 fn make_two_head_disk() -> FloppyImage {
     let sectors_h0: Vec<(u8, &[u8])> = (1..=8).map(|r| (r, [0xAAu8; 1024].as_slice())).collect();
     let sectors_h1: Vec<(u8, &[u8])> = (1..=8).map(|r| (r, [0xBBu8; 1024].as_slice())).collect();
-    let tracks: Vec<(u8, u8, &[(u8, &[u8])])> = vec![(0, 0, &sectors_h0), (0, 1, &sectors_h1)];
+    let tracks = vec![
+        (0u8, 0u8, sectors_h0.as_slice()),
+        (0, 1, sectors_h1.as_slice()),
+    ];
     let d88_bytes = build_2hd_d88(&tracks, false);
     FloppyImage::from_d88_bytes(&d88_bytes).expect("two-head disk parse failed")
 }

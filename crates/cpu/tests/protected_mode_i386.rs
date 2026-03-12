@@ -376,9 +376,11 @@ fn setup_protected_mode(bus: &mut TestBus, ds_limit: u16) -> cpu::I386State {
 
     bus.ram[(PM_CODE_BASE + PM_GP_HANDLER_IP as u32) as usize] = 0xF4;
 
-    let mut state = cpu::I386State::default();
-    state.cr0 = 0x0001;
-    state.ip = 0x0000;
+    let mut state = cpu::I386State {
+        cr0: 0x0001,
+        ip: 0x0000,
+        ..Default::default()
+    };
     state.set_esp(0xFFF0);
 
     state.set_cs(PM_CS_SEL);
@@ -3535,10 +3537,12 @@ fn i386_task_switch_reads_ldt_limit_with_granularity() {
 /// CS = 0x0000 (base 0x00000), SS = 0x0000 (base 0x00000), SP = 0xFFF0.
 /// Code must be placed at offset 0x10000 in the bus (cs_base + ip_upper + ip).
 fn real_mode_stale_ip_upper() -> cpu::I386State {
-    let mut state = cpu::I386State::default();
-    state.cr0 = 0; // Real mode.
-    state.ip = 0x0000;
-    state.ip_upper = 0x0001_0000;
+    let mut state = cpu::I386State {
+        cr0: 0,
+        ip: 0x0000,
+        ip_upper: 0x0001_0000,
+        ..Default::default()
+    };
 
     state.set_cs(0x0000);
     state.seg_bases[cpu::SegReg32::CS as usize] = 0x00000;
@@ -3661,7 +3665,7 @@ fn i386_ret_near_clears_ip_upper() {
     cpu.load_state(&real_mode_stale_ip_upper());
 
     // Push return address 0x1234 onto stack.
-    let sp = cpu.esp() as u32;
+    let sp = cpu.esp();
     write_word_at(&mut bus, sp - 2, 0x1234);
     cpu.state.set_esp(sp - 2);
 
@@ -3683,7 +3687,7 @@ fn i386_ret_near_imm_clears_ip_upper() {
     cpu.load_state(&real_mode_stale_ip_upper());
 
     // Push return address 0xABCD onto stack.
-    let sp = cpu.esp() as u32;
+    let sp = cpu.esp();
     write_word_at(&mut bus, sp - 2, 0xABCD);
     cpu.state.set_esp(sp - 2);
 
@@ -3705,7 +3709,7 @@ fn i386_ret_far_16bit_clears_ip_upper() {
     cpu.load_state(&real_mode_stale_ip_upper());
 
     // Push CS:IP (0x3000:0x0400) onto stack.
-    let sp = cpu.esp() as u32;
+    let sp = cpu.esp();
     write_word_at(&mut bus, sp - 4, 0x0400); // IP
     write_word_at(&mut bus, sp - 2, 0x3000); // CS
     cpu.state.set_esp(sp - 4);
@@ -3729,7 +3733,7 @@ fn i386_ret_far_imm_16bit_clears_ip_upper() {
     cpu.load_state(&real_mode_stale_ip_upper());
 
     // Push CS:IP (0x4000:0x0600) onto stack.
-    let sp = cpu.esp() as u32;
+    let sp = cpu.esp();
     write_word_at(&mut bus, sp - 4, 0x0600); // IP
     write_word_at(&mut bus, sp - 2, 0x4000); // CS
     cpu.state.set_esp(sp - 4);
@@ -3753,7 +3757,7 @@ fn i386_iret_16bit_real_mode_clears_ip_upper() {
     cpu.load_state(&real_mode_stale_ip_upper());
 
     // Push FLAGS, CS, IP onto stack (IRET pops IP, CS, FLAGS).
-    let sp = cpu.esp() as u32;
+    let sp = cpu.esp();
     write_word_at(&mut bus, sp - 6, 0x0800); // IP
     write_word_at(&mut bus, sp - 4, 0x5000); // CS
     write_word_at(&mut bus, sp - 2, 0x0202); // FLAGS (IF=1)
@@ -3859,10 +3863,12 @@ fn i386_pm_to_real_mode_jmp_far_clears_ip_upper() {
     write_gdt_entry16(&mut bus, gdt_base, 2, 0x00000, 0xFFFF, 0x93); // DS/SS.
 
     // Start in PM at code_base:0x0000.
-    let mut state = cpu::I386State::default();
-    state.cr0 = 0x0001; // PE=1.
-    state.ip = 0x0000;
-    state.ip_upper = 0;
+    let mut state = cpu::I386State {
+        cr0: 0x0001,
+        ip: 0x0000,
+        ip_upper: 0,
+        ..Default::default()
+    };
     state.set_cs(0x0008);
     state.seg_bases[cpu::SegReg32::CS as usize] = code_base;
     state.seg_limits[cpu::SegReg32::CS as usize] = 0xFFFF;

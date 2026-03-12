@@ -215,7 +215,7 @@ fn timer_a_period_varies_with_value() {
             } if *duration_in_clocks > 0 => Some(*duration_in_clocks),
             _ => None,
         })
-        .last();
+        .next_back();
 
     let mut chip2 = Y8950::new(RecordingCallbacksY8950::new());
     chip2.reset();
@@ -234,7 +234,7 @@ fn timer_a_period_varies_with_value() {
             } if *duration_in_clocks > 0 => Some(*duration_in_clocks),
             _ => None,
         })
-        .last();
+        .next_back();
 
     if let (Some(d1), Some(d2)) = (duration1, duration2) {
         assert!(

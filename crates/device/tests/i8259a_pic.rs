@@ -532,7 +532,7 @@ fn slave_irq_blocked_by_master_isr() {
     // Now slave IRQ fires
     assert!(pic.has_pending_irq());
     let vector = pic.acknowledge();
-    assert_eq!(vector, 0x10 + 0);
+    assert_eq!(vector, 0x10);
 }
 
 #[test]
@@ -697,7 +697,7 @@ fn specific_eoi_for_wrong_level() {
     assert_eq!(pic.chips[0].isr, 0x08);
 
     // Specific EOI for level 0 (not in-service): ISR unchanged
-    pic.write_port0(0, 0x60 | 0);
+    pic.write_port0(0, 0x60);
     assert_eq!(pic.chips[0].isr, 0x08);
 
     // Specific EOI for level 3 (correct): ISR cleared
@@ -917,7 +917,7 @@ fn master_irq_at_cascade_position_without_slave() {
     pic.set_irq(8);
     assert!(pic.has_pending_irq());
     let vector = pic.acknowledge();
-    assert_eq!(vector, 0x10 + 0); // slave IR0
+    assert_eq!(vector, 0x10); // slave IR0
 }
 
 #[test]

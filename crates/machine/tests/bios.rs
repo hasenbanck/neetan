@@ -53,7 +53,9 @@ use device::{
 };
 use machine::{Pc9801Ra, Pc9801Vm, Pc9801Vx};
 
-fn build_2hd_d88(tracks: &[(u8, u8, &[(u8, &[u8])])], write_protected: bool) -> Vec<u8> {
+type TrackList<'a> = [(u8, u8, &'a [(u8, &'a [u8])])];
+
+fn build_2hd_d88(tracks: &TrackList<'_>, write_protected: bool) -> Vec<u8> {
     const HEADER_SIZE: usize = 0x2B0;
     const SECTOR_HEADER_SIZE: usize = 16;
 

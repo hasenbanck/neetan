@@ -51,9 +51,7 @@ fn make_multi_tick_code(tick_count: u8) -> Vec<u8> {
         0xCD, 0x1C,                         // INT 0x1C  (set interval timer)
         0xFB,                               // STI
     ];
-    for _ in 0..tick_count {
-        code.push(0xF4); // HLT (wait for tick)
-    }
+    code.extend(std::iter::repeat_n(0xF4, tick_count as usize)); // HLT (wait for tick)
     code.extend_from_slice(&[
         0xFA,                               // CLI  (prevent further ticks)
         0xA1, 0x8A, 0x05,                   // MOV AX, [0x058A]
