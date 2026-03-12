@@ -1,0 +1,20 @@
+[package]
+name = "sdl3"
+version = "0.1.0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+use-pkg-config = ["sdl3-sys/use-pkg-config"]
+use-vcpkg = ["sdl3-sys/use-vcpkg"]
+build-from-source = ["sdl3-sys/build-from-source"]
+build-from-source-static = ["sdl3-sys/build-from-source-static"]
+link-framework = ["sdl3-sys/link-framework"]
+link-static = ["sdl3-sys/link-static"]
+no-link = ["sdl3-sys/no-link"]
+
+[dependencies]
+sdl3-sys = { workspace = true }

@@ -1,0 +1,13 @@
+[package]
+name = "ymfm_oxide"
+version = "0.1.0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+ymfm = { path = ".", package = "ymfm_oxide" }

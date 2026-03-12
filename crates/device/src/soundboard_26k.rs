@@ -1,0 +1,478 @@
+//! PC-9801-26K sound board: YM2203 (OPN) FM + SSG synthesis with resampling.
+
+use std::cell::{Cell, RefCell};
+
+use common::EventKind;
+use resampler::{Attenuation, Latency, ResamplerFir};
+use ymfm_oxide::{Ym2203, Ym2203Callbacks, YmfmOpnFidelity, YmfmOutput4};
+
+/// YM2203 input clock: 15.9744 MHz / 4 = 3,993,600 Hz.
+const YM2203_CLOCK: u32 = 3_993_600;
+
+const FIDELITY: YmfmOpnFidelity = YmfmOpnFidelity::Max;
+
+/// Fractional sample remainder for drift-free FM sample count accumulation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FmSampleRemainder(pub f64);
+
+impl Eq for FmSampleRemainder {}
+
+impl Default for FmSampleRemainder {
+    fn default() -> Self {
+        Self(0.0)
+    }
+}
+
+/// Snapshot of the PC-9801-26K sound board state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Soundboard26kState {
+    /// Address latch (write-only via port 0x0188).
+    pub address: u8,
+    /// IRQ line number (default 12 = INT5).
+    pub irq_line: u8,
+    /// Whether the IRQ output is currently asserted.
+    pub irq_asserted: bool,
+    /// CPU cycle at which the busy flag clears.
+    pub busy_end_cycle: u64,
+    /// CPU cycle at which the current audio frame started.
+    pub audio_frame_start_cycle: u64,
+    /// Fractional sample remainder carried across frames.
+    pub sample_remainder: FmSampleRemainder,
+    /// Whether this board uses alternate timer event kinds (dual-board config).
+    pub alternate_timers: bool,
+}
+
+impl Default for Soundboard26kState {
+    fn default() -> Self {
+        Self {
+            address: 0,
+            irq_line: 12,
+            irq_asserted: false,
+            busy_end_cycle: 0,
+            audio_frame_start_cycle: 0,
+            sample_remainder: FmSampleRemainder::default(),
+            alternate_timers: false,
+        }
+    }
+}
+
+enum PendingChipAction {
+    SetTimer {
+        timer_id: u32,
+        duration_in_clocks: i32,
+    },
+    UpdateIrq {
+        asserted: bool,
+    },
+}
+
+struct ChipBridge {
+    current_cycle: Cell<u64>,
+    busy_end_cycle: Cell<u64>,
+    cpu_clock_hz: Cell<u32>,
+    timer_a_kind: EventKind,
+    timer_b_kind: EventKind,
+    pending: RefCell<Vec<PendingChipAction>>,
+}
+
+impl ChipBridge {
+    fn new(cpu_clock_hz: u32, alternate_timers: bool) -> Self {
+        let (timer_a_kind, timer_b_kind) = if alternate_timers {
+            (EventKind::FmTimer2A, EventKind::FmTimer2B)
+        } else {
+            (EventKind::FmTimerA, EventKind::FmTimerB)
+        };
+        Self {
+            current_cycle: Cell::new(0),
+            busy_end_cycle: Cell::new(0),
+            cpu_clock_hz: Cell::new(cpu_clock_hz),
+            timer_a_kind,
+            timer_b_kind,
+            pending: RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl Ym2203Callbacks for ChipBridge {
+    fn set_timer(&self, timer_id: u32, duration_in_clocks: i32) {
+        self.pending.borrow_mut().push(PendingChipAction::SetTimer {
+            timer_id,
+            duration_in_clocks,
+        });
+    }
+
+    fn set_busy_end(&self, clocks: u32) {
+        let cpu_clocks =
+            u64::from(clocks) * u64::from(self.cpu_clock_hz.get()) / u64::from(YM2203_CLOCK);
+        self.busy_end_cycle
+            .set(self.current_cycle.get() + cpu_clocks);
+    }
+
+    fn is_busy(&self) -> bool {
+        self.current_cycle < self.busy_end_cycle
+    }
+
+    fn update_irq(&self, asserted: bool) {
+        self.pending
+            .borrow_mut()
+            .push(PendingChipAction::UpdateIrq { asserted });
+    }
+}
+
+/// Action the bus must process after a sound board operation.
+pub enum Soundboard26kAction {
+    /// Schedule a timer to fire at the given cycle.
+    ScheduleTimer {
+        /// Timer event kind.
+        kind: EventKind,
+        /// CPU cycle at which the timer should fire.
+        fire_cycle: u64,
+    },
+    /// Cancel a previously scheduled timer.
+    CancelTimer {
+        /// Timer event kind.
+        kind: EventKind,
+    },
+    /// Assert an IRQ line on the PIC.
+    AssertIrq {
+        /// IRQ line number.
+        irq: u8,
+    },
+    /// Deassert an IRQ line on the PIC.
+    DeassertIrq {
+        /// IRQ line number.
+        irq: u8,
+    },
+}
+
+/// PC-9801-26K sound board: YM2203 (OPN) FM + SSG synthesis with resampling.
+pub struct Soundboard26k {
+    /// Current device state (saveable).
+    pub state: Soundboard26kState,
+    chip: Ym2203<ChipBridge>,
+    cpu_clock_hz: u32,
+    native_rate: u32,
+    native_buffer: Vec<YmfmOutput4>,
+    pending_native: Vec<YmfmOutput4>,
+    resampler: ResamplerFir,
+    resample_input: Vec<f32>,
+    resample_output: Vec<f32>,
+}
+
+impl Soundboard26k {
+    /// Creates a new PC-9801-26K sound board instance.
+    ///
+    /// When `alternate_timers` is `true`, uses `FmTimer2A`/`FmTimer2B` event
+    /// kinds instead of `FmTimerA`/`FmTimerB` (for dual-board configurations).
+    pub fn new(cpu_clock_hz: u32, sample_rate: u32, alternate_timers: bool) -> Self {
+        let bridge = ChipBridge::new(cpu_clock_hz, alternate_timers);
+        let mut chip = Ym2203::new(bridge);
+        chip.reset();
+        chip.set_fidelity(FIDELITY);
+
+        let native_rate = chip.sample_rate(YM2203_CLOCK);
+        let resampler = ResamplerFir::new(
+            1,
+            native_rate,
+            sample_rate,
+            Latency::Sample64,
+            Attenuation::Db60,
+        );
+        let resample_output_size = resampler.buffer_size_output();
+
+        let state = Soundboard26kState {
+            alternate_timers,
+            ..Default::default()
+        };
+
+        Self {
+            state,
+            chip,
+            cpu_clock_hz,
+            native_rate,
+            native_buffer: vec![YmfmOutput4 { data: [0; 4] }; 4096],
+            pending_native: Vec::new(),
+            resampler,
+            resample_input: vec![0.0; 4096],
+            resample_output: vec![0.0; resample_output_size],
+        }
+    }
+
+    /// Returns the currently latched register address.
+    pub fn address(&self) -> u8 {
+        self.state.address
+    }
+
+    /// Returns the configured IRQ line number.
+    pub fn irq_line(&self) -> u8 {
+        self.state.irq_line
+    }
+
+    /// Sets the address latch to a specific value (used by ITF initialization).
+    pub fn set_address(&mut self, address: u8) {
+        self.state.address = address;
+    }
+
+    /// Advances the YM2203 chip clock to `current_cycle` by generating native
+    /// samples, buffering them for later resampling in `generate_samples()`.
+    ///
+    /// This ensures `m_total_clocks` inside ymfm is always up-to-date when
+    /// registers are read or written, eliminating timer scheduling
+    /// non-determinism caused by varying audio generation intervals.
+    fn sync_to_cycle(&mut self, current_cycle: u64) {
+        let frame_start = self.state.audio_frame_start_cycle;
+        let frame_cycles = current_cycle.saturating_sub(frame_start);
+        if frame_cycles == 0 {
+            return;
+        }
+
+        let native_rate = u64::from(self.native_rate);
+        let exact_native = (frame_cycles as f64 * native_rate as f64)
+            / f64::from(self.cpu_clock_hz)
+            + self.state.sample_remainder.0;
+        let native_count = exact_native as usize;
+        if native_count == 0 {
+            return;
+        }
+
+        self.state.sample_remainder = FmSampleRemainder(exact_native - native_count as f64);
+        self.state.audio_frame_start_cycle = current_cycle;
+
+        if self.native_buffer.len() < native_count {
+            self.native_buffer
+                .resize(native_count, YmfmOutput4 { data: [0; 4] });
+        }
+        self.chip.generate(&mut self.native_buffer[..native_count]);
+        self.pending_native
+            .extend_from_slice(&self.native_buffer[..native_count]);
+    }
+
+    /// Reads the chip status register (port 0x0188 read).
+    pub fn read_status(&mut self, current_cycle: u64) -> u8 {
+        self.sync_to_cycle(current_cycle);
+        self.chip.callbacks_mut().current_cycle.set(current_cycle);
+        self.chip.read_status()
+    }
+
+    /// Reads data from the currently addressed register (port 0x018A read).
+    ///
+    /// Caller must call `drain_actions()` afterward.
+    pub fn read_data(&mut self, current_cycle: u64) -> u8 {
+        self.sync_to_cycle(current_cycle);
+        self.chip.callbacks_mut().current_cycle.set(current_cycle);
+        self.chip.read_data()
+    }
+
+    /// Writes the register address latch (port 0x0188 write).
+    ///
+    /// Caller must call `drain_actions()` afterward.
+    pub fn write_address(&mut self, value: u8, current_cycle: u64) {
+        self.state.address = value;
+        self.sync_to_cycle(current_cycle);
+        self.chip.callbacks_mut().current_cycle.set(current_cycle);
+        self.chip.write_address(value);
+    }
+
+    /// Writes data to the currently addressed register (port 0x018A write).
+    ///
+    /// Caller must call `drain_actions()` afterward.
+    pub fn write_data(&mut self, value: u8, current_cycle: u64) {
+        self.sync_to_cycle(current_cycle);
+        self.chip.callbacks_mut().current_cycle.set(current_cycle);
+        self.chip.write_data(value);
+    }
+
+    /// Notifies the chip that a timer has expired.
+    ///
+    /// Caller must call `drain_actions()` afterward.
+    pub fn timer_expired(&mut self, timer_id: u32, current_cycle: u64) {
+        self.sync_to_cycle(current_cycle);
+        self.chip.callbacks_mut().current_cycle.set(current_cycle);
+        self.chip.timer_expired(timer_id);
+    }
+
+    /// Drains pending actions from the chip bridge and syncs busy state.
+    ///
+    /// Returns actions the bus must process (timer scheduling and IRQ
+    /// assertion/deassertion). Also updates `state.busy_end_cycle` and
+    /// `state.irq_asserted` internally.
+    pub fn drain_actions(&mut self) -> Vec<Soundboard26kAction> {
+        let bridge = self.chip.callbacks_mut();
+        self.state.busy_end_cycle = bridge.busy_end_cycle.get();
+        let current_cycle = bridge.current_cycle.get();
+        let cpu_clock_hz = bridge.cpu_clock_hz.get();
+
+        let timer_a_kind = bridge.timer_a_kind;
+        let timer_b_kind = bridge.timer_b_kind;
+
+        let mut actions = Vec::new();
+        for pending in bridge.pending.borrow_mut().drain(..) {
+            match pending {
+                PendingChipAction::SetTimer {
+                    timer_id,
+                    duration_in_clocks,
+                } => {
+                    let kind = if timer_id == 0 {
+                        timer_a_kind
+                    } else {
+                        timer_b_kind
+                    };
+                    if duration_in_clocks < 0 {
+                        actions.push(Soundboard26kAction::CancelTimer { kind });
+                    } else {
+                        let cpu_cycles = u64::from(duration_in_clocks as u32)
+                            * u64::from(cpu_clock_hz)
+                            / u64::from(YM2203_CLOCK);
+                        actions.push(Soundboard26kAction::ScheduleTimer {
+                            kind,
+                            fire_cycle: current_cycle + cpu_cycles,
+                        });
+                    }
+                }
+                PendingChipAction::UpdateIrq { asserted } => {
+                    self.state.irq_asserted = asserted;
+                    if asserted {
+                        actions.push(Soundboard26kAction::AssertIrq {
+                            irq: self.state.irq_line,
+                        });
+                    } else {
+                        actions.push(Soundboard26kAction::DeassertIrq {
+                            irq: self.state.irq_line,
+                        });
+                    }
+                }
+            }
+        }
+        actions
+    }
+
+    /// Generates resampled FM+SSG audio and mixes it into `output`.
+    ///
+    /// `output` is interleaved stereo (`[L, R, L, R, …]`); this method
+    /// additively mixes in the YM2203 (mono) output scaled by `volume`,
+    /// duplicated to both channels.
+    pub fn generate_samples(
+        &mut self,
+        current_cycle: u64,
+        cpu_clock_hz: u32,
+        volume: f32,
+        output: &mut [f32],
+    ) {
+        if output.is_empty() {
+            self.sync_to_cycle(current_cycle);
+            self.pending_native.clear();
+            self.state.audio_frame_start_cycle = current_cycle;
+            return;
+        }
+
+        // Generate remaining native samples from last sync to current_cycle.
+        let frame_start = self.state.audio_frame_start_cycle;
+        let frame_cycles = current_cycle.saturating_sub(frame_start);
+        let remaining_native = if frame_cycles > 0 {
+            let native_rate = u64::from(self.native_rate);
+            let exact_native = (frame_cycles as f64 * native_rate as f64) / f64::from(cpu_clock_hz)
+                + self.state.sample_remainder.0;
+            let count = exact_native as usize;
+            self.state.sample_remainder = FmSampleRemainder(exact_native - count as f64);
+            count
+        } else {
+            0
+        };
+
+        if remaining_native > 0 {
+            if self.native_buffer.len() < remaining_native {
+                self.native_buffer
+                    .resize(remaining_native, YmfmOutput4 { data: [0; 4] });
+            }
+            self.chip
+                .generate(&mut self.native_buffer[..remaining_native]);
+        }
+
+        let pending_count = self.pending_native.len();
+        let total_native = pending_count + remaining_native;
+
+        if total_native > 0 {
+            if self.resample_input.len() < total_native {
+                self.resample_input.resize(total_native, 0.0);
+            }
+
+            const FM_SCALE: f32 = 1.25 / 32768.0;
+            const SSG_SCALE: f32 = 1.0 / 32768.0;
+
+            for i in 0..pending_count {
+                let s = &self.pending_native[i];
+                self.resample_input[i] = s.data[0] as f32 * FM_SCALE
+                    + s.data[1] as f32 * SSG_SCALE
+                    + s.data[2] as f32 * SSG_SCALE
+                    + s.data[3] as f32 * SSG_SCALE;
+            }
+            for i in 0..remaining_native {
+                let s = &self.native_buffer[i];
+                self.resample_input[pending_count + i] = s.data[0] as f32 * FM_SCALE
+                    + s.data[1] as f32 * SSG_SCALE
+                    + s.data[2] as f32 * SSG_SCALE
+                    + s.data[3] as f32 * SSG_SCALE;
+            }
+
+            // Resample mono, then duplicate each sample to both stereo channels.
+            let mut input_offset = 0;
+            let mut output_frame_offset = 0;
+            let frame_count = output.len() / 2;
+            while input_offset < total_native && output_frame_offset < frame_count {
+                let Ok((consumed, produced)) = self.resampler.resample(
+                    &self.resample_input[input_offset..total_native],
+                    &mut self.resample_output,
+                ) else {
+                    break;
+                };
+                let usable = produced.min(frame_count - output_frame_offset);
+                for i in 0..usable {
+                    let sample = self.resample_output[i] * volume;
+                    output[(output_frame_offset + i) * 2] += sample;
+                    output[(output_frame_offset + i) * 2 + 1] += sample;
+                }
+                input_offset += consumed;
+                output_frame_offset += usable;
+                if consumed == 0 {
+                    break;
+                }
+            }
+        }
+
+        self.pending_native.clear();
+        self.state.audio_frame_start_cycle = current_cycle;
+    }
+
+    /// Creates a snapshot of the current state for save/restore.
+    pub fn save_state(&self) -> Soundboard26kState {
+        self.state.clone()
+    }
+
+    /// Restores from a saved state, recreating the ymfm chip.
+    pub fn load_state(
+        &mut self,
+        saved: &Soundboard26kState,
+        cpu_clock_hz: u32,
+        sample_rate: u32,
+        current_cycle: u64,
+    ) {
+        self.state = saved.clone();
+        // TODO: Save/restore ymfm internal state
+        let bridge = ChipBridge::new(cpu_clock_hz, self.state.alternate_timers);
+        bridge.busy_end_cycle.set(self.state.busy_end_cycle);
+        bridge.current_cycle.set(current_cycle);
+        self.chip = Ym2203::new(bridge);
+        self.chip.reset();
+        self.chip.set_fidelity(FIDELITY);
+        self.native_rate = self.chip.sample_rate(YM2203_CLOCK);
+        self.resampler = ResamplerFir::new(
+            1,
+            self.native_rate,
+            sample_rate,
+            Latency::Sample64,
+            Attenuation::Db60,
+        );
+        self.resample_output
+            .resize(self.resampler.buffer_size_output(), 0.0);
+    }
+}

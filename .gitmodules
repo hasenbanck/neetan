@@ -1,0 +1,9 @@
+[submodule "crates/cpu/tests/SingleStepTests/v20"]
+	path = crates/cpu/tests/SingleStepTests/v20
+	url = https://github.com/SingleStepTests/v20
+[submodule "crates/cpu/tests/SingleStepTests/80286"]
+	path = crates/cpu/tests/SingleStepTests/80286
+	url = https://github.com/SingleStepTests/80286
+[submodule "crates/cpu/tests/SingleStepTests/80386"]
+	path = crates/cpu/tests/SingleStepTests/80386
+	url = https://github.com/SingleStepTests/80386

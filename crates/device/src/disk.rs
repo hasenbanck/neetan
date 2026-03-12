@@ -1,0 +1,715 @@
+//! Hard disk image format parsers for SASI hard disk emulation.
+//!
+//! Supports three PC-98 HDD image formats:
+//! - **NHD** (.nhd): T98Next format with signature and full geometry header.
+//! - **HDI** (.hdi): Anex86 format with compact 32-byte geometry header.
+//! - **THD** (.thd): Original T98 format with minimal header, fixed SASI geometry.
+
+mod hdi;
+mod nhd;
+mod thd;
+
+use std::{error::Error, fmt, path::Path};
+
+/// HDI header size (fixed at 32 bytes).
+const HDI_HEADER_SIZE: usize = 32;
+
+/// NHD file signature: "T98HDDIMAGE.R0\0" (15 bytes).
+const NHD_SIGNATURE: &[u8; 15] = b"T98HDDIMAGE.R0\0";
+
+/// NHD header size (fixed at 512 bytes).
+const NHD_HEADER_SIZE: usize = 512;
+
+/// THD header size (fixed at 256 bytes).
+const THD_HEADER_SIZE: usize = 256;
+
+/// THD fixed geometry: 33 sectors per track.
+const THD_SECTORS_PER_TRACK: u8 = 33;
+
+/// THD fixed geometry: 8 heads.
+const THD_HEADS: u8 = 8;
+
+/// THD fixed sector size: 256 bytes.
+const THD_SECTOR_SIZE: u16 = 256;
+
+/// Legacy SENSE (INT 1Bh Function 04h) return values per SASI HDD type index.
+const SASI_LEGACY_SENSE: [u8; 7] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x04, 0x05];
+
+/// New SENSE (INT 1Bh Function 84h) return values per SASI HDD type index.
+const SASI_NEW_SENSE: [u8; 7] = [0x00, 0x01, 0x02, 0x03, 0x05, 0x05, 0x07];
+
+/// Standard SASI HDD geometry presets (sectors, heads, cylinders).
+const SASI_HDD_TYPES: [(u8, u8, u16); 7] = [
+    (33, 4, 153), // 5 MB
+    (33, 4, 310), // 10 MB
+    (33, 6, 310), // 15 MB
+    (33, 8, 310), // 20 MB
+    (33, 4, 615), // 20 MB (alternate)
+    (33, 6, 615), // 30 MB
+    (33, 8, 615), // 40 MB
+];
+
+/// Disk geometry describing CHS layout and sector size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HddGeometry {
+    /// Number of cylinders.
+    pub cylinders: u16,
+    /// Number of heads (surfaces).
+    pub heads: u8,
+    /// Number of sectors per track.
+    pub sectors_per_track: u8,
+    /// Bytes per sector.
+    pub sector_size: u16,
+}
+
+impl HddGeometry {
+    /// Total number of sectors on the disk.
+    pub fn total_sectors(&self) -> u32 {
+        self.cylinders as u32 * self.heads as u32 * self.sectors_per_track as u32
+    }
+
+    /// Total data size in bytes (excluding any image header).
+    pub fn total_bytes(&self) -> u64 {
+        self.total_sectors() as u64 * self.sector_size as u64
+    }
+
+    /// Returns the SASI media type index (0-6) if this geometry matches a
+    /// standard SASI HDD type, or `None` if it does not.
+    pub fn sasi_media_type(&self) -> Option<u8> {
+        if self.sector_size != 256 {
+            return None;
+        }
+        SASI_HDD_TYPES
+            .iter()
+            .position(|&(spt, heads, cyls)| {
+                self.sectors_per_track == spt && self.heads == heads && self.cylinders == cyls
+            })
+            .map(|i| i as u8)
+    }
+
+    /// Returns the legacy SENSE (INT 1Bh Function 04h) capacity code.
+    pub fn sasi_legacy_sense_type(&self) -> Option<u8> {
+        self.sasi_media_type()
+            .map(|i| SASI_LEGACY_SENSE[i as usize])
+    }
+
+    /// Returns the new SENSE (INT 1Bh Function 84h) capacity code.
+    pub fn sasi_new_sense_type(&self) -> Option<u8> {
+        self.sasi_media_type().map(|i| SASI_NEW_SENSE[i as usize])
+    }
+}
+
+/// The original format of a loaded HDD image (used for serialization).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HddFormat {
+    /// T98Next (.nhd).
+    Nhd,
+    /// Anex86 (.hdi).
+    Hdi,
+    /// Original T98 (.thd).
+    Thd,
+}
+
+/// A parsed hard disk image.
+#[derive(Debug, Clone)]
+pub struct HddImage {
+    /// Disk geometry.
+    pub geometry: HddGeometry,
+    /// Original image format.
+    pub format: HddFormat,
+    /// Raw sector data (geometry.total_sectors() * geometry.sector_size bytes).
+    data: Vec<u8>,
+    /// Header size from the original image (needed for HDI/NHD serialization).
+    original_header_size: u32,
+}
+
+impl HddImage {
+    /// Creates an HDD image from raw components (for testing and programmatic creation).
+    pub fn from_raw(geometry: HddGeometry, format: HddFormat, data: Vec<u8>) -> Self {
+        Self {
+            geometry,
+            format,
+            data,
+            original_header_size: match format {
+                HddFormat::Nhd => NHD_HEADER_SIZE as u32,
+                HddFormat::Hdi => HDI_HEADER_SIZE as u32,
+                HddFormat::Thd => THD_HEADER_SIZE as u32,
+            },
+        }
+    }
+
+    /// Returns a human-readable format name.
+    pub fn format_name(&self) -> &'static str {
+        match self.format {
+            HddFormat::Nhd => "NHD",
+            HddFormat::Hdi => "HDI",
+            HddFormat::Thd => "THD",
+        }
+    }
+
+    /// Reads sector data at the given LBA.
+    pub fn read_sector(&self, lba: u32) -> Option<&[u8]> {
+        if lba >= self.geometry.total_sectors() {
+            return None;
+        }
+        let offset = lba as usize * self.geometry.sector_size as usize;
+        let end = offset + self.geometry.sector_size as usize;
+        if end > self.data.len() {
+            return None;
+        }
+        Some(&self.data[offset..end])
+    }
+
+    /// Writes sector data at the given LBA. Returns `false` if LBA is out of range
+    /// or `data` length does not match the sector size.
+    pub fn write_sector(&mut self, lba: u32, sector_data: &[u8]) -> bool {
+        if lba >= self.geometry.total_sectors() {
+            return false;
+        }
+        if sector_data.len() != self.geometry.sector_size as usize {
+            return false;
+        }
+        let offset = lba as usize * self.geometry.sector_size as usize;
+        let end = offset + self.geometry.sector_size as usize;
+        if end > self.data.len() {
+            return false;
+        }
+        self.data[offset..end].copy_from_slice(sector_data);
+        true
+    }
+
+    /// Formats a track starting at the given LBA by filling sectors with 0xE5.
+    pub fn format_track(&mut self, start_lba: u32) -> bool {
+        let sectors_per_track = self.geometry.sectors_per_track as u32;
+        for i in 0..sectors_per_track {
+            let lba = start_lba + i;
+            if lba >= self.geometry.total_sectors() {
+                return false;
+            }
+            let offset = lba as usize * self.geometry.sector_size as usize;
+            let end = offset + self.geometry.sector_size as usize;
+            if end > self.data.len() {
+                return false;
+            }
+            self.data[offset..end].fill(0xE5);
+        }
+        true
+    }
+
+    /// Serializes the image back to its original format.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        match self.format {
+            HddFormat::Nhd => self.serialize_nhd(),
+            HddFormat::Hdi => self.serialize_hdi(),
+            HddFormat::Thd => self.serialize_thd(),
+        }
+    }
+}
+
+/// Validates geometry parameters are within acceptable bounds.
+fn validate_geometry(
+    cylinders: u32,
+    heads: u32,
+    sectors_per_track: u32,
+    sector_size: u16,
+) -> Result<(), HddError> {
+    if cylinders == 0 {
+        return Err(HddError::InvalidGeometry {
+            field: "cylinders",
+            value: cylinders,
+        });
+    }
+    if heads == 0 {
+        return Err(HddError::InvalidGeometry {
+            field: "heads",
+            value: heads,
+        });
+    }
+    if sectors_per_track == 0 {
+        return Err(HddError::InvalidGeometry {
+            field: "sectors_per_track",
+            value: sectors_per_track,
+        });
+    }
+    if sector_size == 0 || !sector_size.is_power_of_two() {
+        return Err(HddError::InvalidGeometry {
+            field: "sector_size",
+            value: sector_size as u32,
+        });
+    }
+    Ok(())
+}
+
+/// Loads an HDD image, auto-detecting the format by file extension and signature.
+pub fn load_hdd_image(path: &Path, data: &[u8]) -> Result<HddImage, HddError> {
+    // Try NHD first (has a signature).
+    if data.len() >= 15 && &data[..15] == NHD_SIGNATURE {
+        return HddImage::from_nhd(data);
+    }
+
+    // Fall back to extension-based detection.
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+
+    match extension.as_deref() {
+        Some("nhd") => HddImage::from_nhd(data),
+        Some("hdi") => HddImage::from_hdi(data),
+        Some("thd") => HddImage::from_thd(data),
+        _ => Err(HddError::UnrecognizedFormat),
+    }
+}
+
+/// Error type for HDD image parsing.
+#[derive(Debug, Clone)]
+pub enum HddError {
+    /// Image data too small for the format header.
+    TooSmall {
+        /// Format name.
+        format: &'static str,
+        /// Minimum required size.
+        minimum: usize,
+        /// Actual data size.
+        actual: usize,
+    },
+    /// File signature does not match expected value.
+    InvalidSignature {
+        /// Format name.
+        format: &'static str,
+        /// Expected signature string.
+        expected: &'static str,
+    },
+    /// A geometry field has an invalid value.
+    InvalidGeometry {
+        /// Which field is invalid.
+        field: &'static str,
+        /// The invalid value.
+        value: u32,
+    },
+    /// Image data is shorter than the geometry requires.
+    DataTruncated {
+        /// Expected minimum file size.
+        expected: usize,
+        /// Actual file size.
+        actual: usize,
+    },
+    /// File extension not recognized as a supported HDD format.
+    UnrecognizedFormat,
+}
+
+impl fmt::Display for HddError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HddError::TooSmall {
+                format,
+                minimum,
+                actual,
+            } => write!(
+                f,
+                "{format} image too small: need at least {minimum} bytes, got {actual}"
+            ),
+            HddError::InvalidSignature { format, expected } => {
+                write!(
+                    f,
+                    "{format} image has invalid signature, expected {expected}"
+                )
+            }
+            HddError::InvalidGeometry { field, value } => {
+                write!(f, "invalid HDD geometry: {field} = {value}")
+            }
+            HddError::DataTruncated { expected, actual } => {
+                write!(
+                    f,
+                    "HDD image data truncated: expected {expected} bytes, got {actual}"
+                )
+            }
+            HddError::UnrecognizedFormat => write!(f, "unrecognized HDD image format"),
+        }
+    }
+}
+
+impl Error for HddError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn build_nhd_image(cylinders: u16, heads: u8, spt: u8, sector_size: u16) -> Vec<u8> {
+        let header_size = NHD_HEADER_SIZE as u32;
+        let mut header = vec![0u8; NHD_HEADER_SIZE];
+
+        header[..15].copy_from_slice(NHD_SIGNATURE);
+        header[0x110..0x114].copy_from_slice(&header_size.to_le_bytes());
+        header[0x114..0x118].copy_from_slice(&(cylinders as u32).to_le_bytes());
+        header[0x118..0x11A].copy_from_slice(&(heads as u16).to_le_bytes());
+        header[0x11A..0x11C].copy_from_slice(&(spt as u16).to_le_bytes());
+        header[0x11C..0x11E].copy_from_slice(&sector_size.to_le_bytes());
+
+        let total_sectors = cylinders as usize * heads as usize * spt as usize;
+        let data_size = total_sectors * sector_size as usize;
+        let mut data = vec![0u8; data_size];
+        // Fill each sector's first byte with its LBA index (mod 256).
+        for lba in 0..total_sectors {
+            data[lba * sector_size as usize] = lba as u8;
+        }
+
+        header.extend_from_slice(&data);
+        header
+    }
+
+    fn build_hdi_image(cylinders: u16, heads: u8, spt: u8, sector_size: u16) -> Vec<u8> {
+        let header_size = HDI_HEADER_SIZE as u32;
+        let total_sectors = cylinders as u32 * heads as u32 * spt as u32;
+        let mut header = vec![0u8; HDI_HEADER_SIZE];
+
+        header[8..12].copy_from_slice(&header_size.to_le_bytes());
+        header[12..16].copy_from_slice(&total_sectors.to_le_bytes());
+        header[16..20].copy_from_slice(&(sector_size as u32).to_le_bytes());
+        header[20..24].copy_from_slice(&(spt as u32).to_le_bytes());
+        header[24..28].copy_from_slice(&(heads as u32).to_le_bytes());
+        header[28..32].copy_from_slice(&(cylinders as u32).to_le_bytes());
+
+        let data_size = total_sectors as usize * sector_size as usize;
+        let mut data = vec![0u8; data_size];
+        for lba in 0..total_sectors as usize {
+            data[lba * sector_size as usize] = lba as u8;
+        }
+
+        header.extend_from_slice(&data);
+        header
+    }
+
+    fn build_thd_image(cylinders: u16) -> Vec<u8> {
+        let mut header = vec![0u8; THD_HEADER_SIZE];
+        header[0..2].copy_from_slice(&cylinders.to_le_bytes());
+
+        let total_sectors =
+            cylinders as usize * THD_HEADS as usize * THD_SECTORS_PER_TRACK as usize;
+        let data_size = total_sectors * THD_SECTOR_SIZE as usize;
+        let mut data = vec![0u8; data_size];
+        for lba in 0..total_sectors {
+            data[lba * THD_SECTOR_SIZE as usize] = lba as u8;
+        }
+
+        header.extend_from_slice(&data);
+        header
+    }
+
+    #[test]
+    fn parse_nhd_5mb() {
+        let image = build_nhd_image(153, 4, 33, 256);
+        let hdd = HddImage::from_nhd(&image).unwrap();
+
+        assert_eq!(hdd.geometry.cylinders, 153);
+        assert_eq!(hdd.geometry.heads, 4);
+        assert_eq!(hdd.geometry.sectors_per_track, 33);
+        assert_eq!(hdd.geometry.sector_size, 256);
+        assert_eq!(hdd.geometry.total_sectors(), 153 * 4 * 33);
+        assert_eq!(hdd.format, HddFormat::Nhd);
+    }
+
+    #[test]
+    fn parse_hdi_10mb() {
+        let image = build_hdi_image(310, 4, 33, 256);
+        let hdd = HddImage::from_hdi(&image).unwrap();
+
+        assert_eq!(hdd.geometry.cylinders, 310);
+        assert_eq!(hdd.geometry.heads, 4);
+        assert_eq!(hdd.geometry.sectors_per_track, 33);
+        assert_eq!(hdd.geometry.sector_size, 256);
+        assert_eq!(hdd.format, HddFormat::Hdi);
+    }
+
+    #[test]
+    fn parse_thd_20mb() {
+        let image = build_thd_image(310);
+        let hdd = HddImage::from_thd(&image).unwrap();
+
+        assert_eq!(hdd.geometry.cylinders, 310);
+        assert_eq!(hdd.geometry.heads, THD_HEADS);
+        assert_eq!(hdd.geometry.sectors_per_track, THD_SECTORS_PER_TRACK);
+        assert_eq!(hdd.geometry.sector_size, THD_SECTOR_SIZE);
+        assert_eq!(hdd.format, HddFormat::Thd);
+    }
+
+    #[test]
+    fn read_sector_at_various_lbas() {
+        let image = build_nhd_image(153, 4, 33, 256);
+        let hdd = HddImage::from_nhd(&image).unwrap();
+
+        // LBA 0
+        let sector = hdd.read_sector(0).unwrap();
+        assert_eq!(sector[0], 0);
+
+        // LBA 42
+        let sector = hdd.read_sector(42).unwrap();
+        assert_eq!(sector[0], 42);
+
+        // LBA 255
+        let sector = hdd.read_sector(255).unwrap();
+        assert_eq!(sector[0], 255);
+
+        // LBA 256 wraps in our test pattern
+        let sector = hdd.read_sector(256).unwrap();
+        assert_eq!(sector[0], 0);
+    }
+
+    #[test]
+    fn read_last_sector() {
+        let image = build_nhd_image(153, 4, 33, 256);
+        let hdd = HddImage::from_nhd(&image).unwrap();
+
+        let last_lba = hdd.geometry.total_sectors() - 1;
+        assert!(hdd.read_sector(last_lba).is_some());
+        assert!(hdd.read_sector(last_lba + 1).is_none());
+    }
+
+    #[test]
+    fn read_out_of_bounds_returns_none() {
+        let image = build_nhd_image(153, 4, 33, 256);
+        let hdd = HddImage::from_nhd(&image).unwrap();
+
+        assert!(hdd.read_sector(hdd.geometry.total_sectors()).is_none());
+        assert!(hdd.read_sector(u32::MAX).is_none());
+    }
+
+    #[test]
+    fn write_sector_and_read_back() {
+        let image = build_nhd_image(153, 4, 33, 256);
+        let mut hdd = HddImage::from_nhd(&image).unwrap();
+
+        let new_data = vec![0xAB; 256];
+        assert!(hdd.write_sector(10, &new_data));
+
+        let sector = hdd.read_sector(10).unwrap();
+        assert_eq!(sector, &new_data[..]);
+    }
+
+    #[test]
+    fn write_sector_wrong_size_fails() {
+        let image = build_nhd_image(153, 4, 33, 256);
+        let mut hdd = HddImage::from_nhd(&image).unwrap();
+
+        let wrong_size = vec![0xAB; 512];
+        assert!(!hdd.write_sector(0, &wrong_size));
+    }
+
+    #[test]
+    fn write_sector_out_of_bounds_fails() {
+        let image = build_nhd_image(153, 4, 33, 256);
+        let mut hdd = HddImage::from_nhd(&image).unwrap();
+
+        let data = vec![0xAB; 256];
+        assert!(!hdd.write_sector(hdd.geometry.total_sectors(), &data));
+    }
+
+    #[test]
+    fn format_track_fills_with_e5() {
+        let image = build_nhd_image(153, 4, 33, 256);
+        let mut hdd = HddImage::from_nhd(&image).unwrap();
+
+        assert!(hdd.format_track(0));
+
+        for lba in 0..33 {
+            let sector = hdd.read_sector(lba).unwrap();
+            assert!(
+                sector.iter().all(|&b| b == 0xE5),
+                "LBA {lba} not filled with 0xE5"
+            );
+        }
+    }
+
+    #[test]
+    fn nhd_roundtrip() {
+        let image = build_nhd_image(153, 4, 33, 256);
+        let hdd = HddImage::from_nhd(&image).unwrap();
+        let serialized = hdd.to_bytes();
+
+        assert_eq!(serialized.len(), image.len());
+        // Header should match.
+        assert_eq!(&serialized[..15], NHD_SIGNATURE);
+        // Data should match.
+        let data_start = NHD_HEADER_SIZE;
+        assert_eq!(&serialized[data_start..], &image[data_start..]);
+    }
+
+    #[test]
+    fn hdi_roundtrip() {
+        let image = build_hdi_image(310, 4, 33, 256);
+        let hdd = HddImage::from_hdi(&image).unwrap();
+        let serialized = hdd.to_bytes();
+
+        assert_eq!(serialized.len(), image.len());
+        assert_eq!(&serialized[HDI_HEADER_SIZE..], &image[HDI_HEADER_SIZE..]);
+    }
+
+    #[test]
+    fn thd_roundtrip() {
+        let image = build_thd_image(153);
+        let hdd = HddImage::from_thd(&image).unwrap();
+        let serialized = hdd.to_bytes();
+
+        assert_eq!(serialized.len(), image.len());
+        assert_eq!(&serialized[..2], &image[..2]);
+        assert_eq!(&serialized[THD_HEADER_SIZE..], &image[THD_HEADER_SIZE..]);
+    }
+
+    #[test]
+    fn nhd_too_small_rejected() {
+        let data = vec![0u8; 100];
+        assert!(matches!(
+            HddImage::from_nhd(&data),
+            Err(HddError::TooSmall { format: "NHD", .. })
+        ));
+    }
+
+    #[test]
+    fn nhd_bad_signature_rejected() {
+        let mut image = build_nhd_image(153, 4, 33, 256);
+        image[0] = b'X';
+        assert!(matches!(
+            HddImage::from_nhd(&image),
+            Err(HddError::InvalidSignature { format: "NHD", .. })
+        ));
+    }
+
+    #[test]
+    fn hdi_too_small_rejected() {
+        let data = vec![0u8; 16];
+        assert!(matches!(
+            HddImage::from_hdi(&data),
+            Err(HddError::TooSmall { format: "HDI", .. })
+        ));
+    }
+
+    #[test]
+    fn thd_too_small_rejected() {
+        let data = vec![0u8; 100];
+        assert!(matches!(
+            HddImage::from_thd(&data),
+            Err(HddError::TooSmall { format: "THD", .. })
+        ));
+    }
+
+    #[test]
+    fn thd_zero_cylinders_rejected() {
+        let mut image = build_thd_image(153);
+        image[0] = 0;
+        image[1] = 0;
+        assert!(matches!(
+            HddImage::from_thd(&image),
+            Err(HddError::InvalidGeometry {
+                field: "cylinders",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn nhd_truncated_data_rejected() {
+        let mut image = build_nhd_image(153, 4, 33, 256);
+        image.truncate(NHD_HEADER_SIZE + 100);
+        assert!(matches!(
+            HddImage::from_nhd(&image),
+            Err(HddError::DataTruncated { .. })
+        ));
+    }
+
+    #[test]
+    fn auto_detect_nhd_by_signature() {
+        let image = build_nhd_image(153, 4, 33, 256);
+        let hdd = load_hdd_image(Path::new("test.nhd"), &image).unwrap();
+        assert_eq!(hdd.format, HddFormat::Nhd);
+    }
+
+    #[test]
+    fn auto_detect_nhd_by_signature_regardless_of_extension() {
+        let image = build_nhd_image(153, 4, 33, 256);
+        let hdd = load_hdd_image(Path::new("test.hdi"), &image).unwrap();
+        assert_eq!(hdd.format, HddFormat::Nhd);
+    }
+
+    #[test]
+    fn auto_detect_hdi_by_extension() {
+        let image = build_hdi_image(310, 4, 33, 256);
+        let hdd = load_hdd_image(Path::new("test.hdi"), &image).unwrap();
+        assert_eq!(hdd.format, HddFormat::Hdi);
+    }
+
+    #[test]
+    fn auto_detect_thd_by_extension() {
+        let image = build_thd_image(153);
+        let hdd = load_hdd_image(Path::new("test.thd"), &image).unwrap();
+        assert_eq!(hdd.format, HddFormat::Thd);
+    }
+
+    #[test]
+    fn unknown_extension_rejected() {
+        let data = vec![0u8; 1024];
+        assert!(matches!(
+            load_hdd_image(Path::new("test.xyz"), &data),
+            Err(HddError::UnrecognizedFormat)
+        ));
+    }
+
+    #[test]
+    fn sasi_media_type_detection() {
+        let geometry_5mb = HddGeometry {
+            cylinders: 153,
+            heads: 4,
+            sectors_per_track: 33,
+            sector_size: 256,
+        };
+        assert_eq!(geometry_5mb.sasi_media_type(), Some(0));
+
+        let geometry_40mb = HddGeometry {
+            cylinders: 615,
+            heads: 8,
+            sectors_per_track: 33,
+            sector_size: 256,
+        };
+        assert_eq!(geometry_40mb.sasi_media_type(), Some(6));
+
+        let non_sasi = HddGeometry {
+            cylinders: 100,
+            heads: 4,
+            sectors_per_track: 33,
+            sector_size: 512,
+        };
+        assert_eq!(non_sasi.sasi_media_type(), None);
+    }
+
+    #[test]
+    fn nhd_with_512_byte_sectors() {
+        let image = build_nhd_image(100, 4, 17, 512);
+        let hdd = HddImage::from_nhd(&image).unwrap();
+
+        assert_eq!(hdd.geometry.sector_size, 512);
+        assert_eq!(hdd.geometry.total_sectors(), 100 * 4 * 17);
+
+        let sector = hdd.read_sector(0).unwrap();
+        assert_eq!(sector.len(), 512);
+    }
+
+    #[test]
+    fn hdi_with_larger_header() {
+        let mut image = build_hdi_image(153, 4, 33, 256);
+        // Simulate a larger header by setting header_size and inserting padding.
+        let new_header_size = 4096u32;
+        image[8..12].copy_from_slice(&new_header_size.to_le_bytes());
+        let padding = vec![0u8; (new_header_size as usize) - HDI_HEADER_SIZE];
+        let data_portion = image[HDI_HEADER_SIZE..].to_vec();
+        image.truncate(HDI_HEADER_SIZE);
+        image.extend_from_slice(&padding);
+        image.extend_from_slice(&data_portion);
+
+        let hdd = HddImage::from_hdi(&image).unwrap();
+        assert_eq!(hdd.geometry.cylinders, 153);
+        assert_eq!(hdd.original_header_size, 4096);
+
+        // Roundtrip preserves the larger header.
+        let serialized = hdd.to_bytes();
+        assert_eq!(serialized.len(), image.len());
+    }
+}

@@ -1,0 +1,102 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "utils/create_font"]
+
+[workspace.package]
+authors = ["Nils Hasenbanck <nils@hasenbanck.de>"]
+edition = "2024"
+license = "BSD-3-Clause"
+rust-version = "1.93"
+
+[workspace.dependencies]
+# Internal dependencies
+audio_engine = { path = "crates/audio_engine" }
+common = { path = "crates/common" }
+cpu = { path = "crates/cpu" }
+device = { path = "crates/device" }
+graphics_engine = { path = "crates/graphics_engine" }
+machine = { path = "crates/machine" }
+resampler = { path = "crates/resampler" }
+sdl3 = { path = "crates/sdl3" }
+ymfm_oxide = { path = "crates/ymfm_oxide" }
+# External dependencies
+jay-ash = { version = "0.3", default-features = false }
+sdl3-sys = "0.6"
+# Dependencies only used for the verification tests of the V30
+flate2 = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[package]
+name = "neetan"
+version = "2026.3.0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+tracing = []
+
+[dependencies]
+audio_engine = { workspace = true }
+cpu = { workspace = true }
+common = { workspace = true }
+device = { workspace = true }
+graphics_engine = { workspace = true }
+jay-ash = { workspace = true }
+machine = { workspace = true }
+sdl3 = { workspace = true }
+
+[dev-dependencies]
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "thin"
+strip = true
+
+[profile.dev]
+opt-level = 0
+overflow-checks = true
+
+[profile.dev.package."*"]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.audio_engine]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.common]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.cpu]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.device]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.graphics_engine]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.machine]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.resampler]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.sdl3]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.ymfm_oxide]
+opt-level = 3
+codegen-units = 1
