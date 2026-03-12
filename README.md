@@ -179,6 +179,10 @@ the mouse pointer by clicking the right CTRL key again.
 
 Not yet implemented, sorry.
 
+### 日本語も分かりますか？
+
+もちろん！IssueやPRの作成には日本語をご利用いただけますが、ソースコードのコメントについては英語での記述を推奨しております。
+
 ## Build requirements
 
 * [Rust 1.94](https://rustup.rs/)
