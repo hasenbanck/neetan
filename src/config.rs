@@ -351,7 +351,7 @@ pub fn parse_config_file(path: &Path) -> crate::Result<EmulatorConfig> {
 
     for line in contents.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
             continue;
         }
         let Some((key, val)) = line.split_once('=') else {
