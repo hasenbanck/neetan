@@ -3535,7 +3535,7 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             0x07F0 => {
                 self.bios.write_trap_port(value);
                 // TODO: Calibrate these by comparing against the real VM target BIOS calls,
-                //       once we have a verified VC30 cycle accurate core.
+                //       once we have a verified V30 cycle accurate core.
                 //       There are some VM era games, like Dragon Knight that will get
                 //       audio problems when 0x18 is not tuned correctly for example.
                 let cost = match self.bios.pending_vector() {

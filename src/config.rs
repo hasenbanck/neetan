@@ -298,15 +298,15 @@ fn validate_paths(config: &EmulatorConfig) -> crate::Result<()> {
             bail!("fdd2 image not found: {}", path.display());
         }
     }
-    if let Some(ref path) = config.hdd1 {
-        if !path.exists() {
-            bail!("hdd1 image not found: {}", path.display());
-        }
+    if let Some(ref path) = config.hdd1
+        && !path.exists()
+    {
+        bail!("hdd1 image not found: {}", path.display());
     }
-    if let Some(ref path) = config.hdd2 {
-        if !path.exists() {
-            bail!("hdd2 image not found: {}", path.display());
-        }
+    if let Some(ref path) = config.hdd2
+        && !path.exists()
+    {
+        bail!("hdd2 image not found: {}", path.display());
     }
     Ok(())
 }
@@ -328,7 +328,7 @@ pub struct EmulatorConfig {
 impl Default for EmulatorConfig {
     fn default() -> Self {
         Self {
-            machine: MachineType::RA,
+            machine: MachineType::VX,
             fdd1: Vec::new(),
             fdd2: Vec::new(),
             hdd1: None,

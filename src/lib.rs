@@ -218,7 +218,7 @@ fn graphics_display_aspect_mode(aspect_mode: AspectMode) -> DisplayAspectMode {
 }
 
 fn create_surface(window: &mut Window, application: &mut Application) -> Result<vk::SurfaceKHR> {
-    // TODO: We habe access to both our graphics engine and also the SDL3 crate, so we should find
+    // TODO: We have access to both our graphics engine and also the SDL3 crate, so we should find
     //       a way to move the unsafe code into them.
     let instance_handle = application.graphics_engine.raw_instance_handle();
     let sdl_instance = instance_handle.as_raw() as sdl3::video::VkInstance;
