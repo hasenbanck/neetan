@@ -677,8 +677,21 @@ impl Scancode {
 pub struct Mod(pub u16);
 
 impl Mod {
+    /// Returns `true` if either Alt key is held.
+    #[inline]
+    pub const fn alt(&self) -> bool {
+        self.0 & 0x0300 != 0
+    }
+
     /// Returns `true` if either GUI (Super/Command) key is held.
-    pub fn gui(&self) -> bool {
+    #[inline]
+    pub const fn gui(&self) -> bool {
         self.0 & 0x0C00 != 0
+    }
+
+    /// Returns `true` if both Alt and GUI (Super/Command) are held.
+    #[inline]
+    pub const fn alt_gui(&self) -> bool {
+        self.alt() && self.gui()
     }
 }

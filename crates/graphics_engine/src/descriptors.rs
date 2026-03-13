@@ -93,9 +93,15 @@ impl DescriptorResources {
                 .context("Failed to create resource set layout")?
         };
 
+        let push_constant_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+            .offset(0)
+            .size(8); // int2 = 2 × i32 = 8 bytes
+
         let set_layouts = [set_layout_0, set_layout_1];
-        let pipeline_layout_info =
-            vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts);
+        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(&set_layouts)
+            .push_constant_ranges(std::slice::from_ref(&push_constant_range));
 
         let pipeline_layout = unsafe {
             device

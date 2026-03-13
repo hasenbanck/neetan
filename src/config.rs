@@ -32,6 +32,7 @@ Options:
       --hdd2 <PATH>           Hard disk image for SASI drive 2
       --audio-volume <FLOAT>  Audio volume 0.0-1.0
       --aspect-mode <MODE>    Display aspect mode: 4:3 or 1:1
+      --window-mode <MODE>    Window mode: windowed or fullscreen
       --bios-rom <PATH>       Path to BIOS ROM file
       --font-rom <PATH>       Path to font ROM file
       --soundboard <TYPE>     Sound board type: none, 26k, 86, 86+26k
@@ -273,6 +274,10 @@ pub fn parse_args() -> crate::Result<Action> {
                 let val = value(&flag)?;
                 config.aspect_mode = val.parse::<AspectMode>().map_err(StringError)?;
             }
+            "--window-mode" => {
+                let val = value(&flag)?;
+                config.window_mode = val.parse::<WindowMode>().map_err(StringError)?;
+            }
             "--bios-rom" => config.bios_rom = Some(PathBuf::from(value(&flag)?)),
             "--font-rom" => config.font_rom = Some(PathBuf::from(value(&flag)?)),
             "--soundboard" => {
@@ -320,6 +325,7 @@ pub struct EmulatorConfig {
     pub hdd1: Option<PathBuf>,
     pub hdd2: Option<PathBuf>,
     pub aspect_mode: AspectMode,
+    pub window_mode: WindowMode,
     pub audio_volume: f32,
     pub bios_rom: Option<PathBuf>,
     pub font_rom: Option<PathBuf>,
@@ -337,6 +343,7 @@ impl Default for EmulatorConfig {
             hdd1: None,
             hdd2: None,
             aspect_mode: AspectMode::Aspect4By3,
+            window_mode: WindowMode::Windowed,
             audio_volume: 1.0,
             bios_rom: None,
             font_rom: None,
@@ -375,6 +382,10 @@ pub fn parse_config_file(path: &Path) -> crate::Result<EmulatorConfig> {
             "aspect-mode" => match val.parse::<AspectMode>() {
                 Ok(mode) => config.aspect_mode = mode,
                 Err(_) => warn!("Unknown aspect mode in config: {val}"),
+            },
+            "window-mode" => match val.parse::<WindowMode>() {
+                Ok(mode) => config.window_mode = mode,
+                Err(_) => warn!("Unknown window mode in config: {val}"),
             },
             "audio-volume" => match val.parse::<f32>() {
                 Ok(v) => config.audio_volume = v,
@@ -499,6 +510,35 @@ impl std::str::FromStr for AspectMode {
             "4:3" => Ok(Self::Aspect4By3),
             "1:1" => Ok(Self::Aspect1By1),
             _ => Err(format!("unknown aspect mode '{s}', expected 4:3 or 1:1")),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum WindowMode {
+    Windowed,
+    Fullscreen,
+}
+
+impl std::fmt::Display for WindowMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Windowed => f.write_str("windowed"),
+            Self::Fullscreen => f.write_str("fullscreen"),
+        }
+    }
+}
+
+impl std::str::FromStr for WindowMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "windowed" => Ok(Self::Windowed),
+            "fullscreen" => Ok(Self::Fullscreen),
+            _ => Err(format!(
+                "unknown window mode '{s}', expected windowed or fullscreen"
+            )),
         }
     }
 }
