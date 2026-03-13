@@ -28,7 +28,7 @@ fn main() {
             info!("{GAME_NAME}");
             info!("Build version: {CARGO_PKG_VERSION}");
 
-            if let Err(error) = neetan::run(config) {
+            if let Err(error) = neetan::run(*config) {
                 error!("Error while executing the emulator: {error:#}");
                 std::process::exit(1);
             }

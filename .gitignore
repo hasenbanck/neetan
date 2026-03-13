@@ -2,4 +2,3 @@ target/
 .idea/
 .claude/
 .codex/
-*.conf

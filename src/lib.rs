@@ -28,6 +28,7 @@ pub mod config;
 pub mod create;
 mod errors;
 mod floppy_selector;
+mod keymap;
 
 #[cfg(feature = "tracing")]
 mod tracing;
@@ -258,6 +259,8 @@ struct Application {
     mouse_middle: bool,
     /// Whether relative mouse mode is active (Right Ctrl toggles).
     mouse_captured: bool,
+    /// Host-to-PC-98 key mapping.
+    key_map: keymap::KeyMap,
     /// Floppy disk image entries for drive 1.
     fdd1_entries: Vec<FloppyEntry>,
     /// Current index into fdd1_entries, or `None` if no floppy is loaded.
@@ -296,6 +299,7 @@ impl Application {
             config.fdd2.iter().cloned().map(FloppyEntry::new).collect();
 
         let mut machine = initialize_machine(&config, audio_engine::SAMPLE_RATE as u32)?;
+        let key_map = config.key_map;
 
         let mut fdd1_index = None;
         if let Some(entry) = fdd1_entries.first() {
@@ -346,6 +350,7 @@ impl Application {
             mouse_right: false,
             mouse_middle: false,
             mouse_captured: false,
+            key_map,
             fdd1_entries,
             fdd1_index,
             fdd2_entries,
@@ -451,7 +456,9 @@ impl Application {
                         self.open_or_toggle_selector(0);
                     } else if !repeat && keymod.gui() && *scancode == Some(Scancode::F10) {
                         self.open_or_toggle_selector(1);
-                    } else if !repeat && let Some(code) = (*scancode).map(pc98_scancode_from_sdl) {
+                    } else if !repeat
+                        && let Some(code) = (*scancode).map(|sc| self.key_map.lookup(sc))
+                    {
                         self.machine.push_keyboard_scancode(code);
                     }
                 }
@@ -461,7 +468,7 @@ impl Application {
             } => {
                 if self.floppy_selector.is_none()
                     && !repeat
-                    && let Some(code) = (*scancode).map(pc98_scancode_from_sdl)
+                    && let Some(code) = (*scancode).map(|sc| self.key_map.lookup(sc))
                 {
                     self.machine.push_keyboard_scancode(code | 0x80);
                 }
@@ -885,109 +892,4 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
     };
 
     Ok(machine)
-}
-
-/// Maps SDL physical keys to PC-98 keyboard make scan codes.
-///
-/// Values follow the matrix scan codes used by MAME's PC-98 keyboard device.
-#[allow(clippy::just_underscores_and_digits)]
-fn pc98_scancode_from_sdl(scancode: Scancode) -> u8 {
-    use Scancode::*;
-
-    match scancode {
-        Escape => 0x00,
-        _1 => 0x01,
-        _2 => 0x02,
-        _3 => 0x03,
-        _4 => 0x04,
-        _5 => 0x05,
-        _6 => 0x06,
-        _7 => 0x07,
-        _8 => 0x08,
-        _9 => 0x09,
-        _0 => 0x0A,
-        Minus => 0x0B,
-        Equals => 0x0C,
-        Backslash => 0x0D,
-        Backspace => 0x0E,
-        Tab => 0x0F,
-        Q => 0x10,
-        W => 0x11,
-        E => 0x12,
-        R => 0x13,
-        T => 0x14,
-        Y => 0x15,
-        U => 0x16,
-        I => 0x17,
-        O => 0x18,
-        P => 0x19,
-        Grave => 0x1A,
-        LeftBracket => 0x1B,
-        Return => 0x1C,
-        A => 0x1D,
-        S => 0x1E,
-        D => 0x1F,
-        F => 0x20,
-        G => 0x21,
-        H => 0x22,
-        J => 0x23,
-        K => 0x24,
-        L => 0x25,
-        Semicolon => 0x26,
-        Apostrophe => 0x27,
-        RightBracket => 0x28,
-        Z => 0x29,
-        X => 0x2A,
-        C => 0x2B,
-        V => 0x2C,
-        B => 0x2D,
-        N => 0x2E,
-        M => 0x2F,
-        Comma => 0x30,
-        Period => 0x31,
-        Slash => 0x32,
-        NonUsBackslash => 0x33,
-        Space => 0x34,
-        PageDown => 0x36,
-        PageUp => 0x37,
-        Insert => 0x38,
-        Delete => 0x39,
-        Up => 0x3A,
-        Left => 0x3B,
-        Right => 0x3C,
-        Down => 0x3D,
-        Home => 0x3E,
-        End => 0x3F,
-        KpMinus => 0x40,
-        KpDivide => 0x41,
-        Kp7 => 0x42,
-        Kp8 => 0x43,
-        Kp9 => 0x44,
-        KpMultiply => 0x45,
-        Kp4 => 0x46,
-        Kp5 => 0x47,
-        Kp6 => 0x48,
-        KpPlus => 0x49,
-        Kp1 => 0x4A,
-        Kp2 => 0x4B,
-        Kp3 => 0x4C,
-        KpEnter => 0x4D,
-        Kp0 => 0x4E,
-        KpComma => 0x4F,
-        KpPeriod => 0x50,
-        F1 => 0x62,
-        F2 => 0x63,
-        F3 => 0x64,
-        F4 => 0x65,
-        F5 => 0x66,
-        F6 => 0x67,
-        F7 => 0x68,
-        F8 => 0x69,
-        F9 => 0x6A,
-        F10 => 0x6B,
-        LShift | RShift => 0x70,
-        CapsLock => 0x71,
-        LAlt | RAlt => 0x73,
-        LCtrl | RCtrl => 0x74,
-    }
 }
