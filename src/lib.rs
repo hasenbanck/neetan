@@ -721,6 +721,12 @@ impl Application {
                 self.cycle_overshoot = ran_cycles - cycles;
             }
             self.audio_engine.push_samples(self.machine.as_mut());
+
+            if self.machine.shutdown_requested() {
+                info!("Guest triggered system shutdown");
+                self.should_quit = true;
+                return;
+            }
         }
     }
 

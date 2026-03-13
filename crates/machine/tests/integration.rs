@@ -1,4 +1,4 @@
-use common::{Bus, Cpu};
+use common::{Bus, Cpu, Machine as _};
 use machine::{Pc9801Bus, Pc9801Ra, Pc9801Vm, Pc9801Vx};
 
 #[test]
@@ -259,5 +259,159 @@ fn pit_timer_interrupt_fires_i386() {
                 s
             })
         },
+    );
+}
+
+/// Places machine code at `base` in the bus and returns the length.
+fn place_code(bus: &mut Pc9801Bus, base: u32, code: &[u8]) {
+    for (i, &byte) in code.iter().enumerate() {
+        bus.write_byte(base + i as u32, byte);
+    }
+}
+
+#[test]
+fn hle_cold_reset_reinitialises_devices() {
+    let mut machine = Pc9801Vx::new(cpu::I286::new(), Pc9801Bus::new_10mhz_286_egc(48000, 0));
+
+    // Clobber PIC master IMR so we can detect that
+    // initialize_post_boot_state() (IMR=0x3D) ran after the cold reset.
+    machine.bus.io_write_byte(0x00, 0x11); // ICW1
+    machine.bus.io_write_byte(0x02, 0x08); // ICW2
+    machine.bus.io_write_byte(0x02, 0x80); // ICW3
+    machine.bus.io_write_byte(0x02, 0x1D); // ICW4
+    machine.bus.io_write_byte(0x02, 0xFF); // OCW1: IMR=0xFF (all masked)
+    assert_eq!(machine.bus.io_read_byte(0x02), 0xFF);
+
+    // Guest code at 0000:0100:
+    //   MOV AL, 0x0F  → OUT 0x37, AL   (set SHUT0=1)
+    //   MOV AL, 0x0B  → OUT 0x37, AL   (set SHUT1=1)
+    //   MOV AL, 0x00  → OUT 0xF0, AL   (trigger cold reset)
+    //   HLT
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB0, 0x0F,       // MOV AL, 0x0F
+        0xE6, 0x37,       // OUT 0x37, AL
+        0xB0, 0x0B,       // MOV AL, 0x0B
+        0xE6, 0x37,       // OUT 0x37, AL
+        0xB0, 0x00,       // MOV AL, 0x00
+        0xE6, 0xF0,       // OUT 0xF0, AL
+        0xF4,             // HLT
+    ];
+    place_code(&mut machine.bus, 0x0100, code);
+
+    machine.cpu.load_state(&{
+        let mut s = cpu::I286State::default();
+        s.set_sp(0x1000);
+        s.ip = 0x0100;
+        s
+    });
+
+    // Run enough cycles for the cold reset → stub ROM → HLE INT F0h.
+    machine.run_for(50_000);
+
+    assert_eq!(
+        machine.bus.io_read_byte(0x02),
+        0x3D,
+        "PIC master IMR should be restored by HLE cold reset"
+    );
+    assert_eq!(
+        machine.bus.io_read_byte(0x35),
+        0xB8,
+        "System PPI port C should be set to VX post-boot value"
+    );
+    assert!(
+        !machine.shutdown_requested(),
+        "Cold reset must not set shutdown flag"
+    );
+}
+
+#[test]
+fn hle_warm_reset_resumes_execution() {
+    let mut machine = Pc9801Vx::new(cpu::I286::new(), Pc9801Bus::new_10mhz_286_egc(48000, 0));
+
+    // Warm-reset resume target: code at 0000:2000 that increments [0x0500].
+    #[rustfmt::skip]
+    place_code(&mut machine.bus, 0x2000, &[
+        0xFE, 0x06, 0x00, 0x05,   // INC byte [0x0500]
+        0xF4,                      // HLT
+    ]);
+    machine.bus.write_byte(0x0500, 0x00);
+
+    // Build a stack frame at 0000:0600 with the far return address
+    // 0000:2000 (IP=0x2000, CS=0x0000) that the ITF RETF will pop.
+    machine.bus.write_word(0x0600, 0x2000); // IP
+    machine.bus.write_word(0x0602, 0x0000); // CS
+
+    // Store SS:SP at 0000:0404-0407 for the warm-reset context.
+    machine.bus.write_word(0x0404, 0x0600); // SP
+    machine.bus.write_word(0x0406, 0x0000); // SS
+
+    // Guest code at 0000:0100:
+    //   MOV AL, 0x0E  → OUT 0x37, AL   (clear SHUT0 → warm reset)
+    //   MOV AL, 0x00  → OUT 0xF0, AL   (trigger warm reset)
+    //   HLT           (should not reach here)
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB0, 0x0E,       // MOV AL, 0x0E
+        0xE6, 0x37,       // OUT 0x37, AL
+        0xB0, 0x00,       // MOV AL, 0x00
+        0xE6, 0xF0,       // OUT 0xF0, AL
+        0xF4,             // HLT
+    ];
+    place_code(&mut machine.bus, 0x0100, code);
+
+    machine.cpu.load_state(&{
+        let mut s = cpu::I286State::default();
+        s.set_sp(0x1000);
+        s.ip = 0x0100;
+        s
+    });
+
+    machine.run_for(5_000);
+
+    assert_eq!(
+        machine.bus.read_byte(0x0500),
+        1,
+        "Warm reset should have resumed execution at 0000:2000"
+    );
+    assert!(
+        !machine.shutdown_requested(),
+        "Warm reset must not set shutdown flag"
+    );
+}
+
+#[test]
+fn hle_shutdown_stops_machine() {
+    let mut machine = Pc9801Vx::new(cpu::I286::new(), Pc9801Bus::new_10mhz_286_egc(48000, 0));
+
+    // Guest code at 0000:0100:
+    //   MOV AL, 0x0F  → OUT 0x37, AL   (set SHUT0=1)
+    //   MOV AL, 0x0A  → OUT 0x37, AL   (clear SHUT1=0)
+    //   MOV AL, 0x00  → OUT 0xF0, AL   (trigger shutdown)
+    //   HLT
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB0, 0x0F,       // MOV AL, 0x0F
+        0xE6, 0x37,       // OUT 0x37, AL
+        0xB0, 0x0A,       // MOV AL, 0x0A
+        0xE6, 0x37,       // OUT 0x37, AL
+        0xB0, 0x00,       // MOV AL, 0x00
+        0xE6, 0xF0,       // OUT 0xF0, AL
+        0xF4,             // HLT
+    ];
+    place_code(&mut machine.bus, 0x0100, code);
+
+    machine.cpu.load_state(&{
+        let mut s = cpu::I286State::default();
+        s.set_sp(0x1000);
+        s.ip = 0x0100;
+        s
+    });
+
+    machine.run_for(5_000);
+
+    assert!(
+        machine.shutdown_requested(),
+        "Machine should report shutdown requested"
     );
 }

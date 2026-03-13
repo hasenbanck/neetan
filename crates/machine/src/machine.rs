@@ -31,14 +31,14 @@ impl<C: Cpu, T: Tracing> Machine<C, T> {
             total += ran;
 
             if let Some(warm_ctx) = self.bus.take_reset_pending() {
-                if let Some((ss, sp, cs, ip)) = warm_ctx {
-                    // Emulate the ITF ROM warm-reset sequence:
-                    //   SS ← [0000:0406], SP ← [0000:0404], RETF
-                    // Ref: undoc98 memsys.txt — USER_SP / USER_SS at 0000:0404.
+                if self.bus.shutdown_requested() {
+                    // System shutdown
+                    break;
+                } else if let Some((ss, sp, cs, ip)) = warm_ctx {
+                    // Warm reset
                     self.cpu.warm_reset(ss, sp, cs, ip);
                 } else {
-                    // Cold reset: switch to ITF ROM bank so the reset vector
-                    // at FFFF:0000 executes the ITF firmware entry point.
+                    // Cold reset
                     self.bus.select_rom_bank_itf();
                     self.cpu.reset();
                 }
@@ -188,6 +188,10 @@ impl<T: Tracing> common::Machine for Machine<cpu::V30, T> {
         Machine::run_for(self, budget)
     }
 
+    fn shutdown_requested(&self) -> bool {
+        self.bus.shutdown_requested()
+    }
+
     fn snapshot_display(&self) -> &DisplaySnapshotUpload {
         self.bus.vsync_snapshot()
     }
@@ -246,6 +250,10 @@ impl<T: Tracing> common::Machine for Machine<cpu::I286, T> {
         Machine::run_for(self, budget)
     }
 
+    fn shutdown_requested(&self) -> bool {
+        self.bus.shutdown_requested()
+    }
+
     fn snapshot_display(&self) -> &DisplaySnapshotUpload {
         self.bus.vsync_snapshot()
     }
@@ -302,6 +310,10 @@ impl<T: Tracing> common::Machine for Machine<cpu::I386, T> {
 
     fn run_for(&mut self, budget: u64) -> u64 {
         Machine::run_for(self, budget)
+    }
+
+    fn shutdown_requested(&self) -> bool {
+        self.bus.shutdown_requested()
     }
 
     fn snapshot_display(&self) -> &DisplaySnapshotUpload {
