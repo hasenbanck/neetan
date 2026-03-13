@@ -236,6 +236,9 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     a20_enabled: bool,
     cpu_type: CpuType,
     reset_pending: bool,
+    /// Set when the guest triggers a SYSTEM SHUTDOWN (SHUT0=1, SHUT1=0 when
+    /// port 0xF0 is written). The host application should exit cleanly.
+    shutdown_requested: bool,
     /// Set when a cold reset (port 0xF0 write) has occurred. The HLE
     /// VEC_ITF_ENTRY handler checks this to decide whether to reinitialize
     /// all devices to post-BIOS state. Cleared after the HLE handler processes it.
@@ -413,6 +416,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             a20_enabled: false,
             cpu_type,
             reset_pending: false,
+            shutdown_requested: false,
             needs_full_reinit: false,
             warm_reset_context: None,
             vsync_snapshot: Box::new(DisplaySnapshotUpload::default()),
@@ -757,6 +761,12 @@ impl<T: Tracing> Pc9801Bus<T> {
         } else {
             None
         }
+    }
+
+    /// Returns `true` if the guest triggered a SYSTEM SHUTDOWN
+    /// (SHUT0=1, SHUT1=0 when port 0xF0 was written).
+    pub fn shutdown_requested(&self) -> bool {
+        self.shutdown_requested
     }
 
     /// Reads the warm-reset resume context stored by the BIOS at
@@ -1725,6 +1735,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.vram_wait = state.vram_wait;
         self.grcg_wait = state.grcg_wait;
         self.reset_pending = false;
+        self.shutdown_requested = false;
     }
 
     fn process_soundboard_86_actions(&mut self) {
@@ -3402,26 +3413,36 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                 }
             }
 
-            // A20 gate disable + V30 CPU mode switch + CPU reset.
+            // A20 gate disable + V30 CPU mode switch + CPU reset/shutdown.
             0xF0 => {
                 self.a20_enabled = false;
                 if self.cpu_type == CpuType::V30 {
                     self.system_ppi.set_cpu_mode_bit(false);
                 }
-                // Snapshot warm-reset context NOW, before clearing SHUT1 and
-                // before the CPU executes any more instructions. On real
-                // hardware the reset is instantaneous; in our emulator the
-                // CPU keeps running until the machine loop checks.
-                let shut0_clear = self.system_ppi.state.port_c & 0x80 == 0;
-                if shut0_clear {
-                    let ctx = self.read_warm_reset_context();
-                    self.warm_reset_context = Some(ctx);
-                } else {
-                    self.warm_reset_context = None;
+
+                let port_c = self.system_ppi.state.port_c;
+                let shut0 = port_c & 0x80 != 0;
+                let shut1 = port_c & 0x20 != 0;
+
+                match (shut0, shut1) {
+                    (true, false) => {
+                        debug!("System shutdown (SHUT0=1, SHUT1=0)");
+                        self.shutdown_requested = true;
+                        self.reset_pending = true;
+                    }
+                    (false, _) => {
+                        debug!("Warm reset (SHUT0=0)");
+                        self.warm_reset_context = Some(self.read_warm_reset_context());
+                        self.needs_full_reinit = true;
+                        self.reset_pending = true;
+                    }
+                    (true, true) => {
+                        debug!("Cold reset (SHUT0=1, SHUT1=1)");
+                        self.warm_reset_context = None;
+                        self.needs_full_reinit = true;
+                        self.reset_pending = true;
+                    }
                 }
-                self.system_ppi.state.port_c &= !0x20;
-                self.needs_full_reinit = true;
-                self.reset_pending = true;
             }
             // Dual-mode FDC interface control.
             0xBE => {
@@ -4435,5 +4456,87 @@ mod tests {
         assert_eq!(bus.read_byte_with_access_page(0x80000), 0xAB);
         // Original RAM at 0x80000 should be untouched.
         assert_eq!(bus.memory.state.ram[0x80000], 0x00);
+    }
+
+    #[test]
+    fn port_f0_cold_reset_preserves_shut_bits() {
+        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_286_egc(48000, 0);
+        // Set SHUT0=1 (bit 7) and SHUT1=1 (bit 5) via PPI control port.
+        bus.io_write_byte(0x37, 0x0F); // set SHUT0
+        bus.io_write_byte(0x37, 0x0B); // set SHUT1
+        assert_ne!(bus.system_ppi.state.port_c & 0x80, 0, "SHUT0 should be set");
+        assert_ne!(bus.system_ppi.state.port_c & 0x20, 0, "SHUT1 should be set");
+
+        bus.io_write_byte(0xF0, 0x00);
+
+        // Cold reset must leave both SHUT bits intact so the ITF
+        // can read SHUT0=1, SHUT1=1 and perform a normal reset.
+        assert!(bus.reset_pending);
+        assert!(!bus.shutdown_requested);
+        assert!(bus.warm_reset_context.is_none());
+        assert_ne!(
+            bus.system_ppi.state.port_c & 0x80,
+            0,
+            "SHUT0 must survive cold reset"
+        );
+        assert_ne!(
+            bus.system_ppi.state.port_c & 0x20,
+            0,
+            "SHUT1 must survive cold reset"
+        );
+    }
+
+    #[test]
+    fn port_f0_warm_reset_captures_context() {
+        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_286_egc(48000, 0);
+        // Clear SHUT0 (bit 7) — leaves warm-reset mode.
+        bus.io_write_byte(0x37, 0x0E); // clear SHUT0
+        assert_eq!(
+            bus.system_ppi.state.port_c & 0x80,
+            0,
+            "SHUT0 should be clear"
+        );
+
+        // Plant a warm-reset context at 0000:0404 (SP) and 0000:0406 (SS).
+        // The ITF reads SS:SP from there, then pops CS:IP via RETF.
+        // SS=0x0000, SP=0x0600: stack at 0000:0600 contains IP=0x1234, CS=0x5678.
+        bus.memory.state.ram[0x0404] = 0x00; // SP low
+        bus.memory.state.ram[0x0405] = 0x06; // SP high (0x0600)
+        bus.memory.state.ram[0x0406] = 0x00; // SS low
+        bus.memory.state.ram[0x0407] = 0x00; // SS high (0x0000)
+        bus.memory.state.ram[0x0600] = 0x34; // IP low
+        bus.memory.state.ram[0x0601] = 0x12; // IP high
+        bus.memory.state.ram[0x0602] = 0x78; // CS low
+        bus.memory.state.ram[0x0603] = 0x56; // CS high
+
+        bus.io_write_byte(0xF0, 0x00);
+
+        assert!(bus.reset_pending);
+        assert!(!bus.shutdown_requested);
+        let (ss, sp, cs, ip) = bus.warm_reset_context.unwrap();
+        assert_eq!(ss, 0x0000);
+        assert_eq!(sp, 0x0604); // SP advanced past the popped RETF frame
+        assert_eq!(cs, 0x5678);
+        assert_eq!(ip, 0x1234);
+    }
+
+    #[test]
+    fn port_f0_shutdown_sets_flag() {
+        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_286_egc(48000, 0);
+        // Set SHUT0=1 (bit 7), clear SHUT1 (bit 5) → shutdown.
+        bus.io_write_byte(0x37, 0x0F); // set SHUT0
+        bus.io_write_byte(0x37, 0x0A); // clear SHUT1
+        assert_ne!(bus.system_ppi.state.port_c & 0x80, 0, "SHUT0 should be set");
+        assert_eq!(
+            bus.system_ppi.state.port_c & 0x20,
+            0,
+            "SHUT1 should be clear"
+        );
+
+        bus.io_write_byte(0xF0, 0x00);
+
+        assert!(bus.reset_pending);
+        assert!(bus.shutdown_requested);
+        assert!(bus.warm_reset_context.is_none());
     }
 }

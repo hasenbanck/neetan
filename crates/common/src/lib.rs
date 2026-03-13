@@ -477,6 +477,9 @@ pub trait Machine {
     /// Runs the machine for up to `budget` CPU cycles, returning cycles consumed.
     fn run_for(&mut self, budget: u64) -> u64;
 
+    /// Returns `true` if the guest triggered a system shutdown.
+    fn shutdown_requested(&self) -> bool;
+
     /// Returns a reference to the display snapshot captured at the last VSYNC.
     fn snapshot_display(&self) -> &DisplaySnapshotUpload;
 
