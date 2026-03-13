@@ -57,23 +57,5 @@ autolabeler:
     title:
       - '/^test(\(.+\))?!?:/'
 
-version-resolver:
-  major:
-    labels:
-      - "major"
-  minor:
-    labels:
-      - "feature"
-  patch:
-    labels:
-      - "fix"
-      - "performance"
-      - "refactor"
-      - "chore"
-      - "ci"
-      - "documentation"
-      - "test"
-  default: patch
-
 exclude-labels:
   - "skip-changelog"
