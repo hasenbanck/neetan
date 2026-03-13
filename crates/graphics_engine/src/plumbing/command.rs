@@ -505,6 +505,25 @@ impl RenderingEncoder<'_> {
         };
     }
 
+    /// Pushes constants to the command buffer.
+    pub(crate) fn push_constants(
+        &self,
+        pipeline_layout: vk::PipelineLayout,
+        stage_flags: vk::ShaderStageFlags,
+        offset: u32,
+        constants: &[u8],
+    ) {
+        unsafe {
+            self.encoder.context.device().cmd_push_constants(
+                self.encoder.buffer,
+                pipeline_layout,
+                stage_flags,
+                offset,
+                constants,
+            )
+        };
+    }
+
     /// Draws primitives.
     pub(crate) fn draw(
         &self,

@@ -253,7 +253,11 @@ impl Surface {
         match self.acquire_next_image_internal(timeout, semaphore)? {
             AcquireStatus::Success(index) => Ok(index),
             AcquireStatus::OutOfDate => {
-                self.recreate(None, in_flight_fences)?;
+                // Pass the current extent as a hint. On Wayland, the surface
+                // capabilities can report a degenerate currentExtent (e.g. 1x1)
+                // during compositor transitions, which would shrink the swapchain
+                // if we let choose_extent use it unchecked.
+                self.recreate(Some(self.extent), in_flight_fences)?;
 
                 frame_resources
                     .iter_mut()

@@ -19,7 +19,7 @@ use sdl3::{
 };
 
 use crate::{
-    config::{AspectMode, EmulatorConfig, MachineType},
+    config::{AspectMode, EmulatorConfig, MachineType, WindowMode},
     errors::Error,
     floppy_selector::{FloppyEntry, FloppySelector},
 };
@@ -59,22 +59,30 @@ pub fn run(config: EmulatorConfig) -> Result<()> {
 
     print_system_into();
 
-    let mut window = video_subsystem
+    let mut builder = video_subsystem
         .window(GAME_NAME, initial_width, initial_height)
         .high_pixel_density()
         .resizable()
         .position_centered()
         .hidden()
-        .vulkan()
+        .vulkan();
+
+    if config.window_mode == WindowMode::Fullscreen {
+        builder = builder.fullscreen();
+    }
+
+    let mut window = builder
         .build()
         .context("Failed to create window with SDL3")?;
 
-    if let Err(error) = window.set_aspect_ratio(aspect_ratio) {
+    if config.window_mode != WindowMode::Fullscreen
+        && let Err(error) = window.set_aspect_ratio(aspect_ratio)
+    {
         warn!("Failed to lock window aspect ratio to {aspect_ratio}: {error}");
     }
 
     let (width, height) = window.size();
-    let logical_size = (width as f32, height as f32);
+    let (pixel_width, pixel_height) = window.size_in_pixels();
 
     let platform_extension_names = window
         .vulkan_instance_extensions()
@@ -86,16 +94,24 @@ pub fn run(config: EmulatorConfig) -> Result<()> {
         &window,
         platform_extension_names.as_slice(),
         graphics_display_aspect_mode,
-        logical_size,
+        (width as f32, height as f32),
     )?;
 
     let surface_handle = create_surface(&mut window, &mut application)?;
 
     application
         .graphics_engine
-        .on_resume(surface_handle, true, width, height);
+        .on_resume(surface_handle, true, pixel_width, pixel_height);
 
     window.show();
+
+    let (pixel_width, pixel_height) = window.size_in_pixels();
+    if let Err(error) = application
+        .graphics_engine
+        .on_resize(pixel_width, pixel_height)
+    {
+        error!("Error on initial resize after show: {error}");
+    }
 
     let mut event_pump = sdl_context
         .event_pump()
@@ -271,6 +287,8 @@ struct Application {
     fdd2_index: Option<usize>,
     /// Active floppy disk selection screen, if open.
     floppy_selector: Option<FloppySelector>,
+    /// Whether the window is currently in fullscreen mode.
+    fullscreen: bool,
 }
 
 impl Drop for Application {
@@ -356,6 +374,7 @@ impl Application {
             fdd2_entries,
             fdd2_index,
             floppy_selector: None,
+            fullscreen: config.window_mode == WindowMode::Fullscreen,
         })
     }
 
@@ -441,7 +460,7 @@ impl Application {
             } => {
                 if self.floppy_selector.is_some() {
                     if !repeat {
-                        self.handle_selector_key(*scancode, keymod.gui());
+                        self.handle_selector_key(*scancode, keymod.alt_gui());
                     }
                 } else {
                     // Right Ctrl toggles mouse capture.
@@ -452,9 +471,19 @@ impl Application {
                         self.toggle_mouse_capture(w);
                     }
 
-                    if !repeat && keymod.gui() && *scancode == Some(Scancode::F9) {
+                    if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::Escape) {
+                        self.should_quit = true;
+                    } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::Return) {
+                        if let Some(w) = window {
+                            if let Err(error) = w.set_fullscreen(!self.fullscreen) {
+                                warn!("Failed to toggle fullscreen: {error}");
+                            } else {
+                                self.fullscreen = !self.fullscreen;
+                            }
+                        }
+                    } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F9) {
                         self.open_or_toggle_selector(0);
-                    } else if !repeat && keymod.gui() && *scancode == Some(Scancode::F10) {
+                    } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F10) {
                         self.open_or_toggle_selector(1);
                     } else if !repeat
                         && let Some(code) = (*scancode).map(|sc| self.key_map.lookup(sc))
@@ -612,7 +641,7 @@ impl Application {
         self.audio_engine.resume();
     }
 
-    fn handle_selector_key(&mut self, scancode: Option<Scancode>, gui_held: bool) {
+    fn handle_selector_key(&mut self, scancode: Option<Scancode>, alt_gui_held: bool) {
         let Some(code) = scancode else { return };
 
         match code {
@@ -645,10 +674,10 @@ impl Application {
             Scancode::Escape => {
                 self.close_selector();
             }
-            Scancode::F9 if gui_held => {
+            Scancode::F9 if alt_gui_held => {
                 self.open_or_toggle_selector(0);
             }
-            Scancode::F10 if gui_held => {
+            Scancode::F10 if alt_gui_held => {
                 self.open_or_toggle_selector(1);
             }
             _ => {}

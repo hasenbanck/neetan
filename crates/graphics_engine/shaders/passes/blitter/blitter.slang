@@ -4,6 +4,7 @@ import screen_space;
 import transform;
 
 [[vk::binding(0, 1)]] var color_target: Texture2D;
+[[vk::push_constant]] var viewport_offset: int2;
 
 [[shader("vertex")]]
 func vs_main(uint vertex_index : SV_VulkanVertexID) -> FullscreenVertex {
@@ -12,7 +13,7 @@ func vs_main(uint vertex_index : SV_VulkanVertexID) -> FullscreenVertex {
 
 [[shader("pixel")]]
 func fs_main(FullscreenVertex input) -> float4 {
-    let pixel_coord = int3(int2(input.position.xy), 0);
+    let pixel_coord = int3(int2(input.position.xy) - viewport_offset, 0);
 
     let texel = color_target.Load(pixel_coord);
 

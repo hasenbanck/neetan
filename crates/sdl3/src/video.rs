@@ -89,6 +89,12 @@ impl WindowBuilder {
         self
     }
 
+    /// Creates the window in fullscreen (borderless desktop) mode.
+    pub fn fullscreen(mut self) -> Self {
+        self.flags.0 |= ffi::SDL_WINDOW_FULLSCREEN.0;
+        self
+    }
+
     /// Marks the window for use with Vulkan rendering.
     pub fn vulkan(mut self) -> Self {
         self.flags.0 |= ffi::SDL_WINDOW_VULKAN.0;
@@ -154,6 +160,17 @@ impl Window {
         (w as u32, h as u32)
     }
 
+    /// Returns the window's size in pixels (physical size on high-DPI displays).
+    pub fn size_in_pixels(&self) -> (u32, u32) {
+        let mut w: i32 = 0;
+        let mut h: i32 = 0;
+        // Safety: Window pointer is valid; w and h are valid pointers.
+        unsafe {
+            ffi::SDL_GetWindowSizeInPixels(self.ptr, &raw mut w, &raw mut h);
+        }
+        (w as u32, h as u32)
+    }
+
     /// Returns the display scale factor for this window.
     pub fn display_scale(&self) -> f32 {
         // Safety: Window pointer is valid.
@@ -164,6 +181,15 @@ impl Window {
     pub fn set_aspect_ratio(&self, ratio: f32) -> Result<(), Error> {
         // Safety: Window pointer is valid.
         let ok = unsafe { ffi::SDL_SetWindowAspectRatio(self.ptr, ratio, ratio) };
+        if !ok {
+            return Err(crate::get_error());
+        }
+        Ok(())
+    }
+
+    /// Enables or disables fullscreen (borderless desktop) mode on this window.
+    pub fn set_fullscreen(&self, fullscreen: bool) -> Result<(), Error> {
+        let ok = unsafe { ffi::SDL_SetWindowFullscreen(self.ptr, fullscreen) };
         if !ok {
             return Err(crate::get_error());
         }

@@ -44,22 +44,23 @@ neetan <COMMAND>
 
 ### Options
 
-| Option                    | Description                                | Default  |
-|---------------------------|--------------------------------------------|----------|
-| `-c, --config <PATH>`     | Load configuration from file               | —        |
-| `--machine <TYPE>`        | Machine type: `VM`, `VX`, `RA`             | `VX`     |
-| `--fdd1 <PATH>`           | Floppy disk image for drive 1 (repeatable) | —        |
-| `--fdd2 <PATH>`           | Floppy disk image for drive 2 (repeatable) | —        |
-| `--hdd1 <PATH>`           | Hard disk image for SASI drive 1           | —        |
-| `--hdd2 <PATH>`           | Hard disk image for SASI drive 2           | —        |
-| `--audio-volume <FLOAT>`  | Audio volume 0.0–1.0                       | `1.0`    |
-| `--aspect-mode <MODE>`    | Display aspect mode: `4:3` or `1:1`        | `4:3`    |
-| `--bios-rom <PATH>`       | Path to BIOS ROM file                      | HLE BIOS |
-| `--font-rom <PATH>`       | Path to font ROM file                      | Built-in |
-| `--soundboard <TYPE>`     | Sound board: `none`, `26k`, `86`, `86+26k` | `86+26k` |
-| `--printer <PATH>`        | Output file for printer (must exist)       | —        |
-| `-h, --help`              | Print help                                 | —        |
-| `-V, --version`           | Print version                              | —        |
+| Option                   | Description                                | Default    |
+|--------------------------|--------------------------------------------|------------|
+| `-c, --config <PATH>`    | Load configuration from file               | —          |
+| `--machine <TYPE>`       | Machine type: `VM`, `VX`, `RA`             | `VX`       |
+| `--fdd1 <PATH>`          | Floppy disk image for drive 1 (repeatable) | —          |
+| `--fdd2 <PATH>`          | Floppy disk image for drive 2 (repeatable) | —          |
+| `--hdd1 <PATH>`          | Hard disk image for SASI drive 1           | —          |
+| `--hdd2 <PATH>`          | Hard disk image for SASI drive 2           | —          |
+| `--audio-volume <FLOAT>` | Audio volume 0.0–1.0                       | `1.0`      |
+| `--aspect-mode <MODE>`   | Display aspect mode: `4:3` or `1:1`        | `4:3`      |
+| `--window-mode <MODE>`   | Window mode: `windowed` or `fullscreen`    | `windowed` |
+| `--bios-rom <PATH>`      | Path to BIOS ROM file                      | HLE BIOS   |
+| `--font-rom <PATH>`      | Path to font ROM file                      | Built-in   |
+| `--soundboard <TYPE>`    | Sound board: `none`, `26k`, `86`, `86+26k` | `86+26k`   |
+| `--printer <PATH>`       | Output file for printer (must exist)       | —          |
+| `-h, --help`             | Print help                                 | —          |
+| `-V, --version`          | Print version                              | —          |
 
 ### Commands
 
@@ -103,13 +104,15 @@ Command-line arguments override values from the configuration file.
 
 ### Emulator controls
 
-| Key        | Action                           |
-|------------|----------------------------------|
-| Right Ctrl | Toggle mouse capture             |
-| GUI + F9   | Open floppy selector for drive 1 |
-| GUI + F10  | Open floppy selector for drive 2 |
+| Key                | Action                           |
+|--------------------|----------------------------------|
+| Right Ctrl         | Toggle mouse capture             |
+| GUI + Alt + Enter  | Toggle fullscreen                |
+| GUI + Alt + Escape | Quit the emulator                |
+| GUI + Alt + F9     | Open floppy selector for drive 1 |
+| GUI + Alt + F10    | Open floppy selector for drive 2 |
 
-(GUI is the Windows / Command key.)
+(GUI is the Windows / Command key)
 
 ### Supported floppy disk image formats
 
@@ -147,7 +150,7 @@ The first image in each list is automatically inserted at startup.
 
 ### Swapping disks at runtime
 
-Press **GUI + F9** (drive 1) or **GUI + F10** (drive 2) to open the floppy selector.
+Press **GUI + Alt + F9** (drive 1) or **GUI + Alt + F10** (drive 2) to open the floppy selector.
 
 ## Planned features
 

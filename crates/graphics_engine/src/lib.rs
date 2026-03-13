@@ -61,6 +61,30 @@ impl DisplayAspectMode {
             Self::Aspect1By1 => (INITIAL_WINDOW_WIDTH, INITIAL_WINDOW_HEIGHT_1_BY_1),
         }
     }
+
+    fn display_aspect_ratio(self) -> f64 {
+        match self {
+            Self::Aspect4By3 => 4.0 / 3.0,
+            Self::Aspect1By1 => 640.0 / 400.0,
+        }
+    }
+}
+
+fn compute_color_target_extent(
+    surface_width: u32,
+    surface_height: u32,
+    aspect_ratio: f64,
+) -> (u32, u32) {
+    let surface_aspect = surface_width as f64 / surface_height as f64;
+    if surface_aspect > aspect_ratio {
+        let height = surface_height;
+        let width = (surface_height as f64 * aspect_ratio).round() as u32;
+        (width, height)
+    } else {
+        let width = surface_width;
+        let height = (surface_width as f64 / aspect_ratio).round() as u32;
+        (width, height)
+    }
 }
 
 /// The graphics engine of the game.
@@ -103,6 +127,8 @@ pub struct GraphicsEngine {
     device: Device,
     /// Font ROM GPU buffer (kanji + text font banks, shared across frames).
     font_rom_buffer: MappedBuffer,
+    /// Display aspect mode for computing fitted color target extent.
+    display_aspect_mode: DisplayAspectMode,
 }
 
 impl GraphicsEngine {
@@ -143,13 +169,14 @@ impl GraphicsEngine {
         let descriptor_resources = DescriptorResources::new(device.context())
             .context("Can't create descriptor resources")?;
 
-        let resources = Resources::new(
-            &device,
-            &mut layout_transitioner,
+        let (color_width, color_height) = compute_color_target_extent(
             initial_width,
             initial_height,
-        )
-        .context("Can't initialize resources")?;
+            display_aspect_mode.display_aspect_ratio(),
+        );
+        let resources =
+            Resources::new(&device, &mut layout_transitioner, color_width, color_height)
+                .context("Can't initialize resources")?;
 
         let compose = Compose::new(&pipeline_loader, descriptor_resources.pipeline_layout())
             .context("Can't create compose pipeline")?;
@@ -200,6 +227,7 @@ impl GraphicsEngine {
             surface: None,
             device,
             font_rom_buffer,
+            display_aspect_mode,
         };
 
         Ok(engine)
@@ -390,6 +418,10 @@ impl GraphicsEngine {
             .context("Surface not initialized")?
             .extent();
 
+        if extent.width == 0 || extent.height == 0 {
+            return Ok(());
+        }
+
         let frame_index = self.current_frame_index;
 
         {
@@ -477,7 +509,19 @@ impl GraphicsEngine {
                     // Stage 3 — Blit: read color_target, write to swapchain.
                     {
                         encoder.begin_debug_label(c"Blitter Pass", [0.5, 0.5, 1.0, 1.0]);
-                        render_blitter_pass(&mut encoder, extent, &frame, &self.blitter);
+                        let ext = self.resources.color_target().extent();
+                        let color_target_extent = vk::Extent2D {
+                            width: ext.width,
+                            height: ext.height,
+                        };
+                        render_blitter_pass(
+                            &mut encoder,
+                            extent,
+                            color_target_extent,
+                            &frame,
+                            &self.blitter,
+                            self.descriptor_resources.pipeline_layout(),
+                        );
                         encoder.end_debug_label();
                     }
 
@@ -581,10 +625,6 @@ impl GraphicsEngine {
             .present_fence
             .wait(u64::MAX)
             .context("Failed to wait on present fence")?;
-        resources
-            .present_fence
-            .reset()
-            .context("Failed to reset present fence")?;
 
         let surface = self.surface.as_mut().context("Surface not initialized")?;
 
@@ -595,6 +635,14 @@ impl GraphicsEngine {
             fences.as_ref(),
             frame_resources,
         )?;
+
+        // Reset the fence only after image acquisition succeeds. This avoids a
+        // deadlock where recreate() waits on an unsignaled fence that no GPU
+        // submission will ever signal.
+        frame_resources[self.current_frame_index]
+            .present_fence
+            .reset()
+            .context("Failed to reset present fence")?;
 
         let image_view = surface.image_views()[image_index as usize];
         let image = surface.images()[image_index as usize];
@@ -647,6 +695,10 @@ impl GraphicsEngine {
 
     /// Handles window resize by immediately recreating the swapchain.
     pub fn on_resize(&mut self, width: u32, height: u32) -> Result<()> {
+        if width == 0 || height == 0 {
+            return Ok(());
+        }
+
         let fences = self.collect_present_fences();
 
         let Some(surface) = self.surface.as_mut() else {
@@ -661,8 +713,18 @@ impl GraphicsEngine {
 
         surface.on_resize(width, height, &fences)?;
 
-        self.resources
-            .on_resize(&self.device, &mut self.layout_transitioner, width, height);
+        let (color_width, color_height) = compute_color_target_extent(
+            width,
+            height,
+            self.display_aspect_mode.display_aspect_ratio(),
+        );
+
+        self.resources.on_resize(
+            &self.device,
+            &mut self.layout_transitioner,
+            color_width,
+            color_height,
+        );
 
         Ok(())
     }
