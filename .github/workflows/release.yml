@@ -13,7 +13,7 @@ env:
   SLANG_VERSION: "2026.4.2"
 
 jobs:
-  build:
+  build-windows:
     name: Build (Windows x86_64)
     runs-on: windows-2025
     steps:
@@ -213,7 +213,7 @@ jobs:
 
   release:
     name: Publish Release
-    needs: [build, build-linux]
+    needs: [ build-windows, build-linux ]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
