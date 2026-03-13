@@ -1596,7 +1596,17 @@ impl<T: Tracing> Pc9801Bus<T> {
 
     /// Returns a reference to the raw text VRAM contents (16 KB).
     pub fn text_vram(&self) -> &[u8] {
-        &self.memory.state.text_vram[..]
+        self.memory.state.text_vram.as_slice()
+    }
+
+    /// Returns a reference to the raw graphics VRAM (B/R/G planes, 2 pages).
+    pub fn graphics_vram(&self) -> &[u8] {
+        self.memory.state.graphics_vram.as_slice()
+    }
+
+    /// Returns a reference to the E-plane VRAM (2 pages).
+    pub fn e_plane_vram(&self) -> &[u8] {
+        self.memory.state.e_plane_vram.as_slice()
     }
 
     /// Returns the kanji font ROM data (512 KB, double-byte 16×16 glyphs).
@@ -3260,7 +3270,8 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             0x69 => {}
             // Mode register 2 (GDC clock + color depth + accelerator mode).
             0x6A => {
-                self.display_control.write_mode2(value);
+                let has_egc = self.grcg.state.chip == grcg::GRCG_CHIP_EGC;
+                self.display_control.write_mode2(value, has_egc);
                 self.update_plane_e_mapping();
                 self.apply_gdc_dot_clock();
                 self.reschedule_gdc_events();
@@ -3863,28 +3874,6 @@ mod tests {
     }
 
     #[test]
-    fn mode2_bit2_changes_are_blocked_when_permission_is_clear() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
-
-        // Bit2 set attempt should be ignored while bit3 is clear.
-        bus.io_write_byte(0x6A, 0x05);
-        assert_eq!(bus.display_control.state.mode2 & 0x0004, 0);
-
-        // Enable bit3 (permission), then set bit2.
-        bus.io_write_byte(0x6A, 0x07);
-        bus.io_write_byte(0x6A, 0x05);
-        assert_ne!(bus.display_control.state.mode2 & 0x0004, 0);
-
-        // Clear bit3.
-        bus.io_write_byte(0x6A, 0x06);
-        assert_eq!(bus.display_control.state.mode2 & 0x0008, 0);
-
-        // Bit2 clear attempt should be ignored while permission is clear.
-        bus.io_write_byte(0x6A, 0x04);
-        assert_ne!(bus.display_control.state.mode2 & 0x0004, 0);
-    }
-
-    #[test]
     fn gdc_grcg_tdw_ignores_pattern_off_writes() {
         let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
 
@@ -3952,9 +3941,9 @@ mod tests {
 
     /// Helper: enable EGC extended mode via port 0x6A (mode2 bit3=permission, bit2=EGC).
     fn enable_egc_mode(bus: &mut Pc9801Bus<crate::trace::NoTracing>) {
+        bus.set_grcg_chip(device::grcg::GRCG_CHIP_EGC);
         bus.io_write_byte(0x6A, 0x07); // set bit3 (permission)
         bus.io_write_byte(0x6A, 0x05); // set bit2 (EGC extended mode)
-        bus.set_grcg_chip(device::grcg::GRCG_CHIP_EGC);
     }
 
     #[test]

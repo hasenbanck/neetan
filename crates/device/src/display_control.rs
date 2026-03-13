@@ -6,7 +6,6 @@
 //! These are system board control registers, not a single chip.
 
 // TODO(pc98-deferred): Validate mode1 bit4 raster behavior against model-specific timing.
-// TODO(pc98-deferred): Implement remaining mode2 side effects (EGC datapath/protection semantics).
 
 /// Mode register 1 (port 0x68) bit 0: attribute select.
 /// 0 = vertical line, 1 = simple graphics (PC-8001 compat).
@@ -70,6 +69,13 @@ pub struct DisplayControlState {
     /// - Bit 9: GDC CLOCK-1 (0=2.5MHz, 1=5.0MHz)
     /// - Bit 10: GDC CLOCK-2 (0=2.5MHz, 1=5.0MHz)
     pub mode2: u16,
+    /// Latched EGC active flag.
+    ///
+    /// Updated only when mode2 bit 2 is toggled while bit 3 (permission)
+    /// is set and EGC hardware is present. Once latched on, clearing bit 3
+    /// does NOT unlatch this — only an explicit bit 2 toggle with bit 3
+    /// set will clear it.
+    pub egc_latched: bool,
     /// Whether VSYNC IRQ (IRQ 2) is armed for the next vertical retrace.
     ///
     /// Writing any value to port 0x64 arms a one-shot trigger: the next
@@ -104,6 +110,7 @@ impl DisplayControl {
             state: DisplayControlState {
                 video_mode: 0x00,
                 mode2: 0x0000,
+                egc_latched: false,
                 vsync_irq_enabled: false,
                 border_color: 0x00,
                 display_line_count: 0x00,
@@ -153,10 +160,11 @@ impl DisplayControl {
     /// - Base page (bit 7 clear, upper nibble 0): bits [3:1] = address 0-7, bit [0] = data
     /// - Extended page (bit 7 set): bits [2:1] = address 8-11, bit [0] = data
     ///
-    /// TODO(pc98-deferred): Confirm mode2 register-4 behavior across models (MAME notes a quirk).
+    /// `has_egc_hardware` should be true on machines with EGC (VX and later), since it gates
+    /// the EGC latch update
     ///
     /// Ref: undoc98 `io_disp.txt`
-    pub fn write_mode2(&mut self, value: u8) {
+    pub fn write_mode2(&mut self, value: u8, has_egc_hardware: bool) {
         if value & 0x80 != 0 {
             let address = ((value >> 1) & 0x03) + 8;
             self.write_mode2_bit(address.into(), value & 1 != 0);
@@ -164,11 +172,14 @@ impl DisplayControl {
             let address = (value >> 1) & 0x07;
             let data = value & 1 != 0;
 
-            // Mode2 bit 2 changes are gated by mode2 bit 3 permission.
-            if address == 2 && !self.is_egc_mode_change_permitted() {
-                return;
-            }
+            // Mode2 bits are always stored unconditionally.
             self.write_mode2_bit(address.into(), data);
+
+            // For bit 2 (EGC mode): latch the runtime EGC flag only when
+            // bit 3 (permission) is set AND EGC hardware is present.
+            if address == 2 && self.is_egc_mode_change_permitted() && has_egc_hardware {
+                self.state.egc_latched = data;
+            }
         }
     }
 
@@ -202,8 +213,11 @@ impl DisplayControl {
     }
 
     /// Returns whether EGC extended mode is effectively active.
+    ///
+    /// This checks the latched runtime flag, not the mode2 register bits
+    /// directly. The latch persists even if bit 3 is later cleared.
     pub fn is_egc_extended_mode_effective(&self) -> bool {
-        self.is_egc_mode_change_permitted() && self.is_egc_extended_mode_requested()
+        self.state.egc_latched
     }
 
     /// Writes the border color register (port 0x6C).
@@ -330,31 +344,49 @@ mod tests {
     }
 
     #[test]
-    fn mode2_bit2_writes_require_bit3_permission() {
-        let mut display_control = DisplayControl::new();
+    fn mode2_egc_latch_requires_permission_and_hardware() {
+        let mut dc = DisplayControl::new();
 
-        display_control.write_mode2(mode2_base_write(2, true));
-        assert!(!display_control.is_egc_extended_mode_requested());
-        assert!(!display_control.is_egc_extended_mode_effective());
+        // Bit 2 is always stored in mode2 regardless of permission.
+        dc.write_mode2(mode2_base_write(2, true), true);
+        assert!(dc.is_egc_extended_mode_requested());
+        // But the latch is NOT set because bit 3 (permission) is clear.
+        assert!(!dc.is_egc_extended_mode_effective());
 
-        display_control.write_mode2(mode2_base_write(3, true));
-        assert!(display_control.is_egc_mode_change_permitted());
+        // Clear bit 2, enable permission (bit 3), then set bit 2 again.
+        dc.write_mode2(mode2_base_write(2, false), true);
+        dc.write_mode2(mode2_base_write(3, true), true);
+        dc.write_mode2(mode2_base_write(2, true), true);
+        assert!(dc.is_egc_extended_mode_effective());
 
-        display_control.write_mode2(mode2_base_write(2, true));
-        assert!(display_control.is_egc_extended_mode_requested());
-        assert!(display_control.is_egc_extended_mode_effective());
+        // Clearing bit 3 does NOT clear the latch.
+        dc.write_mode2(mode2_base_write(3, false), true);
+        assert!(!dc.is_egc_mode_change_permitted());
+        assert!(dc.is_egc_extended_mode_effective());
 
-        display_control.write_mode2(mode2_base_write(3, false));
-        assert!(!display_control.is_egc_mode_change_permitted());
-        assert!(!display_control.is_egc_extended_mode_effective());
+        // Trying to clear bit 2 without permission: mode2 updates but
+        // the latch stays set (bit 3 is clear, so latch is not touched).
+        dc.write_mode2(mode2_base_write(2, false), true);
+        assert!(!dc.is_egc_extended_mode_requested());
+        assert!(dc.is_egc_extended_mode_effective());
 
-        display_control.write_mode2(mode2_base_write(2, false));
-        assert!(display_control.is_egc_extended_mode_requested());
+        // Re-enable permission, then clear bit 2: latch now clears.
+        dc.write_mode2(mode2_base_write(3, true), true);
+        dc.write_mode2(mode2_base_write(2, false), true);
+        assert!(!dc.is_egc_extended_mode_effective());
+    }
 
-        display_control.write_mode2(mode2_base_write(3, true));
-        display_control.write_mode2(mode2_base_write(2, false));
-        assert!(!display_control.is_egc_extended_mode_requested());
-        assert!(!display_control.is_egc_extended_mode_effective());
+    #[test]
+    fn mode2_egc_latch_ignored_without_egc_hardware() {
+        let mut dc = DisplayControl::new();
+
+        // Full enable sequence, but has_egc_hardware = false.
+        dc.write_mode2(mode2_base_write(3, true), false);
+        dc.write_mode2(mode2_base_write(2, true), false);
+        assert!(dc.is_egc_extended_mode_requested());
+        assert!(dc.is_egc_mode_change_permitted());
+        // Latch is NOT set because no EGC hardware.
+        assert!(!dc.is_egc_extended_mode_effective());
     }
 
     #[test]
@@ -362,13 +394,13 @@ mod tests {
         let mut display_control = DisplayControl::new();
         assert!(!display_control.is_gdc_5mhz());
 
-        display_control.write_mode2(mode2_extended_write(9, true));
+        display_control.write_mode2(mode2_extended_write(9, true), false);
         assert!(!display_control.is_gdc_5mhz());
 
-        display_control.write_mode2(mode2_extended_write(10, true));
+        display_control.write_mode2(mode2_extended_write(10, true), false);
         assert!(display_control.is_gdc_5mhz());
 
-        display_control.write_mode2(mode2_extended_write(9, false));
+        display_control.write_mode2(mode2_extended_write(9, false), false);
         assert!(!display_control.is_gdc_5mhz());
     }
 }
