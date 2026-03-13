@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use common::{Context, StringError, bail, warn};
 
+use crate::keymap::{self, KeyMap};
+
 fn next_value(flag: &str, args: &mut impl Iterator<Item = String>) -> crate::Result<String> {
     match args.next() {
         Some(val) => Ok(val),
@@ -91,7 +93,7 @@ fn print_version() {
 }
 
 pub enum Action {
-    Run(EmulatorConfig),
+    Run(Box<EmulatorConfig>),
     CreateFdd {
         path: PathBuf,
         fdd_type: FddType,
@@ -284,7 +286,7 @@ pub fn parse_args() -> crate::Result<Action> {
 
     validate_paths(&config)?;
 
-    Ok(Action::Run(config))
+    Ok(Action::Run(Box::new(config)))
 }
 
 fn validate_paths(config: &EmulatorConfig) -> crate::Result<()> {
@@ -323,6 +325,7 @@ pub struct EmulatorConfig {
     pub font_rom: Option<PathBuf>,
     pub soundboard: SoundboardType,
     pub printer: Option<PathBuf>,
+    pub key_map: KeyMap,
 }
 
 impl Default for EmulatorConfig {
@@ -339,6 +342,7 @@ impl Default for EmulatorConfig {
             font_rom: None,
             soundboard: SoundboardType::Sb86And26k,
             printer: None,
+            key_map: KeyMap::new(),
         }
     }
 }
@@ -383,6 +387,13 @@ pub fn parse_config_file(path: &Path) -> crate::Result<EmulatorConfig> {
                 Err(_) => warn!("Unknown soundboard type in config: {val}"),
             },
             "printer" => config.printer = Some(PathBuf::from(val)),
+            key if key.starts_with("key.") => {
+                let host_name = &key[4..];
+                match keymap::parse_key_binding(host_name, val) {
+                    Some((host, pc98_code)) => config.key_map.set(host, pc98_code),
+                    None => warn!("Invalid key binding: {key}={val}"),
+                }
+            }
             _ => warn!("Unknown config key: {key}"),
         }
     }

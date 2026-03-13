@@ -83,7 +83,9 @@ Instead of passing all options on the command line, you can use a configuration 
 neetan -c my_game.cfg
 ```
 
-The file uses a simple `key = value` format. Lines starting with `#` are comments.
+The file uses a simple `key = value` format. Lines starting with `#` or `;` are comments.
+See [`configuration/default.conf`](configuration/default.conf) for a complete reference with all
+options and their defaults.
 
 ```ini
 # Example configuration
@@ -93,7 +95,7 @@ audio-volume = 0.8
 aspect-mode = 4:3
 fdd1 = /path/to/disk_a.d88
 fdd1 = /path/to/disk_b.d88
-fdd2 = /path/to/data.d88
+fdd2 = /path/to/save_game.d88
 hdd1 = /path/to/harddrive.hdi
 ```
 
@@ -177,7 +179,9 @@ the mouse pointer by clicking the right CTRL key again.
 
 ### How do I rebind my keys?
 
-Not yet implemented, sorry.
+You can remap keys in the configuration file using `key.<HostKey> = <PC-98 Key>` entries.
+See [`configuration/default.conf`](configuration/default.conf) for a complete reference of all
+available host key names, PC-98 key names, and the default mappings.
 
 ### 日本語も分かりますか？
 

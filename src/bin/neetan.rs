@@ -1,7 +1,10 @@
 #![forbid(unsafe_code)]
 
 use common::{error, info, log::Level};
-use neetan::{CARGO_PKG_VERSION, GAME_NAME, config::parse_args};
+use neetan::{
+    CARGO_PKG_VERSION, GAME_NAME,
+    config::{Action, parse_args},
+};
 
 #[cfg(debug_assertions)]
 const DEFAULT_LOG_LEVEL: Level = Level::Debug;
@@ -20,13 +23,12 @@ fn main() {
         }
     };
 
-    use neetan::config::Action;
     match action {
         Action::Run(config) => {
             info!("{GAME_NAME}");
             info!("Build version: {CARGO_PKG_VERSION}");
 
-            if let Err(error) = neetan::run(config) {
+            if let Err(error) = neetan::run(*config) {
                 error!("Error while executing the emulator: {error:#}");
                 std::process::exit(1);
             }
