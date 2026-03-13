@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+    <id>neetan</id>
+    <name>Neetan</name>
+    <summary>NEC PC-98 Emulator</summary>
+    <metadata_license>BSD-3-Clause</metadata_license>
+    <project_license>BSD-3-Clause</project_license>
+    <description>
+        <p>
+            Neetan is an emulator for the PC-98.
+        </p>
+    </description>
+    <url type="homepage">https://github.com/hasenbanck/neetan</url>
+    <provides>
+        <binary>neetan</binary>
+    </provides>
+    <launchable type="desktop-id">neetan.desktop</launchable>
+    <content_rating type="oars-1.1"/>
+</component>

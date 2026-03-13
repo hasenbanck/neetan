@@ -94,9 +94,126 @@ jobs:
           name: ${{ env.ARCHIVE_NAME }}
           path: ${{ env.ARCHIVE_FILE }}
 
+  build-linux:
+    name: Build (Linux x86_64 AppImage)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang mold cmake libfuse2 \
+            libasound2-dev libpulse-dev libjack-dev libpipewire-0.3-dev libsndio-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev \
+            libwayland-dev libdecor-0-dev libxkbcommon-dev \
+            libdrm-dev libgbm-dev libgl1-mesa-dev libgles2-mesa-dev libegl1-mesa-dev \
+            libdbus-1-dev libibus-1.0-dev libudev-dev
+
+      - name: Install Vulkan SDK
+        run: |
+          VK_VERSION=$(curl -s https://vulkan.lunarg.com/sdk/latest/linux.txt)
+          curl -fsSL -o "$RUNNER_TEMP/vulkan_sdk.tar.xz" \
+            "https://sdk.lunarg.com/sdk/download/$VK_VERSION/linux/vulkan_sdk.tar.xz"
+          mkdir -p "$HOME/VulkanSDK"
+          tar xJf "$RUNNER_TEMP/vulkan_sdk.tar.xz" -C "$HOME/VulkanSDK"
+          echo "VULKAN_SDK=$HOME/VulkanSDK/$VK_VERSION/x86_64" >> "$GITHUB_ENV"
+          echo "$HOME/VulkanSDK/$VK_VERSION/x86_64/bin" >> "$GITHUB_PATH"
+
+      - name: Verify Vulkan SDK
+        run: echo "VULKAN_SDK=$VULKAN_SDK"
+
+      - name: Install slangc
+        run: |
+          mkdir -p "$RUNNER_TEMP/slang"
+          curl -fsSL "https://github.com/shader-slang/slang/releases/download/v${SLANG_VERSION}/slang-${SLANG_VERSION}-linux-x86_64.tar.gz" \
+            | tar xz -C "$RUNNER_TEMP/slang"
+          echo "$RUNNER_TEMP/slang/bin" >> "$GITHUB_PATH"
+
+      - name: Verify slangc
+        run: slangc -version
+
+      - name: Build release
+        run: cargo build --release --features sdl3-build-from-source
+
+      - name: Locate SDL3 shared library
+        id: sdl3
+        run: |
+          SDL3_LIB=$(find target/release/build -path "*sdl3-sys*" \
+            -name "libSDL3.so*" \
+            -not -name "*.a" \
+            -not -type l \
+            | head -1)
+          if [ -z "$SDL3_LIB" ]; then
+            echo "::error::Could not find SDL3 shared library"
+            find target/release/build -path "*sdl3*" -ls
+            exit 1
+          fi
+          echo "path=$SDL3_LIB" >> "$GITHUB_OUTPUT"
+          echo "Found SDL3 library: $SDL3_LIB"
+
+      - name: Download linuxdeploy
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/linuxdeploy" \
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+          chmod +x "$RUNNER_TEMP/linuxdeploy"
+
+      - name: Build AppImage
+        env:
+          LDAI_UPDATE_INFORMATION: ""
+          DISABLE_COPYRIGHT_FILES_DEPLOYMENT: "1"
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          APPDIR="$RUNNER_TEMP/neetan.AppDir"
+
+          mkdir -p "$APPDIR/usr/bin"
+          mkdir -p "$APPDIR/usr/lib"
+          mkdir -p "$APPDIR/usr/share/metainfo"
+          mkdir -p "$APPDIR/usr/share/licenses/neetan"
+
+          cp target/release/neetan "$APPDIR/usr/bin/"
+          cp "${{ steps.sdl3.outputs.path }}" "$APPDIR/usr/lib/"
+          cp -r licenses/* "$APPDIR/usr/share/licenses/neetan/"
+          cp assets/neetan.metainfo.xml "$APPDIR/usr/share/metainfo/"
+
+          VERSION="$VERSION" \
+          "$RUNNER_TEMP/linuxdeploy" \
+            --appdir "$APPDIR" \
+            --executable target/release/neetan \
+            --desktop-file assets/neetan.desktop \
+            --icon-file assets/neetan.png \
+            --exclude-library "libvulkan*" \
+            --exclude-library "libGLX*" \
+            --exclude-library "libGLdispatch*" \
+            --exclude-library "libOpenGL*" \
+            --exclude-library "libEGL*" \
+            --exclude-library "libwayland-client*" \
+            --output appimage
+
+          GENERATED=$(ls -1 Neetan*.AppImage neetan*.AppImage 2>/dev/null | head -1)
+          if [ -z "$GENERATED" ]; then
+            echo "::error::AppImage was not created"
+            ls -la
+            exit 1
+          fi
+          OUTPUT_APPIMAGE="neetan-${VERSION}-x86_64.AppImage"
+          mv "$GENERATED" "$OUTPUT_APPIMAGE"
+          echo "APPIMAGE_FILE=$OUTPUT_APPIMAGE" >> "$GITHUB_ENV"
+          echo "ARCHIVE_NAME=neetan-${VERSION}-x86_64-linux-appimage" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_NAME }}
+          path: ${{ env.APPIMAGE_FILE }}
+
   release:
     name: Publish Release
-    needs: build
+    needs: [build, build-linux]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
