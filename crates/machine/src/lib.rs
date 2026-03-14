@@ -22,7 +22,7 @@ use device::{
     printer::PrinterState, soundboard_26k::Soundboard26kState, soundboard_86::Soundboard86State,
     upd765a_fdc::Upd765aFdcState, upd7220_gdc::GdcState, upd52611_crtc::Upd52611CrtcState,
 };
-pub use machine::{Machine, Pc9801Ra, Pc9801Vm, Pc9801Vx};
+pub use machine::{Machine, Pc9801Ra, Pc9801Vm, Pc9801Vx, Pc9821};
 pub use trace::{NoTracing, Tracing};
 
 pub use crate::{bus::Pc9801Bus, config::ClockConfig, memory::Pc9801MemoryState};

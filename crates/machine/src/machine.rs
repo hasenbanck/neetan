@@ -1,4 +1,4 @@
-use common::{Bus, Cpu, DisplaySnapshotUpload};
+use common::{Bus, Cpu, DisplaySnapshotUpload, PegcSnapshotUpload};
 
 use crate::{
     CpuState, MachineState, Pc9801Bus,
@@ -48,6 +48,12 @@ impl<C: Cpu, T: Tracing> Machine<C, T> {
             if self.bus.sasi_hle_pending() {
                 self.bus.set_hle_paging(self.cpu.cr0(), self.cpu.cr3());
                 self.bus.execute_sasi_hle(self.cpu.ss(), self.cpu.sp());
+                continue;
+            }
+
+            if self.bus.ide_hle_pending() {
+                self.bus.set_hle_paging(self.cpu.cr0(), self.cpu.cr3());
+                self.bus.execute_ide_hle(self.cpu.ss(), self.cpu.sp());
                 continue;
             }
 
@@ -111,6 +117,9 @@ pub type Pc9801Vx = Machine<cpu::I286>;
 
 /// PC-9801RA machine type (80386 CPU at 16 or 20 MHz).
 pub type Pc9801Ra = Machine<cpu::I386>;
+
+/// PC-9821 machine type (80386 CPU at 20 MHz, IDE, PEGC).
+pub type Pc9821 = Machine<cpu::I386>;
 
 impl<T: Tracing> Machine<cpu::V30, T> {
     /// Captures the full machine state.
@@ -196,6 +205,10 @@ impl<T: Tracing> common::Machine for Machine<cpu::V30, T> {
         self.bus.vsync_snapshot()
     }
 
+    fn pegc_snapshot_display(&self) -> Option<&PegcSnapshotUpload> {
+        self.bus.pegc_vsync_snapshot()
+    }
+
     fn push_keyboard_scancode(&mut self, code: u8) {
         self.bus.push_keyboard_scancode(code);
     }
@@ -258,6 +271,10 @@ impl<T: Tracing> common::Machine for Machine<cpu::I286, T> {
         self.bus.vsync_snapshot()
     }
 
+    fn pegc_snapshot_display(&self) -> Option<&PegcSnapshotUpload> {
+        self.bus.pegc_vsync_snapshot()
+    }
+
     fn push_keyboard_scancode(&mut self, code: u8) {
         self.bus.push_keyboard_scancode(code);
     }
@@ -318,6 +335,10 @@ impl<T: Tracing> common::Machine for Machine<cpu::I386, T> {
 
     fn snapshot_display(&self) -> &DisplaySnapshotUpload {
         self.bus.vsync_snapshot()
+    }
+
+    fn pegc_snapshot_display(&self) -> Option<&PegcSnapshotUpload> {
+        self.bus.pegc_vsync_snapshot()
     }
 
     fn push_keyboard_scancode(&mut self, code: u8) {

@@ -25,11 +25,11 @@ Commands:
 
 Options:
   -c, --config <PATH>         Load configuration from file
-      --machine <TYPE>        Machine type: PC9801VM, PC9801VX, PC9801RA
+      --machine <TYPE>        Machine type: PC9801VM, PC9801VX, PC9801RA, PC9821
       --fdd1 <PATH>           Floppy disk image for drive 1 (repeatable)
       --fdd2 <PATH>           Floppy disk image for drive 2 (repeatable)
-      --hdd1 <PATH>           Hard disk image for SASI drive 1
-      --hdd2 <PATH>           Hard disk image for SASI drive 2
+      --hdd1 <PATH>           Hard disk image for drive 1 (SASI or IDE)
+      --hdd2 <PATH>           Hard disk image for drive 2 (SASI or IDE)
       --audio-volume <FLOAT>  Audio volume 0.0-1.0
       --aspect-mode <MODE>    Display aspect mode: 4:3 or 1:1
       --window-mode <MODE>    Window mode: windowed or fullscreen
@@ -76,16 +76,23 @@ Arguments:
   <PATH>  Output file path (must have .hdi extension)
 
 Options:
-      --type <TYPE>  HDD size [default: 40]
+      --type <TYPE>  HDD size (required)
   -h, --help         Print help
 
-HDD types (standard SASI geometries):
-  5       5 MB  (153 cyl, 4 heads, 33 spt, 256 B/sector)
-  10     10 MB  (310 cyl, 4 heads, 33 spt, 256 B/sector)
-  15     15 MB  (310 cyl, 6 heads, 33 spt, 256 B/sector)
-  20     20 MB  (310 cyl, 8 heads, 33 spt, 256 B/sector)
-  30     30 MB  (615 cyl, 6 heads, 33 spt, 256 B/sector)
-  40     40 MB  (615 cyl, 8 heads, 33 spt, 256 B/sector)"
+SASI types:
+  sasi5      5 MB  (153 cyl, 4 heads, 33 spt, 256 B/sector)
+  sasi10    10 MB  (310 cyl, 4 heads, 33 spt, 256 B/sector)
+  sasi15    15 MB  (310 cyl, 6 heads, 33 spt, 256 B/sector)
+  sasi20    20 MB  (310 cyl, 8 heads, 33 spt, 256 B/sector)
+  sasi30    30 MB  (615 cyl, 6 heads, 33 spt, 256 B/sector)
+  sasi40    40 MB  (615 cyl, 8 heads, 33 spt, 256 B/sector)
+
+IDE types:
+  ide40     40 MB  (977 cyl, 5 heads, 17 spt, 512 B/sector)
+  ide80     80 MB  (977 cyl, 10 heads, 17 spt, 512 B/sector)
+  ide120   120 MB  (977 cyl, 15 heads, 17 spt, 512 B/sector)
+  ide200   200 MB  (977 cyl, 15 heads, 28 spt, 512 B/sector)
+  ide500   500 MB  (1015 cyl, 16 heads, 63 spt, 512 B/sector)"
     );
 }
 
@@ -131,6 +138,11 @@ pub enum HddSizeType {
     Mb20,
     Mb30,
     Mb40,
+    IdeMb40,
+    IdeMb80,
+    IdeMb120,
+    IdeMb200,
+    IdeMb500,
 }
 
 impl std::str::FromStr for HddSizeType {
@@ -138,14 +150,19 @@ impl std::str::FromStr for HddSizeType {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "5" => Ok(Self::Mb5),
-            "10" => Ok(Self::Mb10),
-            "15" => Ok(Self::Mb15),
-            "20" => Ok(Self::Mb20),
-            "30" => Ok(Self::Mb30),
-            "40" => Ok(Self::Mb40),
+            "sasi5" => Ok(Self::Mb5),
+            "sasi10" => Ok(Self::Mb10),
+            "sasi15" => Ok(Self::Mb15),
+            "sasi20" => Ok(Self::Mb20),
+            "sasi30" => Ok(Self::Mb30),
+            "sasi40" => Ok(Self::Mb40),
+            "ide40" => Ok(Self::IdeMb40),
+            "ide80" => Ok(Self::IdeMb80),
+            "ide120" => Ok(Self::IdeMb120),
+            "ide200" => Ok(Self::IdeMb200),
+            "ide500" => Ok(Self::IdeMb500),
             _ => Err(format!(
-                "unknown HDD size '{s}', expected 5, 10, 15, 20, 30, or 40"
+                "unknown HDD size '{s}', expected sasi5, sasi10, sasi15, sasi20, sasi30, sasi40, ide40, ide80, ide120, ide200, or ide500"
             )),
         }
     }
@@ -187,7 +204,7 @@ fn parse_create_fdd_args(args: &mut impl Iterator<Item = String>) -> crate::Resu
 
 fn parse_create_hdd_args(args: &mut impl Iterator<Item = String>) -> crate::Result<Action> {
     let mut path: Option<PathBuf> = None;
-    let mut hdd_type = HddSizeType::Mb40;
+    let mut hdd_type: Option<HddSizeType> = None;
 
     while let Some(arg) = args.next() {
         let (flag, inline_value) = match arg.split_once('=') {
@@ -206,7 +223,7 @@ fn parse_create_hdd_args(args: &mut impl Iterator<Item = String>) -> crate::Resu
                 } else {
                     next_value("--type", args)?
                 };
-                hdd_type = val.parse::<HddSizeType>().map_err(StringError)?;
+                hdd_type = Some(val.parse::<HddSizeType>().map_err(StringError)?);
             }
             other if !other.starts_with('-') && path.is_none() => {
                 path = Some(PathBuf::from(other));
@@ -216,6 +233,8 @@ fn parse_create_hdd_args(args: &mut impl Iterator<Item = String>) -> crate::Resu
     }
 
     let path = path.ok_or_else(|| StringError("missing required argument: <PATH>".into()))?;
+    let hdd_type =
+        hdd_type.ok_or_else(|| StringError("missing required option: --type <TYPE>".into()))?;
     Ok(Action::CreateHdd { path, hdd_type })
 }
 

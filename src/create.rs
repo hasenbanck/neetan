@@ -61,20 +61,25 @@ pub fn create_hdd_image(path: &Path, hdd_type: HddSizeType) -> crate::Result<()>
         bail!("output path must have a .hdi extension");
     }
 
-    let (cylinders, heads, sectors_per_track) = match hdd_type {
-        HddSizeType::Mb5 => (153u16, 4u8, 33u8),
-        HddSizeType::Mb10 => (310, 4, 33),
-        HddSizeType::Mb15 => (310, 6, 33),
-        HddSizeType::Mb20 => (310, 8, 33),
-        HddSizeType::Mb30 => (615, 6, 33),
-        HddSizeType::Mb40 => (615, 8, 33),
+    let (cylinders, heads, sectors_per_track, sector_size) = match hdd_type {
+        HddSizeType::Mb5 => (153u16, 4u8, 33u8, 256u16),
+        HddSizeType::Mb10 => (310, 4, 33, 256),
+        HddSizeType::Mb15 => (310, 6, 33, 256),
+        HddSizeType::Mb20 => (310, 8, 33, 256),
+        HddSizeType::Mb30 => (615, 6, 33, 256),
+        HddSizeType::Mb40 => (615, 8, 33, 256),
+        HddSizeType::IdeMb40 => (977, 5, 17, 512),
+        HddSizeType::IdeMb80 => (977, 10, 17, 512),
+        HddSizeType::IdeMb120 => (977, 15, 17, 512),
+        HddSizeType::IdeMb200 => (977, 15, 28, 512),
+        HddSizeType::IdeMb500 => (1015, 16, 63, 512),
     };
 
     let geometry = HddGeometry {
         cylinders,
         heads,
         sectors_per_track,
-        sector_size: 256,
+        sector_size,
     };
 
     let data = vec![0u8; geometry.total_bytes() as usize];

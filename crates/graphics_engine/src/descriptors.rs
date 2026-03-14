@@ -60,7 +60,7 @@ impl DescriptorResources {
                 .context("Failed to create sampler set layout")?
         };
 
-        // Set 1: Two SAMPLED_IMAGE bindings + two STORAGE_BUFFER bindings.
+        // Set 1: Two SAMPLED_IMAGE bindings + three STORAGE_BUFFER bindings.
         let resource_bindings = [
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
@@ -79,6 +79,11 @@ impl DescriptorResources {
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
             vk::DescriptorSetLayoutBinding::default()
                 .binding(3)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(4)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
@@ -129,6 +134,7 @@ impl DescriptorResources {
         native_target: &ColorTargetImage,
         upload_buffer: &MappedBuffer,
         font_rom_buffer: &MappedBuffer,
+        pegc_buffer: &MappedBuffer,
     ) {
         if *descriptor_version >= current_version {
             return;
@@ -154,6 +160,11 @@ impl DescriptorResources {
             .offset(0)
             .range(font_rom_buffer.byte_size());
 
+        let pegc_buffer_info = vk::DescriptorBufferInfo::default()
+            .buffer(pegc_buffer.raw())
+            .offset(0)
+            .range(pegc_buffer.byte_size());
+
         let writes = [
             vk::WriteDescriptorSet::default()
                 .dst_set(frame_sets.resource_set())
@@ -175,6 +186,11 @@ impl DescriptorResources {
                 .dst_binding(3)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .buffer_info(std::slice::from_ref(&font_rom_buffer_info)),
+            vk::WriteDescriptorSet::default()
+                .dst_set(frame_sets.resource_set())
+                .dst_binding(4)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(std::slice::from_ref(&pegc_buffer_info)),
         ];
 
         unsafe {
@@ -247,7 +263,7 @@ impl FrameDescriptorSets {
                 .descriptor_count(2),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(2),
+                .descriptor_count(3),
         ];
 
         let pool_info = vk::DescriptorPoolCreateInfo::default()

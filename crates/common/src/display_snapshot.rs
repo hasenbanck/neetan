@@ -104,13 +104,67 @@ impl Default for DisplaySnapshotUpload {
     }
 }
 
+/// Display flags bit 7: PEGC 256-color mode active.
+pub const DISPLAY_FLAG_PEGC_256_COLOR: u32 = 0x80;
+
 const _: [(); DisplaySnapshotUpload::BYTE_SIZE] = [(); size_of::<DisplaySnapshotUpload>()];
+
+/// PEGC snapshot uploaded to a separate GPU buffer when 256-color mode is active.
+///
+/// Contains the 256-entry palette and the full 512 KB extended VRAM.
+/// Bound at descriptor binding 4 in the compose shader.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PegcSnapshotUpload {
+    /// 256-color palette entries packed as 0xAA_BB_GG_RR.
+    pub palette_rgba_256: [u32; 256],
+    /// Flags: bit 0 = packed pixel mode, bit 1 = 1-screen (480-line) mode, bit 2 = display page 1.
+    pub pegc_flags: u32,
+    /// Reserved for alignment.
+    pub reserved: [u32; 3],
+    /// Full 512 KB PEGC VRAM as 32-bit little-endian words.
+    pub pegc_vram: [u32; 0x80000 / 4],
+}
+
+impl PegcSnapshotUpload {
+    /// Total byte size of the upload payload.
+    pub const BYTE_SIZE: usize = 256 * 4 + 4 + 3 * 4 + 0x80000;
+
+    /// Returns the raw byte representation of this struct.
+    ///
+    /// # Safety justification
+    ///
+    /// Sound because `Self` is `#[repr(C)]`, composed entirely of `u32` (valid for
+    /// any bit pattern), and every byte of the struct is initialized.
+    #[allow(unsafe_code)]
+    pub fn as_bytes(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>()) }
+    }
+
+    /// Returns a zero-initialized instance.
+    ///
+    /// # Safety justification
+    ///
+    /// Sound because every field is `u32` (or `[u32; N]`), and zero is a valid value for `u32`.
+    #[allow(unsafe_code)]
+    pub fn zeroed() -> Self {
+        unsafe { std::mem::zeroed() }
+    }
+}
+
+impl Default for PegcSnapshotUpload {
+    fn default() -> Self {
+        Self::zeroed()
+    }
+}
+
+const _: [(); PegcSnapshotUpload::BYTE_SIZE] = [(); size_of::<PegcSnapshotUpload>()];
 
 #[cfg(test)]
 mod tests {
     use std::mem::{offset_of, size_of};
 
-    use super::DisplaySnapshotUpload;
+    use super::{DisplaySnapshotUpload, PegcSnapshotUpload};
 
     #[test]
     fn display_snapshot_layout_matches_expected_offsets() {
@@ -161,5 +215,17 @@ mod tests {
         assert_eq!(offset_of!(DisplaySnapshotUpload, graphics_r_plane), 0xC100);
         assert_eq!(offset_of!(DisplaySnapshotUpload, graphics_g_plane), 0x14100);
         assert_eq!(offset_of!(DisplaySnapshotUpload, graphics_e_plane), 0x1C100);
+    }
+
+    #[test]
+    fn pegc_snapshot_layout_matches_expected_offsets() {
+        assert_eq!(
+            size_of::<PegcSnapshotUpload>(),
+            PegcSnapshotUpload::BYTE_SIZE
+        );
+        assert_eq!(offset_of!(PegcSnapshotUpload, palette_rgba_256), 0x000);
+        assert_eq!(offset_of!(PegcSnapshotUpload, pegc_flags), 0x400);
+        assert_eq!(offset_of!(PegcSnapshotUpload, reserved), 0x404);
+        assert_eq!(offset_of!(PegcSnapshotUpload, pegc_vram), 0x410);
     }
 }

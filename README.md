@@ -12,15 +12,15 @@ files is supported, but should provide no additional benefit.
 
 ## Supported systems
 
-Currently, we aim to support all 16-bit era DOS games and emulate them accurately for 3 idealized machine targets:
+Currently, we aim to support all 16-bit era DOS games and emulate them accurately for 5 idealized machine targets:
 
-| Machine   | CPU      | RAM     | Extended RAM |
-|-----------|----------|---------|--------------|
-| PC-9801VM | V30      | 640 KiB | None         |
-| PC-9801VX | 80286    | 640 KiB | 4 MiB        |
-| PC-9801RA | 80386 DX | 640 KiB | 14 MiB       |
-
-All machines support up to two floppy drives and upt to two SASI hard drives.
+| Machine   | CPU   | CPU Speed | RAM     | Extended RAM | Graphics | Interface | CD-ROM | Implementation Status |
+|-----------|-------|-----------|---------|--------------|----------|-----------|--------|-----------------------|
+| PC-9801VM | V30   | 10 Mhz    | 640 KiB | None         | GRCG     | SASI      | No     | Works fine            |
+| PC-9801VX | 80286 | 10 Mhz    | 640 KiB | 4 MiB        | ECG      | SASI      | No     | Works fine            |
+| PC-9801RA | 80386 | 20 Mhz    | 640 KiB | 12 MiB       | ECG      | SASI      | No     | Works fine            |
+| PC-9821   | 80386 | 20 Mhz    | 640 KiB | 14 MiB       | PEGC     | IDE       | Yes    | Inprogress            |
+| PC-9821AP | 80486 | 66 Mhz    | 640 KiB | 14 MiB       | PEGC     | IDE       | Yes    | Missing               |
 
 We also support the following sound cards:
 
@@ -44,23 +44,23 @@ neetan <COMMAND>
 
 ### Options
 
-| Option                   | Description                                      | Default    |
-|--------------------------|--------------------------------------------------|------------|
-| `-c, --config <PATH>`    | Load configuration from file                     | —          |
-| `--machine <TYPE>`       | Machine type: `PC9801VM`, `PC9801VX`, `PC9801RA` | `PC9801VX` |
-| `--fdd1 <PATH>`          | Floppy disk image for drive 1 (repeatable)       | —          |
-| `--fdd2 <PATH>`          | Floppy disk image for drive 2 (repeatable)       | —          |
-| `--hdd1 <PATH>`          | Hard disk image for SASI drive 1                 | —          |
-| `--hdd2 <PATH>`          | Hard disk image for SASI drive 2                 | —          |
-| `--audio-volume <FLOAT>` | Audio volume 0.0–1.0                             | `1.0`      |
-| `--aspect-mode <MODE>`   | Display aspect mode: `4:3` or `1:1`              | `4:3`      |
-| `--window-mode <MODE>`   | Window mode: `windowed` or `fullscreen`          | `windowed` |
-| `--bios-rom <PATH>`      | Path to BIOS ROM file                            | HLE BIOS   |
-| `--font-rom <PATH>`      | Path to font ROM file                            | Built-in   |
-| `--soundboard <TYPE>`    | Sound board: `none`, `26k`, `86`, `86+26k`       | `86+26k`   |
-| `--printer <PATH>`       | Output file for printer (must exist)             | —          |
-| `-h, --help`             | Print help                                       | —          |
-| `-V, --version`          | Print version                                    | —          |
+| Option                   | Description                                                | Default    |
+|--------------------------|------------------------------------------------------------|------------|
+| `-c, --config <PATH>`    | Load configuration from file                               | —          |
+| `--machine <TYPE>`       | Machine type: `PC9801VM`, `PC9801VX`, `PC9801RA`, `PC9821` | `PC9801VX` |
+| `--fdd1 <PATH>`          | Floppy disk image for drive 1 (repeatable)                 | —          |
+| `--fdd2 <PATH>`          | Floppy disk image for drive 2 (repeatable)                 | —          |
+| `--hdd1 <PATH>`          | Hard disk image for SASI drive 1                           | —          |
+| `--hdd2 <PATH>`          | Hard disk image for SASI drive 2                           | —          |
+| `--audio-volume <FLOAT>` | Audio volume 0.0–1.0                                       | `1.0`      |
+| `--aspect-mode <MODE>`   | Display aspect mode: `4:3` or `1:1`                        | `4:3`      |
+| `--window-mode <MODE>`   | Window mode: `windowed` or `fullscreen`                    | `windowed` |
+| `--bios-rom <PATH>`      | Path to BIOS ROM file                                      | HLE BIOS   |
+| `--font-rom <PATH>`      | Path to font ROM file                                      | Built-in   |
+| `--soundboard <TYPE>`    | Sound board: `none`, `26k`, `86`, `86+26k`                 | `86+26k`   |
+| `--printer <PATH>`       | Output file for printer (must exist)                       | —          |
+| `-h, --help`             | Print help                                                 | —          |
+| `-V, --version`          | Print version                                              | —          |
 
 ### Commands
 
@@ -72,9 +72,9 @@ neetan <COMMAND>
 
 `create-hdd <PATH> [OPTIONS]` — Create an empty hard disk image (HDI format).
 
-| Option          | Description                              | Default |
-|-----------------|------------------------------------------|---------|
-| `--type <TYPE>` | `5`, `10`, `15`, `20`, `30`, or `40` MiB | `40`    |
+| Option          | Description                                                                                                          |
+|-----------------|----------------------------------------------------------------------------------------------------------------------|
+| `--type <TYPE>` | SASI: `sasi5`, `sasi10`, `sasi15`, `sasi20`, `sasi30`, `sasi40`. IDE: `ide40`, `ide80`, `ide120`, `ide200`, `ide500` |
 
 ### Configuration file
 

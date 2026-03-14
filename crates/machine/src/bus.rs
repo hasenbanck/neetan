@@ -8,8 +8,8 @@ mod bios;
 use std::path::PathBuf;
 
 use common::{
-    CpuType, DisplaySnapshotUpload, EventKind, MachineModel, Scheduler,
-    cast_u32_slice_as_bytes_mut, debug, warn,
+    CpuType, DISPLAY_FLAG_PEGC_256_COLOR, DisplaySnapshotUpload, EventKind, MachineModel,
+    PegcSnapshotUpload, Scheduler, cast_u32_slice_as_bytes_mut, debug, warn,
 };
 use device::{
     beeper::Beeper,
@@ -27,8 +27,10 @@ use device::{
     i8255_system_ppi::I8255SystemPpi,
     i8259a_pic::I8259aPic,
     palette::Palette,
+    pegc::Pegc,
     printer::Printer,
     sasi::{SasiAction, SasiController, SasiPhase},
+    sdip::Sdip,
     soundboard_26k::{Soundboard26k, Soundboard26kAction},
     soundboard_86::{Soundboard86, Soundboard86Action},
     upd765a_fdc::{
@@ -62,10 +64,12 @@ const GRCG_WAIT_CYCLES: i64 = 8;
 /// Each byte-sized I/O read or write incurs this penalty.
 const IO_WAIT_CYCLES: i64 = 1;
 
-/// DMA access control register (port 0x0439) default value at boot.
-/// Bit 2 set: mask DMA physical addresses to 20 bits (normal mode).
+/// DMA access control register (port 0x0439) default: 20-bit DMA mask.
+///
+/// Used by 8/10 MHz machines (VM, VX). On 386+ machines (RA, PC-9821),
+/// the register starts at 0x00 (full 24/32-bit DMA addressing).
 /// Ref: undoc98 `io_dma.txt` (port 0x0439).
-const DMA_ACCESS_CTRL_DEFAULT: u8 = 0x04;
+const DMA_ACCESS_CTRL_20BIT: u8 = 0x04;
 
 /// System status register (port 0xF0 read) default for a minimal VM config.
 /// All bits clear = no sound board, no IDE interface installed.
@@ -199,6 +203,7 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     crtc: Upd52611Crtc,
     grcg: Grcg,
     egc: Egc,
+    pegc: Pegc,
     palette: Palette,
     soundboard_26k: Option<Soundboard26k>,
     soundboard_86: Option<Soundboard86>,
@@ -212,6 +217,10 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     mouse_timer_setting: u8,
     /// PC-9801-27 SASI hard disk controller.
     sasi: SasiController,
+    /// PC-98 IDE (ATA) hard disk controller.
+    ide: device::ide::IdeController,
+    /// Software DIP Switch (SDIP) — NVRAM configuration on PC-9821.
+    sdip: Sdip,
     /// BIOS HLE trap controller.
     bios: device::bios::BiosController,
     a20_enabled: bool,
@@ -229,6 +238,8 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     /// continues until the machine loop checks, so we snapshot the state.
     warm_reset_context: Option<(u16, u16, u16, u16)>,
     vsync_snapshot: Box<DisplaySnapshotUpload>,
+    pegc_vsync_snapshot: Box<PegcSnapshotUpload>,
+    pegc_mode_active: bool,
     /// DMA access control register (port 0x0439). Bit 2: mask DMA above 1MB.
     dma_access_ctrl: u8,
     /// VRAM/EMS bank register (write-only via port 0x043F).
@@ -253,6 +264,30 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     key_sense_0ec: u8,
     /// Expansion-slot socket processing latch (port 0x043A).
     external_interrupt_43a: u8,
+    /// Extended video flip-flop index register (port 0x09A0).
+    video_ff2_index: u8,
+    /// Window Accelerator Board index register (port 0x0FAA).
+    /// Used on PC-9821 for built-in graphics accelerator control.
+    wab_index: u8,
+    /// Window Accelerator Board data registers (indexed by `wab_index`).
+    wab_data: [u8; 8],
+    /// Display output relay control (port 0x0FAC).
+    wab_relay: u8,
+    /// CPU mode / wait control register (port 0x0534).
+    cpu_mode_534: u8,
+    /// SIMM memory controller address register (port 0x0530).
+    /// Bit 7: 1=limit address, 0=base address. Bits 3-0: socket number.
+    /// Ref: undoc98 `io_mem.txt` (port 0x0530)
+    simm_address_register: u8,
+    /// SIMM memory controller data (indexed by simm_address_register).
+    /// 16 sockets × 2 (base + limit) = 32 entries.
+    simm_data: [u8; 32],
+    /// Memory bank switching register (port 0x063C).
+    /// Ref: undoc98 `io_mem.txt` (port 0x063C)
+    memory_bank_063c: u8,
+    /// CPU/cache control register (port 0x063F).
+    /// Ref: undoc98 `io_mem.txt` (port 0x063F)
+    cache_control_063f: u8,
     /// Current text RAM access wait penalty in CPU cycles.
     /// Switched between display-period and VSYNC-blanking values by the
     /// GdcVsync / GdcDisplayStart event handlers.
@@ -305,6 +340,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             crtc: Upd52611Crtc::new(),
             grcg: Grcg::new(machine_model.grcg_chip_version()),
             egc: Egc::new(),
+            pegc: Pegc::new(),
             palette: Palette::new(),
             soundboard_26k: None,
             soundboard_86: None,
@@ -314,6 +350,8 @@ impl<T: Tracing> Pc9801Bus<T> {
             mouse_ppi: I8255MousePpi::new(),
             mouse_timer_setting: MOUSE_TIMER_DEFAULT_SETTING,
             sasi: SasiController::new(),
+            ide: device::ide::IdeController::new(),
+            sdip: Sdip::new(),
             bios: device::bios::BiosController::new(),
             a20_enabled: false,
             machine_model,
@@ -322,7 +360,12 @@ impl<T: Tracing> Pc9801Bus<T> {
             needs_full_reinit: false,
             warm_reset_context: None,
             vsync_snapshot: Box::new(DisplaySnapshotUpload::default()),
-            dma_access_ctrl: DMA_ACCESS_CTRL_DEFAULT,
+            pegc_vsync_snapshot: Box::new(PegcSnapshotUpload::default()),
+            pegc_mode_active: false,
+            dma_access_ctrl: match machine_model {
+                MachineModel::PC9801VM | MachineModel::PC9801VX => DMA_ACCESS_CTRL_20BIT,
+                MachineModel::PC9801RA | MachineModel::PC9821 => 0x00,
+            },
             vram_ems_bank: 0x00,
             ram_window: 0x08,
             hole_15m_control: 0x00,
@@ -333,6 +376,15 @@ impl<T: Tracing> Pc9801Bus<T> {
             rtc_control_22: 0x00,
             key_sense_0ec: 0xFF,
             external_interrupt_43a: 0xFF,
+            video_ff2_index: 0x00,
+            wab_index: 0x00,
+            wab_data: [0u8; 8],
+            wab_relay: 0xFC,
+            cpu_mode_534: 0x00,
+            simm_address_register: 0x00,
+            simm_data: [0u8; 32],
+            memory_bank_063c: 0x00,
+            cache_control_063f: 0x00,
             tram_wait: TRAM_WAIT_CYCLES,
             vram_wait: VRAM_WAIT_CYCLES,
             grcg_wait: GRCG_WAIT_CYCLES,
@@ -473,7 +525,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         // F2DD_POINTER (0x05CC) / F2HD_POINTER (0x05F8): far pointers to format
         // tables in ROM. The offsets differ between BIOS generations (RA vs others).
         let (f2hd_off, f2dd_off): (u16, u16) = match self.machine_model {
-            MachineModel::PC9801RA => (0x1AAF, 0x1AD7),
+            MachineModel::PC9801RA | MachineModel::PC9821 => (0x1AAF, 0x1AD7),
             MachineModel::PC9801VM | MachineModel::PC9801VX => (0x1AB4, 0x1ADC),
         };
         self.memory.state.ram[0x05CC..0x05D0].copy_from_slice(&[
@@ -551,6 +603,11 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.memory.set_shadow_control(0);
         self.vram_ems_bank = 0;
         self.protected_memory_max = 0;
+        // Reset display control to hardware-reset defaults. The real BIOS
+        // expects video_mode and mode2 to start at zero and configures them
+        // via port 0x68/0x6A writes during POST.
+        self.display_control.state.video_mode = 0x00;
+        self.display_control.state.mode2 = 0x0000;
     }
 
     /// Loads a V98-format font ROM into the CGROM buffer.
@@ -598,17 +655,38 @@ impl<T: Tracing> Pc9801Bus<T> {
 
     /// Inserts a hard disk image into the specified drive (0-1).
     pub fn insert_hdd(&mut self, drive: usize, image: HddImage, path: Option<PathBuf>) {
-        self.sasi.insert_drive(drive, image, path);
+        match self.machine_model {
+            MachineModel::PC9801VM | MachineModel::PC9801VX | MachineModel::PC9801RA => {
+                self.sasi.insert_drive(drive, image, path);
+            }
+            MachineModel::PC9821 => {
+                self.ide.insert_drive(drive, image, path);
+            }
+        }
     }
 
     /// Writes the HDD image back to its file if it has been modified.
     pub fn flush_hdd(&mut self, drive: usize) {
-        self.sasi.flush_drive(drive);
+        match self.machine_model {
+            MachineModel::PC9801VM | MachineModel::PC9801VX | MachineModel::PC9801RA => {
+                self.sasi.flush_drive(drive);
+            }
+            MachineModel::PC9821 => {
+                self.ide.flush_drive(drive);
+            }
+        }
     }
 
     /// Flushes all dirty HDD images to disk.
     pub fn flush_all_hdds(&mut self) {
-        self.sasi.flush_all_drives();
+        match self.machine_model {
+            MachineModel::PC9801VM | MachineModel::PC9801VX | MachineModel::PC9801RA => {
+                self.sasi.flush_all_drives();
+            }
+            MachineModel::PC9821 => {
+                self.ide.flush_all_drives();
+            }
+        }
     }
 
     /// Attaches a file handle for printer output.
@@ -817,9 +895,30 @@ impl<T: Tracing> Pc9801Bus<T> {
     }
 
     fn update_plane_e_mapping(&mut self) {
-        self.memory.set_e_plane_enabled(
-            self.graphics_extension_enabled && self.display_control.is_palette_analog_mode(),
-        );
+        if self.pegc.is_256_color_active() {
+            self.memory.set_e_plane_enabled(false);
+        } else {
+            self.memory.set_e_plane_enabled(
+                self.graphics_extension_enabled && self.display_control.is_palette_analog_mode(),
+            );
+        }
+    }
+
+    fn update_pegc_mapping(&mut self) {
+        if self.pegc.is_256_color_active() {
+            self.memory.set_e_plane_enabled(false);
+        } else {
+            self.update_plane_e_mapping();
+        }
+    }
+
+    /// Returns the PEGC VSYNC snapshot if 256-color mode was active at last capture.
+    pub fn pegc_vsync_snapshot(&self) -> Option<&PegcSnapshotUpload> {
+        if self.pegc_mode_active {
+            Some(&self.pegc_vsync_snapshot)
+        } else {
+            None
+        }
     }
 
     fn mouse_timer_irq_enabled(&self) -> bool {
@@ -964,10 +1063,24 @@ impl<T: Tracing> Pc9801Bus<T> {
                 }
             }
             0xA8000..=0xAFFFF => {
+                if self.pegc.is_256_color_active() {
+                    if self.pegc.is_packed_pixel_mode() {
+                        let vram = self.memory.state.pegc_vram.as_ref().unwrap().as_slice();
+                        return self.pegc.packed_read_byte(0, address - 0xA8000, vram);
+                    }
+                    return 0;
+                }
                 let page_base = self.access_page_index() * GRAPHICS_PAGE_SIZE_BYTES;
                 self.memory.state.graphics_vram[page_base + (address - 0xA8000) as usize]
             }
             0xB0000..=0xBFFFF => {
+                if self.pegc.is_256_color_active() && address <= 0xB7FFF {
+                    if self.pegc.is_packed_pixel_mode() {
+                        let vram = self.memory.state.pegc_vram.as_ref().unwrap().as_slice();
+                        return self.pegc.packed_read_byte(1, address - 0xB0000, vram);
+                    }
+                    return 0;
+                }
                 if self.b_bank_ems && self.vram_ems_bank & 0x02 != 0 {
                     self.memory.read_byte(0x100000 + (address - 0xB0000))
                 } else {
@@ -983,7 +1096,18 @@ impl<T: Tracing> Pc9801Bus<T> {
                     self.memory.read_byte(address)
                 }
             }
+            // IDE HLE ROM overlay (expansion ROM area).
+            0xD8000..=0xD9FFF => {
+                if self.ide.rom_installed() {
+                    self.ide.read_rom_byte((address - 0xD8000) as usize)
+                } else {
+                    self.memory.read_byte(address)
+                }
+            }
             0xE0000..=0xE7FFF => {
+                if self.pegc.is_256_color_active() {
+                    return self.pegc.mmio_read_byte(address - 0xE0000);
+                }
                 if self.memory.state.e_plane_enabled {
                     let page_base = self.access_page_index() * E_PLANE_PAGE_SIZE_BYTES;
                     self.memory.state.e_plane_vram[page_base + (address - 0xE0000) as usize]
@@ -991,7 +1115,20 @@ impl<T: Tracing> Pc9801Bus<T> {
                     0xFF
                 }
             }
-            _ => self.memory.read_byte(address),
+            _ => {
+                if self.machine_model.has_pegc() {
+                    let is_pegc_range = (0xF00000..=0xF7FFFF).contains(&address)
+                        || (0xFFF00000..=0xFFF7FFFF).contains(&address);
+                    if is_pegc_range {
+                        if self.pegc.is_upper_vram_enabled() {
+                            return self.memory.state.pegc_vram.as_ref().unwrap().as_slice()
+                                [(address & 0x7FFFF) as usize];
+                        }
+                        return 0xFF;
+                    }
+                }
+                self.memory.read_byte(address)
+            }
         }
     }
 
@@ -1024,10 +1161,26 @@ impl<T: Tracing> Pc9801Bus<T> {
                 }
             }
             0xA8000..=0xAFFFF => {
+                if self.pegc.is_256_color_active() {
+                    if self.pegc.is_packed_pixel_mode() {
+                        let vram = self.memory.state.pegc_vram.as_mut().unwrap().as_mut_slice();
+                        self.pegc
+                            .packed_write_byte(0, address - 0xA8000, value, vram);
+                    }
+                    return;
+                }
                 let page_base = self.access_page_index() * GRAPHICS_PAGE_SIZE_BYTES;
                 self.memory.state.graphics_vram[page_base + (address - 0xA8000) as usize] = value;
             }
             0xB0000..=0xBFFFF => {
+                if self.pegc.is_256_color_active() && address <= 0xB7FFF {
+                    if self.pegc.is_packed_pixel_mode() {
+                        let vram = self.memory.state.pegc_vram.as_mut().unwrap().as_mut_slice();
+                        self.pegc
+                            .packed_write_byte(1, address - 0xB0000, value, vram);
+                    }
+                    return;
+                }
                 if self.b_bank_ems && self.vram_ems_bank & 0x02 != 0 {
                     self.memory
                         .write_byte(0x100000 + (address - 0xB0000), value);
@@ -1038,13 +1191,30 @@ impl<T: Tracing> Pc9801Bus<T> {
                 }
             }
             0xE0000..=0xE7FFF => {
+                if self.pegc.is_256_color_active() {
+                    self.pegc.mmio_write_byte(address - 0xE0000, value);
+                    return;
+                }
                 if self.memory.state.e_plane_enabled {
                     let page_base = self.access_page_index() * E_PLANE_PAGE_SIZE_BYTES;
                     self.memory.state.e_plane_vram[page_base + (address - 0xE0000) as usize] =
                         value;
                 }
             }
-            _ => self.memory.write_byte(address, value),
+            _ => {
+                if self.machine_model.has_pegc() {
+                    let is_pegc_range = (0xF00000..=0xF7FFFF).contains(&address)
+                        || (0xFFF00000..=0xFFF7FFFF).contains(&address);
+                    if is_pegc_range {
+                        if self.pegc.is_upper_vram_enabled() {
+                            self.memory.state.pegc_vram.as_mut().unwrap().as_mut_slice()
+                                [(address & 0x7FFFF) as usize] = value;
+                        }
+                        return;
+                    }
+                }
+                self.memory.write_byte(address, value);
+            }
         }
     }
 
@@ -1480,6 +1650,35 @@ impl<T: Tracing> Pc9801Bus<T> {
         e_plane.copy_from_slice(
             &self.memory.state.e_plane_vram[e_page_base..e_page_base + E_PLANE_PAGE_SIZE_BYTES],
         );
+
+        if self.pegc.is_256_color_active() {
+            snapshot.display_flags |= DISPLAY_FLAG_PEGC_256_COLOR;
+
+            let is_packed = self.pegc.is_packed_pixel_mode();
+            let is_one_screen =
+                self.pegc.state.screen_mode == device::pegc::PegcScreenMode::OneScreen;
+            let display_page = self.display_page_index() as u32;
+
+            let pegc_snap = &mut *self.pegc_vsync_snapshot;
+
+            for i in 0..256 {
+                let [green, red, blue] = self.pegc.state.palette_256[i];
+                pegc_snap.palette_rgba_256[i] = u32::from(red)
+                    | (u32::from(green) << 8)
+                    | (u32::from(blue) << 16)
+                    | 0xFF00_0000;
+            }
+
+            pegc_snap.pegc_flags =
+                u32::from(is_packed) | (u32::from(is_one_screen) << 1) | (display_page << 2);
+
+            let vram_bytes = cast_u32_slice_as_bytes_mut(&mut pegc_snap.pegc_vram);
+            vram_bytes.copy_from_slice(&**self.memory.state.pegc_vram.as_ref().unwrap());
+
+            self.pegc_mode_active = true;
+        } else {
+            self.pegc_mode_active = false;
+        }
     }
 
     /// Generates audio samples for the current frame.
@@ -1802,6 +2001,12 @@ impl<T: Tracing> Pc9801Bus<T> {
                 }
                 EventKind::SasiInterrupt => {
                     self.handle_sasi_interrupt();
+                }
+                EventKind::IdeExecution => {
+                    self.handle_ide_execution();
+                }
+                EventKind::IdeInterrupt => {
+                    self.handle_ide_interrupt();
                 }
             }
         }
@@ -2395,9 +2600,44 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.tracer.trace_irq_raise(9);
     }
 
+    fn process_ide_action(&mut self, action: device::ide::IdeAction) {
+        match action {
+            device::ide::IdeAction::None => {}
+            device::ide::IdeAction::ScheduleCompletion => {
+                self.scheduler.schedule(
+                    EventKind::IdeExecution,
+                    self.current_cycle + Self::INTERRUPT_DELAY_CYCLES,
+                );
+                self.update_next_event_cycle();
+            }
+        }
+    }
+
+    fn handle_ide_execution(&mut self) {
+        let raise_irq = self.ide.complete_operation();
+        if raise_irq {
+            self.scheduler.schedule(
+                EventKind::IdeInterrupt,
+                self.current_cycle + Self::INTERRUPT_DELAY_CYCLES,
+            );
+            self.update_next_event_cycle();
+        }
+    }
+
+    fn handle_ide_interrupt(&mut self) {
+        // IDE uses IRQ 9 (slave PIC IRQ 1), same as SASI.
+        self.pic.set_irq(9);
+        self.tracer.trace_irq_raise(9);
+    }
+
     /// Returns `true` if a SASI HLE trap is pending.
     pub fn sasi_hle_pending(&self) -> bool {
         self.sasi.hle_pending()
+    }
+
+    /// Returns `true` if an IDE HLE trap is pending.
+    pub fn ide_hle_pending(&self) -> bool {
+        self.ide.hle_pending()
     }
 
     /// Returns `true` if a BIOS HLE trap is pending.
@@ -2578,15 +2818,141 @@ impl<T: Tracing> Pc9801Bus<T> {
             self.write_byte_with_access_page(0x0481, mode_flags);
         }
     }
+
+    /// Executes the pending IDE HLE operation using the CPU's stack frame.
+    ///
+    /// The stack frame layout is identical to SASI HLE:
+    /// SP+0x00: AX, SP+0x02: BX, SP+0x04: CX, SP+0x06: DX, SP+0x08: BP,
+    /// SP+0x0A: ES, SP+0x0C: DI, SP+0x0E: SI, SP+0x10: DS
+    /// After these 9 words, the INT frame follows:
+    /// SP+0x12: IP, SP+0x14: CS, SP+0x16: FLAGS
+    pub fn execute_ide_hle(&mut self, ss: u16, sp: u16) {
+        let stack_base = (u32::from(ss) << 4).wrapping_add(u32::from(sp));
+
+        let ax = self.read_word_direct(stack_base);
+        let bx = self.read_word_direct(stack_base + 0x02);
+        let cx = self.read_word_direct(stack_base + 0x04);
+        let dx = self.read_word_direct(stack_base + 0x06);
+        let bp = self.read_word_direct(stack_base + 0x08);
+        let es = self.read_word_direct(stack_base + 0x0A);
+
+        let function_code = (ax >> 8) as u8;
+        let drive_select = ax as u8;
+        let drive_idx = device::ide::drive_index(drive_select);
+
+        let result_ah = match function_code {
+            // SASI-compatible functions (lower nibble dispatch).
+            0x03 => {
+                let current_lo = self.read_byte_with_access_page(0x055C);
+                let current_hi = self.read_byte_with_access_page(0x055D);
+                let current_equip = u16::from(current_lo) | (u16::from(current_hi) << 8);
+                let disk_equip = self.ide.execute_init(current_equip);
+                self.write_byte_with_access_page(0x055C, disk_equip as u8);
+                self.write_byte_with_access_page(0x055D, (disk_equip >> 8) as u8);
+                self.pic.state.chips[0].imr &= !0x01;
+                0x00
+            }
+            0x04 | 0x84 => {
+                if function_code == 0x84 {
+                    let sense_result = self.ide.execute_sense(drive_idx);
+                    if sense_result >= 0x20 {
+                        sense_result
+                    } else {
+                        if let Some(geometry) = self.ide.drive_geometry(drive_idx) {
+                            let write_stack = |bus: &mut Self, offset: u32, value: u16| {
+                                let addr = stack_base + offset;
+                                bus.memory.write_byte(addr, value as u8);
+                                bus.memory.write_byte(addr + 1, (value >> 8) as u8);
+                            };
+                            write_stack(self, 0x02, geometry.sector_size);
+                            write_stack(self, 0x04, geometry.cylinders.saturating_sub(1));
+                            let dx_value = ((u16::from(geometry.heads)) << 8)
+                                | u16::from(geometry.sectors_per_track);
+                            write_stack(self, 0x06, dx_value);
+                        }
+                        sense_result
+                    }
+                } else {
+                    self.ide.execute_sense(drive_idx)
+                }
+            }
+            0x05 => {
+                let xfer = device::ide::transfer_size(bx);
+                let geometry = self.ide.drive_geometry(drive_idx);
+                let pos = geometry
+                    .map(|g| device::ide::sector_position(drive_select, cx, dx, &g))
+                    .unwrap_or(0);
+                let addr = device::ide::buffer_address(es, bp);
+                let cr0 = self.hle_cr0;
+                let cr3 = self.hle_cr3;
+                let memory = &self.memory;
+                self.ide.execute_write(drive_idx, xfer, pos, addr, |a| {
+                    let phys = bios::hle_page_translate(cr0, cr3, a, memory);
+                    memory.read_byte(phys)
+                })
+            }
+            0x06 => {
+                let xfer = device::ide::transfer_size(bx);
+                let geometry = self.ide.drive_geometry(drive_idx);
+                let pos = geometry
+                    .map(|g| device::ide::sector_position(drive_select, cx, dx, &g))
+                    .unwrap_or(0);
+                let addr = device::ide::buffer_address(es, bp);
+                let cr0 = self.hle_cr0;
+                let cr3 = self.hle_cr3;
+                let memory = &mut self.memory;
+                self.ide
+                    .execute_read(drive_idx, xfer, pos, addr, |a, byte| {
+                        let phys = bios::hle_page_translate(cr0, cr3, a, memory);
+                        memory.write_byte(phys, byte);
+                    })
+            }
+            0x07 | 0x0F => 0x00, // Retract: no-op
+            0x0D => {
+                let geometry = self.ide.drive_geometry(drive_idx);
+                let pos = geometry
+                    .map(|g| device::ide::sector_position(drive_select, cx, dx, &g))
+                    .unwrap_or(0);
+                self.ide.execute_format(drive_idx, pos)
+            }
+            0x0E => self.ide.execute_mode_set(drive_idx),
+            0x01 => 0x00, // Verify: no-op
+
+            // IDE-specific motor control extensions.
+            0xD0 => self.ide.execute_check_power_mode(drive_idx),
+            0xE0 => self.ide.execute_motor_on(drive_idx),
+            0xF0 => self.ide.execute_motor_off(drive_idx),
+
+            _ => 0x40, // Unsupported: Equipment Check error
+        };
+
+        // Write result AH back to stack (high byte of AX word at stack_base).
+        self.memory.write_byte(stack_base + 1, result_ah);
+
+        // Update FLAGS on the stack: set CF on error, clear on success.
+        let flags_addr = stack_base + 0x16;
+        let mut flags = self.read_word_direct(flags_addr);
+        if result_ah >= 0x20 {
+            flags |= 0x0001;
+        } else {
+            flags &= !0x0001;
+        }
+        self.memory.write_byte(flags_addr, flags as u8);
+        self.memory.write_byte(flags_addr + 1, (flags >> 8) as u8);
+
+        self.ide.clear_hle_pending();
+    }
 }
 
 impl<T: Tracing> common::Bus for Pc9801Bus<T> {
     fn read_byte(&mut self, address: u32) -> u8 {
         let address = self.a20_mask(address);
+        let pegc_active = self.pegc.is_256_color_active();
         let ems_b_bank = self.b_bank_ems
             && self.vram_ems_bank & 0x02 != 0
             && (0xB0000..=0xBFFFF).contains(&address);
         let in_grcg_range = !ems_b_bank
+            && !pegc_active
             && ((0xA8000..=0xBFFFF).contains(&address) || (0xE0000..=0xE7FFF).contains(&address));
         if self.grcg.is_active() && in_grcg_range {
             if self.is_egc_effective() {
@@ -2612,10 +2978,12 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
 
     fn write_byte(&mut self, address: u32, value: u8) {
         let address = self.a20_mask(address);
+        let pegc_active = self.pegc.is_256_color_active();
         let ems_b_bank = self.b_bank_ems
             && self.vram_ems_bank & 0x02 != 0
             && (0xB0000..=0xBFFFF).contains(&address);
         let in_grcg_range = !ems_b_bank
+            && !pegc_active
             && ((0xA8000..=0xBFFFF).contains(&address) || (0xE0000..=0xE7FFF).contains(&address));
         if self.grcg.is_active() && in_grcg_range {
             if self.is_egc_effective() {
@@ -2640,11 +3008,44 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
 
     fn read_word(&mut self, address: u32) -> u16 {
         let address = self.a20_mask(address);
+        let pegc_active = self.pegc.is_256_color_active();
+        if pegc_active && (0xA8000..=0xB7FFF).contains(&address) {
+            self.pending_wait_cycles += self.vram_wait;
+            if self.pegc.is_plane_mode() {
+                let mut offset = address - 0xA8000;
+                if self.pegc.state.screen_mode == device::pegc::PegcScreenMode::TwoScreen
+                    && self.access_page_index() != 0
+                {
+                    offset += 0x8000;
+                }
+                let vram = self.memory.state.pegc_vram.as_ref().unwrap().as_slice();
+                let value = self.pegc.plane_read_word(offset, vram);
+                self.tracer.trace_mem_read_word(address, value);
+                return value;
+            }
+            let vram = self.memory.state.pegc_vram.as_ref().unwrap().as_slice();
+            let window = if address < 0xB0000 { 0 } else { 1 };
+            let offset = if address < 0xB0000 {
+                address - 0xA8000
+            } else {
+                address - 0xB0000
+            };
+            let value = self.pegc.packed_read_word(window, offset, vram);
+            self.tracer.trace_mem_read_word(address, value);
+            return value;
+        }
+        if pegc_active && (0xE0000..=0xE7FFF).contains(&address) {
+            self.pending_wait_cycles += self.vram_wait;
+            let value = self.pegc.mmio_read_word(address - 0xE0000);
+            self.tracer.trace_mem_read_word(address, value);
+            return value;
+        }
         let ems_b_bank = self.b_bank_ems
             && self.vram_ems_bank & 0x02 != 0
             && ((0xB0000..=0xBFFFF).contains(&address)
                 || (0xB0000..=0xBFFFF).contains(&(address + 1)));
         let in_grcg_range = !ems_b_bank
+            && !pegc_active
             && ((0xA8000..=0xBFFFF).contains(&address) || (0xE0000..=0xE7FFF).contains(&address))
             && ((0xA8000..=0xBFFFF).contains(&(address + 1))
                 || (0xE0000..=0xE7FFF).contains(&(address + 1)));
@@ -2674,11 +3075,44 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
 
     fn write_word(&mut self, address: u32, value: u16) {
         let address = self.a20_mask(address);
+        let pegc_active = self.pegc.is_256_color_active();
+        if pegc_active && (0xA8000..=0xB7FFF).contains(&address) {
+            self.pending_wait_cycles += self.vram_wait;
+            if self.pegc.is_plane_mode() {
+                let mut offset = address - 0xA8000;
+                if self.pegc.state.screen_mode == device::pegc::PegcScreenMode::TwoScreen
+                    && self.access_page_index() != 0
+                {
+                    offset += 0x8000;
+                }
+                let vram = self.memory.state.pegc_vram.as_mut().unwrap().as_mut_slice();
+                self.pegc.plane_write_word(offset, value, vram);
+                self.tracer.trace_mem_write_word(address, value);
+                return;
+            }
+            let vram = self.memory.state.pegc_vram.as_mut().unwrap().as_mut_slice();
+            let window = if address < 0xB0000 { 0 } else { 1 };
+            let offset = if address < 0xB0000 {
+                address - 0xA8000
+            } else {
+                address - 0xB0000
+            };
+            self.pegc.packed_write_word(window, offset, value, vram);
+            self.tracer.trace_mem_write_word(address, value);
+            return;
+        }
+        if pegc_active && (0xE0000..=0xE7FFF).contains(&address) {
+            self.pending_wait_cycles += self.vram_wait;
+            self.pegc.mmio_write_word(address - 0xE0000, value);
+            self.tracer.trace_mem_write_word(address, value);
+            return;
+        }
         let ems_b_bank = self.b_bank_ems
             && self.vram_ems_bank & 0x02 != 0
             && ((0xB0000..=0xBFFFF).contains(&address)
                 || (0xB0000..=0xBFFFF).contains(&(address + 1)));
         let in_grcg_range = !ems_b_bank
+            && !pegc_active
             && ((0xA8000..=0xBFFFF).contains(&address) || (0xE0000..=0xE7FFF).contains(&address))
             && ((0xA8000..=0xBFFFF).contains(&(address + 1))
                 || (0xE0000..=0xE7FFF).contains(&(address + 1)));
@@ -2748,8 +3182,17 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             // RS-232C i8251 status register.
             0x32 => self.serial.read_status(),
 
-            // DIP switches and system ports
-            0x31 => self.system_ppi.read_dip_switch_2(),
+            // DIP switches and system ports.
+            // On PC-9821 (no physical DIP switches), reads SDIP front bank
+            // register 1 — always from the front bank regardless of the
+            // current bank selection.
+            0x31 => {
+                if self.machine_model.has_sdip() {
+                    self.sdip.read_front_bank(1)
+                } else {
+                    self.system_ppi.read_dip_switch_2()
+                }
+            }
             0x33 => self.system_ppi.read_rs232c_status() | self.rtc.cdat(),
             0x35 => self.system_ppi.read_port_c(),
 
@@ -2826,8 +3269,8 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             ),
 
             // SASI hard disk controller
-            0x80 => self.sasi.read_data(),
-            0x82 => self.sasi.read_status(),
+            0x80 if self.machine_model.has_sasi() => self.sasi.read_data(),
+            0x82 if self.machine_model.has_sasi() => self.sasi.read_status(),
 
             // GDC slave (graphics)
             0xA0 => self.gdc_slave.read_status(),
@@ -2839,6 +3282,16 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                 }
             }
 
+            // Palette register reads (ports 0xA8/0xAA/0xAC/0xAE).
+            0xA8 => {
+                if self.pegc.is_256_color_active() {
+                    self.pegc.state.palette_index
+                } else if self.display_control.is_palette_analog_mode() {
+                    self.palette.read_index()
+                } else {
+                    self.palette.read_digital(0)
+                }
+            }
             // CGROM glyph data read
             0xA9 => {
                 if let Some(addr) = self
@@ -2848,6 +3301,33 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                     self.memory.font_read(addr)
                 } else {
                     0
+                }
+            }
+            0xAA => {
+                if self.pegc.is_256_color_active() {
+                    self.pegc.read_palette_component(0)
+                } else if self.display_control.is_palette_analog_mode() {
+                    self.palette.read_analog(0)
+                } else {
+                    self.palette.read_digital(1)
+                }
+            }
+            0xAC => {
+                if self.pegc.is_256_color_active() {
+                    self.pegc.read_palette_component(1)
+                } else if self.display_control.is_palette_analog_mode() {
+                    self.palette.read_analog(1)
+                } else {
+                    self.palette.read_digital(2)
+                }
+            }
+            0xAE => {
+                if self.pegc.is_256_color_active() {
+                    self.pegc.read_palette_component(2)
+                } else if self.display_control.is_palette_analog_mode() {
+                    self.palette.read_analog(2)
+                } else {
+                    self.palette.read_digital(3)
                 }
             }
 
@@ -3035,11 +3515,14 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                 self.hole_15m_control
             }
 
-            // ROM bank select readback (write-only, no read on 386).
-            // On 486+ machines this returns cache hit status in bit 2;
-            // for RA-class (386) it is unconnected.
+            // ROM bank select / cache hit status readback.
+            // On 486+ machines bit 2 = cache hit status (1=hit, 0=miss).
+            // The ITF tests cache by reading memory then checking this bit.
+            // Returning 0x00 (no cache hits) is correct for 386 (no on-chip
+            // cache) and satisfies the ITF XOR-based cache test, which expects
+            // bit 2 = 0 on non-first reads and inverts bit 2 on the first.
             // Ref: undoc98 `io_mem.txt` lines 240-260.
-            0x043D => 0xFF,
+            0x043D => 0x00,
 
             // Port 0x043E: not a documented I/O port.
             // Some BIOS revisions probe it during POST; ignore silently.
@@ -3057,8 +3540,9 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                 }
             }
 
-            // SCSI controller status (no SCSI controller present).
-            0x0CC4 => 0xFF,
+            // SCSI controller (WD33C93) ports — no SCSI present.
+            // Ref: undoc98 `io_scsi.txt`
+            0x0CC0 | 0x0CC2 | 0x0CC4 => 0xFF,
 
             // Key-down sense probe latch.
             0x00EC => {
@@ -3087,6 +3571,136 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             // Games probe these to detect sound hardware at non-primary bases.
             // No hardware present — return 0xFF silently.
             0x0288 | 0x028A | 0x028C | 0x028E | 0x0388 | 0x038A | 0x038C | 0x038E => 0xFF,
+
+            0x09A0 => {
+                if self.machine_model.has_pegc() {
+                    let mut result = match self.video_ff2_index {
+                        0x00 => 0xFF,
+                        0x04 => (self.display_control.state.mode2 & 1) as u8,
+                        0x07 => ((self.display_control.state.mode2 >> 2) & 1) as u8,
+                        0x08 => ((self.display_control.state.mode2 >> 3) & 1) as u8,
+                        0x0A => u8::from(self.pegc.is_256_color_active()),
+                        0x0B => u8::from(self.pegc.is_packed_pixel_mode()),
+                        0x0D => u8::from(
+                            self.pegc.state.screen_mode == device::pegc::PegcScreenMode::OneScreen,
+                        ),
+                        _ => 0,
+                    };
+                    if self.display_control.state.mode2 & (1 << 10) != 0 {
+                        result |= 0x02;
+                    }
+                    result
+                } else {
+                    0xFF
+                }
+            }
+
+            // 31 kHz GDC mode register. The BIOS probes this during POST to
+            // detect monitor frequency support. No 31 kHz monitor attached.
+            0x09A8 => 0x00,
+
+            // IDE bank select and presence detection
+            0x0430 if self.machine_model.has_ide() => self.ide.read_bank(0),
+            0x0432 if self.machine_model.has_ide() => self.ide.read_bank(1),
+            0x0433 if self.machine_model.has_ide() => self.ide.read_presence(),
+            0x0435 if self.machine_model.has_ide() => self.ide.read_additional_status(),
+
+            // IDE CS0 registers
+            0x0642 if self.machine_model.has_ide() => self.ide.read_error(),
+            0x0644 if self.machine_model.has_ide() => self.ide.read_sector_count(),
+            0x0646 if self.machine_model.has_ide() => self.ide.read_sector_number(),
+            0x0648 if self.machine_model.has_ide() => self.ide.read_cylinder_low(),
+            0x064A if self.machine_model.has_ide() => self.ide.read_cylinder_high(),
+            0x064C if self.machine_model.has_ide() => self.ide.read_device_head(),
+            0x064E if self.machine_model.has_ide() => self.ide.read_status(),
+
+            // IDE CS1 registers
+            0x074C if self.machine_model.has_ide() => self.ide.read_alt_status(),
+            0x074E if self.machine_model.has_ide() => self.ide.read_digital_input(),
+
+            // IDE BIOS work area mapping (DA000-DBFFF).
+            0x1E8E if self.machine_model.has_ide() => self.ide.read_work_area_port(),
+
+            // SIMM memory controller.
+            // Ref: undoc98 `io_mem.txt` (ports 0x0530/0x0531)
+            0x0530 if self.machine_model == MachineModel::PC9821 => self.simm_address_register,
+            0x0531 if self.machine_model == MachineModel::PC9821 => {
+                let index = self.simm_address_register as usize;
+                let socket = index & 0x0F;
+                let is_limit = index & 0x80 != 0;
+                let data_index = socket * 2 + is_limit as usize;
+                if data_index < self.simm_data.len() {
+                    self.simm_data[data_index]
+                } else {
+                    0xFF
+                }
+            }
+
+            // Memory bank switching register.
+            // Ref: undoc98 `io_mem.txt` (port 0x063C)
+            0x063C if self.machine_model == MachineModel::PC9821 => self.memory_bank_063c,
+
+            // Flash ROM power voltage control (stub).
+            // Ref: undoc98 `io_mem.txt` (port 0x063E)
+            0x063E if self.machine_model == MachineModel::PC9821 => 0x00,
+
+            // CPU/cache control register.
+            // Ref: undoc98 `io_mem.txt` (port 0x063F)
+            0x063F if self.machine_model == MachineModel::PC9821 => self.cache_control_063f,
+
+            // IDE bank select register (port 0x0436).
+            0x0436 if self.machine_model == MachineModel::PC9821 => 0xFF,
+
+            // Window Accelerator Board (WAB) — built-in graphics accelerator.
+            // Ref: undoc98 `io_wab.txt`
+            0x0FAA if self.machine_model == MachineModel::PC9821 => self.wab_index,
+            0x0FAB if self.machine_model == MachineModel::PC9821 => {
+                let index = self.wab_index as usize;
+                if index < self.wab_data.len() {
+                    self.wab_data[index]
+                } else {
+                    0xFF
+                }
+            }
+            0x0FAC if self.machine_model == MachineModel::PC9821 => self.wab_relay,
+
+            // CPU mode / wait control register.
+            // Ref: undoc98 `io_cpu.txt` (port 0x0534)
+            0x0534 if self.machine_model == MachineModel::PC9821 => self.cpu_mode_534,
+
+            // Memory status register (read-only).
+            // Bit 7,6 = 11 → no 2nd cache RAM board.
+            // Ref: undoc98 `io_mem.txt` (port 0x063D)
+            0x063D if self.machine_model == MachineModel::PC9821 => 0xFF,
+
+            // Hardware wait timing adjustment register.
+            // Ref: undoc98 `io_tstmp.txt` (port 0x045F)
+            0x045F if self.machine_model == MachineModel::PC9821 => 0x00,
+
+            // Graphics accelerator presence detection.
+            // 0xFF = no CL-GD5428/5430 accelerator present.
+            // Ref: undoc98 `io_wab.txt` (port 0x0CA0)
+            0x0CA0 if self.machine_model == MachineModel::PC9821 => 0xFF,
+
+            // MATE-X PCM sound ports (stub, no MATE-X hardware).
+            0xAC6C..=0xAC6F if self.machine_model == MachineModel::PC9821 => 0xFF,
+
+            // Mystery I/O ports (banking mechanism, undocumented).
+            // NP21W labels these as "謎のI/Oポート" in pcidev.c.
+            0x18F0 if self.machine_model == MachineModel::PC9821 => 0x00,
+            0x18F1 if self.machine_model == MachineModel::PC9821 => 0x00,
+            0x18F2 if self.machine_model == MachineModel::PC9821 => 0x00,
+            0x18F3 if self.machine_model == MachineModel::PC9821 => 0x00,
+
+            // Software DIP Switch (SDIP) — ports 0x841E–0x8F1E at 0x100 stride.
+            // Ref: undoc98 `io_sdip.txt`
+            port if self.machine_model.has_sdip()
+                && (port & 0xFF) == 0x1E
+                && (0x841E..=0x8F1E).contains(&port) =>
+            {
+                let offset = ((port >> 8) as usize & 0x0F) - 4;
+                self.sdip.read(offset)
+            }
 
             _ => {
                 self.tracer.trace_io_unhandled_read(port);
@@ -3202,6 +3816,23 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             0x6A => {
                 let has_egc = self.grcg.state.chip == grcg::GRCG_CHIP_EGC;
                 self.display_control.write_mode2(value, has_egc);
+                if self.machine_model.has_pegc() {
+                    match value {
+                        0x20 if self.display_control.is_egc_mode_change_permitted() => {
+                            self.pegc.set_256_color_enabled(false);
+                            self.update_pegc_mapping();
+                        }
+                        0x21 if self.display_control.is_egc_mode_change_permitted() => {
+                            self.pegc.set_256_color_enabled(true);
+                            self.update_pegc_mapping();
+                        }
+                        0x62 => self.pegc.set_vram_access_mode_plane(),
+                        0x63 => self.pegc.set_vram_access_mode_packed(),
+                        0x68 => self.pegc.set_screen_mode(false),
+                        0x69 => self.pegc.set_screen_mode(true),
+                        _ => {}
+                    }
+                }
                 self.update_plane_e_mapping();
                 self.apply_gdc_dot_clock();
                 self.reschedule_gdc_events();
@@ -3238,11 +3869,11 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             0x7E => self.grcg.write_tile(value),
 
             // SASI hard disk controller
-            0x80 => {
+            0x80 if self.machine_model.has_sasi() => {
                 let action = self.sasi.write_data(value);
                 self.process_sasi_action(action);
             }
-            0x82 => {
+            0x82 if self.machine_model.has_sasi() => {
                 let action = self.sasi.write_control(value);
                 self.process_sasi_action(action);
             }
@@ -3282,35 +3913,49 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                 self.handle_gdc_slave_action(action);
             }
             // Graphics display page select.
-            0xA4 => self.display_control.write_display_page(value),
+            0xA4 => {
+                if !self.machine_model.has_pegc()
+                    || self.pegc.state.screen_mode != device::pegc::PegcScreenMode::OneScreen
+                {
+                    self.display_control.write_display_page(value);
+                }
+            }
             // VRAM drawing page select.
             0xA6 => self.display_control.write_access_page(value),
             // Palette registers (mode-dependent via mode2 bit 0).
             // 16-color analog: 0xA8=index select, 0xAA=green, 0xAC=red, 0xAE=blue.
             // 8-color digital: all 4 ports store packed nibble pairs directly.
             0xA8 => {
-                if self.display_control.is_palette_analog_mode() {
+                if self.pegc.is_256_color_active() {
+                    self.pegc.write_palette_index(value);
+                } else if self.display_control.is_palette_analog_mode() {
                     self.palette.write_index(value);
                 } else {
                     self.palette.write_digital(0, value);
                 }
             }
             0xAA => {
-                if self.display_control.is_palette_analog_mode() {
+                if self.pegc.is_256_color_active() {
+                    self.pegc.write_palette_component(0, value);
+                } else if self.display_control.is_palette_analog_mode() {
                     self.palette.write_analog(0, value);
                 } else {
                     self.palette.write_digital(1, value);
                 }
             }
             0xAC => {
-                if self.display_control.is_palette_analog_mode() {
+                if self.pegc.is_256_color_active() {
+                    self.pegc.write_palette_component(1, value);
+                } else if self.display_control.is_palette_analog_mode() {
                     self.palette.write_analog(1, value);
                 } else {
                     self.palette.write_digital(2, value);
                 }
             }
             0xAE => {
-                if self.display_control.is_palette_analog_mode() {
+                if self.pegc.is_256_color_active() {
+                    self.pegc.write_palette_component(2, value);
+                } else if self.display_control.is_palette_analog_mode() {
                     self.palette.write_analog(2, value);
                 } else {
                     self.palette.write_digital(3, value);
@@ -3375,9 +4020,14 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                     self.system_ppi.set_cpu_mode_bit(true);
                 }
             }
-            // A20 line control + DIP switch bank select.
+            // A20 line control + SDIP bank select.
+            // On PC-9821 first-gen and Ce, writes of 0xA0/0xE0 select the SDIP
+            // bank (bit 6: 0 = front, 1 = back). Other values control A20/NMI.
+            // Ref: undoc98 `io_sdip.txt`
             0xF6 => {
-                if self.machine_model.has_a20_nmi_port() {
+                if self.machine_model.has_sdip() && (value == 0xA0 || value == 0xE0) {
+                    self.sdip.select_bank_from_bit6(value);
+                } else if self.machine_model.has_a20_nmi_port() {
                     match value {
                         0x02 => self.a20_enabled = true,
                         0x03 => self.a20_enabled = false,
@@ -3492,8 +4142,13 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             }
 
             // SASI HLE trap port.
-            0x07EF => {
+            0x07EF if self.machine_model.has_sasi() => {
                 self.sasi.write_trap_port(value);
+            }
+
+            // IDE HLE trap port.
+            0x07EE if self.machine_model.has_ide() => {
+                self.ide.write_trap_port(value);
             }
 
             // BIOS HLE trap port.
@@ -3590,6 +4245,181 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             // Alternate FM sound board base addresses — silently ignore writes.
             0x0288 | 0x028A | 0x028C | 0x028E | 0x0388 | 0x038A | 0x038C | 0x038E => {}
 
+            0x09A0 => {
+                if self.machine_model.has_pegc() {
+                    self.video_ff2_index = value;
+                }
+            }
+
+            // 31 kHz GDC mode register (no-op write).
+            0x09A8 => {}
+
+            // IDE bank select
+            0x0430 if self.machine_model.has_ide() => self.ide.write_bank(0, value),
+            0x0432 if self.machine_model.has_ide() => self.ide.write_bank(1, value),
+
+            // IDE CS0 registers
+            0x0642 if self.machine_model.has_ide() => self.ide.write_features(value),
+            0x0644 if self.machine_model.has_ide() => self.ide.write_sector_count(value),
+            0x0646 if self.machine_model.has_ide() => self.ide.write_sector_number(value),
+            0x0648 if self.machine_model.has_ide() => self.ide.write_cylinder_low(value),
+            0x064A if self.machine_model.has_ide() => self.ide.write_cylinder_high(value),
+            0x064C if self.machine_model.has_ide() => self.ide.write_device_head(value),
+            0x064E if self.machine_model.has_ide() => {
+                let action = self.ide.write_command(value);
+                self.process_ide_action(action);
+            }
+
+            // IDE CS1 registers
+            0x074C if self.machine_model.has_ide() => self.ide.write_device_control(value),
+            0x074E if self.machine_model.has_ide() => {} // Digital input — write is a no-op
+
+            // IDE BIOS work area mapping (DA000-DBFFF).
+            0x1E8E if self.machine_model.has_ide() => self.ide.write_work_area_port(value),
+
+            // SIMM memory controller.
+            // Ref: undoc98 `io_mem.txt` (ports 0x0530/0x0531)
+            0x0530 if self.machine_model == MachineModel::PC9821 => {
+                self.simm_address_register = value;
+            }
+            0x0531 if self.machine_model == MachineModel::PC9821 => {
+                let index = self.simm_address_register as usize;
+                let socket = index & 0x0F;
+                let is_limit = index & 0x80 != 0;
+                let data_index = socket * 2 + is_limit as usize;
+                if data_index < self.simm_data.len() {
+                    self.simm_data[data_index] = value;
+                }
+            }
+
+            // Memory bank switching register.
+            // Ref: undoc98 `io_mem.txt` (port 0x063C)
+            0x063C if self.machine_model == MachineModel::PC9821 => {
+                self.memory_bank_063c = value;
+            }
+
+            // Flash ROM power voltage control (no-op).
+            // Ref: undoc98 `io_mem.txt` (port 0x063E)
+            0x063E if self.machine_model == MachineModel::PC9821 => {}
+
+            // CPU/cache control register.
+            // Ref: undoc98 `io_mem.txt` (port 0x063F)
+            0x063F if self.machine_model == MachineModel::PC9821 => {
+                self.cache_control_063f = value;
+            }
+
+            // IDE bank select register (port 0x0436).
+            0x0436 if self.machine_model == MachineModel::PC9821 => {}
+
+            // Window Accelerator Board (WAB) — built-in graphics accelerator.
+            // Ref: undoc98 `io_wab.txt`
+            0x0FAA if self.machine_model == MachineModel::PC9821 => {
+                self.wab_index = value;
+            }
+            0x0FAB if self.machine_model == MachineModel::PC9821 => {
+                let index = self.wab_index as usize;
+                if index < self.wab_data.len() {
+                    self.wab_data[index] = value;
+                }
+            }
+            0x0FAC if self.machine_model == MachineModel::PC9821 => {
+                self.wab_relay = value;
+            }
+
+            // CPU mode / wait control register.
+            // Ref: undoc98 `io_cpu.txt` (port 0x0534)
+            0x0534 if self.machine_model == MachineModel::PC9821 => {
+                self.cpu_mode_534 = value;
+            }
+
+            // Display mode register (PC-9821).
+            // Ref: undoc98 `io_disp.txt` (port 0x00A7)
+            0x00A7 if self.machine_model == MachineModel::PC9821 => {}
+
+            // Memory status register (read-only, writes ignored).
+            // Ref: undoc98 `io_mem.txt` (port 0x063D)
+            0x063D if self.machine_model == MachineModel::PC9821 => {}
+
+            // Hardware wait timing adjustment register.
+            // Ref: undoc98 `io_tstmp.txt` (port 0x045F)
+            0x045F if self.machine_model == MachineModel::PC9821 => {}
+
+            // Graphics accelerator attribute controller (no accelerator present).
+            // Ref: undoc98 `io_wab.txt` (port 0x0CA0)
+            0x0CA0 if self.machine_model == MachineModel::PC9821 => {}
+
+            // SCSI controller (WD33C93) — no SCSI present.
+            // Ref: undoc98 `io_scsi.txt`
+            0x0CC0 | 0x0CC2 => {}
+
+            // Mouse interrupt vector setting.
+            // Ref: undoc98 `io_mouse.txt` (port 0x98D7)
+            0x98D7 if self.machine_model == MachineModel::PC9821 => {}
+
+            // Unknown display register (PC-9821).
+            0x98DB if self.machine_model == MachineModel::PC9821 => {}
+
+            // Serial port FIFO control register.
+            // Ref: undoc98 `io_rs.txt` (port 0x0138)
+            0x0138 if self.machine_model == MachineModel::PC9821 => {}
+
+            // Printer interface control register.
+            0x0149 if self.machine_model == MachineModel::PC9821 => {}
+
+            // Extended RS-232C control register.
+            // Ref: undoc98 `io_rs.txt` (port 0x0434)
+            0x0434 if self.machine_model == MachineModel::PC9821 => {}
+
+            // CPU/system control register (port 0x00F4).
+            0x00F4 if self.machine_model == MachineModel::PC9821 => {}
+
+            // Memory/expansion control registers.
+            0x0448 if self.machine_model == MachineModel::PC9821 => {}
+            0x047B if self.machine_model == MachineModel::PC9821 => {}
+            0x0555 if self.machine_model == MachineModel::PC9821 => {}
+
+            // Extended DMA control registers (stub).
+            0x0E00 | 0x0E01 | 0x0E02 | 0x0E03 | 0x0E0F
+                if self.machine_model == MachineModel::PC9821 => {}
+
+            // 32-bit DMA controller (ORBIT) index/data.
+            // Ref: undoc98 `io_dma.txt` (ports 0x002B/0x002D)
+            0x002B | 0x002D if self.machine_model == MachineModel::PC9821 => {}
+
+            // Pixel mask register (PC-H98 only, ignore on PC-9821).
+            // Ref: undoc98 `io_disp.txt` (port 0x09AE)
+            0x09AE if self.machine_model == MachineModel::PC9821 => {}
+
+            // Unknown keyboard/display mapping register.
+            0x0535 if self.machine_model == MachineModel::PC9821 => {}
+
+            // MATE-X PCM sound ports (stub, no MATE-X hardware).
+            0xAC6C..=0xAC6F if self.machine_model == MachineModel::PC9821 => {}
+
+            // Mystery I/O ports (banking mechanism, undocumented).
+            // NP21W labels these as "謎のI/Oポート" in pcidev.c.
+            0x18F0 if self.machine_model == MachineModel::PC9821 => {}
+            0x18F1 if self.machine_model == MachineModel::PC9821 => {}
+            0x18F2 if self.machine_model == MachineModel::PC9821 => {}
+            0x18F3 if self.machine_model == MachineModel::PC9821 => {}
+
+            // Software DIP Switch (SDIP) — ports 0x841E–0x8F1E at 0x100 stride.
+            // Ref: undoc98 `io_sdip.txt`
+            port if self.machine_model.has_sdip()
+                && (port & 0xFF) == 0x1E
+                && (0x841E..=0x8F1E).contains(&port) =>
+            {
+                let offset = ((port >> 8) as usize & 0x0F) - 4;
+                self.sdip.write(offset, value);
+            }
+
+            // SDIP bank select (later PC-9821 models).
+            // Bit 6: 0 = front bank, 1 = back bank.
+            // Ref: undoc98 `io_sdip.txt`
+            0x8F1F if self.machine_model.has_sdip() => {
+                self.sdip.select_bank_from_bit6(value);
+            }
+
             _ => {
                 self.tracer.trace_io_unhandled_write(port, value);
                 warn!("Unhandled I/O write: port={port:#06X} value={value:#04X}");
@@ -3597,8 +4427,29 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
         }
     }
 
+    fn io_read_word(&mut self, port: u16) -> u16 {
+        match port {
+            // IDE 16-bit data register.
+            0x0640 if self.machine_model.has_ide() => {
+                self.pending_wait_cycles += IO_WAIT_CYCLES;
+                self.ide.read_data_word()
+            }
+            _ => {
+                let low = self.io_read_byte(port) as u16;
+                let high = self.io_read_byte(port.wrapping_add(1)) as u16;
+                low | (high << 8)
+            }
+        }
+    }
+
     fn io_write_word(&mut self, port: u16, value: u16) {
         match port {
+            // IDE 16-bit data register.
+            0x0640 if self.machine_model.has_ide() => {
+                self.pending_wait_cycles += IO_WAIT_CYCLES;
+                let action = self.ide.write_data_word(value);
+                self.process_ide_action(action);
+            }
             // EGC registers: atomic word write avoids double recalculate_shift()
             // that the default byte-split path would cause on shift (0x04AC) and
             // length (0x04AE) registers.
@@ -3659,7 +4510,9 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
     }
 
     fn cpu_should_yield(&self) -> bool {
-        self.sasi.take_yield_requested() || self.bios.take_yield_requested()
+        self.sasi.take_yield_requested()
+            || self.ide.take_yield_requested()
+            || self.bios.take_yield_requested()
     }
 }
 
@@ -4469,5 +5322,484 @@ mod tests {
         assert!(bus.reset_pending);
         assert!(bus.shutdown_requested);
         assert!(bus.warm_reset_context.is_none());
+    }
+
+    fn create_pc9821_bus() -> Pc9801Bus<NoTracing> {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821, 48000);
+        bus.display_control.state.mode2 |= 0x01 | 0x08;
+        bus.set_graphics_extension_enabled(true);
+        bus
+    }
+
+    fn enable_pegc(bus: &mut Pc9801Bus<NoTracing>) {
+        bus.io_write_byte(0x6A, 0x21);
+    }
+
+    fn disable_pegc(bus: &mut Pc9801Bus<NoTracing>) {
+        bus.io_write_byte(0x6A, 0x20);
+    }
+
+    #[test]
+    fn pegc_port_6a_0x21_enables_256_color() {
+        let mut bus = create_pc9821_bus();
+        assert!(!bus.pegc.is_256_color_active());
+        enable_pegc(&mut bus);
+        assert!(bus.pegc.is_256_color_active());
+    }
+
+    #[test]
+    fn pegc_port_6a_0x20_disables_256_color() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+        assert!(bus.pegc.is_256_color_active());
+        disable_pegc(&mut bus);
+        assert!(!bus.pegc.is_256_color_active());
+    }
+
+    #[test]
+    fn pegc_port_6a_screen_mode() {
+        let mut bus = create_pc9821_bus();
+        bus.io_write_byte(0x6A, 0x69);
+        assert_eq!(
+            bus.pegc.state.screen_mode,
+            device::pegc::PegcScreenMode::OneScreen
+        );
+        bus.io_write_byte(0x6A, 0x68);
+        assert_eq!(
+            bus.pegc.state.screen_mode,
+            device::pegc::PegcScreenMode::TwoScreen
+        );
+    }
+
+    #[test]
+    fn pegc_port_6a_ignored_on_non_9821() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        bus.io_write_byte(0x6A, 0x21);
+        assert!(!bus.pegc.is_256_color_active());
+    }
+
+    #[test]
+    fn pegc_e0000_routes_to_mmio_when_active() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+
+        bus.write_byte(0xE0004, 0x05);
+        assert_eq!(bus.pegc.state.bank_a8, 0x05);
+        assert_eq!(bus.read_byte(0xE0004), 0x05);
+    }
+
+    #[test]
+    fn pegc_e0000_routes_to_e_plane_when_inactive() {
+        let mut bus = create_pc9821_bus();
+
+        bus.memory.state.e_plane_vram[0] = 0xAB;
+        assert_eq!(bus.read_byte(0xE0000), 0xAB);
+
+        enable_pegc(&mut bus);
+        assert_ne!(bus.read_byte(0xE0000), 0xAB);
+
+        disable_pegc(&mut bus);
+        assert_eq!(bus.read_byte(0xE0000), 0xAB);
+    }
+
+    #[test]
+    fn pegc_a8000_routes_to_pegc_vram_when_active() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+
+        bus.write_byte(0xA8000, 0x42);
+        assert_eq!(bus.memory.state.pegc_vram.as_ref().unwrap()[0], 0x42);
+        assert_eq!(bus.read_byte(0xA8000), 0x42);
+    }
+
+    #[test]
+    fn pegc_b0000_routes_to_pegc_vram_when_active() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+
+        bus.pegc.state.bank_b0 = 1;
+        bus.write_byte(0xB0000, 0x77);
+        assert_eq!(bus.memory.state.pegc_vram.as_ref().unwrap()[0x8000], 0x77);
+        assert_eq!(bus.read_byte(0xB0000), 0x77);
+    }
+
+    #[test]
+    fn pegc_grcg_bypassed_when_active() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+
+        bus.grcg.write_mode(0x80);
+        bus.grcg.write_tile(0xFF);
+        bus.grcg.write_tile(0xFF);
+        bus.grcg.write_tile(0xFF);
+        bus.grcg.write_tile(0xFF);
+
+        bus.write_byte(0xA8000, 0x42);
+
+        assert_eq!(bus.memory.state.pegc_vram.as_ref().unwrap()[0], 0x42);
+        assert_eq!(bus.memory.state.graphics_vram[0], 0x00);
+    }
+
+    #[test]
+    fn pegc_flat_access_f00000() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+        bus.a20_enabled = true;
+
+        bus.write_word(0xE0102, 0x0001);
+        assert!(bus.pegc.is_upper_vram_enabled());
+
+        bus.write_byte(0xF00000, 0xAA);
+        assert_eq!(bus.memory.state.pegc_vram.as_ref().unwrap()[0], 0xAA);
+        assert_eq!(bus.read_byte(0xF00000), 0xAA);
+
+        bus.write_byte(0xF7FFFF, 0xBB);
+        assert_eq!(bus.memory.state.pegc_vram.as_ref().unwrap()[0x7FFFF], 0xBB);
+    }
+
+    #[test]
+    fn pegc_flat_access_disabled_by_default() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+        bus.a20_enabled = true;
+
+        bus.memory.state.pegc_vram.as_mut().unwrap()[0] = 0xCC;
+
+        let value = bus.read_byte(0xF00000);
+        assert_eq!(value, 0xFF);
+    }
+
+    #[test]
+    fn pegc_palette_ports_route_to_pegc_when_active() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+
+        bus.io_write_byte(0xA8, 100);
+        bus.io_write_byte(0xAA, 0x11);
+        bus.io_write_byte(0xAC, 0x22);
+        bus.io_write_byte(0xAE, 0x33);
+
+        assert_eq!(bus.pegc.state.palette_index, 100);
+        assert_eq!(bus.pegc.state.palette_256[100], [0x11, 0x22, 0x33]);
+    }
+
+    #[test]
+    fn pegc_palette_ports_route_to_analog_when_inactive() {
+        let mut bus = create_pc9821_bus();
+
+        bus.io_write_byte(0xA8, 5);
+        bus.io_write_byte(0xAA, 0x0A);
+
+        assert_eq!(bus.palette.state.index, 5);
+        assert_eq!(bus.palette.state.analog[5][0], 0x0A);
+    }
+
+    #[test]
+    fn pegc_snapshot_sets_flag_bit() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+
+        bus.capture_vsync_snapshot();
+        assert_ne!(
+            bus.vsync_snapshot().display_flags & super::DISPLAY_FLAG_PEGC_256_COLOR,
+            0
+        );
+        assert!(bus.pegc_vsync_snapshot().is_some());
+    }
+
+    #[test]
+    fn pegc_snapshot_copies_vram_and_palette() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+
+        bus.pegc.state.palette_256[42] = [0x10, 0x20, 0x30];
+        bus.memory.state.pegc_vram.as_mut().unwrap()[0] = 0xEE;
+
+        bus.capture_vsync_snapshot();
+
+        let snap = bus.pegc_vsync_snapshot().unwrap();
+        assert_eq!(snap.palette_rgba_256[42], 0xFF30_1020);
+        assert_eq!(snap.pegc_vram[0] & 0xFF, 0xEE);
+    }
+
+    #[test]
+    fn pegc_b8000_falls_through_to_graphics_vram() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+
+        let page_base = bus.access_page_index() * super::GRAPHICS_PAGE_SIZE_BYTES;
+        bus.memory.state.graphics_vram[page_base + (0xB8000 - 0xA8000)] = 0xCD;
+
+        assert_eq!(bus.read_byte(0xB8000), 0xCD);
+    }
+
+    #[test]
+    fn pegc_b7fff_routes_to_pegc_vram() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+
+        bus.write_byte(0xB7FFF, 0xAB);
+        assert_eq!(bus.read_byte(0xB7FFF), 0xAB);
+
+        let vram = bus.memory.state.pegc_vram.as_ref().unwrap();
+        assert_eq!(vram[0x7FFF], 0xAB);
+    }
+
+    #[test]
+    fn pegc_palette_read_256_color_mode() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+
+        bus.io_write_byte(0xA8, 42);
+        bus.io_write_byte(0xAA, 0x11);
+        bus.io_write_byte(0xAC, 0x22);
+        bus.io_write_byte(0xAE, 0x33);
+
+        bus.io_write_byte(0xA8, 42);
+        assert_eq!(bus.io_read_byte(0xA8), 42);
+        assert_eq!(bus.io_read_byte(0xAA), 0x11);
+        assert_eq!(bus.io_read_byte(0xAC), 0x22);
+        assert_eq!(bus.io_read_byte(0xAE), 0x33);
+    }
+
+    #[test]
+    fn pegc_palette_read_analog_mode() {
+        let mut bus = create_pc9821_bus();
+
+        bus.io_write_byte(0xA8, 5);
+        bus.io_write_byte(0xAA, 0x0A);
+        bus.io_write_byte(0xAC, 0x0B);
+        bus.io_write_byte(0xAE, 0x0C);
+
+        assert_eq!(bus.io_read_byte(0xA8), 5);
+        assert_eq!(bus.io_read_byte(0xAA), 0x0A);
+        assert_eq!(bus.io_read_byte(0xAC), 0x0B);
+        assert_eq!(bus.io_read_byte(0xAE), 0x0C);
+    }
+
+    #[test]
+    fn pegc_port_6a_0x21_blocked_without_mode2_bit3() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821, 48000);
+        bus.display_control.state.mode2 |= 0x01;
+        bus.set_graphics_extension_enabled(true);
+        bus.io_write_byte(0x6A, 0x21);
+        assert!(!bus.pegc.is_256_color_active());
+    }
+
+    #[test]
+    fn pegc_flat_access_fff00000_mirror() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+        bus.a20_enabled = true;
+
+        bus.write_word(0xE0102, 0x0001);
+        assert!(bus.pegc.is_upper_vram_enabled());
+
+        bus.write_byte(0xFFF00000, 0xDD);
+        assert_eq!(bus.memory.state.pegc_vram.as_ref().unwrap()[0], 0xDD);
+        assert_eq!(bus.read_byte(0xFFF00000), 0xDD);
+        assert_eq!(bus.read_byte(0xF00000), 0xDD);
+    }
+
+    #[test]
+    fn pegc_flat_access_disabled_returns_0xff() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+        bus.a20_enabled = true;
+
+        bus.memory.state.pegc_vram.as_mut().unwrap()[0] = 0xCC;
+        assert_eq!(bus.read_byte(0xF00000), 0xFF);
+        assert_eq!(bus.read_byte(0xFFF00000), 0xFF);
+    }
+
+    #[test]
+    fn pegc_port_09a0_readback_256_color_status() {
+        let mut bus = create_pc9821_bus();
+
+        bus.io_write_byte(0x09A0, 0x0A);
+        assert_eq!(bus.io_read_byte(0x09A0), 0);
+
+        enable_pegc(&mut bus);
+        bus.io_write_byte(0x09A0, 0x0A);
+        assert_eq!(bus.io_read_byte(0x09A0), 1);
+
+        disable_pegc(&mut bus);
+        bus.io_write_byte(0x09A0, 0x0A);
+        assert_eq!(bus.io_read_byte(0x09A0), 0);
+    }
+
+    #[test]
+    fn pegc_port_09a0_readback_screen_mode() {
+        let mut bus = create_pc9821_bus();
+
+        bus.io_write_byte(0x09A0, 0x0D);
+        assert_eq!(bus.io_read_byte(0x09A0), 0);
+
+        bus.io_write_byte(0x6A, 0x69);
+        bus.io_write_byte(0x09A0, 0x0D);
+        assert_eq!(bus.io_read_byte(0x09A0), 1);
+
+        bus.io_write_byte(0x6A, 0x68);
+        bus.io_write_byte(0x09A0, 0x0D);
+        assert_eq!(bus.io_read_byte(0x09A0), 0);
+    }
+
+    #[test]
+    fn pegc_snapshot_display_page_bit() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+
+        bus.display_control.write_display_page(0);
+        bus.capture_vsync_snapshot();
+        let snap = bus.pegc_vsync_snapshot().unwrap();
+        assert_eq!(snap.pegc_flags & 0x04, 0);
+
+        bus.display_control.write_display_page(1);
+        bus.capture_vsync_snapshot();
+        let snap = bus.pegc_vsync_snapshot().unwrap();
+        assert_eq!(snap.pegc_flags & 0x04, 0x04);
+    }
+
+    #[test]
+    fn pegc_plane_mode_drawing_page_offset() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+        bus.write_byte(0xE0100, 0x01);
+
+        bus.pegc.state.rop_register = 0x0100;
+        bus.pegc.state.write_mask = 0xFFFF;
+        bus.pegc.state.block_length = 0x0FFF;
+        bus.pegc.state.data_select = 1;
+
+        bus.display_control.write_access_page(1);
+
+        bus.write_word(0xA8000, 0xFFFF);
+
+        let vram = bus.memory.state.pegc_vram.as_ref().unwrap();
+        assert_ne!(
+            vram[0x40000], 0,
+            "page 1 at offset 0x40000 should be written"
+        );
+        assert_eq!(vram[0], 0, "page 0 at offset 0 should be untouched");
+    }
+
+    #[test]
+    fn pegc_mmio_word_write_pattern_register() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+
+        bus.write_word(0xE0120, 0xBEEF);
+
+        assert_eq!(bus.pegc.state.pattern_data[0], 0xEF);
+        assert_eq!(bus.pegc.state.pattern_data[1], 0xBE);
+    }
+
+    #[test]
+    fn pegc_mmio_word_read_pattern_register() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+
+        bus.pegc.state.pattern_data[0] = 0xEF;
+        bus.pegc.state.pattern_data[1] = 0xBE;
+
+        let value = bus.read_word(0xE0120);
+        assert_eq!(value, 0xBEEF);
+    }
+
+    #[test]
+    fn pegc_mmio_word_write_mode_register() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+
+        bus.write_word(0xE0100, 0x0001);
+        assert!(bus.pegc.is_plane_mode());
+
+        bus.write_word(0xE0100, 0x0000);
+        assert!(bus.pegc.is_packed_pixel_mode());
+    }
+
+    #[test]
+    fn pegc_port_6a_0x62_sets_plane_mode() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+        assert!(bus.pegc.is_packed_pixel_mode());
+
+        bus.io_write_byte(0x6A, 0x62);
+        assert!(bus.pegc.is_plane_mode());
+
+        bus.io_write_byte(0x6A, 0x63);
+        assert!(bus.pegc.is_packed_pixel_mode());
+    }
+
+    #[test]
+    fn pegc_port_6a_0x62_0x63_ignored_on_non_9821() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        bus.io_write_byte(0x6A, 0x62);
+        assert!(bus.pegc.is_packed_pixel_mode());
+    }
+
+    #[test]
+    fn pegc_port_09a0_readback_vram_access_mode() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+
+        bus.io_write_byte(0x09A0, 0x0B);
+        assert_eq!(bus.io_read_byte(0x09A0), 1);
+
+        bus.io_write_byte(0x6A, 0x62);
+        bus.io_write_byte(0x09A0, 0x0B);
+        assert_eq!(bus.io_read_byte(0x09A0), 0);
+
+        bus.io_write_byte(0x6A, 0x63);
+        bus.io_write_byte(0x09A0, 0x0B);
+        assert_eq!(bus.io_read_byte(0x09A0), 1);
+    }
+
+    #[test]
+    fn pegc_port_a4_blocked_in_one_screen_mode() {
+        let mut bus = create_pc9821_bus();
+
+        bus.io_write_byte(0xA4, 1);
+        assert_eq!(bus.display_control.state.display_page, 1);
+
+        bus.io_write_byte(0x6A, 0x69);
+        bus.io_write_byte(0xA4, 0);
+        assert_eq!(
+            bus.display_control.state.display_page, 1,
+            "write should be blocked in OneScreen mode"
+        );
+
+        bus.io_write_byte(0x6A, 0x68);
+        bus.io_write_byte(0xA4, 0);
+        assert_eq!(
+            bus.display_control.state.display_page, 0,
+            "write should succeed in TwoScreen mode"
+        );
+    }
+
+    #[test]
+    fn pegc_port_09a0_includes_gdc_clock2_bit() {
+        let mut bus = create_pc9821_bus();
+        enable_pegc(&mut bus);
+
+        bus.io_write_byte(0x09A0, 0x0A);
+        assert_eq!(bus.io_read_byte(0x09A0), 0x01, "PEGC active, no clock");
+
+        bus.io_write_byte(0x6A, 0x85);
+        bus.io_write_byte(0x09A0, 0x0A);
+        assert_eq!(bus.io_read_byte(0x09A0), 0x03, "PEGC active + GDC CLOCK-2");
+
+        bus.io_write_byte(0x6A, 0x84);
+        bus.io_write_byte(0x09A0, 0x0A);
+        assert_eq!(bus.io_read_byte(0x09A0), 0x01, "clock cleared, PEGC only");
+
+        bus.io_write_byte(0x6A, 0x85);
+        bus.io_write_byte(0x09A0, 0x04);
+        let result = bus.io_read_byte(0x09A0);
+        assert_eq!(
+            result & 0x02,
+            0x02,
+            "GDC CLOCK-2 bit ORed into index 0x04 readback"
+        );
     }
 }

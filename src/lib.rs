@@ -5,8 +5,8 @@
 use std::fs::File;
 
 use audio_engine::AudioEngine;
-use common::{Context, Machine, StringError, ensure, error, info, warn};
-use device::disk::load_hdd_image;
+use common::{Context, Machine, MachineModel, StringError, bail, ensure, error, info, warn};
+use device::disk::{HddGeometry, load_hdd_image};
 use graphics_engine::{DisplayAspectMode, GraphicsEngine, RenderInstructions};
 use jay_ash::{vk, vk::Handle};
 use sdl3::{
@@ -749,8 +749,13 @@ impl Application {
             self.machine.snapshot_display()
         };
 
+        let pegc_snapshot = self.machine.pegc_snapshot_display();
+
         self.graphics_engine
-            .render_frame(Some(&RenderInstructions { display_snapshot }))
+            .render_frame(Some(&RenderInstructions {
+                display_snapshot,
+                pegc_snapshot,
+            }))
             .context("Graphics engine failed to render frame")?;
 
         Ok(())
@@ -783,6 +788,10 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
     let model = config.machine;
     let mut bus: machine::Pc9801Bus<Tracer> = machine::Pc9801Bus::new(model, sample_rate);
     bus.set_host_local_time_fn(host_local_time_bcd);
+
+    if config.bios_rom.is_some() && model == common::MachineModel::PC9821 {
+        bail!("Real BIOS ROM is not supported for PC-9821. Use HLE BIOS mode (omit --bios-rom).");
+    }
 
     if let Some(ref bios_path) = config.bios_rom {
         let bios_rom = std::fs::read(bios_path)
@@ -866,6 +875,7 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
             .with_context(|| format!("Failed to read HDD1 image from {}", hdd1_path.display()))?;
         let image = load_hdd_image(hdd1_path, &data)
             .with_context(|| format!("Failed to parse HDD1 image from {}", hdd1_path.display()))?;
+        validate_hdd_for_machine(model, &image.geometry, "HDD1")?;
         info!(
             "Inserted HDD1: {}C/{}H/{}S ({}) from {}",
             image.geometry.cylinders,
@@ -882,6 +892,7 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
             .with_context(|| format!("Failed to read HDD2 image from {}", hdd2_path.display()))?;
         let image = load_hdd_image(hdd2_path, &data)
             .with_context(|| format!("Failed to parse HDD2 image from {}", hdd2_path.display()))?;
+        validate_hdd_for_machine(model, &image.geometry, "HDD2")?;
         info!(
             "Inserted HDD2: {}C/{}H/{}S ({}) from {}",
             image.geometry.cylinders,
@@ -900,4 +911,34 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
     };
 
     Ok(machine)
+}
+
+fn validate_hdd_for_machine(
+    model: MachineModel,
+    geometry: &HddGeometry,
+    label: &str,
+) -> Result<()> {
+    match model {
+        MachineModel::PC9801VM | MachineModel::PC9801VX | MachineModel::PC9801RA => {
+            ensure!(
+                geometry.sasi_media_type().is_some(),
+                "{label} is not compatible with {model} (SASI): \
+                 geometry {}C/{}H/{}S with {}-byte sectors \
+                 does not match any standard SASI drive type",
+                geometry.cylinders,
+                geometry.heads,
+                geometry.sectors_per_track,
+                geometry.sector_size,
+            );
+        }
+        MachineModel::PC9821 => {
+            ensure!(
+                geometry.sector_size == 512,
+                "{label} is not compatible with {model} (IDE): \
+                 image has {}-byte sectors, but IDE requires 512-byte sectors",
+                geometry.sector_size,
+            );
+        }
+    }
+    Ok(())
 }

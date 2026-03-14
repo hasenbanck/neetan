@@ -200,7 +200,9 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.pic.state.chips[1].write_icw = 0;
         match self.machine_model {
             MachineModel::PC9801VM => self.pic.state.chips[1].ocw3 = 0x0B,
-            MachineModel::PC9801RA => self.pic.state.chips[0].ocw3 = 0x0B,
+            MachineModel::PC9801RA | MachineModel::PC9821 => {
+                self.pic.state.chips[0].ocw3 = 0x0B;
+            }
             MachineModel::PC9801VX => {}
         }
 
@@ -237,7 +239,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         // System PPI: machine-specific port_c values.
         self.system_ppi.state.port_c = match self.machine_model {
             MachineModel::PC9801VM => 0x18,
-            MachineModel::PC9801VX | MachineModel::PC9801RA => 0xB8,
+            MachineModel::PC9801VX | MachineModel::PC9801RA | MachineModel::PC9821 => 0xB8,
         };
 
         // NMI gate enabled.
@@ -314,7 +316,9 @@ impl<T: Tracing> Pc9801Bus<T> {
         // Analog palette: indices 0-7 dim, 8 half-bright, 9-15 bright (0x0F).
         let (dim, half_bright) = match self.machine_model {
             MachineModel::PC9801VM => (0x0Au8, [7u8, 7, 7]),
-            MachineModel::PC9801VX | MachineModel::PC9801RA => (0x07u8, [4u8, 4, 4]),
+            MachineModel::PC9801VX | MachineModel::PC9801RA | MachineModel::PC9821 => {
+                (0x07u8, [4u8, 4, 4])
+            }
         };
         self.palette.state.analog[0] = [0, 0, 0];
         for i in 1u8..8 {
@@ -333,7 +337,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         }
         self.palette.state.index = match self.machine_model {
             MachineModel::PC9801VM => 0x08,
-            MachineModel::PC9801VX | MachineModel::PC9801RA => 0x0F,
+            MachineModel::PC9801VX | MachineModel::PC9801RA | MachineModel::PC9821 => 0x0F,
         };
         self.palette.state.digital = [0x37, 0x15, 0x26, 0x04];
 
@@ -356,7 +360,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         // Printer port C.
         match self.machine_model {
             MachineModel::PC9801VM => self.printer.state.port_c = 0x80,
-            MachineModel::PC9801VX | MachineModel::PC9801RA => {}
+            MachineModel::PC9801VX | MachineModel::PC9801RA | MachineModel::PC9821 => {}
         }
 
         // Sound ROM: install stub if no full ROM was loaded.
@@ -375,7 +379,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.mouse_ppi.state.port_b = 0x00;
         self.mouse_ppi.state.port_c = match self.machine_model {
             MachineModel::PC9801VM => 0xF0,
-            MachineModel::PC9801VX | MachineModel::PC9801RA => 0x00,
+            MachineModel::PC9801VX | MachineModel::PC9801RA | MachineModel::PC9821 => 0x00,
         };
         self.mouse_ppi.state.accumulator_x = 0;
         self.mouse_ppi.state.accumulator_y = 0;
@@ -409,7 +413,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         let year_bcd = (self.host_local_time_fn)()[0];
         let msw3 = match self.machine_model {
             MachineModel::PC9801VM => 0x02,
-            MachineModel::PC9801VX | MachineModel::PC9801RA => 0x04,
+            MachineModel::PC9801VX | MachineModel::PC9801RA | MachineModel::PC9821 => 0x04,
         };
         let msw_values: [u8; 8] = [0x48, 0x05, msw3, 0x00, 0x01, 0x00, 0x00, year_bcd];
         let msw_offsets: [usize; 8] = [
@@ -2206,7 +2210,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         match devtype {
             // SASI/IDE: DA high nibble 0x80 or 0x00.
-            0x80 | 0x00 => self.int1bh_sasi(cpu, function),
+            0x80 | 0x00 => self.int1bh_hdd(cpu, function),
             // FDD 1MB channel (2HD): DA high nibble 0x90 or 0x10.
             0x90 | 0x10 => self.int1bh_fdd(cpu, function),
             _ => self.write_result_ah_cf(cpu, 0x40),
@@ -2583,6 +2587,14 @@ impl<T: Tracing> Pc9801Bus<T> {
         }
     }
 
+    fn int1bh_hdd(&mut self, cpu: &mut impl Cpu, function: u8) {
+        if self.machine_model.has_ide() {
+            self.int1bh_ide(cpu, function);
+        } else {
+            self.int1bh_sasi(cpu, function);
+        }
+    }
+
     fn int1bh_sasi(&mut self, cpu: &mut impl Cpu, function: u8) {
         let ax = cpu.ax();
         let bx = cpu.bx();
@@ -2672,6 +2684,103 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
             0x01 => 0x00,
             _ => 0x40,
+        };
+
+        self.tracer
+            .trace_sasi_hle(function_code, drive_select, result_ah, bx, cx, dx, es, bp);
+
+        self.write_result_ah_cf(cpu, result_ah);
+    }
+
+    fn int1bh_ide(&mut self, cpu: &mut impl Cpu, function: u8) {
+        let ax = cpu.ax();
+        let bx = cpu.bx();
+        let cx = cpu.cx();
+        let dx = cpu.dx();
+        let bp = cpu.bp();
+        let es = cpu.es();
+
+        let function_code = (ax >> 8) as u8;
+        let drive_select = ax as u8;
+        let drive_idx = device::ide::drive_index(drive_select);
+
+        // IDE-specific extensions use the full unmasked function code.
+        let result_ah = match function_code {
+            0xD0 => self.ide.execute_check_power_mode(drive_idx),
+            0xE0 => self.ide.execute_motor_on(drive_idx),
+            0xF0 => self.ide.execute_motor_off(drive_idx),
+            _ => match function {
+                0x03 => {
+                    let current_lo = self.read_byte_direct(0x055C);
+                    let current_hi = self.read_byte_direct(0x055D);
+                    let current_equip = u16::from(current_lo) | (u16::from(current_hi) << 8);
+                    let disk_equip = self.ide.execute_init(current_equip);
+                    self.memory.write_byte(0x055C, disk_equip as u8);
+                    self.memory.write_byte(0x055D, (disk_equip >> 8) as u8);
+                    self.pic.state.chips[0].imr &= !0x01;
+                    0x00
+                }
+                0x04 => match function_code {
+                    0x84 => {
+                        let sense_result = self.ide.execute_sense(drive_idx);
+                        if sense_result >= 0x20 {
+                            sense_result
+                        } else {
+                            if let Some(geometry) = self.ide.drive_geometry(drive_idx) {
+                                cpu.set_bx(geometry.sector_size);
+                                cpu.set_cx(geometry.cylinders.saturating_sub(1));
+                                let dx_value = ((u16::from(geometry.heads)) << 8)
+                                    | u16::from(geometry.sectors_per_track);
+                                cpu.set_dx(dx_value);
+                            }
+                            sense_result
+                        }
+                    }
+                    _ => self.ide.execute_sense(drive_idx),
+                },
+                0x05 => {
+                    let xfer = device::ide::transfer_size(bx);
+                    let geometry = self.ide.drive_geometry(drive_idx);
+                    let pos = geometry
+                        .map(|g| device::ide::sector_position(drive_select, cx, dx, &g))
+                        .unwrap_or(0);
+                    let addr = device::ide::buffer_address(es, bp);
+                    let cr0 = self.hle_cr0;
+                    let cr3 = self.hle_cr3;
+                    let memory = &self.memory;
+                    self.ide.execute_write(drive_idx, xfer, pos, addr, |a| {
+                        let phys = hle_page_translate(cr0, cr3, a, memory);
+                        memory.read_byte(phys)
+                    })
+                }
+                0x06 => {
+                    let xfer = device::ide::transfer_size(bx);
+                    let geometry = self.ide.drive_geometry(drive_idx);
+                    let pos = geometry
+                        .map(|g| device::ide::sector_position(drive_select, cx, dx, &g))
+                        .unwrap_or(0);
+                    let addr = device::ide::buffer_address(es, bp);
+                    let cr0 = self.hle_cr0;
+                    let cr3 = self.hle_cr3;
+                    let memory = &mut self.memory;
+                    self.ide
+                        .execute_read(drive_idx, xfer, pos, addr, |a, byte| {
+                            let phys = hle_page_translate(cr0, cr3, a, memory);
+                            memory.write_byte(phys, byte);
+                        })
+                }
+                0x07 | 0x0F => 0x00,
+                0x0D => {
+                    let geometry = self.ide.drive_geometry(drive_idx);
+                    let pos = geometry
+                        .map(|g| device::ide::sector_position(drive_select, cx, dx, &g))
+                        .unwrap_or(0);
+                    self.ide.execute_format(drive_idx, pos)
+                }
+                0x0E => self.ide.execute_mode_set(drive_idx),
+                0x01 => 0x00,
+                _ => 0x40,
+            },
         };
 
         self.tracer
@@ -2881,28 +2990,20 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
         }
 
-        // Try FDD 0-3, then HDD 0-1.
-        // Determine the sector size (N) from the actual first sector on track 0
-        // to handle both 2HD (N=3, 1024B) and 2DD (N=1, 256B) disks.
-        for drive in 0..4usize {
-            if self.floppy.has_drive(drive)
-                && let Some(n) = self.floppy.boot_sector_size_code(drive)
-                && let Some(data) = self.floppy.read_sector_data(drive, 0, 0, 0, 1, n)
-            {
-                let boot_data: Vec<u8> = data.to_vec();
-                for (i, &byte) in boot_data.iter().enumerate() {
-                    self.memory.write_byte(0x1FC00 + i as u32, byte);
-                }
-                self.memory.state.ram[0x0584] = (0x90 | drive) as u8;
-                let iret_base = iret_stack_base(cpu);
-                self.write_mem_word(iret_base, 0x0000); // IP
-                self.write_mem_word(iret_base + 2, 0x1FC0); // CS
-
-                return;
+        // Initialize IDE drives before boot attempt (equivalent of INT 1Bh AH=03).
+        for hdd in 0..2usize {
+            if self.ide.drive_geometry(hdd).is_some() {
+                let current_lo = self.memory.state.ram[0x055C];
+                let current_hi = self.memory.state.ram[0x055D];
+                let current_equip = u16::from(current_lo) | (u16::from(current_hi) << 8);
+                let disk_equip = self.ide.execute_init(current_equip);
+                self.memory.state.ram[0x055C] = disk_equip as u8;
+                self.memory.state.ram[0x055D] = (disk_equip >> 8) as u8;
+                break;
             }
         }
 
-        // Try SASI HDD 0-1.
+        // Try SASI HDD 0-1, then IDE HDD 0-1, then FDD 0-3.
         for hdd in 0..2usize {
             if self.sasi.drive_geometry(hdd).is_some() {
                 let drive_select = 0x80 | (hdd as u8);
@@ -2924,6 +3025,50 @@ impl<T: Tracing> Pc9801Bus<T> {
 
                     return;
                 }
+            }
+        }
+
+        for hdd in 0..2usize {
+            if self.ide.drive_geometry(hdd).is_some() {
+                let drive_select = 0x80 | (hdd as u8);
+                let geometry = self.ide.drive_geometry(hdd).unwrap();
+                let pos = device::ide::sector_position(drive_select, 0, 0, &geometry);
+                let addr = device::ide::buffer_address(0x1FC0, 0x0000);
+                let xfer = device::ide::transfer_size(0x0200);
+                let result = {
+                    let memory = &mut self.memory;
+                    self.ide.execute_read(hdd, xfer, pos, addr, |a, byte| {
+                        memory.write_byte(a, byte);
+                    })
+                };
+                if result < 0x20 {
+                    self.memory.state.ram[0x0584] = 0x80 | hdd as u8;
+                    let iret_base = iret_stack_base(cpu);
+                    self.write_mem_word(iret_base, 0x0000); // IP
+                    self.write_mem_word(iret_base + 2, 0x1FC0); // CS
+
+                    return;
+                }
+            }
+        }
+
+        // Determine the sector size (N) from the actual first sector on track 0
+        // to handle both 2HD (N=3, 1024B) and 2DD (N=1, 256B) disks.
+        for drive in 0..4usize {
+            if self.floppy.has_drive(drive)
+                && let Some(n) = self.floppy.boot_sector_size_code(drive)
+                && let Some(data) = self.floppy.read_sector_data(drive, 0, 0, 0, 1, n)
+            {
+                let boot_data: Vec<u8> = data.to_vec();
+                for (i, &byte) in boot_data.iter().enumerate() {
+                    self.memory.write_byte(0x1FC00 + i as u32, byte);
+                }
+                self.memory.state.ram[0x0584] = (0x90 | drive) as u8;
+                let iret_base = iret_stack_base(cpu);
+                self.write_mem_word(iret_base, 0x0000); // IP
+                self.write_mem_word(iret_base + 2, 0x1FC0); // CS
+
+                return;
             }
         }
 

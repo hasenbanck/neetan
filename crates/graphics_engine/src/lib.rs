@@ -15,7 +15,10 @@ use std::{
     rc::Rc,
 };
 
-use common::{Context, DisplaySnapshotUpload, OptionContext, StackVec, bail, error, info};
+use common::{
+    Context, DISPLAY_FLAG_PEGC_256_COLOR, DisplaySnapshotUpload, OptionContext, PegcSnapshotUpload,
+    StackVec, bail, error, info,
+};
 pub use errors::Error;
 pub use instructions::RenderInstructions;
 use jay_ash::vk;
@@ -42,6 +45,7 @@ const INITIAL_WINDOW_WIDTH: u32 = 1280;
 const INITIAL_WINDOW_HEIGHT_4_BY_3: u32 = 960;
 const INITIAL_WINDOW_HEIGHT_1_BY_1: u32 = 800;
 const UPLOAD_BUFFER_SIZE: u64 = DisplaySnapshotUpload::BYTE_SIZE as u64;
+const PEGC_BUFFER_SIZE: u64 = PegcSnapshotUpload::BYTE_SIZE as u64;
 const FONT_ROM_BUFFER_SIZE: u64 = 0x83000;
 const DEFAULT_BLITTER_IMAGE_FORMAT: vk::Format = vk::Format::R8G8B8A8_SRGB;
 
@@ -334,6 +338,15 @@ impl GraphicsEngine {
                 )
                 .context("Failed to create per-frame upload buffer")?;
 
+                let pegc_buffer = MappedBuffer::new(
+                    Rc::clone(&context),
+                    &format!("pegc_buffer_{i}").into_cstring(),
+                    vk::BufferUsageFlags::STORAGE_BUFFER,
+                    PEGC_BUFFER_SIZE,
+                    None,
+                )
+                .context("Failed to create per-frame PEGC buffer")?;
+
                 let mut last_descriptor_version = 0u64;
                 self.descriptor_resources.write_stale_descriptors(
                     &mut descriptors,
@@ -343,6 +356,7 @@ impl GraphicsEngine {
                     self.resources.native_target(),
                     &upload_buffer,
                     &self.font_rom_buffer,
+                    &pegc_buffer,
                 );
 
                 Ok(FrameResources {
@@ -351,6 +365,7 @@ impl GraphicsEngine {
                     graphics_command_buffer,
                     descriptors,
                     upload_buffer,
+                    pegc_buffer,
                     last_descriptor_version,
                     present_wait_id: 0,
                 })
@@ -460,6 +475,17 @@ impl GraphicsEngine {
                         .upload_buffer
                         .flush(0, upload_data.len() as u64);
 
+                    if let Some(pegc_snapshot) = render_instructions.pegc_snapshot {
+                        let pegc_data = pegc_snapshot.as_bytes();
+                        {
+                            let dst = frame_resources
+                                .pegc_buffer
+                                .as_mut_slice_at(0, pegc_data.len());
+                            dst.copy_from_slice(pegc_data);
+                        }
+                        frame_resources.pegc_buffer.flush(0, pegc_data.len() as u64);
+                    }
+
                     self.descriptor_resources.write_stale_descriptors(
                         &mut frame_resources.descriptors,
                         &mut frame_resources.last_descriptor_version,
@@ -468,6 +494,7 @@ impl GraphicsEngine {
                         self.resources.native_target(),
                         &frame_resources.upload_buffer,
                         &self.font_rom_buffer,
+                        &frame_resources.pegc_buffer,
                     );
 
                     // Render phase
@@ -488,7 +515,7 @@ impl GraphicsEngine {
 
                     encoder.begin_debug_label(c"Render Phase", [0.0, 0.5, 1.0, 1.0]);
 
-                    // Stage 1 — Compose: render text VRAM to native_target (640×400).
+                    // Stage 1 — Compose: render text VRAM to native_target (640×480).
                     {
                         encoder.begin_debug_label(c"Compose Pass", [1.0, 0.0, 0.0, 1.0]);
                         render_compose_pass(
@@ -502,7 +529,22 @@ impl GraphicsEngine {
                     // Stage 2 — Scale: read native_target, write to color_target (window res).
                     {
                         encoder.begin_debug_label(c"Scale Pass", [0.0, 1.0, 0.0, 1.0]);
-                        render_scale_pass(&mut encoder, self.resources.color_target(), &self.scale);
+
+                        let is_pegc_480 = (render_instructions.display_snapshot.display_flags
+                            & DISPLAY_FLAG_PEGC_256_COLOR)
+                            != 0
+                            && render_instructions
+                                .pegc_snapshot
+                                .is_some_and(|p| (p.pegc_flags & 0x02) != 0);
+                        let native_height = if is_pegc_480 { 480 } else { 400 };
+
+                        render_scale_pass(
+                            &mut encoder,
+                            self.resources.color_target(),
+                            &self.scale,
+                            native_height,
+                            self.descriptor_resources.pipeline_layout(),
+                        );
                         encoder.end_debug_label();
                     }
 

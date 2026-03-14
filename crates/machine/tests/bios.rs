@@ -52,7 +52,7 @@ use device::{
     disk::{HddFormat, HddGeometry, HddImage},
     floppy::FloppyImage,
 };
-use machine::{Pc9801Ra, Pc9801Vm, Pc9801Vx};
+use machine::{Pc9801Ra, Pc9801Vm, Pc9801Vx, Pc9821};
 
 type TrackList<'a> = [(u8, u8, &'a [(u8, &'a [u8])])];
 
@@ -123,6 +123,20 @@ fn make_halt_boot_hdd() -> HddImage {
     HddImage::from_raw(geometry, HddFormat::Thd, data)
 }
 
+fn make_halt_boot_ide_hdd() -> HddImage {
+    let geometry = HddGeometry {
+        cylinders: 20,
+        heads: 4,
+        sectors_per_track: 17,
+        sector_size: 512,
+    };
+    let total = geometry.total_bytes() as usize;
+    let mut data = vec![0u8; total];
+    data[0] = 0xFA; // CLI
+    data[1] = 0xF4; // HLT
+    HddImage::from_raw(geometry, HddFormat::Hdi, data)
+}
+
 #[path = "bios/data.rs"]
 mod data;
 
@@ -134,6 +148,9 @@ mod int1bh;
 
 #[path = "bios/sasi_boot.rs"]
 mod sasi_boot;
+
+#[path = "bios/ide_boot.rs"]
+mod ide_boot;
 
 #[path = "bios/int18h.rs"]
 mod int18h;
@@ -155,10 +172,6 @@ mod int1ch;
 
 #[path = "bios/int1fh.rs"]
 mod int1fh;
-
-// TODO: Implement LIO in the HLE BIOS
-// #[path = "bios/lio.rs"]
-// mod lio;
 
 #[path = "bios/hw_vectors.rs"]
 mod hw_vectors;
@@ -207,6 +220,16 @@ fn create_machine_ra() -> Pc9801Ra {
     machine
 }
 
+fn create_machine_pc9821() -> Pc9821 {
+    let mut machine = Pc9821::new(
+        cpu::I386::new(),
+        machine::Pc9801Bus::new(MachineModel::PC9821, 48000),
+    );
+    // TODO: We haven't verified our implementation yet against a real 9821 BIOS.
+    machine.bus.load_font_rom(FONT_ROM_DATA);
+    machine
+}
+
 fn create_machine_vm_hdd() -> Pc9801Vm {
     let mut machine = create_machine_vm();
     machine.bus.insert_hdd(0, make_halt_boot_hdd(), None);
@@ -222,6 +245,12 @@ fn create_machine_vx_hdd() -> Pc9801Vx {
 fn create_machine_ra_hdd() -> Pc9801Ra {
     let mut machine = create_machine_ra();
     machine.bus.insert_hdd(0, make_halt_boot_hdd(), None);
+    machine
+}
+
+fn create_machine_pc9821_hdd() -> Pc9821 {
+    let mut machine = create_machine_pc9821();
+    machine.bus.insert_hdd(0, make_halt_boot_ide_hdd(), None);
     machine
 }
 

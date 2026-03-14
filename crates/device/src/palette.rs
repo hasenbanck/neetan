@@ -91,4 +91,24 @@ impl Palette {
     pub fn write_digital(&mut self, index: usize, value: u8) {
         self.state.digital[index] = value;
     }
+
+    /// Reads the analog palette index register (port 0xA8 in analog mode).
+    pub fn read_index(&self) -> u8 {
+        self.state.index & 0x0F
+    }
+
+    /// Reads an analog palette component for the currently selected index.
+    ///
+    /// `component`: 0=green (0xAA), 1=red (0xAC), 2=blue (0xAE).
+    pub fn read_analog(&self, component: usize) -> u8 {
+        let i = (self.state.index & 0x0F) as usize;
+        self.state.analog[i][component] & 0x0F
+    }
+
+    /// Reads a digital palette register.
+    ///
+    /// `index`: 0 (0xA8), 1 (0xAA), 2 (0xAC), 3 (0xAE).
+    pub fn read_digital(&self, index: usize) -> u8 {
+        self.state.digital[index]
+    }
 }
