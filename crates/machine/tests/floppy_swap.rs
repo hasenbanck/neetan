@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use common::{Bus, Machine};
+use common::{Bus, Machine, MachineModel};
 use machine::{NoTracing, Pc9801Bus};
 
 /// Builds a minimal D88 2HD image with the given disk name and sectors on track 0 head 0.
@@ -59,21 +59,21 @@ fn cleanup_temp_file(path: &Path) {
 fn create_machine_vm() -> machine::Pc9801Vm {
     machine::Pc9801Vm::new(
         cpu::V30::new(),
-        Pc9801Bus::<NoTracing>::new_10mhz_v30_grcg(48000),
+        Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000),
     )
 }
 
 fn create_machine_vx() -> machine::Pc9801Vx {
     machine::Pc9801Vx::new(
         cpu::I286::new(),
-        Pc9801Bus::<NoTracing>::new_10mhz_286_egc(48000, 1 << 20),
+        Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000),
     )
 }
 
 fn create_machine_ra() -> machine::Pc9801Ra {
     machine::Pc9801Ra::new(
         cpu::I386::new(),
-        Pc9801Bus::<NoTracing>::new_20mhz_386_egc(48000, 2 << 20),
+        Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000),
     )
 }
 

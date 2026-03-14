@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use common::Bus;
+use common::{Bus, MachineModel};
 use machine::{NoTracing, Pc9801Bus, Pc9801Vm};
 
 const CYCLES_PER_STEP: u64 = 200_000;
@@ -84,7 +84,7 @@ fn grcg_firmware_all_patterns() {
     let bios_data = std::fs::read(&bios_path)
         .unwrap_or_else(|error| panic!("Failed to read {}: {error}", bios_path.display()));
 
-    let mut bus = Pc9801Bus::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::new(MachineModel::PC9801VM, 48000);
     bus.load_bios_rom(&bios_data);
 
     let mut machine = Pc9801Vm::new(cpu::V30::new(), bus);
@@ -307,7 +307,7 @@ const VRAM_G_BASE: u32 = 0xB8000;
 const VRAM_E_BASE: u32 = 0xE0000;
 
 fn setup_grcg_bus() -> Pc9801Bus<NoTracing> {
-    let mut bus = Pc9801Bus::<NoTracing>::new_10mhz_286_egc(48000, 0);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
     bus.io_write_byte(0x6A, 0x01); // analog mode for E-plane access
     bus
 }

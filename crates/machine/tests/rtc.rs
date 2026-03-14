@@ -1,4 +1,4 @@
-use common::Bus;
+use common::{Bus, MachineModel};
 use machine::{NoTracing, Pc9801Bus};
 
 /// Test time: 2026-03-03 14:30:45, Monday (day_of_week=1).
@@ -9,7 +9,7 @@ fn test_time() -> [u8; 6] {
 }
 
 fn make_bus() -> Pc9801Bus<NoTracing> {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
     bus.set_host_local_time_fn(test_time);
     bus
 }

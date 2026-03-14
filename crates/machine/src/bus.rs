@@ -8,7 +8,8 @@ mod bios;
 use std::path::PathBuf;
 
 use common::{
-    CpuType, DisplaySnapshotUpload, EventKind, Scheduler, cast_u32_slice_as_bytes_mut, debug, warn,
+    CpuType, DisplaySnapshotUpload, EventKind, MachineModel, Scheduler,
+    cast_u32_slice_as_bytes_mut, debug, warn,
 };
 use device::{
     beeper::Beeper,
@@ -41,29 +42,9 @@ use device::{
 
 use crate::{
     config::ClockConfig,
-    memory::{ADDRESS_MASK_I286, ADDRESS_MASK_I386, ADDRESS_MASK_V30, Pc9801Memory},
+    memory::Pc9801Memory,
     trace::{NoTracing, Tracing},
 };
-
-/// PIT base clock for the 8 MHz machine lineage (8MHz系): 1,996,800 Hz.
-///
-/// Derivation: 8 MHz / 4 = 1.9968 MHz. Used by the VM (8 MHz), RA2 (16 MHz),
-/// RA21 (20 MHz), and all later 386+ machines.
-///
-/// Note: The undoc98 `io_tcu.txt` summary table (lines 32-39) has the lineage
-/// labels SWAPPED relative to the actual crystal values. However, the baud-rate
-/// table in the same file (lines 126-140) confirms the correct mapping:
-/// - 9600 bps sync count = 208 for 8 MHz lineage -> 208 * 9600 = 1,996,800
-/// - 9600 bps sync count = 256 for 5/10 MHz lineage -> 256 * 9600 = 2,457,600
-const PIT_CLOCK_8MHZ_LINEAGE: u32 = 1_996_800;
-
-/// PIT base clock for the 5/10 MHz machine lineage (5M/10MHz系): 2,457,600 Hz.
-///
-/// Derivation: dedicated 2.4576 MHz crystal oscillator. Used by the original
-/// PC-9801 (5 MHz) and the VX (10 MHz).
-///
-/// See `PIT_CLOCK_8MHZ_LINEAGE` for the undoc98 typo note.
-const PIT_CLOCK_10MHZ_LINEAGE: u32 = 2_457_600;
 
 /// Text RAM (0xA0000-0xA3FFF) access wait penalty in CPU cycles.
 const TRAM_WAIT_CYCLES: i64 = 1;
@@ -234,7 +215,7 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     /// BIOS HLE trap controller.
     bios: device::bios::BiosController,
     a20_enabled: bool,
-    cpu_type: CpuType,
+    machine_model: MachineModel,
     reset_pending: bool,
     /// Set when the guest triggers a SYSTEM SHUTDOWN (SHUT0=1, SHUT1=0 when
     /// port 0xF0 is written). The host application should exit cleanly.
@@ -294,99 +275,20 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
 }
 
 impl<T: Tracing> Pc9801Bus<T> {
-    /// Creates a new bus with 8 MHz clock settings and 20-bit address space (PC-9801VM).
-    ///
-    /// PIT clock: 1.9968 MHz for the 8 MHz machine lineage (8MHz系).
-    ///
-    /// See `undoc98/io_tcu.txt`.
-    pub fn new_8mhz_v30(sample_rate: u32) -> Self {
-        Self::new(
-            ClockConfig {
-                cpu_clock_hz: 8_000_000,
-                pit_clock_hz: PIT_CLOCK_8MHZ_LINEAGE,
-            },
-            ADDRESS_MASK_V30,
-            sample_rate,
-            0,
-            CpuType::V30,
-        )
-    }
-
-    /// Creates a new bus with 10 MHz clock settings and 20-bit address space (PC-9801VM).
-    ///
-    /// PIT clock: 2.4576 MHz for the 5/10 MHz machine lineage (5M/10MHz系).
-    ///
-    /// See `undoc98/io_tcu.txt`.
-    pub fn new_10mhz_v30_grcg(sample_rate: u32) -> Self {
-        Self::new(
-            ClockConfig {
-                cpu_clock_hz: 10_000_000,
-                pit_clock_hz: PIT_CLOCK_10MHZ_LINEAGE,
-            },
-            ADDRESS_MASK_V30,
-            sample_rate,
-            0,
-            CpuType::V30,
-        )
-    }
-
-    /// Creates a new bus with 10 MHz clock settings and 24-bit address space (PC-9801VX).
-    ///
-    /// PIT clock: 2.4576 MHz for the 5/10 MHz machine lineage (5M/10MHz系).
-    ///
-    /// See `undoc98/io_tcu.txt`.
-    pub fn new_10mhz_286_egc(sample_rate: u32, extended_ram_size: usize) -> Self {
-        let mut bus = Self::new(
-            ClockConfig {
-                cpu_clock_hz: 10_000_000,
-                pit_clock_hz: PIT_CLOCK_10MHZ_LINEAGE,
-            },
-            ADDRESS_MASK_I286,
-            sample_rate,
-            extended_ram_size,
-            CpuType::I286,
-        );
-        bus.set_grcg_chip(grcg::GRCG_CHIP_EGC);
-        bus.set_cg_ram(true);
-        bus
-    }
-
-    /// Creates a new bus with 20 MHz clock settings and 32-bit address space (PC-9801RA).
-    ///
-    /// PIT clock: 1.9968 MHz for the 8 MHz machine lineage (8MHz系)(sic!).
-    ///
-    /// See `undoc98/io_tcu.txt`.
-    pub fn new_20mhz_386_egc(sample_rate: u32, extended_ram_size: usize) -> Self {
-        let mut bus = Self::new(
-            ClockConfig {
-                cpu_clock_hz: 20_000_000,
-                pit_clock_hz: PIT_CLOCK_8MHZ_LINEAGE,
-            },
-            ADDRESS_MASK_I386,
-            sample_rate,
-            extended_ram_size,
-            CpuType::I386,
-        );
-        bus.set_grcg_chip(grcg::GRCG_CHIP_EGC);
-        bus.set_cg_ram(true);
-        bus
-    }
-
-    fn new(
-        clocks: ClockConfig,
-        address_mask: u32,
-        sample_rate: u32,
-        extended_ram_size: usize,
-        cpu_type: CpuType,
-    ) -> Self {
-        let is_8mhz_lineage = clocks.pit_clock_hz == PIT_CLOCK_8MHZ_LINEAGE;
+    /// Creates a new bus configured for the given machine model.
+    pub fn new(machine_model: MachineModel, sample_rate: u32) -> Self {
+        let clocks = ClockConfig {
+            cpu_clock_hz: machine_model.cpu_clock_hz(),
+            pit_clock_hz: machine_model.pit_clock_hz(),
+        };
+        let is_8mhz_lineage = machine_model.is_8mhz_pit_lineage();
 
         let mut bus = Self {
             current_cycle: 0,
             next_event_cycle: u64::MAX,
             nmi_enabled: false,
             clocks,
-            memory: Pc9801Memory::new(address_mask, extended_ram_size),
+            memory: Pc9801Memory::new(machine_model, machine_model.extended_ram_default_size()),
             pic: I8259aPic::new(),
             scheduler: Scheduler::new(),
             pit: I8253Pit::new(is_8mhz_lineage),
@@ -401,7 +303,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             display_control: DisplayControl::new(),
             cgrom: Cgrom::new(),
             crtc: Upd52611Crtc::new(),
-            grcg: Grcg::new(grcg::GRCG_CHIP_V1),
+            grcg: Grcg::new(machine_model.grcg_chip_version()),
             egc: Egc::new(),
             palette: Palette::new(),
             soundboard_26k: None,
@@ -414,7 +316,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             sasi: SasiController::new(),
             bios: device::bios::BiosController::new(),
             a20_enabled: false,
-            cpu_type,
+            machine_model,
             reset_pending: false,
             shutdown_requested: false,
             needs_full_reinit: false,
@@ -425,7 +327,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             ram_window: 0x08,
             hole_15m_control: 0x00,
             protected_memory_max: 0x00,
-            b_bank_ems: address_mask > ADDRESS_MASK_I286,
+            b_bank_ems: machine_model.has_b_bank_ems(),
             graphics_extension_enabled: false,
             pending_wait_cycles: 0,
             rtc_control_22: 0x00,
@@ -440,6 +342,10 @@ impl<T: Tracing> Pc9801Bus<T> {
             hle_cr3: 0,
         };
 
+        if machine_model.has_cg_ram() {
+            bus.set_cg_ram(true);
+        }
+
         // Emulate a machine with the analog 16-color graphics extension installed.
         bus.set_graphics_extension_enabled(true);
 
@@ -449,7 +355,8 @@ impl<T: Tracing> Pc9801Bus<T> {
         // Schedule the first VSYNC event after one display period.
         bus.scheduler
             .schedule(EventKind::GdcVsync, bus.gdc_master.state.display_period);
-        bus.system_ppi.set_cpu_mode_bit(cpu_type == CpuType::V30);
+        bus.system_ppi
+            .set_cpu_mode_bit(machine_model == MachineModel::PC9801VM);
         bus.update_next_event_cycle();
         bus.initialize_post_boot_state();
         bus
@@ -494,10 +401,10 @@ impl<T: Tracing> Pc9801Bus<T> {
         }
     }
 
-    /// Populates BDA fields based on machine configuration (CPU type, clock lineage).
+    /// Populates BDA fields based on machine model and clock lineage.
     fn populate_bda(&mut self) {
-        let is_v30 = self.cpu_type == CpuType::V30;
-        let is_8mhz_lineage = self.clocks.pit_clock_hz == PIT_CLOCK_8MHZ_LINEAGE;
+        let cpu_type = self.machine_model.cpu_type();
+        let is_v30 = cpu_type == CpuType::V30;
 
         // MSW3 from text VRAM memory switch area (stride 4, at offset 0x3FEA).
         let msw3 = self.memory.state.text_vram[0x3FEA];
@@ -511,13 +418,17 @@ impl<T: Tracing> Pc9801Bus<T> {
         //   bit 5 = 1 (always set)
         //   bits 0-2 = real-mode memory size from MSW3 (128KB units above base 128KB)
         let bios_flag1 = 0x20u8
-            | if is_8mhz_lineage { 0x80 } else { 0x00 }
+            | if self.machine_model.is_8mhz_pit_lineage() {
+                0x80
+            } else {
+                0x00
+            }
             | if is_v30 { 0x40 } else { 0x00 }
             | (msw3 & 0x07);
         self.memory.state.ram[0x0501] = bios_flag1;
 
         // BIOS_FLAG2 (0x0400): 386 machines get extended memory + protected mode bits.
-        let bios_flag2 = match self.cpu_type {
+        let bios_flag2 = match cpu_type {
             CpuType::I386 => 0x06,
             _ => 0x00,
         };
@@ -527,7 +438,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         //   bits 0-1: CPU type (V30=0x00, I286=0x01, I386=0x03)
         //   bit 3: dual-use FDD present
         //   bit 6: EGC / protected mode test passed
-        let sys_type = match self.cpu_type {
+        let sys_type = match cpu_type {
             CpuType::V30 => 0x00,
             CpuType::I286 => 0x01,
             CpuType::I386 => 0x4B,
@@ -535,8 +446,8 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.memory.state.ram[0x0480] = sys_type;
 
         // USER_SP / USER_SS (0x0404 / 0x0406): saved stack from the ITF
-        // protected mode test on 386 machines.
-        if self.cpu_type == CpuType::I386 {
+        // protected mode test on 386+ CPUs.
+        if cpu_type >= CpuType::I386 {
             self.memory.state.ram[0x0404] = 0xF8;
             self.memory.state.ram[0x0405] = 0x00;
             self.memory.state.ram[0x0406] = 0x30;
@@ -548,9 +459,9 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.memory.state.ram[0x0401] = expmmsz;
 
         // BIOS_FLAG3 (0x0481): 386 machines have bit 5 set.
-        self.memory.state.ram[0x0481] = match self.cpu_type {
+        self.memory.state.ram[0x0481] = match cpu_type {
             CpuType::I386 => 0x20,
-            _ => 0x00,
+            CpuType::I286 | CpuType::V30 => 0x00,
         };
 
         // F2HD_MODE (0x0493): all drives 2HD.
@@ -560,10 +471,10 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.memory.state.ram[0x05CA] = 0xFF;
 
         // F2DD_POINTER (0x05CC) / F2HD_POINTER (0x05F8): far pointers to format
-        // tables in ROM. The offsets differ between BIOS generations.
-        let (f2hd_off, f2dd_off): (u16, u16) = match self.cpu_type {
-            CpuType::I386 => (0x1AAF, 0x1AD7),
-            _ => (0x1AB4, 0x1ADC),
+        // tables in ROM. The offsets differ between BIOS generations (RA vs others).
+        let (f2hd_off, f2dd_off): (u16, u16) = match self.machine_model {
+            MachineModel::PC9801RA => (0x1AAF, 0x1AD7),
+            MachineModel::PC9801VM | MachineModel::PC9801VX => (0x1AB4, 0x1ADC),
         };
         self.memory.state.ram[0x05CC..0x05D0].copy_from_slice(&[
             f2dd_off as u8,
@@ -587,11 +498,11 @@ impl<T: Tracing> Pc9801Bus<T> {
         // PRXCRT (0x054C): display config (color, GRCG present, 8MHz).
         self.memory.state.ram[0x054C] = 0x4E;
 
-        // PRXDUPD (0x054D): graphics mode / GRCG version.
-        self.memory.state.ram[0x054D] = match self.cpu_type {
-            CpuType::V30 => 0x00,
-            CpuType::I286 => 0x50,
-            CpuType::I386 => 0x50,
+        // PRXDUPD (0x054D): graphics mode / GRCG version (0x50 = EGC present).
+        self.memory.state.ram[0x054D] = if self.machine_model.has_egc() {
+            0x50
+        } else {
+            0x00
         };
 
         // DISK_EQUIP (0x055C): 4 FDD drives present.
@@ -799,13 +710,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
     /// Returns the CPU type configured for this bus.
     pub fn cpu_type(&self) -> CpuType {
-        self.cpu_type
-    }
-
-    /// Sets the GRCG chip version.
-    /// 1=GRCG v1 (VM), 3=EGC (VX+).
-    fn set_grcg_chip(&mut self, chip: u8) {
-        self.grcg.state.chip = chip;
+        self.machine_model.cpu_type()
     }
 
     /// Enables CG RAM mode (VX+). All character codes become writable.
@@ -1640,6 +1545,7 @@ impl<T: Tracing> Pc9801Bus<T> {
     pub(crate) fn save_state(&self, cpu: crate::CpuState) -> crate::MachineState {
         crate::MachineState {
             cpu,
+            machine_model: self.machine_model,
             memory: self.memory.state.clone(),
             clocks: self.clocks,
             pic: self.pic.state.clone(),
@@ -1681,6 +1587,7 @@ impl<T: Tracing> Pc9801Bus<T> {
     }
 
     pub(crate) fn load_peripherals(&mut self, state: &crate::MachineState) {
+        self.machine_model = state.machine_model;
         self.memory.state = state.memory.clone();
         self.pic.state = state.pic.clone();
         self.scheduler.state = state.scheduler.clone();
@@ -3095,7 +3002,13 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             0xF2 => 0xFF - (!self.a20_enabled as u8),
             // A20 line control status (386+ CPU port).
             // Bit 0: A20 mask state (1=masked), bit 1: NMI enable (1=enabled).
-            0xF6 => (!self.a20_enabled as u8) | ((self.nmi_enabled as u8) << 1),
+            0xF6 => {
+                if self.machine_model.has_a20_nmi_port() {
+                    (!self.a20_enabled as u8) | ((self.nmi_enabled as u8) << 1)
+                } else {
+                    0xFF
+                }
+            }
 
             // Hi-res/normal mode detection (bit 2: 1=normal, 0=hi-res).
             // All PC-9801 targets use normal mode (640x400/640x200).
@@ -3135,8 +3048,14 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                 0xFF
             }
 
-            // Protected memory registration readback.
-            0x0567 => self.protected_memory_max,
+            // Protected memory registration readback (VX/RA only).
+            0x0567 => {
+                if self.machine_model.has_protected_memory_register() {
+                    self.protected_memory_max
+                } else {
+                    0xFF
+                }
+            }
 
             // SCSI controller status (no SCSI controller present).
             0x0CC4 => 0xFF,
@@ -3416,7 +3335,7 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             // A20 gate disable + V30 CPU mode switch + CPU reset/shutdown.
             0xF0 => {
                 self.a20_enabled = false;
-                if self.cpu_type == CpuType::V30 {
+                if self.machine_model == MachineModel::PC9801VM {
                     self.system_ppi.set_cpu_mode_bit(false);
                 }
 
@@ -3452,16 +3371,20 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             // A20 gate enable + restore V30 native mode (no reset).
             0xF2 => {
                 self.a20_enabled = true;
-                if self.cpu_type == CpuType::V30 {
+                if self.machine_model == MachineModel::PC9801VM {
                     self.system_ppi.set_cpu_mode_bit(true);
                 }
             }
-            // A20 line control + DIP switch bank select (386+ CPU port).
-            0xF6 => match value {
-                0x02 => self.a20_enabled = true,
-                0x03 => self.a20_enabled = false,
-                _ => {}
-            },
+            // A20 line control + DIP switch bank select.
+            0xF6 => {
+                if self.machine_model.has_a20_nmi_port() {
+                    match value {
+                        0x02 => self.a20_enabled = true,
+                        0x03 => self.a20_enabled = false,
+                        _ => {}
+                    }
+                }
+            }
 
             // 26K alternate base register select (dual-board mode: 26K at 0x0088).
             0x0088 => {
@@ -3536,11 +3459,15 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             }
             // ROM bank select (port 0x043D).
             // 0x10/0x00/0x18 = ITF bank, 0x12 = BIOS bank.
-            0x043D => match value {
-                0x00 | 0x10 | 0x18 => self.memory.select_banked_rom_window(false),
-                0x12 => self.memory.select_banked_rom_window(true),
-                _ => {}
-            },
+            0x043D => {
+                if self.machine_model.is_dual_bank_bios() {
+                    match value {
+                        0x00 | 0x10 | 0x18 => self.memory.select_banked_rom_window(false),
+                        0x12 => self.memory.select_banked_rom_window(true),
+                        _ => {}
+                    }
+                }
+            }
             // Port 0x043E: not a documented I/O port. Ignore writes silently.
             0x043E => {}
             // VRAM/EMS banking.
@@ -3551,11 +3478,17 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             0x0461 => {
                 self.ram_window = value;
             }
-            // Shadow RAM control (i386+ only).
-            0x053D => self.memory.set_shadow_control(value),
+            // Shadow RAM control.
+            0x053D => {
+                if self.machine_model.has_shadow_ram() {
+                    self.memory.set_shadow_control(value);
+                }
+            }
             // Protected memory registration.
             0x0567 => {
-                self.protected_memory_max = value;
+                if self.machine_model.has_protected_memory_register() {
+                    self.protected_memory_max = value;
+                }
             }
 
             // SASI HLE trap port.
@@ -3638,16 +3571,21 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
 
             // EGC registers (byte access).
             0x04A0..=0x04AF => {
-                if self.display_control.is_egc_extended_mode_effective() && self.grcg.is_active() {
+                if self.machine_model.has_egc()
+                    && self.display_control.is_egc_extended_mode_effective()
+                    && self.grcg.is_active()
+                {
                     self.egc.write_register_byte((port & 0x0F) as u8, value);
                 }
             }
 
             // DMA extended bank registers (A24-A31, 386+ only).
-            0x0E05 => self.dma.write_extended_page(0, value),
-            0x0E07 => self.dma.write_extended_page(1, value),
-            0x0E09 => self.dma.write_extended_page(2, value),
-            0x0E0B => self.dma.write_extended_page(3, value),
+            0x0E05 | 0x0E07 | 0x0E09 | 0x0E0B => {
+                if self.machine_model.has_extended_dma() {
+                    let channel = ((port - 0x0E05) / 2) as usize;
+                    self.dma.write_extended_page(channel, value);
+                }
+            }
 
             // Alternate FM sound board base addresses — silently ignore writes.
             0x0288 | 0x028A | 0x028C | 0x028E | 0x0388 | 0x038A | 0x038C | 0x038E => {}
@@ -3667,7 +3605,10 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             0x04A0..=0x04AE if port & 1 == 0 => {
                 self.pending_wait_cycles += IO_WAIT_CYCLES;
                 self.tracer.set_cycle(self.current_cycle);
-                if self.display_control.is_egc_extended_mode_effective() && self.grcg.is_active() {
+                if self.machine_model.has_egc()
+                    && self.display_control.is_egc_extended_mode_effective()
+                    && self.grcg.is_active()
+                {
                     self.egc.write_register_word((port & 0x0F) as u8, value);
                 }
             }
@@ -3724,9 +3665,9 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
 
 #[cfg(test)]
 mod tests {
-    use common::Bus;
+    use common::{Bus, MachineModel};
 
-    use super::{DOT_CLOCK_200LINE, DOT_CLOCK_400LINE, Pc9801Bus, VramOp};
+    use super::{DOT_CLOCK_200LINE, DOT_CLOCK_400LINE, NoTracing, Pc9801Bus, VramOp};
 
     fn compose_halfwidth_font_address(
         video_mode: u8,
@@ -3756,7 +3697,7 @@ mod tests {
 
     #[test]
     fn capture_vsync_snapshot_populates_typed_fields() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
         bus.palette.state.analog[1] = [0x0A, 0x02, 0x0F];
         bus.gdc_master.state.pitch = 80;
@@ -3811,7 +3752,7 @@ mod tests {
 
     #[test]
     fn capture_vsync_snapshot_sets_kanji_high_mask_from_kac_mode() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
         bus.capture_vsync_snapshot();
         assert_eq!(bus.vsync_snapshot().gdc_text_kanji_high_mask, 0xFF);
@@ -3867,7 +3808,7 @@ mod tests {
 
     #[test]
     fn mode2_and_line_count_update_both_gdc_dot_clocks() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
         // Boot state has display_line_count=0x01 (400-line dot clock).
         assert_eq!(bus.gdc_master.state.dot_clock_hz, DOT_CLOCK_400LINE);
@@ -3896,9 +3837,8 @@ mod tests {
 
     #[test]
     fn gdc_grcg_tdw_ignores_pattern_off_writes() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
 
-        bus.set_grcg_chip(device::grcg::GRCG_CHIP_EGC);
         bus.grcg.write_mode(0x80);
         bus.grcg.state.tile = [0x5A, 0xA5, 0x3C, 0xC3];
 
@@ -3928,9 +3868,8 @@ mod tests {
 
     #[test]
     fn gdc_grcg_rmw_uses_active_mask_bits_only() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
 
-        bus.set_grcg_chip(device::grcg::GRCG_CHIP_EGC);
         bus.grcg.write_mode(0xC0);
         bus.grcg.state.tile = [0xFF, 0x00, 0x00, 0x00];
 
@@ -3961,15 +3900,14 @@ mod tests {
     }
 
     /// Helper: enable EGC extended mode via port 0x6A (mode2 bit3=permission, bit2=EGC).
-    fn enable_egc_mode(bus: &mut Pc9801Bus<crate::trace::NoTracing>) {
-        bus.set_grcg_chip(device::grcg::GRCG_CHIP_EGC);
+    fn enable_egc_mode(bus: &mut Pc9801Bus<NoTracing>) {
         bus.io_write_byte(0x6A, 0x07); // set bit3 (permission)
         bus.io_write_byte(0x6A, 0x05); // set bit2 (EGC extended mode)
     }
 
     #[test]
     fn egc_io_write_word_sets_register_atomically() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
         enable_egc_mode(&mut bus);
         bus.grcg.write_mode(0x80); // activate GRCG
 
@@ -3982,7 +3920,7 @@ mod tests {
 
     #[test]
     fn egc_io_write_word_noop_when_egc_inactive() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
         let old_sft = bus.egc.state.sft;
         bus.io_write_word(0x04AC, 0x1033);
         assert_eq!(bus.egc.state.sft, old_sft);
@@ -3990,8 +3928,7 @@ mod tests {
 
     #[test]
     fn grcg_tdw_write_byte_intercepts_e_plane() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
-        bus.set_grcg_chip(device::grcg::GRCG_CHIP_EGC);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
         bus.set_graphics_extension_enabled(true);
         bus.grcg.write_mode(0x80); // TDW mode, all planes enabled
 
@@ -4009,8 +3946,7 @@ mod tests {
 
     #[test]
     fn grcg_tcr_read_byte_intercepts_e_plane() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
-        bus.set_grcg_chip(device::grcg::GRCG_CHIP_EGC);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
         bus.set_graphics_extension_enabled(true);
         bus.grcg.write_mode(0x80); // TDW/TCR mode, all planes enabled
 
@@ -4028,8 +3964,7 @@ mod tests {
 
     #[test]
     fn grcg_tdw_write_word_intercepts_e_plane() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
-        bus.set_grcg_chip(device::grcg::GRCG_CHIP_EGC);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
         bus.set_graphics_extension_enabled(true);
         bus.grcg.write_mode(0x80); // TDW mode
         bus.grcg.state.tile = [0x11, 0x22, 0x33, 0x44];
@@ -4048,7 +3983,7 @@ mod tests {
 
     #[test]
     fn egc_aligned_word_write_charges_one_grcg_wait() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
         enable_egc_mode(&mut bus);
         bus.grcg.write_mode(0x80);
 
@@ -4059,7 +3994,7 @@ mod tests {
 
     #[test]
     fn egc_misaligned_word_write_charges_one_grcg_wait() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
         enable_egc_mode(&mut bus);
         bus.grcg.write_mode(0x80);
 
@@ -4073,7 +4008,7 @@ mod tests {
 
     #[test]
     fn egc_misaligned_word_read_charges_one_grcg_wait() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
         enable_egc_mode(&mut bus);
         bus.grcg.write_mode(0x80);
 
@@ -4087,8 +4022,7 @@ mod tests {
 
     #[test]
     fn gdc_grcg_tdw_writes_all_planes_regardless_of_plane_enable() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
-        bus.set_grcg_chip(device::grcg::GRCG_CHIP_EGC);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
         // TDW mode with only planes 0,2 enabled (bits 1,3 set = planes 1,3 disabled).
         bus.grcg.write_mode(0x8A);
         bus.grcg.state.tile = [0x11, 0x22, 0x33, 0x44];
@@ -4108,8 +4042,7 @@ mod tests {
 
     #[test]
     fn port_7c_read_returns_grcg_mode_register() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
-        bus.set_grcg_chip(device::grcg::GRCG_CHIP_EGC);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
 
         bus.grcg.write_mode(0xCA);
         let value = bus.io_read_byte(0x7C);
@@ -4122,7 +4055,7 @@ mod tests {
 
     #[test]
     fn gdc_egc_write_does_not_charge_cpu_wait() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
         enable_egc_mode(&mut bus);
         bus.grcg.write_mode(0x80);
 
@@ -4141,7 +4074,7 @@ mod tests {
 
     #[test]
     fn e_plane_read_charges_vram_wait() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
         bus.set_graphics_extension_enabled(true);
 
         bus.pending_wait_cycles = 0;
@@ -4154,7 +4087,7 @@ mod tests {
 
     #[test]
     fn e_plane_write_charges_vram_wait() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
         bus.set_graphics_extension_enabled(true);
 
         bus.pending_wait_cycles = 0;
@@ -4167,7 +4100,7 @@ mod tests {
 
     #[test]
     fn access_page_selects_vram_bank_for_cpu_writes() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
         // Write to page 0 (default).
         bus.write_byte(0xA8000, 0xAA);
@@ -4185,7 +4118,7 @@ mod tests {
 
     #[test]
     fn access_page_selects_vram_bank_for_cpu_reads() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
         let page1_base = super::GRAPHICS_PAGE_SIZE_BYTES;
         bus.memory.state.graphics_vram[0] = 0x11;
@@ -4202,7 +4135,7 @@ mod tests {
 
     #[test]
     fn access_page_selects_e_plane_bank() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
         bus.display_control.state.mode2 |= 0x01;
         bus.set_graphics_extension_enabled(true);
 
@@ -4222,7 +4155,7 @@ mod tests {
 
     #[test]
     fn display_page_selects_snapshot_bank() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
         let page1_base = super::GRAPHICS_PAGE_SIZE_BYTES;
         bus.memory.state.graphics_vram[0] = 0xAA; // page 0 B-plane
@@ -4240,12 +4173,11 @@ mod tests {
 
     #[test]
     fn grcg_tdw_operates_on_access_page() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
 
         // Seed page 0 B-plane with a known value before enabling GRCG.
         bus.memory.state.graphics_vram[0] = 0x42;
 
-        bus.set_grcg_chip(device::grcg::GRCG_CHIP_EGC);
         bus.grcg.write_mode(0x80); // TDW, all planes enabled
         bus.grcg.state.tile = [0x5A, 0xA5, 0x3C, 0x00];
 
@@ -4265,8 +4197,7 @@ mod tests {
 
     #[test]
     fn grcg_tcr_reads_from_access_page() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
-        bus.set_grcg_chip(device::grcg::GRCG_CHIP_EGC);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
         bus.grcg.write_mode(0x80); // TCR mode, all planes enabled
         bus.grcg.state.tile = [0xAA, 0xBB, 0xCC, 0x00];
 
@@ -4289,7 +4220,7 @@ mod tests {
 
     #[test]
     fn port_a6_read_returns_access_page() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_v30_grcg(48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
         assert_eq!(bus.io_read_byte(0xA6), 0x00);
 
@@ -4303,7 +4234,7 @@ mod tests {
 
     #[test]
     fn port_053d_shadow_ram_control() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_20mhz_386_egc(48000, 0x100000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
         bus.memory.set_shadow_control(0x00);
         assert_eq!(bus.memory.state.shadow_control, 0x00);
         bus.io_write_byte(0x053D, 0x82);
@@ -4312,7 +4243,7 @@ mod tests {
 
     #[test]
     fn port_053d_shadow_ram_boot_sequence() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_20mhz_386_egc(48000, 0x100000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
         bus.memory.set_shadow_control(0x00);
         let mut rom = vec![0xFFu8; 0x18000];
         rom[0] = 0xAA;
@@ -4343,7 +4274,7 @@ mod tests {
 
     #[test]
     fn port_043b_readback() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_20mhz_386_egc(48000, 0x100000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
         assert_eq!(bus.hole_15m_control, 0x00);
         bus.io_write_byte(0x043B, 0x55);
         assert_eq!(bus.hole_15m_control, 0x55);
@@ -4352,7 +4283,7 @@ mod tests {
 
     #[test]
     fn ram_window_blocked_when_bios_access_disabled() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_20mhz_386_egc(48000, 0x100000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
         // Shadow RAM read mode (bit 1) so we can read back writes to the BIOS range.
         bus.memory.set_shadow_control(0x02);
         // Map RAM window to E0000-FFFFF range (window value 0x0E → physical base 0xE0000).
@@ -4376,7 +4307,7 @@ mod tests {
 
     #[test]
     fn port_00f6_a20_control() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_20mhz_386_egc(48000, 0x100000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
         bus.a20_enabled = false;
         // 0x02 = release A20 mask.
         bus.io_write_byte(0xF6, 0x02);
@@ -4392,7 +4323,7 @@ mod tests {
 
     #[test]
     fn port_0567_readback() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_20mhz_386_egc(48000, 0x100000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
         assert_eq!(bus.io_read_byte(0x0567), 0xE0);
         bus.io_write_byte(0x0567, 0x42);
         assert_eq!(bus.io_read_byte(0x0567), 0x42);
@@ -4400,13 +4331,13 @@ mod tests {
 
     #[test]
     fn port_0cc4_returns_ff() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_20mhz_386_egc(48000, 0x100000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
         assert_eq!(bus.io_read_byte(0x0CC4), 0xFF);
     }
 
     #[test]
     fn sound_ports_0288_and_0388_do_not_alias_low_bank() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_20mhz_386_egc(48000, 0x100000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
         bus.install_soundboard_86(None);
 
         // Primary base 0x0188 works: reg 0xFF returns chip ID 0x01.
@@ -4420,7 +4351,7 @@ mod tests {
 
     #[test]
     fn port_a460_reports_86_id_and_mask_controls_opna() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_20mhz_386_egc(48000, 0x100000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
         bus.install_soundboard_86(None);
 
         assert_eq!(bus.io_read_byte(0xA460), 0x40);
@@ -4439,13 +4370,13 @@ mod tests {
 
     #[test]
     fn ram_window_default_identity() {
-        let bus = Pc9801Bus::<crate::trace::NoTracing>::new_20mhz_386_egc(48000, 0x100000);
+        let bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
         assert_eq!(bus.ram_window, 0x08);
     }
 
     #[test]
     fn ram_window_remaps_to_extended_ram() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_20mhz_386_egc(48000, 0x100000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
         // Set RAM window to 0x10 → physical base 0x100000 (1 MB).
         bus.ram_window = 0x10;
         // Write via remapped window.
@@ -4460,7 +4391,7 @@ mod tests {
 
     #[test]
     fn port_f0_cold_reset_preserves_shut_bits() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_286_egc(48000, 0);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
         // Set SHUT0=1 (bit 7) and SHUT1=1 (bit 5) via PPI control port.
         bus.io_write_byte(0x37, 0x0F); // set SHUT0
         bus.io_write_byte(0x37, 0x0B); // set SHUT1
@@ -4488,7 +4419,7 @@ mod tests {
 
     #[test]
     fn port_f0_warm_reset_captures_context() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_286_egc(48000, 0);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
         // Clear SHUT0 (bit 7) — leaves warm-reset mode.
         bus.io_write_byte(0x37, 0x0E); // clear SHUT0
         assert_eq!(
@@ -4522,7 +4453,7 @@ mod tests {
 
     #[test]
     fn port_f0_shutdown_sets_flag() {
-        let mut bus = Pc9801Bus::<crate::trace::NoTracing>::new_10mhz_286_egc(48000, 0);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
         // Set SHUT0=1 (bit 7), clear SHUT1 (bit 5) → shutdown.
         bus.io_write_byte(0x37, 0x0F); // set SHUT0
         bus.io_write_byte(0x37, 0x0A); // clear SHUT1

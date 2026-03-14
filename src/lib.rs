@@ -19,7 +19,7 @@ use sdl3::{
 };
 
 use crate::{
-    config::{AspectMode, EmulatorConfig, MachineType, WindowMode},
+    config::{AspectMode, EmulatorConfig, WindowMode},
     errors::Error,
     floppy_selector::{FloppyEntry, FloppySelector},
 };
@@ -44,8 +44,6 @@ pub const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 const INITIAL_WINDOW_WIDTH: u32 = 1280;
 const MAX_AUDIO_STEPS: usize = 40;
 const SAMPLE_RATE: f64 = audio_engine::SAMPLE_RATE as f64;
-const BIOS_ROM_SINGLE_BANK_SIZE: usize = 0x18000;
-const BIOS_ROM_DUAL_BANK_SIZE: usize = 0x30000;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -782,39 +780,23 @@ fn host_local_time_bcd() -> [u8; 6] {
 }
 
 fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
-    let mut bus: machine::Pc9801Bus<Tracer> = match config.machine {
-        MachineType::VM => machine::Pc9801Bus::new_10mhz_v30_grcg(sample_rate),
-        MachineType::VX => machine::Pc9801Bus::new_10mhz_286_egc(sample_rate, 0x400000),
-        MachineType::RA => machine::Pc9801Bus::new_20mhz_386_egc(sample_rate, 0xE00000),
-    };
+    let model = config.machine;
+    let mut bus: machine::Pc9801Bus<Tracer> = machine::Pc9801Bus::new(model, sample_rate);
     bus.set_host_local_time_fn(host_local_time_bcd);
 
     if let Some(ref bios_path) = config.bios_rom {
         let bios_rom = std::fs::read(bios_path)
             .with_context(|| format!("Failed to read BIOS ROM from {}", bios_path.display()))?;
 
-        match config.machine {
-            MachineType::VM => {
-                ensure!(
-                    bios_rom.len() == BIOS_ROM_SINGLE_BANK_SIZE,
-                    "BIOS ROM is {} bytes, expected exactly {} bytes (96 KB) for {}: {}",
-                    bios_rom.len(),
-                    BIOS_ROM_SINGLE_BANK_SIZE,
-                    config.machine,
-                    bios_path.display()
-                );
-            }
-            MachineType::VX | MachineType::RA => {
-                ensure!(
-                    bios_rom.len() == BIOS_ROM_DUAL_BANK_SIZE,
-                    "BIOS ROM is {} bytes, expected exactly {} bytes (192 KB dual-bank) for {}: {}",
-                    bios_rom.len(),
-                    BIOS_ROM_DUAL_BANK_SIZE,
-                    config.machine,
-                    bios_path.display()
-                );
-            }
-        }
+        let expected = model.bios_rom_size();
+        ensure!(
+            bios_rom.len() == expected,
+            "BIOS ROM is {} bytes, expected exactly {} bytes for {}: {}",
+            bios_rom.len(),
+            expected,
+            model,
+            bios_path.display()
+        );
 
         info!(
             "Loaded BIOS ROM ({} bytes) from {}",
@@ -911,19 +893,10 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
         bus.insert_hdd(1, image, Some(hdd2_path.clone()));
     }
 
-    let machine: Box<dyn Machine> = match config.machine {
-        MachineType::VM => {
-            let cpu = cpu::V30::new();
-            Box::new(machine::Machine::new(cpu, bus))
-        }
-        MachineType::VX => {
-            let cpu = cpu::I286::new();
-            Box::new(machine::Machine::new(cpu, bus))
-        }
-        MachineType::RA => {
-            let cpu = cpu::I386::new();
-            Box::new(machine::Machine::new(cpu, bus))
-        }
+    let machine: Box<dyn Machine> = match model.cpu_type() {
+        common::CpuType::V30 => Box::new(machine::Machine::new(cpu::V30::new(), bus)),
+        common::CpuType::I286 => Box::new(machine::Machine::new(cpu::I286::new(), bus)),
+        common::CpuType::I386 => Box::new(machine::Machine::new(cpu::I386::new(), bus)),
     };
 
     Ok(machine)

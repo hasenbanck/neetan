@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use common::{Context, StringError, bail, warn};
+use common::{Context, MachineModel, StringError, bail, warn};
 
 use crate::keymap::{self, KeyMap};
 
@@ -25,7 +25,7 @@ Commands:
 
 Options:
   -c, --config <PATH>         Load configuration from file
-      --machine <TYPE>        Machine type: VM, VX, RA
+      --machine <TYPE>        Machine type: PC9801VM, PC9801VX, PC9801RA
       --fdd1 <PATH>           Floppy disk image for drive 1 (repeatable)
       --fdd2 <PATH>           Floppy disk image for drive 2 (repeatable)
       --hdd1 <PATH>           Hard disk image for SASI drive 1
@@ -258,7 +258,7 @@ pub fn parse_args() -> crate::Result<Action> {
             }
             "--machine" => {
                 let val = value(&flag)?;
-                config.machine = val.parse::<MachineType>().map_err(StringError)?;
+                config.machine = val.parse::<MachineModel>().map_err(StringError)?;
             }
             "--fdd1" => config.fdd1.push(PathBuf::from(value(&flag)?)),
             "--fdd2" => config.fdd2.push(PathBuf::from(value(&flag)?)),
@@ -319,7 +319,7 @@ fn validate_paths(config: &EmulatorConfig) -> crate::Result<()> {
 }
 
 pub struct EmulatorConfig {
-    pub machine: MachineType,
+    pub machine: MachineModel,
     pub fdd1: Vec<PathBuf>,
     pub fdd2: Vec<PathBuf>,
     pub hdd1: Option<PathBuf>,
@@ -337,7 +337,7 @@ pub struct EmulatorConfig {
 impl Default for EmulatorConfig {
     fn default() -> Self {
         Self {
-            machine: MachineType::VX,
+            machine: MachineModel::PC9801VX,
             fdd1: Vec::new(),
             fdd2: Vec::new(),
             hdd1: None,
@@ -371,7 +371,7 @@ pub fn parse_config_file(path: &Path) -> crate::Result<EmulatorConfig> {
         let key = key.trim();
         let val = val.trim();
         match key {
-            "machine" => match val.parse::<MachineType>() {
+            "machine" => match val.parse::<MachineModel>() {
                 Ok(mt) => config.machine = mt,
                 Err(_) => warn!("Unknown machine type in config: {val}"),
             },
@@ -413,16 +413,6 @@ pub fn parse_config_file(path: &Path) -> crate::Result<EmulatorConfig> {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum MachineType {
-    /// PC-9801VM
-    VM,
-    /// PC-9801VX
-    VX,
-    /// PC-9801RA
-    RA,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum AspectMode {
     Aspect4By3,
     Aspect1By1,
@@ -433,16 +423,6 @@ impl std::fmt::Display for AspectMode {
         match self {
             Self::Aspect4By3 => f.write_str("4:3"),
             Self::Aspect1By1 => f.write_str("1:1"),
-        }
-    }
-}
-
-impl std::fmt::Display for MachineType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::VM => f.write_str("VM"),
-            Self::VX => f.write_str("VX"),
-            Self::RA => f.write_str("RA"),
         }
     }
 }
@@ -482,21 +462,6 @@ impl std::str::FromStr for SoundboardType {
             "86+26k" => Ok(Self::Sb86And26k),
             _ => Err(format!(
                 "unknown soundboard type '{s}', expected none, 26k, 86, or 86+26k"
-            )),
-        }
-    }
-}
-
-impl std::str::FromStr for MachineType {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_ascii_uppercase().as_str() {
-            "VM" => Ok(Self::VM),
-            "VX" => Ok(Self::VX),
-            "RA" => Ok(Self::RA),
-            _ => Err(format!(
-                "unknown machine type '{s}', expected VM, VX, or RA"
             )),
         }
     }

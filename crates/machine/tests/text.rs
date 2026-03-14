@@ -3,7 +3,7 @@ use std::{
     process::Command,
 };
 
-use common::JisChar;
+use common::{JisChar, MachineModel};
 use machine::{Pc9801Bus, Pc9801Vm};
 
 const CYCLES_PER_STEP: u64 = 200_000;
@@ -62,7 +62,7 @@ fn debug_text_debug_firmware_pages_and_wrap() {
     let firmware_data = std::fs::read(&firmware_path)
         .unwrap_or_else(|error| panic!("Failed to read {}: {error}", firmware_path.display()));
 
-    let mut bus = Pc9801Bus::new_10mhz_v30_grcg(48_000);
+    let mut bus = Pc9801Bus::new(MachineModel::PC9801VM, 48_000);
     bus.load_bios_rom(&firmware_data);
 
     let mut machine = Pc9801Vm::new(cpu::V30::new(), bus);

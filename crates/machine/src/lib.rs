@@ -12,6 +12,7 @@ mod machine;
 mod memory;
 mod trace;
 
+use common::MachineModel;
 pub use common::SchedulerState;
 use device::{
     beeper::BeeperState, cgrom::CgromState, display_control::DisplayControlState, egc::EgcState,
@@ -42,6 +43,8 @@ pub enum CpuState {
 pub struct MachineState {
     /// CPU register snapshot.
     pub cpu: CpuState,
+    /// Machine model.
+    pub machine_model: MachineModel,
     /// Memory subsystem snapshot.
     pub memory: Pc9801MemoryState,
     /// Clock configuration.
