@@ -9,7 +9,7 @@ use crate::{
     plumbing::{ColorTargetImage, CommandEncoder},
 };
 
-/// Renders the compose pass (Stage 1): text VRAM to native-resolution target (640×400).
+/// Renders the compose pass (Stage 1): text VRAM to native-resolution target (640×480).
 pub(crate) fn render_compose_pass(
     encoder: &mut CommandEncoder,
     native_target: &ColorTargetImage,

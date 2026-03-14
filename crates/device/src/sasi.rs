@@ -11,10 +11,10 @@ mod lle;
 use std::{cell::Cell, path::PathBuf};
 
 use common::error;
-pub use hle::{buffer_address, drive_index, sector_position, transfer_size};
 pub use lle::{SasiAction, SasiPhase};
 
 use crate::disk::{HddGeometry, HddImage};
+pub use crate::disk_hle::{buffer_address, drive_index, sector_position, transfer_size};
 
 /// Size of the expansion ROM window mapped at 0xD7000.
 pub const ROM_SIZE: usize = 4096;
@@ -124,7 +124,7 @@ impl SasiController {
         buf_addr: u32,
         write_byte: impl FnMut(u32, u8),
     ) -> u8 {
-        hle::execute_read(
+        crate::disk_hle::execute_read(
             drive_idx,
             xfer_size,
             sector_pos,
@@ -144,7 +144,7 @@ impl SasiController {
         buf_addr: u32,
         read_byte: impl Fn(u32) -> u8,
     ) -> u8 {
-        let status = hle::execute_write(
+        let status = crate::disk_hle::execute_write::<256>(
             drive_idx,
             xfer_size,
             sector_pos,
@@ -166,12 +166,12 @@ impl SasiController {
     /// Executes a BIOS init: returns the disk equipment word.
     /// Preserves non-SASI bits from `current_equip`.
     pub fn execute_init(&self, current_equip: u16) -> u16 {
-        hle::execute_init(&self.drives, current_equip)
+        crate::disk_hle::execute_init(&self.drives, current_equip)
     }
 
     /// Executes a BIOS format on a track. Marks the drive dirty on success.
     pub fn execute_format(&mut self, drive_idx: usize, sector_pos: u32) -> u8 {
-        let status = hle::execute_format(drive_idx, sector_pos, &mut self.drives);
+        let status = crate::disk_hle::execute_format(drive_idx, sector_pos, &mut self.drives);
         if status == 0x00 {
             self.drive_dirty[drive_idx] = true;
         }

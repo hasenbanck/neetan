@@ -653,3 +653,174 @@ fn mouse_timer_fires_regardless_of_ppi_mode_bit3() {
     assert!(bus.has_irq());
     assert_eq!(bus.acknowledge_irq(), 0x15);
 }
+
+#[test]
+fn sdip_ports_return_parity_correct_defaults_on_pc9821() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821, 48000);
+
+    // Most SDIP bytes have per-byte odd parity. The BIOS checks this during
+    // POST and shows "SET THE SOFTWARE DIP SWITCH" if any check fails.
+    // Exception: 0x891E and 0x8A1E share combined odd parity across both bytes.
+    // Ref: undoc98 `io_sdip.txt`
+    let per_byte_parity_ports: [u16; 10] = [
+        0x841E, 0x851E, 0x861E, 0x871E, 0x881E, 0x8B1E, 0x8C1E, 0x8D1E, 0x8E1E, 0x8F1E,
+    ];
+
+    for &port in &per_byte_parity_ports {
+        let value = bus.io_read_byte(port);
+        let ones = value.count_ones();
+        assert!(
+            ones % 2 == 1,
+            "SDIP port {port:#06X} value {value:#04X} has {ones} ones (must be odd parity)"
+        );
+    }
+
+    // 0x891E + 0x8A1E use combined odd parity (bit 7 of 0x8A1E is the parity
+    // bit for the pair). Total 1-bits across both bytes must be odd.
+    let modem_a = bus.io_read_byte(0x891E);
+    let modem_b = bus.io_read_byte(0x8A1E);
+    let combined_ones = modem_a.count_ones() + modem_b.count_ones();
+    assert!(
+        combined_ones % 2 == 1,
+        "SDIP 0x891E+0x8A1E combined {modem_a:#04X}+{modem_b:#04X} has {combined_ones} ones (must be odd)"
+    );
+
+    // Verify specific critical defaults:
+    // 0x841E: GRPH extended, 512B HDD sectors, RS-232C async, FDD 1/2
+    assert_eq!(bus.io_read_byte(0x841E), 0xF8);
+    // 0x851E: GDC 2.5 MHz, HDD connected, 25 lines, 80 cols
+    assert_eq!(bus.io_read_byte(0x851E), 0xE3);
+    // 0x871E bit 5: MEMSW init = 1 (do initialize memory switches)
+    assert_ne!(bus.io_read_byte(0x871E) & 0x20, 0);
+}
+
+#[test]
+fn sdip_read_write_roundtrip() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821, 48000);
+
+    // Write a test value to SDIP port 0x841E and read it back.
+    bus.io_write_byte(0x841E, 0x42);
+    assert_eq!(bus.io_read_byte(0x841E), 0x42);
+
+    // Write to a different port and verify independence.
+    bus.io_write_byte(0x851E, 0x55);
+    assert_eq!(bus.io_read_byte(0x851E), 0x55);
+    assert_eq!(bus.io_read_byte(0x841E), 0x42);
+}
+
+#[test]
+fn sdip_bank_selection_via_port_f6() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821, 48000);
+
+    // Read front bank default at offset 0.
+    let _front_default = bus.io_read_byte(0x841E);
+
+    // Write a test value to front bank.
+    bus.io_write_byte(0x841E, 0xAA);
+    assert_eq!(bus.io_read_byte(0x841E), 0xAA);
+
+    // Select back bank via port 0xF6 (0xE0 = back, bit 6 = 1).
+    bus.io_write_byte(0xF6, 0xE0);
+    let back_value = bus.io_read_byte(0x841E);
+    assert_ne!(
+        back_value, 0xAA,
+        "back bank should be independent from front"
+    );
+
+    // Write to back bank.
+    bus.io_write_byte(0x841E, 0xBB);
+    assert_eq!(bus.io_read_byte(0x841E), 0xBB);
+
+    // Select front bank via port 0xF6 (0xA0 = front, bit 6 = 0).
+    bus.io_write_byte(0xF6, 0xA0);
+    assert_eq!(
+        bus.io_read_byte(0x841E),
+        0xAA,
+        "front bank should be preserved"
+    );
+
+    // Verify back bank value via port 0xF6 again.
+    bus.io_write_byte(0xF6, 0xE0);
+    assert_eq!(
+        bus.io_read_byte(0x841E),
+        0xBB,
+        "back bank should be preserved"
+    );
+
+    // Verify that other 0xF6 values still control A20 (not SDIP bank).
+    bus.io_write_byte(0xF6, 0xA0); // back to front
+    bus.io_write_byte(0xF6, 0x02); // A20 enable — should NOT switch bank
+    assert_eq!(
+        bus.io_read_byte(0x841E),
+        0xAA,
+        "A20 write must not switch bank"
+    );
+}
+
+#[test]
+fn sdip_bank_selection_via_port_8f1f() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821, 48000);
+
+    // Write to front bank.
+    bus.io_write_byte(0x841E, 0xCC);
+
+    // Select back bank via port 0x8F1F (0xC0 = back, bit 6 = 1).
+    bus.io_write_byte(0x8F1F, 0xC0);
+    assert_ne!(bus.io_read_byte(0x841E), 0xCC);
+
+    // Select front bank via port 0x8F1F (0x80 = front, bit 6 = 0).
+    bus.io_write_byte(0x8F1F, 0x80);
+    assert_eq!(bus.io_read_byte(0x841E), 0xCC);
+}
+
+#[test]
+fn sdip_ports_not_present_on_pc9801() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+
+    // SDIP ports should return open bus (0xFF) on PC-9801 models.
+    assert_eq!(bus.io_read_byte(0x841E), 0xFF);
+    assert_eq!(bus.io_read_byte(0x8F1E), 0xFF);
+}
+
+#[test]
+fn wab_relay_default_matches_np21w() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821, 48000);
+
+    // NP21W returns 0xFC | relay_state on reads. Initial relay state = 0,
+    // so reads return 0xFC (bits [7:2] high, bits [1:0] clear).
+    // Ref: NP21W wab/wab.c:527 (np2wab_ifac)
+    assert_eq!(bus.io_read_byte(0x0FAC), 0xFC);
+
+    // Writing updates the relay register.
+    bus.io_write_byte(0x0FAC, 0x03);
+    assert_eq!(bus.io_read_byte(0x0FAC), 0x03);
+}
+
+#[test]
+fn port_31_reads_sdip_front_bank_regardless_of_bank_select() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821, 48000);
+
+    // Port 0x31 should always read SDIP front bank register 1.
+    // Default front bank register 1 = 0xE3 (GDC 2.5 MHz, HDD, 25 lines, 80 cols).
+    assert_eq!(bus.io_read_byte(0x31), 0xE3);
+
+    // Write a known value to front bank SDIP port 0x851E (register 1).
+    bus.io_write_byte(0x851E, 0x42);
+    assert_eq!(bus.io_read_byte(0x31), 0x42);
+
+    // Switch to back bank via port 0x8F1F.
+    bus.io_write_byte(0x8F1F, 0xC0);
+
+    // Port 0x31 must still return the front bank value.
+    assert_eq!(bus.io_read_byte(0x31), 0x42);
+
+    // Write to back bank register 1 via SDIP port 0x851E.
+    bus.io_write_byte(0x851E, 0x99);
+
+    // Port 0x31 must still return the front bank value, not the back bank.
+    assert_eq!(bus.io_read_byte(0x31), 0x42);
+
+    // Switch back to front bank and verify SDIP port 0x851E shows front value.
+    bus.io_write_byte(0x8F1F, 0x80);
+    assert_eq!(bus.io_read_byte(0x851E), 0x42);
+}

@@ -4,8 +4,9 @@ use device::{
 };
 
 use super::{
-    TEST_CODE, boot_and_run_ra, boot_and_run_vm, boot_and_run_vx, build_2hd_d88, create_machine_ra,
-    create_machine_vm, create_machine_vx, read_ivt_vector, read_ram_u16, write_bytes,
+    TEST_CODE, boot_and_run_ra, boot_and_run_vm, boot_and_run_vx, build_2hd_d88,
+    create_machine_pc9821, create_machine_ra, create_machine_vm, create_machine_vx,
+    read_ivt_vector, read_ram_u16, write_bytes,
 };
 
 const RESULT: u32 = 0x0600;
@@ -95,9 +96,8 @@ fn make_sasi_test_drive() -> HddImage {
         data[offset] = (lba >> 8) as u8;
         data[offset + 1] = lba as u8;
     }
-    // Sector 0 is the IPL — the BIOS reads it and does `call far IPL_SEGMENT:0`.
-    // Put a RETF (0xCB) so the boot attempt returns cleanly to the BIOS.
-    data[0] = 0xCB;
+    data[0] = 0xFA; // CLI
+    data[1] = 0xF4; // HLT
     HddImage::from_raw(geometry, HddFormat::Thd, data)
 }
 
@@ -1761,16 +1761,16 @@ fn int1bh_sasi_sense_no_drive_ra() {
 fn assert_sasi_read_chs(ram: &[u8; 0xA0000]) {
     assert_result_ah(ram, 0x00, "SASI read CHS");
     let buf_start = DATA_BUFFER as usize;
-    // LBA 0 byte 0 is 0xCB (RETF stub for clean IPL boot return).
+    // LBA 0 bytes 0-1 are CLI+HLT (boot sector stub).
     assert_eq!(
-        ram[buf_start], 0xCB,
-        "LBA 0 byte 0 should be 0xCB (IPL RETF stub, got {:#04X})",
+        ram[buf_start], 0xFA,
+        "LBA 0 byte 0 should be 0xFA (CLI, got {:#04X})",
         ram[buf_start]
     );
     assert_eq!(
         ram[buf_start + 1],
-        0x00,
-        "LBA 0 marker low byte should be 0x00 (got {:#04X})",
+        0xF4,
+        "LBA 0 byte 1 should be 0xF4 (HLT, got {:#04X})",
         ram[buf_start + 1]
     );
 }
@@ -2589,4 +2589,328 @@ fn int1bh_fdd_write_single_sector_drive1_vx() {
         sector.data.iter().all(|&b| b == 0xBB),
         "sector 1 data should be all 0xBB after write"
     );
+}
+
+const DA_IDE_CHS_DRIVE0: u8 = 0x80;
+
+fn make_ide_test_drive() -> HddImage {
+    let geometry = HddGeometry {
+        cylinders: 20,
+        heads: 4,
+        sectors_per_track: 17,
+        sector_size: 512,
+    };
+    let total = geometry.total_bytes() as usize;
+    let mut data = vec![0u8; total];
+    for lba in 0..geometry.total_sectors() {
+        let offset = lba as usize * 512;
+        data[offset] = (lba >> 8) as u8;
+        data[offset + 1] = lba as u8;
+    }
+    data[0] = 0xFA; // CLI
+    data[1] = 0xF4; // HLT
+    HddImage::from_raw(geometry, HddFormat::Hdi, data)
+}
+
+fn boot_and_run_ide_pc9821(
+    code: &[u8],
+    hdd: Option<(usize, HddImage)>,
+    budget: u64,
+) -> machine::Pc9821 {
+    let mut machine = create_machine_pc9821();
+    if let Some((drive, image)) = hdd {
+        machine.bus.insert_hdd(drive, image, None);
+    }
+    boot_to_halt!(machine);
+    write_bytes(&mut machine.bus, TEST_CODE, code);
+    machine.cpu.load_state(&{
+        let mut s = cpu::I386State {
+            ip: TEST_CODE as u16,
+            ..Default::default()
+        };
+        s.set_esp(0x4000);
+        s
+    });
+    machine.run_for(budget);
+    machine
+}
+
+#[rustfmt::skip]
+fn make_int1bh_ide_sense_new(al: u8) -> Vec<u8> {
+    vec![
+        0xB8, al, 0x84,                // MOV AX, 0x84:al
+        0xCD, 0x1B,                     // INT 0x1B
+        0xA3, 0x00, 0x06,              // MOV [RESULT], AX
+        0x89, 0x1E, 0x02, 0x06,        // MOV [RESULT+2], BX
+        0x89, 0x0E, 0x04, 0x06,        // MOV [RESULT+4], CX
+        0x89, 0x16, 0x06, 0x06,        // MOV [RESULT+6], DX
+        0xF4,                           // HLT
+    ]
+}
+
+#[test]
+fn int1bh_ide_initialize_pc9821() {
+    let code = make_int1bh_simple(0x03, DA_IDE_CHS_DRIVE0);
+    let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x00, "IDE init");
+    let disk_equip = read_ram_u16(&state.memory.ram, DISK_EQUIP);
+    assert_eq!(
+        disk_equip & 0x0100,
+        0x0100,
+        "IDE drive 0 should be present in equipment word (got {disk_equip:#06X})"
+    );
+}
+
+#[test]
+fn int1bh_ide_verify_pc9821() {
+    let code = make_int1bh_simple(0x01, DA_IDE_CHS_DRIVE0);
+    let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x00, "IDE verify");
+}
+
+#[test]
+fn int1bh_ide_sense_pc9821() {
+    let code = make_int1bh_simple(0x04, DA_IDE_CHS_DRIVE0);
+    let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x0F, "IDE sense");
+}
+
+#[test]
+fn int1bh_ide_sense_new_pc9821() {
+    let code = make_int1bh_ide_sense_new(DA_IDE_CHS_DRIVE0);
+    let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x0F, "IDE new sense");
+    let bx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
+    assert_eq!(bx, 0x0200, "BX should be sector size (512)");
+    let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 4);
+    assert_eq!(cx, 19, "CX should be cylinders - 1 (20 - 1 = 19)");
+    let dx = read_ram_u16(&state.memory.ram, RESULT as usize + 6);
+    assert_eq!(dx, 0x0411, "DX should encode DH=heads(4), DL=sectors(17)");
+}
+
+#[test]
+fn int1bh_ide_sense_no_drive_pc9821() {
+    let code = make_int1bh_simple(0x04, 0x81);
+    let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x60, "IDE sense no drive");
+}
+
+#[test]
+fn int1bh_ide_read_chs_pc9821() {
+    let code = make_int1bh_sasi_rw(
+        0x06,
+        DA_IDE_CHS_DRIVE0,
+        512,
+        0x0000,
+        0x0005,
+        0x0000,
+        DATA_BUFFER as u16,
+    );
+    let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x00, "IDE read CHS");
+    assert_eq!(
+        state.memory.ram[DATA_BUFFER as usize], 0x00,
+        "sector 5 byte 0 (LBA high)"
+    );
+    assert_eq!(
+        state.memory.ram[DATA_BUFFER as usize + 1],
+        0x05,
+        "sector 5 byte 1 (LBA low)"
+    );
+}
+
+#[test]
+fn int1bh_ide_read_no_drive_pc9821() {
+    let code = make_int1bh_sasi_rw(0x06, 0x81, 512, 0, 0, 0x0000, DATA_BUFFER as u16);
+    let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x60, "IDE read no drive");
+}
+
+fn make_ide_write_and_readback_code() -> Vec<u8> {
+    let buf_lo = (DATA_BUFFER & 0xFF) as u8;
+    let buf_hi = ((DATA_BUFFER >> 8) & 0xFF) as u8;
+    let result_lo = (RESULT & 0xFF) as u8;
+    let result_hi = ((RESULT >> 8) & 0xFF) as u8;
+    vec![
+        // Fill DATA_BUFFER with 0xCC (512 bytes using REP STOSB)
+        0x31,
+        0xC0, // XOR AX, AX
+        0x8E,
+        0xC0, // MOV ES, AX
+        0xBF,
+        buf_lo,
+        buf_hi, // MOV DI, DATA_BUFFER
+        0xB0,
+        0xCC, // MOV AL, 0xCC
+        0xB9,
+        0x00,
+        0x02, // MOV CX, 512
+        0xFC, // CLD
+        0xF3,
+        0xAA, // REP STOSB
+        // INT 1Bh IDE write: AH=0x05, AL=0x80 (CHS drive 0)
+        0x31,
+        0xC0, // XOR AX, AX
+        0x8E,
+        0xC0, // MOV ES, AX
+        0xBD,
+        buf_lo,
+        buf_hi, // MOV BP, DATA_BUFFER
+        0xBB,
+        0x00,
+        0x02, // MOV BX, 512
+        0xB9,
+        0x00,
+        0x00, // MOV CX, cylinder=0
+        0xBA,
+        0x01,
+        0x00, // MOV DX, head=0, sector=1
+        0xB8,
+        0x80,
+        0x05, // MOV AX, 0x05:0x80
+        0xCD,
+        0x1B, // INT 0x1B
+        0xA3,
+        result_lo,
+        result_hi, // MOV [RESULT], AX
+        // Clear buffer before readback
+        0x31,
+        0xC0, // XOR AX, AX
+        0x8E,
+        0xC0, // MOV ES, AX
+        0xBF,
+        buf_lo,
+        buf_hi, // MOV DI, DATA_BUFFER
+        0xB0,
+        0x00, // MOV AL, 0x00
+        0xB9,
+        0x00,
+        0x02, // MOV CX, 512
+        0xFC, // CLD
+        0xF3,
+        0xAA, // REP STOSB
+        // INT 1Bh IDE read: AH=0x06, AL=0x80 (CHS drive 0), same C/H/S
+        0x31,
+        0xC0, // XOR AX, AX
+        0x8E,
+        0xC0, // MOV ES, AX
+        0xBD,
+        buf_lo,
+        buf_hi, // MOV BP, DATA_BUFFER
+        0xBB,
+        0x00,
+        0x02, // MOV BX, 512
+        0xB9,
+        0x00,
+        0x00, // MOV CX, cylinder=0
+        0xBA,
+        0x01,
+        0x00, // MOV DX, head=0, sector=1
+        0xB8,
+        0x80,
+        0x06, // MOV AX, 0x06:0x80
+        0xCD,
+        0x1B, // INT 0x1B
+        0x89,
+        0x06,
+        (result_lo + 2),
+        result_hi, // MOV [RESULT+2], AX
+        0xF4,      // HLT
+    ]
+}
+
+#[test]
+fn int1bh_ide_write_chs_pc9821() {
+    let code = make_ide_write_and_readback_code();
+    let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    let write_ax = read_ram_u16(&state.memory.ram, RESULT as usize);
+    let write_ah = (write_ax >> 8) as u8;
+    assert_eq!(
+        write_ah, 0x00,
+        "IDE write AH should be 0x00 (got {write_ah:#04X})"
+    );
+    let read_ax = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
+    let read_ah = (read_ax >> 8) as u8;
+    assert_eq!(
+        read_ah, 0x00,
+        "IDE readback AH should be 0x00 (got {read_ah:#04X})"
+    );
+    for i in 0..512usize {
+        assert_eq!(
+            state.memory.ram[DATA_BUFFER as usize + i],
+            0xCC,
+            "readback mismatch at offset {i}"
+        );
+    }
+}
+
+#[test]
+fn int1bh_ide_retract_pc9821() {
+    let code = make_int1bh_simple(0x07, DA_IDE_CHS_DRIVE0);
+    let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x00, "IDE retract");
+}
+
+#[test]
+fn int1bh_ide_mode_set_pc9821() {
+    let code = make_int1bh_simple(0x0E, DA_IDE_CHS_DRIVE0);
+    let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x00, "IDE mode set");
+}
+
+#[test]
+fn int1bh_ide_format_pc9821() {
+    let code = make_int1bh_sasi_rw(0x0D, DA_IDE_CHS_DRIVE0, 0, 0x0001, 0x0000, 0x0000, 0x0000);
+    let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x00, "IDE format");
+}
+
+// INT 1Bh function codes with high nibble set must be dispatched correctly
+// via the lower nibble mask (e.g. AH=0x8E → mode set, AH=0x21 → verify).
+
+#[test]
+fn int1bh_ide_mode_set_high_nibble_pc9821() {
+    // AH=0x8E: lower nibble 0x0E = mode set. Must succeed like AH=0x0E.
+    let code = make_int1bh_simple(0x8E, DA_IDE_CHS_DRIVE0);
+    let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x00, "IDE mode set AH=0x8E");
+}
+
+#[test]
+fn int1bh_ide_verify_high_nibble_pc9821() {
+    // AH=0x21: lower nibble 0x01 = verify. Must succeed like AH=0x01.
+    let code = make_int1bh_simple(0x21, DA_IDE_CHS_DRIVE0);
+    let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x00, "IDE verify AH=0x21");
+}
+
+#[test]
+fn int1bh_sasi_mode_set_high_nibble_ra() {
+    // AH=0x8E: lower nibble 0x0E = mode set. Must succeed like AH=0x0E.
+    let code = make_int1bh_simple(0x8E, DA_SASI_CHS_DRIVE0);
+    let machine = boot_and_run_sasi_ra(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x00, "SASI mode set AH=0x8E");
+}
+
+#[test]
+fn int1bh_sasi_verify_high_nibble_ra() {
+    // AH=0x21: lower nibble 0x01 = verify. Must succeed like AH=0x01.
+    let code = make_int1bh_simple(0x21, DA_SASI_CHS_DRIVE0);
+    let machine = boot_and_run_sasi_ra(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x00, "SASI verify AH=0x21");
 }

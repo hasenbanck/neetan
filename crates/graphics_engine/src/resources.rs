@@ -39,7 +39,7 @@ impl Resources {
             layout_transitioner,
             vk::Format::R8G8B8A8_SRGB,
             640,
-            400,
+            480,
         )
         .context("Can't create native-resolution target")?;
 
@@ -89,7 +89,7 @@ impl Resources {
         &self.color_target
     }
 
-    /// Returns a reference to the native-resolution target image (640x400).
+    /// Returns a reference to the native-resolution target image (640x480).
     pub(crate) fn native_target(&self) -> &ColorTargetImage {
         &self.native_target
     }

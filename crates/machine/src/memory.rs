@@ -87,6 +87,9 @@ const ITF_BANK_SWITCH_START: u32 = 0xF8000;
 ///   then copy BIOS ROM to bank1 offset `0x18000`.
 const BIOS_ROM_DUAL_BANK_IMAGE_SIZE: usize = BIOS_ROM_SIZE * 2;
 
+/// PEGC extended VRAM size (512 KB). Only allocated for PC-9821 machines.
+const PEGC_VRAM_SIZE: usize = 0x80000;
+
 /// Character generator ROM size (528 KB).
 const FONT_ROM_SIZE: usize = 0x84000;
 
@@ -121,6 +124,8 @@ pub struct Pc9801MemoryState {
     pub graphics_vram: Box<[u8; GRAPHICS_VRAM_SIZE]>,
     /// Extended graphics VRAM E-plane (32 KB per page, two pages total).
     pub e_plane_vram: Box<[u8; E_PLANE_VRAM_SIZE]>,
+    /// PEGC extended VRAM (512 KB). Only present on PC-9821 machines.
+    pub pegc_vram: Option<Box<[u8; PEGC_VRAM_SIZE]>>,
     /// Whether E-plane VRAM is currently mapped at E0000-E7FFF.
     pub e_plane_enabled: bool,
     /// CPU address mask.
@@ -150,6 +155,13 @@ impl fmt::Debug for Pc9801MemoryState {
             .field(
                 "e_plane_vram",
                 &format_args!("[u8; {:#X}]", self.e_plane_vram.len()),
+            )
+            .field(
+                "pegc_vram",
+                &self
+                    .pegc_vram
+                    .as_ref()
+                    .map(|v| format!("[u8; {:#X}]", v.len())),
             )
             .field("e_plane_enabled", &self.e_plane_enabled)
             .field("address_mask", &format_args!("{:#010X}", self.address_mask))
@@ -275,6 +287,16 @@ impl Pc9801Memory {
                     .try_into()
                     .unwrap(),
                 e_plane_vram: Box::new([0u8; E_PLANE_VRAM_SIZE]),
+                pegc_vram: if machine_model.has_pegc() {
+                    Some(
+                        vec![0u8; PEGC_VRAM_SIZE]
+                            .into_boxed_slice()
+                            .try_into()
+                            .unwrap(),
+                    )
+                } else {
+                    None
+                },
                 e_plane_enabled: false,
                 address_mask: machine_model.address_mask(),
                 shadow_ram,
@@ -356,7 +378,7 @@ impl Pc9801Memory {
         // Format table offsets differ between BIOS generations (RA vs others).
         let (f2hd_ind, f2hd_data, f2dd_ind, f2dd_data): (usize, usize, usize, usize) =
             match machine_model {
-                MachineModel::PC9801RA => (0x1AAF, 0x1AB7, 0x1AD7, 0x1ADF),
+                MachineModel::PC9801RA | MachineModel::PC9821 => (0x1AAF, 0x1AB7, 0x1AD7, 0x1ADF),
                 MachineModel::PC9801VM | MachineModel::PC9801VX => (0x1AB4, 0x1ABC, 0x1ADC, 0x1AE4),
             };
 

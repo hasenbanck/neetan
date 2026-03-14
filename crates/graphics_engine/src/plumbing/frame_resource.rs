@@ -19,6 +19,8 @@ pub(crate) struct FrameResources {
     pub(crate) descriptors: FrameDescriptorSets,
     /// Per-frame upload buffer for CPU->GPU VRAM data transfer.
     pub(crate) upload_buffer: MappedBuffer,
+    /// Per-frame PEGC buffer for 256-color VRAM + palette (512 KB + metadata).
+    pub(crate) pegc_buffer: MappedBuffer,
     /// Tracks which descriptor version this frame's descriptors were last written at.
     pub(crate) last_descriptor_version: u64,
     /// Present ID for VK_KHR_present_id2 if supported.

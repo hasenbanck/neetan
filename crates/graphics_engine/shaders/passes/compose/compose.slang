@@ -36,6 +36,15 @@ struct FontRomData {
 
 [[vk::binding(3, 1)]] StructuredBuffer<FontRomData> font_rom_buffer;
 
+struct PegcSnapshotUpload {
+    uint palette_rgba_256[256];
+    uint pegc_flags;
+    uint reserved[3];
+    uint pegc_vram[131072];
+};
+
+[[vk::binding(4, 1)]] StructuredBuffer<PegcSnapshotUpload> pegc_buffer;
+
 [[shader("vertex")]]
 func vs_main(uint vertex_index : SV_VulkanVertexID) -> FullscreenVertex {
     return FullscreenVertex::new(vertex_index);
@@ -47,13 +56,20 @@ func fs_main(FullscreenVertex input) -> float4 {
     let x = uint(pixel.x);
     let y = uint(pixel.y);
 
-    if (x >= 640 || y >= 400) {
+    let is_pegc_256_color = (upload_buffer[0].display_flags & 0x80) != 0;
+    let max_y = is_pegc_256_color && ((pegc_buffer[0].pegc_flags & 0x02) != 0) ? 480u : 400u;
+
+    if (x >= 640 || y >= max_y) {
         return float4(0.0, 0.0, 0.0, 1.0);
     }
 
     let display_enabled_global = (upload_buffer[0].display_flags & 0x40) != 0;
     if (!display_enabled_global) {
         return float4(0.0, 0.0, 0.0, 1.0);
+    }
+
+    if (is_pegc_256_color) {
+        return compute_pegc_composited_pixel(x, y);
     }
 
     let graphics_enabled = (upload_buffer[0].display_flags & 0x20) != 0;
@@ -91,6 +107,61 @@ func fs_main(FullscreenVertex input) -> float4 {
 
     let packed = upload_buffer[0].palette_rgba[color_index];
     return color::unpack_srgb(packed);
+}
+
+[ForceInline]
+func compute_pegc_composited_pixel(x: uint, y: uint) -> float4 {
+    let text_enabled = (upload_buffer[0].display_flags & 0x10) != 0;
+    var text_on: bool;
+    var text_color_index: uint;
+    if (text_enabled) {
+        compute_text_pixel(x, y, text_on, text_color_index);
+    } else {
+        text_on = false;
+        text_color_index = 0;
+    }
+
+    if (text_on) {
+        let packed = upload_buffer[0].palette_rgba[text_color_index];
+        return color::unpack_srgb(packed);
+    }
+
+    let graphics_enabled = (upload_buffer[0].display_flags & 0x20) != 0;
+    if (!graphics_enabled) {
+        return float4(0.0, 0.0, 0.0, 1.0);
+    }
+
+    let is_one_screen = (pegc_buffer[0].pegc_flags & 0x02) != 0;
+    let display_page = (pegc_buffer[0].pegc_flags >> 2) & 1;
+    let pitch = upload_buffer[0].gdc_graphics_pitch;
+    let pixel_address = compute_pegc_address(x, y, pitch, is_one_screen, display_page);
+    let word_index = pixel_address / 4;
+    let byte_position = pixel_address % 4;
+    let word = pegc_buffer[0].pegc_vram[word_index];
+    let palette_index = (word >> (byte_position * 8)) & 0xFF;
+
+    let packed = pegc_buffer[0].palette_rgba_256[palette_index];
+    return color::unpack_srgb(packed);
+}
+
+[ForceInline]
+func compute_pegc_address(x: uint, y: uint, pitch: uint, is_one_screen: bool, display_page: uint) -> uint {
+    let vram_size = is_one_screen ? 0x80000u : 0x40000u;
+    let page_base = (!is_one_screen && display_page != 0) ? vram_size : 0u;
+    var scanline = y;
+    for (uint i = 0; i < 4; i++) {
+        let scroll = upload_buffer[0].gdc_graphics_scroll[i];
+        let start_address = unpack_low_u16(scroll);
+        let line_count = unpack_high_u16(scroll);
+        if (line_count == 0) {
+            continue;
+        }
+        if (scanline < line_count) {
+            return (page_base + start_address * 2 + scanline * pitch * 2 + x) & (vram_size - 1);
+        }
+        scanline -= line_count;
+    }
+    return page_base;
 }
 
 [ForceInline]

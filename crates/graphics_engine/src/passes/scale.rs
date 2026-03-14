@@ -14,6 +14,8 @@ pub(crate) fn render_scale_pass(
     encoder: &mut CommandEncoder,
     color_target: &ColorTargetImage,
     scale: &Scale,
+    native_height: u32,
+    pipeline_layout: vk::PipelineLayout,
 ) {
     let extent = color_target.extent();
 
@@ -67,6 +69,14 @@ pub(crate) fn render_scale_pass(
                 height: extent.height,
             },
         }]);
+
+        let content_height = native_height as f32;
+        rendering_encoder.push_constants(
+            pipeline_layout,
+            vk::ShaderStageFlags::FRAGMENT,
+            0,
+            &content_height.to_le_bytes(),
+        );
 
         scale.render(&rendering_encoder, ());
     }
