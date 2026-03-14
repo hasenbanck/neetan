@@ -44,23 +44,23 @@ neetan <COMMAND>
 
 ### Options
 
-| Option                   | Description                                | Default    |
-|--------------------------|--------------------------------------------|------------|
-| `-c, --config <PATH>`    | Load configuration from file               | —          |
-| `--machine <TYPE>`       | Machine type: `VM`, `VX`, `RA`             | `VX`       |
-| `--fdd1 <PATH>`          | Floppy disk image for drive 1 (repeatable) | —          |
-| `--fdd2 <PATH>`          | Floppy disk image for drive 2 (repeatable) | —          |
-| `--hdd1 <PATH>`          | Hard disk image for SASI drive 1           | —          |
-| `--hdd2 <PATH>`          | Hard disk image for SASI drive 2           | —          |
-| `--audio-volume <FLOAT>` | Audio volume 0.0–1.0                       | `1.0`      |
-| `--aspect-mode <MODE>`   | Display aspect mode: `4:3` or `1:1`        | `4:3`      |
-| `--window-mode <MODE>`   | Window mode: `windowed` or `fullscreen`    | `windowed` |
-| `--bios-rom <PATH>`      | Path to BIOS ROM file                      | HLE BIOS   |
-| `--font-rom <PATH>`      | Path to font ROM file                      | Built-in   |
-| `--soundboard <TYPE>`    | Sound board: `none`, `26k`, `86`, `86+26k` | `86+26k`   |
-| `--printer <PATH>`       | Output file for printer (must exist)       | —          |
-| `-h, --help`             | Print help                                 | —          |
-| `-V, --version`          | Print version                              | —          |
+| Option                   | Description                                      | Default    |
+|--------------------------|--------------------------------------------------|------------|
+| `-c, --config <PATH>`    | Load configuration from file                     | —          |
+| `--machine <TYPE>`       | Machine type: `PC9801VM`, `PC9801VX`, `PC9801RA` | `PC9801VX` |
+| `--fdd1 <PATH>`          | Floppy disk image for drive 1 (repeatable)       | —          |
+| `--fdd2 <PATH>`          | Floppy disk image for drive 2 (repeatable)       | —          |
+| `--hdd1 <PATH>`          | Hard disk image for SASI drive 1                 | —          |
+| `--hdd2 <PATH>`          | Hard disk image for SASI drive 2                 | —          |
+| `--audio-volume <FLOAT>` | Audio volume 0.0–1.0                             | `1.0`      |
+| `--aspect-mode <MODE>`   | Display aspect mode: `4:3` or `1:1`              | `4:3`      |
+| `--window-mode <MODE>`   | Window mode: `windowed` or `fullscreen`          | `windowed` |
+| `--bios-rom <PATH>`      | Path to BIOS ROM file                            | HLE BIOS   |
+| `--font-rom <PATH>`      | Path to font ROM file                            | Built-in   |
+| `--soundboard <TYPE>`    | Sound board: `none`, `26k`, `86`, `86+26k`       | `86+26k`   |
+| `--printer <PATH>`       | Output file for printer (must exist)             | —          |
+| `-h, --help`             | Print help                                       | —          |
+| `-V, --version`          | Print version                                    | —          |
 
 ### Commands
 
@@ -90,7 +90,7 @@ options and their defaults.
 
 ```ini
 # Example configuration
-machine = RA
+machine = PC9801RA
 soundboard = 86+26k
 audio-volume = 0.8
 aspect-mode = 4:3

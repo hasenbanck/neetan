@@ -1,9 +1,12 @@
-use common::{Bus, Cpu, Machine as _};
+use common::{Bus, Cpu, Machine as _, MachineModel};
 use machine::{Pc9801Bus, Pc9801Ra, Pc9801Vm, Pc9801Vx};
 
 #[test]
 fn pit_timer_interrupt_fires() {
-    let mut machine = Pc9801Vm::new(cpu::V30::new(), Pc9801Bus::new_8mhz_v30(48000));
+    let mut machine = Pc9801Vm::new(
+        cpu::V30::new(),
+        Pc9801Bus::new(MachineModel::PC9801VM, 48000),
+    );
 
     // Set up PIC: unmask all IRQs.
     machine.bus.io_write_byte(0x00, 0x11); // ICW1
@@ -74,7 +77,10 @@ fn pit_timer_interrupt_fires() {
 
 #[test]
 fn pit_timer_multiple_interrupts() {
-    let mut machine = Pc9801Vm::new(cpu::V30::new(), Pc9801Bus::new_8mhz_v30(48000));
+    let mut machine = Pc9801Vm::new(
+        cpu::V30::new(),
+        Pc9801Bus::new(MachineModel::PC9801VM, 48000),
+    );
 
     // Set up PIC.
     machine.bus.io_write_byte(0x00, 0x11);
@@ -197,7 +203,10 @@ fn pit_timer_single_interrupt_test<C: Cpu>(
 
 #[test]
 fn pit_timer_eoi_in_handler_allows_repeated_refire() {
-    let mut machine = Pc9801Vm::new(cpu::V30::new(), Pc9801Bus::new_8mhz_v30(48000));
+    let mut machine = Pc9801Vm::new(
+        cpu::V30::new(),
+        Pc9801Bus::new(MachineModel::PC9801VM, 48000),
+    );
     machine.bus.write_word(0x00500, 0x0000);
 
     // INC word [0x0500], MOV AL 0x20, OUT 0x00 AL, IRET
@@ -232,7 +241,10 @@ fn pit_timer_eoi_in_handler_allows_repeated_refire() {
 #[test]
 fn pit_timer_interrupt_fires_i286() {
     pit_timer_single_interrupt_test(
-        Pc9801Vx::new(cpu::I286::new(), Pc9801Bus::new_10mhz_v30_grcg(48000)),
+        Pc9801Vx::new(
+            cpu::I286::new(),
+            Pc9801Bus::new(MachineModel::PC9801VX, 48000),
+        ),
         |cpu| {
             cpu.load_state(&{
                 let mut s = cpu::I286State::default();
@@ -249,7 +261,7 @@ fn pit_timer_interrupt_fires_i386() {
     pit_timer_single_interrupt_test(
         Pc9801Ra::new(
             cpu::I386::new(),
-            Pc9801Bus::new_20mhz_386_egc(48000, 0x100000),
+            Pc9801Bus::new(MachineModel::PC9801RA, 48000),
         ),
         |cpu| {
             cpu.load_state(&{
@@ -271,7 +283,10 @@ fn place_code(bus: &mut Pc9801Bus, base: u32, code: &[u8]) {
 
 #[test]
 fn hle_cold_reset_reinitialises_devices() {
-    let mut machine = Pc9801Vx::new(cpu::I286::new(), Pc9801Bus::new_10mhz_286_egc(48000, 0));
+    let mut machine = Pc9801Vx::new(
+        cpu::I286::new(),
+        Pc9801Bus::new(MachineModel::PC9801VX, 48000),
+    );
 
     // Clobber PIC master IMR so we can detect that
     // initialize_post_boot_state() (IMR=0x3D) ran after the cold reset.
@@ -327,7 +342,10 @@ fn hle_cold_reset_reinitialises_devices() {
 
 #[test]
 fn hle_warm_reset_resumes_execution() {
-    let mut machine = Pc9801Vx::new(cpu::I286::new(), Pc9801Bus::new_10mhz_286_egc(48000, 0));
+    let mut machine = Pc9801Vx::new(
+        cpu::I286::new(),
+        Pc9801Bus::new(MachineModel::PC9801VX, 48000),
+    );
 
     // Warm-reset resume target: code at 0000:2000 that increments [0x0500].
     #[rustfmt::skip]
@@ -382,7 +400,10 @@ fn hle_warm_reset_resumes_execution() {
 
 #[test]
 fn hle_shutdown_stops_machine() {
-    let mut machine = Pc9801Vx::new(cpu::I286::new(), Pc9801Bus::new_10mhz_286_egc(48000, 0));
+    let mut machine = Pc9801Vx::new(
+        cpu::I286::new(),
+        Pc9801Bus::new(MachineModel::PC9801VX, 48000),
+    );
 
     // Guest code at 0000:0100:
     //   MOV AL, 0x0F  → OUT 0x37, AL   (set SHUT0=1)

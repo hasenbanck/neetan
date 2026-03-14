@@ -1,4 +1,4 @@
-use common::Bus;
+use common::{Bus, MachineModel};
 use device::disk::{HddFormat, HddGeometry, HddImage};
 use machine::{NoTracing, Pc9801Bus};
 
@@ -144,7 +144,7 @@ impl SasiTestFrame {
 
 #[test]
 fn sasi_rom_mapped_at_d7000_when_hdd_inserted() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     // Before inserting HDD, D7000 should return 0xFF (unmapped).
     assert_eq!(bus.read_byte(0xD7000), 0xFF);
@@ -168,7 +168,7 @@ fn sasi_rom_mapped_at_d7000_when_hdd_inserted() {
 
 #[test]
 fn sasi_test_unit_ready_with_drive() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // Test Unit Ready (cmd 0x00) for unit 0
@@ -183,7 +183,7 @@ fn sasi_test_unit_ready_with_drive() {
 
 #[test]
 fn sasi_test_unit_ready_without_drive() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     // Test Unit Ready (cmd 0x00) for unit 0 (no drive)
     send_sasi_command(&mut bus, [0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
@@ -199,7 +199,7 @@ fn sasi_test_unit_ready_without_drive() {
 
 #[test]
 fn sasi_read_single_sector_via_dma() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // Clear destination memory.
@@ -231,7 +231,7 @@ fn sasi_read_single_sector_via_dma() {
 
 #[test]
 fn sasi_read_sector_at_nonzero_lba() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     for i in 0..256u32 {
@@ -259,7 +259,7 @@ fn sasi_read_sector_at_nonzero_lba() {
 
 #[test]
 fn sasi_write_single_sector_via_dma() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // Write a test pattern to RAM at 0x10000.
@@ -305,7 +305,7 @@ fn sasi_write_single_sector_via_dma() {
 
 #[test]
 fn sasi_read_nonexistent_drive_returns_error() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
     // No drive inserted.
 
     setup_dma_for_sasi_read(&mut bus, 0x10000, 256);
@@ -326,7 +326,7 @@ fn sasi_read_nonexistent_drive_returns_error() {
 
 #[test]
 fn sasi_status_register_reports_drive_capacity() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     // With no drives, both slots report type 7 (no drive).
     // NRDSW=0 reads capacity indicators.
@@ -347,7 +347,7 @@ fn sasi_status_register_reports_drive_capacity() {
 
 #[test]
 fn sasi_hle_trap_port_triggers_on_magic() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // Writing partial magic should not trigger anything special.
@@ -361,7 +361,7 @@ fn sasi_hle_trap_port_triggers_on_magic() {
 
 #[test]
 fn sasi_hle_init_sets_disk_equipment_word() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // AH=0x03 (init), AL=0x80 (drive 0).
@@ -390,7 +390,7 @@ fn sasi_hle_init_sets_disk_equipment_word() {
 
 #[test]
 fn sasi_hle_read_copies_sector_to_memory() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // Clear destination buffer at ES:BP = 0x2000:0x0000 = 0x20000.
@@ -415,7 +415,7 @@ fn sasi_hle_read_copies_sector_to_memory() {
 
 #[test]
 fn sasi_hle_write_modifies_drive_image() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // Fill source buffer at 0x20000 with 0xCC.
@@ -448,7 +448,7 @@ fn sasi_hle_write_modifies_drive_image() {
 
 #[test]
 fn sasi_hle_sense_returns_media_type() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // AH=0x04 (legacy sense), AL=0x80 (drive 0).
@@ -475,7 +475,7 @@ fn sasi_hle_sense_returns_media_type() {
 
 #[test]
 fn sasi_hle_new_sense_84_returns_geometry_in_registers() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // AH=0x84 (new sense), AL=0x80 (drive 0).
@@ -514,7 +514,7 @@ fn sasi_hle_new_sense_84_returns_geometry_in_registers() {
 
 #[test]
 fn sasi_hle_read_no_drive_sets_error_and_carry() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
     // No drive inserted.
 
     let frame = SasiTestFrame::new(&mut bus, 0x0680, 0x0100, 0x0000, 0x0000, 0x0000, 0x2000);
@@ -531,7 +531,7 @@ fn sasi_hle_read_no_drive_sets_error_and_carry() {
 
 #[test]
 fn sasi_hle_yield_flag_triggers_and_clears() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // Initially no yield pending.
@@ -555,7 +555,7 @@ fn sasi_hle_yield_flag_triggers_and_clears() {
 
 #[test]
 fn sasi_recalibrate() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // Recalibrate (cmd 0x01) unit 0.
@@ -569,7 +569,7 @@ fn sasi_recalibrate() {
 
 #[test]
 fn sasi_request_sense_after_error() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
     // No drive — commands will fail.
 
     // Test Unit Ready on nonexistent drive.
@@ -604,7 +604,7 @@ fn sasi_request_sense_after_error() {
 
 #[test]
 fn sasi_hle_unsupported_function_returns_error() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // AH=0x02 is unsupported. Should return 0x40 (Equipment Check) with CF set.
@@ -648,7 +648,7 @@ fn setup_sasi_page_tables(bus: &mut Pc9801Bus<NoTracing>) {
 
 #[test]
 fn sasi_hle_read_with_paging() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_20mhz_386_egc(48000, 2 << 20);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     setup_sasi_page_tables(&mut bus);
@@ -694,7 +694,7 @@ fn sasi_hle_read_with_paging() {
 
 #[test]
 fn sasi_hle_write_with_paging() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_20mhz_386_egc(48000, 2 << 20);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     setup_sasi_page_tables(&mut bus);

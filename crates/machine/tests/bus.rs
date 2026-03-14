@@ -1,9 +1,9 @@
-use common::Bus;
+use common::{Bus, MachineModel};
 use machine::{NoTracing, Pc9801Bus};
 
 #[test]
 fn ram_read_write() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     bus.write_byte(0x00100, 0x42);
     assert_eq!(bus.read_byte(0x00100), 0x42);
@@ -14,7 +14,7 @@ fn ram_read_write() {
 
 #[test]
 fn ram_word_access() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     bus.write_word(0x00200, 0xBEEF);
     assert_eq!(bus.read_word(0x00200), 0xBEEF);
@@ -24,7 +24,7 @@ fn ram_word_access() {
 
 #[test]
 fn unmapped_regions() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     assert_eq!(bus.read_byte(0xC0000), 0xFF);
     assert_eq!(bus.read_byte(0xD0000), 0xFF);
@@ -36,7 +36,7 @@ fn unmapped_regions() {
 
 #[test]
 fn rom_read_only() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     // Load some ROM data.
     let rom_data = vec![0xAB; 16];
@@ -52,7 +52,7 @@ fn rom_read_only() {
 
 #[test]
 fn text_vram_access() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     bus.write_byte(0xA0000, 0x55);
     assert_eq!(bus.read_byte(0xA0000), 0x55);
@@ -63,7 +63,7 @@ fn text_vram_access() {
 
 #[test]
 fn graphics_vram_access() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     bus.write_byte(0xA8000, 0x11);
     assert_eq!(bus.read_byte(0xA8000), 0x11);
@@ -74,7 +74,7 @@ fn graphics_vram_access() {
 
 #[test]
 fn kanji_ram_stub() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     assert_eq!(bus.read_byte(0xA4000), 0xFF);
     assert_eq!(bus.read_byte(0xA4FFF), 0xFF);
@@ -82,7 +82,7 @@ fn kanji_ram_stub() {
 
 #[test]
 fn plane_e_vram_stub() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     // Default VM boot state uses mode2 bit 0 = 1, so force digital mode first.
     bus.io_write_byte(0x6A, 0x00);
@@ -92,7 +92,7 @@ fn plane_e_vram_stub() {
 
 #[test]
 fn plane_e_vram_mapped_in_analog_mode() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     // Start from digital mode.
     bus.io_write_byte(0x6A, 0x00);
@@ -116,7 +116,7 @@ fn plane_e_vram_mapped_in_analog_mode() {
 
 #[test]
 fn grcg_writes_all_four_planes_when_extension_present() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     // Enable analog mode so E-plane is mapped (mode2 bit 0).
     bus.io_write_byte(0x6A, 0x01);
@@ -143,7 +143,7 @@ fn grcg_writes_all_four_planes_when_extension_present() {
 
 #[test]
 fn graphics_page_select_affects_cpu_access_and_snapshot_display() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     // Enable analog mode so E-plane addresses are valid.
     bus.io_write_byte(0x6A, 0x01);
@@ -179,7 +179,7 @@ fn graphics_page_select_affects_cpu_access_and_snapshot_display() {
 
 #[test]
 fn memory_switch_writes_require_mode1_bit6() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
     let memory_switch_1 = 0xA3FE2;
 
     // Boot state has memory-switch write protection enabled.
@@ -200,7 +200,7 @@ fn memory_switch_writes_require_mode1_bit6() {
 
 #[test]
 fn mode1_bit7_controls_global_display_flag() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     // Boot state: bit 7 set.
     bus.capture_vsync_snapshot();
@@ -219,7 +219,7 @@ fn mode1_bit7_controls_global_display_flag() {
 
 #[test]
 fn mode1_bit5_switches_cgrom_access_bank() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     bus.io_write_byte(0xA1, 0x21);
     bus.io_write_byte(0xA3, 0x56);
@@ -242,7 +242,7 @@ fn mode1_bit5_switches_cgrom_access_bank() {
 
 #[test]
 fn io_pic_routing() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     // Master IMR.
     bus.io_write_byte(0x02, 0xFF);
@@ -255,7 +255,7 @@ fn io_pic_routing() {
 
 #[test]
 fn io_pit_routing() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     // Program PIT channel 0: word mode, mode 3.
     bus.io_write_byte(0x77, 0x36);
@@ -276,7 +276,7 @@ fn io_pit_routing() {
 
 #[test]
 fn io_nmi_control() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     // NMI disable.
     bus.io_write_byte(0x50, 0x00);
@@ -290,7 +290,7 @@ fn io_nmi_control() {
 
 #[test]
 fn io_unmapped_returns_ff() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     assert_eq!(bus.io_read_byte(0xFF), 0xFF);
     assert_eq!(bus.io_read_byte(0x1234), 0xFF);
@@ -298,7 +298,7 @@ fn io_unmapped_returns_ff() {
 
 #[test]
 fn address_wraps_20bit() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     // Address above 1MB wraps to 20-bit.
     bus.write_byte(0x100000, 0x42); // wraps to 0x00000.
@@ -307,7 +307,7 @@ fn address_wraps_20bit() {
 
 #[test]
 fn pit_mirror_ports() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     // Program PIT via mirror control port.
     bus.io_write_byte(0x3FDF, 0x36); // ch0: word, mode 3
@@ -338,7 +338,7 @@ fn pit_mirror_ports() {
 
 #[test]
 fn timer_full_cycle() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
 
     // Set up PIC: unmask all.
     bus.io_write_byte(0x00, 0x11);
@@ -355,8 +355,8 @@ fn timer_full_cycle() {
     // No IRQ yet.
     assert!(!bus.has_irq());
 
-    // fire_cycle = 100 * 8_000_000 / 1_996_800 = 400
-    bus.set_current_cycle(400);
+    // fire_cycle = 100 * 20_000_000 / 1_996_800 = 1001
+    bus.set_current_cycle(1001);
     assert!(bus.has_irq());
 
     // Acknowledge
@@ -367,8 +367,8 @@ fn timer_full_cycle() {
     bus.io_write_byte(0x00, 0x20);
     assert!(!bus.has_irq());
 
-    // Mode 2 periodic: re-fires at cycle 800.
-    bus.set_current_cycle(800);
+    // Mode 2 periodic: re-fires at cycle 2002.
+    bus.set_current_cycle(2002);
     assert!(bus.has_irq());
     let vector = bus.acknowledge_irq();
     assert_eq!(vector, 0x08);
@@ -376,7 +376,7 @@ fn timer_full_cycle() {
 
 #[test]
 fn timer_value_zero_65536_period() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
 
     // Set up PIC: enable only IRQ 0 (timer). Mask IRQ 2 (VSYNC) since this
     // test advances past the VSYNC period.
@@ -391,17 +391,17 @@ fn timer_value_zero_65536_period() {
     bus.io_write_byte(0x71, 0x00);
     bus.io_write_byte(0x71, 0x00);
 
-    // fire_cycle = 65536 * 8_000_000 / 1_996_800 = 262_564
-    bus.set_current_cycle(262_563);
+    // fire_cycle = 65536 * 20_000_000 / 1_996_800 = 656_410
+    bus.set_current_cycle(656_409);
     assert!(!bus.has_irq());
 
-    bus.set_current_cycle(262_564);
+    bus.set_current_cycle(656_410);
     assert!(bus.has_irq());
 }
 
 #[test]
 fn control_word_write_clears_irq0() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
 
     // Set up PIC.
     bus.io_write_byte(0x00, 0x11);
@@ -415,8 +415,8 @@ fn control_word_write_clears_irq0() {
     bus.io_write_byte(0x71, 0x64);
     bus.io_write_byte(0x71, 0x00);
 
-    // Fire the timer.
-    bus.set_current_cycle(400);
+    // Fire the timer. fire_cycle = 100 * 20_000_000 / 1_996_800 = 1001
+    bus.set_current_cycle(1001);
     assert!(bus.has_irq());
 
     // Write new control word for ch0 — clears IRQ 0.
@@ -434,16 +434,16 @@ fn init_pic(bus: &mut Pc9801Bus) {
 
 #[test]
 fn timer_reprogram_mid_count() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
     init_pic(&mut bus);
 
-    // PIT ch0: mode 2, reload = 100 → fire at cycle 400
+    // PIT ch0: mode 2, reload = 100 → fire at cycle 1001
     bus.io_write_byte(0x77, 0x34);
     bus.io_write_byte(0x71, 0x64);
     bus.io_write_byte(0x71, 0x00);
 
-    // Advance to mid-count (cycle 200), no fire yet.
-    bus.set_current_cycle(200);
+    // Advance to mid-count (cycle 500), no fire yet.
+    bus.set_current_cycle(500);
     assert!(!bus.has_irq());
 
     // Reprogram with new control + counter: reload = 50
@@ -451,11 +451,11 @@ fn timer_reprogram_mid_count() {
     bus.io_write_byte(0x71, 0x32); // 50
     bus.io_write_byte(0x71, 0x00);
 
-    // fire = 200 + 50*8000000/1996800 = 200 + 200 = 400
-    bus.set_current_cycle(399);
+    // fire = 500 + 50*20000000/1996800 = 500 + 500 = 1000
+    bus.set_current_cycle(999);
     assert!(!bus.has_irq());
 
-    bus.set_current_cycle(400);
+    bus.set_current_cycle(1000);
     assert!(bus.has_irq());
     let vector = bus.acknowledge_irq();
     assert_eq!(vector, 0x08);
@@ -463,31 +463,31 @@ fn timer_reprogram_mid_count() {
 
 #[test]
 fn timer_reprogram_larger_value_delays_fire() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
     init_pic(&mut bus);
 
-    // PIT ch0: mode 2, reload = 100 → fire at cycle 400
+    // PIT ch0: mode 2, reload = 100 → fire at cycle 1001
     bus.io_write_byte(0x77, 0x34);
     bus.io_write_byte(0x71, 0x64);
     bus.io_write_byte(0x71, 0x00);
 
-    // Advance to cycle 200, reprogram with reload = 200
-    bus.set_current_cycle(200);
+    // Advance to cycle 500, reprogram with reload = 200
+    bus.set_current_cycle(500);
     assert!(!bus.has_irq());
 
     bus.io_write_byte(0x77, 0x34);
     bus.io_write_byte(0x71, 0xC8); // 200
     bus.io_write_byte(0x71, 0x00);
 
-    // New fire = 200 + 200*8000000/1996800 = 200 + 801 = 1001
-    // Old event at 400 should be replaced.
-    bus.set_current_cycle(400);
+    // New fire = 500 + 200*20000000/1996800 = 500 + 2003 = 2503
+    // Old event at 1001 should be replaced.
+    bus.set_current_cycle(1001);
     assert!(!bus.has_irq(), "old event should be replaced");
 
-    bus.set_current_cycle(1000);
+    bus.set_current_cycle(2502);
     assert!(!bus.has_irq());
 
-    bus.set_current_cycle(1001);
+    bus.set_current_cycle(2503);
     assert!(bus.has_irq());
     let vector = bus.acknowledge_irq();
     assert_eq!(vector, 0x08);
@@ -495,7 +495,7 @@ fn timer_reprogram_larger_value_delays_fire() {
 
 #[test]
 fn pit_channels_1_and_2_no_irq() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
     init_pic(&mut bus);
 
     // Program PIT ch1: mode 2, reload = 100
@@ -517,17 +517,17 @@ fn pit_channels_1_and_2_no_irq() {
 
 #[test]
 fn multiple_timer_periods_accumulate() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
     init_pic(&mut bus);
 
-    // PIT ch0: mode 2, reload = 100 → fire every 400 cycles
+    // PIT ch0: mode 2, reload = 100 → fire every 1001 cycles
     bus.io_write_byte(0x77, 0x34);
     bus.io_write_byte(0x71, 0x64);
     bus.io_write_byte(0x71, 0x00);
 
     // Verify 5 consecutive periodic timer fires.
     for i in 1..=5u64 {
-        let fire_cycle = i * 400;
+        let fire_cycle = i * 1001;
         bus.set_current_cycle(fire_cycle);
         assert!(
             bus.has_irq(),
@@ -542,16 +542,16 @@ fn multiple_timer_periods_accumulate() {
 
 #[test]
 fn timer_count_readable_while_running() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
     init_pic(&mut bus);
 
-    // PIT ch0: mode 2, reload = 1000 → fire at cycle ~4005
+    // PIT ch0: mode 2, reload = 1000 → fire at cycle ~10016
     bus.io_write_byte(0x77, 0x34);
     bus.io_write_byte(0x71, 0xE8);
     bus.io_write_byte(0x71, 0x03);
 
     // Advance to mid-period.
-    bus.set_current_cycle(2000);
+    bus.set_current_cycle(4997);
     assert!(!bus.has_irq());
 
     // Latch ch0 via I/O.
@@ -562,14 +562,14 @@ fn timer_count_readable_while_running() {
     let high = bus.io_read_byte(0x71);
     let count = (high as u16) << 8 | low as u16;
 
-    // elapsed_pit at cycle 2000 = 2000*1996800/8000000 = 499
-    // pos = 499 % 1000 = 499, count = 1000 - 499 = 501
-    assert_eq!(count, 501);
+    // elapsed_pit at cycle 4997 = 4997*1996800/20000000 = 498
+    // pos = 498 % 1000 = 498, count = 1000 - 498 = 502
+    assert_eq!(count, 502);
 }
 
 #[test]
 fn mouse_timer_irq15_periodic_and_masked() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     // Unmask only the slave cascade on master and only slave IR5 (IRQ13).
     bus.io_write_byte(0x02, 0x7F);
@@ -579,14 +579,14 @@ fn mouse_timer_irq15_periodic_and_masked() {
     bus.io_write_byte(0xBFDB, 0x00);
     bus.io_write_byte(0x7FDD, 0xE0);
 
-    // 8 MHz / 120 Hz = 66,667 cycles (rounded up).
-    bus.set_current_cycle(66_667);
+    // 20 MHz / 120 Hz = 166,667 cycles.
+    bus.set_current_cycle(166_667);
     assert!(bus.has_irq());
     assert_eq!(bus.acknowledge_irq(), 0x15);
     bus.io_write_byte(0x08, 0x20);
     bus.io_write_byte(0x00, 0x20);
 
-    bus.set_current_cycle(133_334);
+    bus.set_current_cycle(333_334);
     assert!(bus.has_irq());
     assert_eq!(bus.acknowledge_irq(), 0x15);
     bus.io_write_byte(0x08, 0x20);
@@ -594,13 +594,13 @@ fn mouse_timer_irq15_periodic_and_masked() {
 
     // Mask INT# (bit4=1): timer must stop raising IRQ13.
     bus.io_write_byte(0x7FDD, 0xF0);
-    bus.set_current_cycle(250_000);
+    bus.set_current_cycle(500_000);
     assert!(!bus.has_irq());
 }
 
 #[test]
 fn mouse_timer_ignores_upper_bit_writes_to_bfdb() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     // Port 0xBFDB is write-only on the PC-9801VM (reads return 0xFF).
     assert_eq!(bus.io_read_byte(0xBFDB), 0xFF);
@@ -614,9 +614,9 @@ fn mouse_timer_ignores_upper_bit_writes_to_bfdb() {
     bus.io_write_byte(0x7FDD, 0xE0);
 
     // Write with upper bits set (e.g. 0x27 from jastrike) — must be ignored.
-    // Timer should remain at 120 Hz (8 MHz / 120 = 66,667 cycles).
+    // Timer should remain at 120 Hz (20 MHz / 120 = 166,667 cycles).
     bus.io_write_byte(0xBFDB, 0x27);
-    bus.set_current_cycle(66_667);
+    bus.set_current_cycle(166_667);
     assert!(
         bus.has_irq(),
         "timer must still fire at 120 Hz after ignored write"
@@ -626,15 +626,15 @@ fn mouse_timer_ignores_upper_bit_writes_to_bfdb() {
     bus.io_write_byte(0x00, 0x20);
 
     // Valid write (bits 1:0 = 0b01, 60 Hz) accepted.
-    // 8 MHz / 60 = 133,334 cycles per tick.
+    // 20 MHz / 60 = 333,334 cycles per tick.
     bus.io_write_byte(0xBFDB, 0x01);
-    bus.set_current_cycle(66_667 + 133_334);
+    bus.set_current_cycle(166_667 + 333_334);
     assert!(bus.has_irq(), "timer must fire at 60 Hz after valid write");
 }
 
 #[test]
 fn mouse_timer_fires_regardless_of_ppi_mode_bit3() {
-    let mut bus = Pc9801Bus::<NoTracing>::new_8mhz_v30(48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
 
     // Unmask slave cascade on master and slave IR5 (IRQ13).
     bus.io_write_byte(0x02, 0x7F);
@@ -648,8 +648,8 @@ fn mouse_timer_fires_regardless_of_ppi_mode_bit3() {
     bus.io_write_byte(0xBFDB, 0x00);
     bus.io_write_byte(0x7FDD, 0xE0);
 
-    // 8 MHz / 120 Hz = 66,667 cycles.
-    bus.set_current_cycle(66_667);
+    // 20 MHz / 120 Hz = 166,667 cycles.
+    bus.set_current_cycle(166_667);
     assert!(bus.has_irq());
     assert_eq!(bus.acknowledge_irq(), 0x15);
 }

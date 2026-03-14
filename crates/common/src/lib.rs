@@ -20,7 +20,7 @@ pub use jis::{JisChar, char_to_jis, jis_slice_to_string, jis_to_char, str_to_jis
 pub use stack_vec::StackVec;
 
 /// CPU generation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CpuType {
     /// NEC V30 (µPD70116).
     V30,
@@ -28,6 +28,200 @@ pub enum CpuType {
     I286,
     /// Intel 80386.
     I386,
+}
+
+/// PC-98 machine model.
+///
+/// Encodes the full hardware profile of a specific PC-9801 variant:
+/// CPU, clock rates, address space, graphics capabilities, and peripheral set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MachineModel {
+    /// PC-9801VM (V30, 10 MHz, GRCG v1, 20-bit address space, SASI built-in).
+    PC9801VM,
+    /// PC-9801VX (80286, 10 MHz, EGC, 24-bit address space, SASI built-in).
+    PC9801VX,
+    /// PC-9801RA (80386, 20 MHz, EGC, 32-bit address space, SASI built-in).
+    PC9801RA,
+}
+
+impl MachineModel {
+    /// V30 (20-bit) address mask: 0xF_FFFF (1 MB).
+    pub const ADDRESS_MASK_V30: u32 = 0xF_FFFF;
+    /// i286 (24-bit) address mask: 0xFF_FFFF (16 MB).
+    pub const ADDRESS_MASK_I286: u32 = 0xFF_FFFF;
+    /// i386+ (32-bit) address mask: 0xFFFF_FFFF (4 GB).
+    pub const ADDRESS_MASK_I386: u32 = 0xFFFF_FFFF;
+
+    /// GRCG chip version 1 (PC-9801VM).
+    pub const GRCG_CHIP_V1: u8 = 1;
+    /// GRCG with EGC support (PC-9801VX and later).
+    pub const GRCG_CHIP_EGC: u8 = 3;
+
+    /// Returns the CPU generation for this machine model.
+    pub const fn cpu_type(self) -> CpuType {
+        match self {
+            Self::PC9801VM => CpuType::V30,
+            Self::PC9801VX => CpuType::I286,
+            Self::PC9801RA => CpuType::I386,
+        }
+    }
+
+    /// Returns the CPU clock frequency in Hz.
+    pub const fn cpu_clock_hz(self) -> u32 {
+        match self {
+            Self::PC9801VM | Self::PC9801VX => 10_000_000,
+            Self::PC9801RA => 20_000_000,
+        }
+    }
+
+    /// Returns the PIT clock frequency in Hz.
+    pub const fn pit_clock_hz(self) -> u32 {
+        match self {
+            Self::PC9801VM | Self::PC9801VX => 2_457_600,
+            Self::PC9801RA => 1_996_800,
+        }
+    }
+
+    /// Returns whether this machine uses the 8 MHz PIT clock lineage.
+    pub const fn is_8mhz_pit_lineage(self) -> bool {
+        match self {
+            Self::PC9801RA => true,
+            Self::PC9801VM | Self::PC9801VX => false,
+        }
+    }
+
+    /// Returns the CPU address mask for this machine.
+    pub const fn address_mask(self) -> u32 {
+        match self {
+            Self::PC9801VM => Self::ADDRESS_MASK_V30,
+            Self::PC9801VX => Self::ADDRESS_MASK_I286,
+            Self::PC9801RA => Self::ADDRESS_MASK_I386,
+        }
+    }
+
+    /// Returns whether this machine has the EGC graphics controller.
+    pub const fn has_egc(self) -> bool {
+        match self {
+            Self::PC9801VM => false,
+            Self::PC9801VX | Self::PC9801RA => true,
+        }
+    }
+
+    /// Returns the GRCG chip version for this machine.
+    pub const fn grcg_chip_version(self) -> u8 {
+        match self {
+            Self::PC9801VM => Self::GRCG_CHIP_V1,
+            Self::PC9801VX | Self::PC9801RA => Self::GRCG_CHIP_EGC,
+        }
+    }
+
+    /// Returns whether this machine has CG RAM (user-definable character generator).
+    pub const fn has_cg_ram(self) -> bool {
+        match self {
+            Self::PC9801VM => false,
+            Self::PC9801VX | Self::PC9801RA => true,
+        }
+    }
+
+    /// Returns whether this machine supports NEC B-bank EMS.
+    pub const fn has_b_bank_ems(self) -> bool {
+        match self {
+            Self::PC9801RA => true,
+            Self::PC9801VM | Self::PC9801VX => false,
+        }
+    }
+
+    /// Returns whether this machine has shadow RAM (E8000-FFFFF).
+    pub const fn has_shadow_ram(self) -> bool {
+        match self {
+            Self::PC9801RA => true,
+            Self::PC9801VM | Self::PC9801VX => false,
+        }
+    }
+
+    /// Returns the default extended RAM size in bytes.
+    pub const fn extended_ram_default_size(self) -> usize {
+        match self {
+            Self::PC9801VM => 0,
+            Self::PC9801VX => 0x400000,
+            Self::PC9801RA => 0xE00000,
+        }
+    }
+
+    /// Returns whether this machine has a SASI hard disk controller.
+    pub const fn has_sasi(self) -> bool {
+        true
+    }
+
+    /// Returns whether this machine has an IDE hard disk controller.
+    pub const fn has_ide(self) -> bool {
+        false
+    }
+
+    /// Returns whether this machine uses dual-bank BIOS ROM.
+    pub const fn is_dual_bank_bios(self) -> bool {
+        match self {
+            Self::PC9801VM => false,
+            Self::PC9801VX | Self::PC9801RA => true,
+        }
+    }
+
+    /// Returns the expected BIOS ROM file size in bytes.
+    pub const fn bios_rom_size(self) -> usize {
+        match self {
+            Self::PC9801VM => 0x18000,
+            Self::PC9801VX | Self::PC9801RA => 0x30000,
+        }
+    }
+
+    /// Returns whether this machine has DMA extended page registers (A24-A31).
+    pub const fn has_extended_dma(self) -> bool {
+        match self {
+            Self::PC9801VM | Self::PC9801VX => false,
+            Self::PC9801RA => true,
+        }
+    }
+
+    /// Returns whether this machine has the protected memory registration port (0x0567).
+    pub const fn has_protected_memory_register(self) -> bool {
+        match self {
+            Self::PC9801VM => false,
+            Self::PC9801VX | Self::PC9801RA => true,
+        }
+    }
+
+    /// Returns whether this machine has the 386+ A20/NMI control port (0xF6).
+    pub const fn has_a20_nmi_port(self) -> bool {
+        match self {
+            Self::PC9801VM | Self::PC9801VX => false,
+            Self::PC9801RA => true,
+        }
+    }
+}
+
+impl std::fmt::Display for MachineModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PC9801VM => f.write_str("PC9801VM"),
+            Self::PC9801VX => f.write_str("PC9801VX"),
+            Self::PC9801RA => f.write_str("PC9801RA"),
+        }
+    }
+}
+
+impl std::str::FromStr for MachineModel {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_uppercase().as_str() {
+            "PC9801VM" => Ok(Self::PC9801VM),
+            "PC9801VX" => Ok(Self::PC9801VX),
+            "PC9801RA" => Ok(Self::PC9801RA),
+            _ => Err(format!(
+                "unknown machine model '{s}', expected PC9801VM, PC9801VX, or PC9801RA"
+            )),
+        }
+    }
 }
 
 /// Number of [`EventKind`] variants.

@@ -1,4 +1,4 @@
-use common::{Bus, Cpu, jis_slice_to_string};
+use common::{Bus, Cpu, MachineModel, jis_slice_to_string};
 use machine::{Pc9801Bus, Pc9801Vm};
 
 const VSYNC_COUNTER: u32 = 0x0502;
@@ -132,7 +132,7 @@ fn build_hlt_vsync_rom() -> Vec<u8> {
 fn hlt_wakes_on_vsync_irq() {
     let rom = build_hlt_vsync_rom();
 
-    let mut bus = Pc9801Bus::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::new(MachineModel::PC9801VM, 48000);
     bus.load_bios_rom(&rom);
 
     let mut machine = Pc9801Vm::new(cpu::V30::new(), bus);
@@ -281,7 +281,7 @@ fn build_vsync_oneshot_rom() -> Vec<u8> {
 fn vsync_port64_is_oneshot_trigger() {
     let rom = build_vsync_oneshot_rom();
 
-    let mut bus = Pc9801Bus::new_10mhz_v30_grcg(48000);
+    let mut bus = Pc9801Bus::new(MachineModel::PC9801VM, 48000);
     bus.load_bios_rom(&rom);
 
     let mut machine = Pc9801Vm::new(cpu::V30::new(), bus);

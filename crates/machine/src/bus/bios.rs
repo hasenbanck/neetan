@@ -5,7 +5,7 @@
 //! write the vector number to the trap port, and IRET. The Rust side
 //! restores AX/DX from the stack before dispatching to the handler.
 
-use common::{Cpu, CpuType, EventKind};
+use common::{Cpu, EventKind, MachineModel};
 use device::{i8253_pit::PIT_FLAG_I, upd7220_gdc::GdcScrollPartition};
 
 use super::{MOUSE_TIMER_DEFAULT_SETTING, MOUSE_TIMER_IRQ_LINE, Pc9801Bus};
@@ -184,7 +184,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.memory.load_stub_bios_rom();
         self.memory
             .install_keyboard_tables(&KEYBOARD_TABLES, KEYBOARD_ROM_OFFSET);
-        self.memory.install_disk_format_tables(self.cpu_type);
+        self.memory.install_disk_format_tables(self.machine_model);
         self.populate_ivt_from_stub_bios();
 
         // PIC: fully initialized with PC-98 vectors and cascade.
@@ -198,18 +198,17 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.pic.state.chips[1].isr = 0;
         self.pic.state.chips[1].irr = 0;
         self.pic.state.chips[1].write_icw = 0;
-        if self.cpu_type == CpuType::V30 {
-            self.pic.state.chips[1].ocw3 = 0x0B;
-        }
-        if self.cpu_type == CpuType::I386 {
-            self.pic.state.chips[0].ocw3 = 0x0B;
+        match self.machine_model {
+            MachineModel::PC9801VM => self.pic.state.chips[1].ocw3 = 0x0B,
+            MachineModel::PC9801RA => self.pic.state.chips[0].ocw3 = 0x0B,
+            MachineModel::PC9801VX => {}
         }
 
         // PIT: ch0 mode 0 (interrupt on terminal count), ch1 mode 3 (beep),
         // ch2 mode 3 (baud rate). ch1 value is already set correctly by I8253Pit::new().
         // After POST, the real BIOS leaves ch0 in mode 0 (one-shot, already expired)
         // with IRQ 0 masked. The event must be scheduled so on_timer0_event keeps
-        // the counter running (needed for correct get_count behaviour), matching
+        // the counter running (needed for correct get_count behavior), matching
         // the real BIOS where the PIT free-runs even without raising IRQ.
         self.pit.state.channels[0].ctrl = 0x30;
         self.pit.state.channels[0].value = 0;
@@ -236,10 +235,9 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.serial.state.expect_mode = true;
 
         // System PPI: machine-specific port_c values.
-        self.system_ppi.state.port_c = if self.cpu_type == CpuType::V30 {
-            0x18
-        } else {
-            0xB8
+        self.system_ppi.state.port_c = match self.machine_model {
+            MachineModel::PC9801VM => 0x18,
+            MachineModel::PC9801VX | MachineModel::PC9801RA => 0xB8,
         };
 
         // NMI gate enabled.
@@ -266,11 +264,10 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.gdc_master.state.cursor_blink_rate = 12;
         self.gdc_master.state.lines_per_row = 16;
         self.gdc_master.state.draw_on_retrace = true;
-        if self.cpu_type == CpuType::V30 {
-            self.gdc_master.state.pattern = 0;
-        }
-        if self.cpu_type != CpuType::V30 {
+        if self.machine_model.has_egc() {
             self.gdc_master.state.display_enabled = true;
+        } else {
+            self.gdc_master.state.pattern = 0;
         }
 
         // GDC slave (graphics): SYNC params, scroll areas, and mask.
@@ -297,27 +294,27 @@ impl<T: Tracing> Pc9801Bus<T> {
                 wd: false,
             };
         }
-        self.gdc_slave.state.mask = if self.cpu_type == CpuType::V30 { 0 } else { 1 };
+        self.gdc_slave.state.mask = if self.machine_model.has_egc() { 1 } else { 0 };
         self.gdc_slave.state.draw_on_retrace = true;
-        if self.cpu_type == CpuType::V30 {
+        if !self.machine_model.has_egc() {
             self.gdc_slave.state.display_mode = 2;
         }
 
         // Display control.
         self.display_control.state.video_mode = 0x99;
         self.display_control.state.mode2 = 0x0100;
-        self.display_control.state.display_line_count = if self.cpu_type == CpuType::I286 {
-            23
-        } else {
-            1
-        };
+        self.display_control.state.display_line_count =
+            if self.machine_model == MachineModel::PC9801VX {
+                23
+            } else {
+                1
+            };
         self.display_control.state.vsync_irq_enabled = true;
 
         // Analog palette: indices 0-7 dim, 8 half-bright, 9-15 bright (0x0F).
-        let (dim, half_bright) = if self.cpu_type == CpuType::V30 {
-            (0x0Au8, [7u8, 7, 7])
-        } else {
-            (0x07u8, [4u8, 4, 4])
+        let (dim, half_bright) = match self.machine_model {
+            MachineModel::PC9801VM => (0x0Au8, [7u8, 7, 7]),
+            MachineModel::PC9801VX | MachineModel::PC9801RA => (0x07u8, [4u8, 4, 4]),
         };
         self.palette.state.analog[0] = [0, 0, 0];
         for i in 1u8..8 {
@@ -334,19 +331,18 @@ impl<T: Tracing> Pc9801Bus<T> {
             let green = if j & 4 != 0 { 0x0F } else { 0 };
             self.palette.state.analog[i as usize] = [green, red, blue];
         }
-        self.palette.state.index = if self.cpu_type == CpuType::V30 {
-            0x08
-        } else {
-            0x0F
+        self.palette.state.index = match self.machine_model {
+            MachineModel::PC9801VM => 0x08,
+            MachineModel::PC9801VX | MachineModel::PC9801RA => 0x0F,
         };
         self.palette.state.digital = [0x37, 0x15, 0x26, 0x04];
 
         // GRCG: mode and tile registers.
-        if self.cpu_type == CpuType::V30 {
-            self.grcg.state.mode = 0x0F;
-        } else {
+        if self.machine_model.has_egc() {
             self.grcg.state.mode = 0x00;
             self.grcg.state.tile = [51, 85, 0, 0];
+        } else {
+            self.grcg.state.mode = 0x0F;
         }
 
         // CGROM: last accessed character state.
@@ -358,8 +354,9 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.crtc.state.regs = [0x00, 0x0F, 0x10, 0x00, 0x00, 0x00];
 
         // Printer port C.
-        if self.cpu_type == CpuType::V30 {
-            self.printer.state.port_c = 0x80;
+        match self.machine_model {
+            MachineModel::PC9801VM => self.printer.state.port_c = 0x80,
+            MachineModel::PC9801VX | MachineModel::PC9801RA => {}
         }
 
         // Sound ROM: install stub if no full ROM was loaded.
@@ -376,10 +373,9 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.mouse_ppi.state.mode = 0x93;
         self.mouse_ppi.state.port_a = 0x00;
         self.mouse_ppi.state.port_b = 0x00;
-        self.mouse_ppi.state.port_c = if self.cpu_type == CpuType::V30 {
-            0xF0
-        } else {
-            0x00
+        self.mouse_ppi.state.port_c = match self.machine_model {
+            MachineModel::PC9801VM => 0xF0,
+            MachineModel::PC9801VX | MachineModel::PC9801RA => 0x00,
         };
         self.mouse_ppi.state.accumulator_x = 0;
         self.mouse_ppi.state.accumulator_y = 0;
@@ -411,10 +407,9 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         // Memory switches at text VRAM (stride 4).
         let year_bcd = (self.host_local_time_fn)()[0];
-        let msw3 = if self.cpu_type == CpuType::V30 {
-            0x02
-        } else {
-            0x04
+        let msw3 = match self.machine_model {
+            MachineModel::PC9801VM => 0x02,
+            MachineModel::PC9801VX | MachineModel::PC9801RA => 0x04,
         };
         let msw_values: [u8; 8] = [0x48, 0x05, msw3, 0x00, 0x01, 0x00, 0x00, year_bcd];
         let msw_offsets: [usize; 8] = [
@@ -428,7 +423,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.memory.state.ram[0x04F8..0x04FE]
             .copy_from_slice(&[0xEE, 0xEA, 0x00, 0x00, 0xFF, 0xFF]);
 
-        // BDA fields derived from CPU type and memory switch configuration.
+        // BDA fields derived from machine model and memory switch configuration.
         // Must run after memory switch initialization above.
         self.populate_bda();
 
@@ -437,7 +432,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.reschedule_gdc_events();
 
         // RA-specific registers.
-        if self.cpu_type == CpuType::I386 {
+        if self.machine_model.has_shadow_ram() {
             self.vram_ems_bank = 0x20;
             self.protected_memory_max = 0xE0;
             self.memory.copy_rom_to_shadow_ram();
@@ -2796,7 +2791,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         // On VM (expansion ROM handler), CF is cleared even for AH < 0x80.
         // On VX/RA, the handler returns without modifying flags.
         if ah & 0x80 == 0 {
-            if self.cpu_type == CpuType::V30 {
+            if self.machine_model == MachineModel::PC9801VM {
                 self.set_iret_cf(cpu, false);
             }
             return;
@@ -2809,7 +2804,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
             0x90 => {
                 // Protected-mode memory copy (286/386 only).
-                if self.cpu_type == CpuType::V30 {
+                if self.machine_model == MachineModel::PC9801VM {
                     self.set_iret_cf(cpu, false);
                     return;
                 }

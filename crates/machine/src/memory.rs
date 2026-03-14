@@ -3,7 +3,7 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use common::CpuType;
+use common::MachineModel;
 
 /// Main RAM start address (00000h). 640 KB on the PC-9801VM.
 const RAM_START: u32 = 0x00000;
@@ -89,13 +89,6 @@ const BIOS_ROM_DUAL_BANK_IMAGE_SIZE: usize = BIOS_ROM_SIZE * 2;
 
 /// Character generator ROM size (528 KB).
 const FONT_ROM_SIZE: usize = 0x84000;
-
-/// V30 (20-bit) address mask: 0xF_FFFF (1 MB).
-pub(crate) const ADDRESS_MASK_V30: u32 = 0xF_FFFF;
-/// i286 (24-bit) address mask: 0xFF_FFFF (16 MB).
-pub(crate) const ADDRESS_MASK_I286: u32 = 0xFF_FFFF;
-/// i386+ (32-bit) address mask: 0xFFFF_FFFF (4 GB).
-pub(crate) const ADDRESS_MASK_I386: u32 = 0xFFFF_FFFF;
 
 /// Sound ROM start address (CC000h). 16 KB.
 const SOUND_ROM_START: u32 = 0xCC000;
@@ -251,23 +244,18 @@ impl DerefMut for Pc9801Memory {
 }
 
 impl Pc9801Memory {
-    /// Creates a new memory subsystem with the given address mask and extended RAM size.
-    ///
-    /// Address masks:
-    /// - V30: `0xF_FFFF` (20-bit, 1 MB) — extended RAM is always 0
-    /// - i286: `0xFF_FFFF` (24-bit, 16 MB)
-    /// - i386+: `0xFFFF_FFFF` (32-bit, 4 GB)
+    /// Creates a new memory subsystem for the given machine model and extended RAM size.
     ///
     /// The BIOS probes extended RAM by writing test patterns in protected mode;
     /// addresses backed by RAM return the pattern, unmapped addresses read 0xFF.
     /// The detected size is stored at 0x0401 (EXPMMSZ) in 128 KB units.
-    pub(crate) fn new(address_mask: u32, extended_ram_size: usize) -> Self {
-        let extended_ram_size = if address_mask <= ADDRESS_MASK_V30 {
+    pub(crate) fn new(machine_model: MachineModel, extended_ram_size: usize) -> Self {
+        let extended_ram_size = if machine_model == MachineModel::PC9801VM {
             0
         } else {
             extended_ram_size
         };
-        let shadow_ram = if address_mask > ADDRESS_MASK_I286 {
+        let shadow_ram = if machine_model.has_shadow_ram() {
             Some(
                 vec![0u8; BIOS_ROM_SIZE]
                     .into_boxed_slice()
@@ -288,7 +276,7 @@ impl Pc9801Memory {
                     .unwrap(),
                 e_plane_vram: Box::new([0u8; E_PLANE_VRAM_SIZE]),
                 e_plane_enabled: false,
-                address_mask,
+                address_mask: machine_model.address_mask(),
                 shadow_ram,
                 shadow_control: 0x00,
             },
@@ -338,7 +326,7 @@ impl Pc9801Memory {
     /// VM/VX indirection at 0x1AB4/0x1ADC, data at 0x1ABC/0x1AE4.
     /// RA indirection at 0x1AAF/0x1AD7, data at 0x1AB7/0x1ADF.
     /// Each machine type gets only its own indirection to avoid overlap.
-    pub(crate) fn install_disk_format_tables(&mut self, cpu_type: CpuType) {
+    pub(crate) fn install_disk_format_tables(&mut self, machine_model: MachineModel) {
         const BIOS_SEG_PHYS: usize = 0xFD800;
         const ROM_BASE: usize = 0xE8000;
 
@@ -365,10 +353,11 @@ impl Pc9801Memory {
             }
         };
 
+        // Format table offsets differ between BIOS generations (RA vs others).
         let (f2hd_ind, f2hd_data, f2dd_ind, f2dd_data): (usize, usize, usize, usize) =
-            match cpu_type {
-                CpuType::I386 => (0x1AAF, 0x1AB7, 0x1AD7, 0x1ADF),
-                _ => (0x1AB4, 0x1ABC, 0x1ADC, 0x1AE4),
+            match machine_model {
+                MachineModel::PC9801RA => (0x1AAF, 0x1AB7, 0x1AD7, 0x1ADF),
+                MachineModel::PC9801VM | MachineModel::PC9801VX => (0x1AB4, 0x1ABC, 0x1ADC, 0x1AE4),
             };
 
         let dest = BIOS_SEG_PHYS + f2hd_data - ROM_BASE;
@@ -700,7 +689,9 @@ impl Pc9801Memory {
 
 #[cfg(test)]
 mod tests {
-    use super::{ADDRESS_MASK_V30, Pc9801Memory, V98_FONT_ROM_SIZE};
+    use common::MachineModel;
+
+    use super::{Pc9801Memory, V98_FONT_ROM_SIZE};
 
     fn expected_chargraph16_bytes(char_code: u8) -> [u8; 16] {
         let mut output = [0u8; 16];
@@ -746,7 +737,7 @@ mod tests {
 
     #[test]
     fn load_font_rom_populates_chargraph16_and_chargraph8_banks() {
-        let mut memory = Pc9801Memory::new(ADDRESS_MASK_V30, 0);
+        let mut memory = Pc9801Memory::new(MachineModel::PC9801VM, 0);
         let data = test_v98_font_rom_data();
         memory.load_font_rom(&data);
 
@@ -771,7 +762,7 @@ mod tests {
 
     #[test]
     fn load_font_rom_keeps_ank8_bytes_separate_from_chargraph8_bytes() {
-        let mut memory = Pc9801Memory::new(ADDRESS_MASK_V30, 0);
+        let mut memory = Pc9801Memory::new(MachineModel::PC9801VM, 0);
         let data = test_v98_font_rom_data();
         memory.load_font_rom(&data);
 
@@ -788,7 +779,7 @@ mod tests {
 
     #[test]
     fn load_font_rom_applies_f2_nec_patch_to_chargraph_banks() {
-        let mut memory = Pc9801Memory::new(ADDRESS_MASK_V30, 0);
+        let mut memory = Pc9801Memory::new(MachineModel::PC9801VM, 0);
         let data = test_v98_font_rom_data();
         memory.load_font_rom(&data);
 
@@ -810,29 +801,27 @@ mod tests {
 
     #[test]
     fn shadow_ram_not_allocated_for_v30() {
-        let memory = Pc9801Memory::new(ADDRESS_MASK_V30, 0);
+        let memory = Pc9801Memory::new(MachineModel::PC9801VM, 0);
         assert!(memory.state.shadow_ram.is_none());
     }
 
     #[test]
     fn shadow_ram_not_allocated_for_i286() {
-        use super::ADDRESS_MASK_I286;
-        let memory = Pc9801Memory::new(ADDRESS_MASK_I286, 0x100000);
+        let memory = Pc9801Memory::new(MachineModel::PC9801VX, 0x100000);
         assert!(memory.state.shadow_ram.is_none());
     }
 
     #[test]
     fn shadow_ram_allocated_for_i386() {
-        use super::{ADDRESS_MASK_I386, BIOS_ROM_SIZE};
-        let memory = Pc9801Memory::new(ADDRESS_MASK_I386, 0x100000);
+        use super::BIOS_ROM_SIZE;
+        let memory = Pc9801Memory::new(MachineModel::PC9801RA, 0x100000);
         assert!(memory.state.shadow_ram.is_some());
         assert_eq!(BIOS_ROM_SIZE, 0x18000);
     }
 
     #[test]
     fn shadow_ram_reads_rom_by_default() {
-        use super::ADDRESS_MASK_I386;
-        let mut memory = Pc9801Memory::new(ADDRESS_MASK_I386, 0x100000);
+        let mut memory = Pc9801Memory::new(MachineModel::PC9801RA, 0x100000);
         let mut rom = vec![0xFFu8; 0x18000];
         rom[0] = 0xAB;
         memory.load_rom(&rom);
@@ -841,8 +830,7 @@ mod tests {
 
     #[test]
     fn shadow_ram_reads_ram_when_selected() {
-        use super::ADDRESS_MASK_I386;
-        let mut memory = Pc9801Memory::new(ADDRESS_MASK_I386, 0x100000);
+        let mut memory = Pc9801Memory::new(MachineModel::PC9801RA, 0x100000);
         let mut rom = vec![0xFFu8; 0x18000];
         rom[0] = 0xAB;
         memory.load_rom(&rom);
@@ -853,8 +841,7 @@ mod tests {
 
     #[test]
     fn shadow_ram_write_goes_to_ram_when_selected() {
-        use super::ADDRESS_MASK_I386;
-        let mut memory = Pc9801Memory::new(ADDRESS_MASK_I386, 0x100000);
+        let mut memory = Pc9801Memory::new(MachineModel::PC9801RA, 0x100000);
         memory.load_rom(&vec![0xFFu8; 0x18000]);
         memory.set_shadow_control(0x02);
         memory.write_byte(0xE8000, 0x42);
@@ -864,8 +851,7 @@ mod tests {
 
     #[test]
     fn shadow_ram_write_works_regardless_of_read_select() {
-        use super::ADDRESS_MASK_I386;
-        let mut memory = Pc9801Memory::new(ADDRESS_MASK_I386, 0x100000);
+        let mut memory = Pc9801Memory::new(MachineModel::PC9801RA, 0x100000);
         memory.load_rom(&vec![0xFFu8; 0x18000]);
         // shadow_control=0x00 (bit 1=0, ROM reads) — writes should still go to shadow RAM.
         memory.write_byte(0xE8000, 0x42);
@@ -876,8 +862,7 @@ mod tests {
 
     #[test]
     fn shadow_ram_rom_to_ram_copy_sequence() {
-        use super::ADDRESS_MASK_I386;
-        let mut memory = Pc9801Memory::new(ADDRESS_MASK_I386, 0x100000);
+        let mut memory = Pc9801Memory::new(MachineModel::PC9801RA, 0x100000);
         let mut rom = vec![0xFFu8; 0x18000];
         rom[0] = 0xAA;
         rom[0x17FFF] = 0xBB;
@@ -903,8 +888,7 @@ mod tests {
 
     #[test]
     fn shadow_ram_covers_full_bios_range() {
-        use super::ADDRESS_MASK_I386;
-        let mut memory = Pc9801Memory::new(ADDRESS_MASK_I386, 0x100000);
+        let mut memory = Pc9801Memory::new(MachineModel::PC9801RA, 0x100000);
         memory.set_shadow_control(0x02);
         memory.write_byte(0xE8000, 0x11);
         memory.write_byte(0xFFFFF, 0x22);
@@ -920,8 +904,7 @@ mod tests {
 
     #[test]
     fn sound_rom_respects_enable_bit_on_386() {
-        use super::ADDRESS_MASK_I386;
-        let mut memory = Pc9801Memory::new(ADDRESS_MASK_I386, 0x100000);
+        let mut memory = Pc9801Memory::new(MachineModel::PC9801RA, 0x100000);
         memory.load_sound_rom(None);
         // On 386, shadow_control bit 7 clear => sound ROM hidden.
         assert_eq!(memory.read_byte(0xCC000), 0xFF);
