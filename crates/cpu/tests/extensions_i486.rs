@@ -1,5 +1,5 @@
 use common::{Bus as _, Cpu as _};
-use cpu::{CPU_MODEL_486SX, I386, I386State};
+use cpu::{CPU_MODEL_486, I386, I386State};
 
 const RAM_SIZE: usize = 1024 * 1024;
 const ADDRESS_MASK: u32 = 0x000F_FFFF;
@@ -72,8 +72,8 @@ fn setup_ivt_entry(bus: &mut TestBus, vector: u8, handler_cs: u16, handler_ip: u
     bus.ram[addr + 3] = (handler_cs >> 8) as u8;
 }
 
-fn make_486sx() -> I386<{ CPU_MODEL_486SX }> {
-    I386::<{ CPU_MODEL_486SX }>::new()
+fn make_486dx() -> I386<{ CPU_MODEL_486 }> {
+    I386::<{ CPU_MODEL_486 }>::new()
 }
 
 fn setup_state(cs: u16, ip: u16) -> I386State {
@@ -86,14 +86,17 @@ fn setup_state(cs: u16, ip: u16) -> I386State {
 }
 
 #[test]
-fn i486sx_cr0_after_reset() {
-    let cpu = make_486sx();
-    assert_eq!(cpu.cr0, 0x0000_0000, "486SX reset: ET=0, PE=0, all zero");
+fn i486dx_cr0_after_reset() {
+    let cpu = make_486dx();
+    assert_eq!(
+        cpu.cr0, 0x0000_0010,
+        "486DX reset: ET=1 (hardwired, on-chip FPU), PE=0"
+    );
 }
 
 #[test]
-fn i486sx_bswap_eax() {
-    let mut cpu = make_486sx();
+fn i486dx_bswap_eax() {
+    let mut cpu = make_486dx();
     let mut bus = TestBus::new();
 
     let cs: u16 = 0x1000;
@@ -120,8 +123,8 @@ fn i486sx_bswap_eax() {
 }
 
 #[test]
-fn i486sx_bswap_ecx() {
-    let mut cpu = make_486sx();
+fn i486dx_bswap_ecx() {
+    let mut cpu = make_486dx();
     let mut bus = TestBus::new();
 
     let cs: u16 = 0x1000;
@@ -147,8 +150,8 @@ fn i486sx_bswap_ecx() {
 }
 
 #[test]
-fn i486sx_bswap_zero() {
-    let mut cpu = make_486sx();
+fn i486dx_bswap_zero() {
+    let mut cpu = make_486dx();
     let mut bus = TestBus::new();
 
     let cs: u16 = 0x1000;
@@ -170,8 +173,8 @@ fn i486sx_bswap_zero() {
 }
 
 #[test]
-fn i486sx_cmpxchg_byte_equal() {
-    let mut cpu = make_486sx();
+fn i486dx_cmpxchg_byte_equal() {
+    let mut cpu = make_486dx();
     let mut bus = TestBus::new();
 
     let cs: u16 = 0x1000;
@@ -208,8 +211,8 @@ fn i486sx_cmpxchg_byte_equal() {
 }
 
 #[test]
-fn i486sx_cmpxchg_byte_not_equal() {
-    let mut cpu = make_486sx();
+fn i486dx_cmpxchg_byte_not_equal() {
+    let mut cpu = make_486dx();
     let mut bus = TestBus::new();
 
     let cs: u16 = 0x1000;
@@ -250,8 +253,8 @@ fn i486sx_cmpxchg_byte_not_equal() {
 }
 
 #[test]
-fn i486sx_cmpxchg_word_equal() {
-    let mut cpu = make_486sx();
+fn i486dx_cmpxchg_word_equal() {
+    let mut cpu = make_486dx();
     let mut bus = TestBus::new();
 
     let cs: u16 = 0x1000;
@@ -288,8 +291,8 @@ fn i486sx_cmpxchg_word_equal() {
 }
 
 #[test]
-fn i486sx_cmpxchg_word_not_equal() {
-    let mut cpu = make_486sx();
+fn i486dx_cmpxchg_word_not_equal() {
+    let mut cpu = make_486dx();
     let mut bus = TestBus::new();
 
     let cs: u16 = 0x1000;
@@ -330,8 +333,8 @@ fn i486sx_cmpxchg_word_not_equal() {
 }
 
 #[test]
-fn i486sx_xadd_byte_reg() {
-    let mut cpu = make_486sx();
+fn i486dx_xadd_byte_reg() {
+    let mut cpu = make_486dx();
     let mut bus = TestBus::new();
 
     let cs: u16 = 0x1000;
@@ -362,8 +365,8 @@ fn i486sx_xadd_byte_reg() {
 }
 
 #[test]
-fn i486sx_xadd_word_reg() {
-    let mut cpu = make_486sx();
+fn i486dx_xadd_word_reg() {
+    let mut cpu = make_486dx();
     let mut bus = TestBus::new();
 
     let cs: u16 = 0x1000;
@@ -397,8 +400,8 @@ fn i486sx_xadd_word_reg() {
 }
 
 #[test]
-fn i486sx_invd_is_nop() {
-    let mut cpu = make_486sx();
+fn i486dx_invd_is_nop() {
+    let mut cpu = make_486dx();
     let mut bus = TestBus::new();
 
     let cs: u16 = 0x1000;
@@ -422,8 +425,8 @@ fn i486sx_invd_is_nop() {
 }
 
 #[test]
-fn i486sx_wbinvd_is_nop() {
-    let mut cpu = make_486sx();
+fn i486dx_wbinvd_is_nop() {
+    let mut cpu = make_486dx();
     let mut bus = TestBus::new();
 
     let cs: u16 = 0x1000;
@@ -451,8 +454,8 @@ fn i486sx_wbinvd_is_nop() {
 }
 
 #[test]
-fn i486sx_invlpg_no_fault_real_mode() {
-    let mut cpu = make_486sx();
+fn i486dx_invlpg_no_fault_real_mode() {
+    let mut cpu = make_486dx();
     let mut bus = TestBus::new();
 
     let cs: u16 = 0x1000;
@@ -568,8 +571,8 @@ fn i386_xadd_triggers_ud() {
 }
 
 #[test]
-fn i486sx_div_byte_toggles_af() {
-    let mut cpu = make_486sx();
+fn i486dx_div_byte_toggles_af() {
+    let mut cpu = make_486dx();
     let mut bus = TestBus::new();
 
     let cs: u16 = 0x1000;
@@ -628,8 +631,8 @@ fn i486sx_div_byte_toggles_af() {
 }
 
 #[test]
-fn i486sx_idiv_byte_toggles_af() {
-    let mut cpu = make_486sx();
+fn i486dx_idiv_byte_toggles_af() {
+    let mut cpu = make_486dx();
     let mut bus = TestBus::new();
 
     let cs: u16 = 0x1000;
@@ -661,8 +664,8 @@ fn i486sx_idiv_byte_toggles_af() {
 }
 
 #[test]
-fn i486sx_div_word_toggles_af() {
-    let mut cpu = make_486sx();
+fn i486dx_div_word_toggles_af() {
+    let mut cpu = make_486dx();
     let mut bus = TestBus::new();
 
     let cs: u16 = 0x1000;
@@ -693,8 +696,8 @@ fn i486sx_div_word_toggles_af() {
 }
 
 #[test]
-fn i486sx_idiv_word_toggles_af() {
-    let mut cpu = make_486sx();
+fn i486dx_idiv_word_toggles_af() {
+    let mut cpu = make_486dx();
     let mut bus = TestBus::new();
 
     let cs: u16 = 0x1000;
@@ -728,8 +731,8 @@ fn i486sx_idiv_word_toggles_af() {
 }
 
 #[test]
-fn i486sx_fpu_escape_triggers_nm() {
-    let mut cpu = make_486sx();
+fn i486dx_fpu_escape_no_fault() {
+    let mut cpu = make_486dx();
     let mut bus = TestBus::new();
 
     let cs: u16 = 0x1000;
@@ -746,12 +749,12 @@ fn i486sx_fpu_escape_triggers_nm() {
 
     cpu.step(&mut bus);
 
-    assert_eq!(
-        cpu.cs(),
-        handler_cs,
-        "486SX: FPU opcode should trigger #NM (INT 7)"
+    assert_eq!(cpu.cs(), cs, "486DX: FPU opcode should execute, not fault");
+    assert_ne!(
+        cpu.ip() as u16,
+        ip,
+        "486DX: IP should advance past the FPU opcode"
     );
-    assert_eq!(cpu.ip() as u16, handler_ip);
 }
 
 #[test]

@@ -31,8 +31,8 @@ pub enum CpuType {
     I286,
     /// Intel 80386.
     I386,
-    /// Intel 80486SX (no FPU).
-    I486SX,
+    /// Intel 80486DX.
+    I486DX,
 }
 
 /// PC-98 machine model.
@@ -47,7 +47,7 @@ pub enum MachineModel {
     PC9801VX,
     /// PC-9801RA (80386, 20 MHz, EGC, 32-bit address space, SASI built-in).
     PC9801RA,
-    /// PC-9821As (486SX, 25 MHz, PEGC, 32-bit address space, IDE built-in).
+    /// PC-9821As (486DX, 33 MHz, PEGC, 32-bit address space, IDE built-in).
     PC9821As,
 }
 
@@ -70,7 +70,7 @@ impl MachineModel {
             Self::PC9801VM => CpuType::V30,
             Self::PC9801VX => CpuType::I286,
             Self::PC9801RA => CpuType::I386,
-            Self::PC9821As => CpuType::I486SX,
+            Self::PC9821As => CpuType::I486DX,
         }
     }
 
@@ -79,7 +79,7 @@ impl MachineModel {
         match self {
             Self::PC9801VM | Self::PC9801VX => 10_000_000,
             Self::PC9801RA => 20_000_000,
-            Self::PC9821As => 25_000_000,
+            Self::PC9821As => 33_000_000,
         }
     }
 
@@ -442,6 +442,13 @@ pub trait Bus {
     fn reset_pending(&self) -> bool {
         false
     }
+
+    /// Signals an FPU error (FERR#) for DOS-compatible exception delivery.
+    ///
+    /// When CR0.NE=0 and an unmasked x87 exception is pending, the CPU calls
+    /// this instead of raising #MF. The bus implementation routes this to the
+    /// appropriate IRQ (typically IRQ 13 on PC-98).
+    fn signal_fpu_error(&mut self) {}
 
     /// Returns `true` if the bus requests the CPU to yield execution.
     ///

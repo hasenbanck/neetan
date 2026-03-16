@@ -1,0 +1,10 @@
+[package]
+name = "softfloat"
+version = "0.1.0"
+license = "BSD-3-Clause OR MIT-0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]

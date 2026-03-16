@@ -1,4 +1,4 @@
-use super::{I386, flags::I386Flags};
+use super::{I386, flags::I386Flags, fpu::X87State};
 use crate::{ByteReg, DwordReg, RegisterFile32, SegReg32};
 
 /// Snapshot of all I386 CPU registers and flags.
@@ -68,6 +68,8 @@ pub struct I386State {
     pub tr_rights: u8,
     /// Stored current privilege level (updated on CS loads).
     pub stored_cpl: u16,
+    /// x87 FPU state.
+    pub fpu: X87State,
 }
 
 impl I386State {

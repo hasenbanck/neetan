@@ -1,4 +1,4 @@
-use super::{CPU_MODEL_386, CPU_MODEL_486SX, I386};
+use super::{CPU_MODEL_386, CPU_MODEL_486, I386};
 use crate::{ByteReg, DwordReg, SegReg32, WordReg};
 
 impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
@@ -211,7 +211,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
             // CALL far, WAIT
             0x9A => self.call_far(bus),
-            0x9B => self.clk(Self::timing(6, 1)), // WAIT
+            0x9B => self.fpu_wait(bus),
             0x9C => self.pushf(bus),
             0x9D => self.popf(bus),
             0x9E => self.sahf(),
@@ -307,8 +307,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             // XLAT
             0xD7 => self.xlat(bus),
 
-            // FPU escape (NOP on I386)
-            0xD8..=0xDF => self.fpu_escape(bus),
+            // FPU escape
+            0xD8..=0xDF => self.fpu_escape(opcode, bus),
 
             // LOOPNE, LOOPE, LOOP, JCXZ
             0xE0 => self.loopne(bus),
@@ -1397,7 +1397,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     let m = self.next_instruction_length_approx(bus);
                     self.clk(7 + m);
                 }
-                CPU_MODEL_486SX => self.clk(3),
+                CPU_MODEL_486 => self.clk(3),
                 _ => {
                     unreachable!("Unhandled CPU_MODEL")
                 }
@@ -1417,7 +1417,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     let m = self.next_instruction_length_approx(bus);
                     self.clk(7 + m);
                 }
-                CPU_MODEL_486SX => self.clk(3),
+                CPU_MODEL_486 => self.clk(3),
                 _ => {
                     unreachable!("Unhandled CPU_MODEL")
                 }
@@ -1693,7 +1693,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     let m = self.next_instruction_length_approx(bus);
                     self.clk(17 + m + penalty);
                 }
-                CPU_MODEL_486SX => self.clk(18 + penalty),
+                CPU_MODEL_486 => self.clk(18 + penalty),
                 _ => {
                     unreachable!("Unhandled CPU_MODEL")
                 }
@@ -1727,7 +1727,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     let m = self.next_instruction_length_approx(bus);
                     self.clk(17 + m + penalty);
                 }
-                CPU_MODEL_486SX => self.clk(18 + penalty),
+                CPU_MODEL_486 => self.clk(18 + penalty),
                 _ => {
                     unreachable!("Unhandled CPU_MODEL")
                 }
@@ -1749,7 +1749,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     let m = self.next_instruction_length_approx(bus);
                     self.clk(7 + m + penalty);
                 }
-                CPU_MODEL_486SX => self.clk(3 + penalty),
+                CPU_MODEL_486 => self.clk(3 + penalty),
                 _ => {
                     unreachable!("Unhandled CPU_MODEL")
                 }
@@ -1765,7 +1765,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     let m = self.next_instruction_length_approx(bus);
                     self.clk(7 + m + penalty);
                 }
-                CPU_MODEL_486SX => self.clk(3 + penalty),
+                CPU_MODEL_486 => self.clk(3 + penalty),
                 _ => {
                     unreachable!("Unhandled CPU_MODEL")
                 }
@@ -1785,7 +1785,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     let m = self.next_instruction_length_approx(bus);
                     self.clk(7 + m);
                 }
-                CPU_MODEL_486SX => self.clk(3),
+                CPU_MODEL_486 => self.clk(3),
                 _ => {
                     unreachable!("Unhandled CPU_MODEL")
                 }
@@ -1799,7 +1799,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     let m = self.next_instruction_length_approx(bus);
                     self.clk(7 + m);
                 }
-                CPU_MODEL_486SX => self.clk(3),
+                CPU_MODEL_486 => self.clk(3),
                 _ => {
                     unreachable!("Unhandled CPU_MODEL")
                 }
@@ -1825,7 +1825,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     let m = self.next_instruction_length_approx(bus);
                     self.clk(12 + m);
                 }
-                CPU_MODEL_486SX => self.clk(17),
+                CPU_MODEL_486 => self.clk(17),
                 _ => {
                     unreachable!("Unhandled CPU_MODEL")
                 }
@@ -1847,7 +1847,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     let m = self.next_instruction_length_approx(bus);
                     self.clk(12 + m);
                 }
-                CPU_MODEL_486SX => self.clk(17),
+                CPU_MODEL_486 => self.clk(17),
                 _ => {
                     unreachable!("Unhandled CPU_MODEL")
                 }
@@ -1864,7 +1864,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 let m = self.next_instruction_length_approx(bus);
                 self.clk(7 + m);
             }
-            CPU_MODEL_486SX => self.clk(3),
+            CPU_MODEL_486 => self.clk(3),
             _ => {
                 unreachable!("Unhandled CPU_MODEL")
             }
@@ -1886,7 +1886,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 let m = self.next_instruction_length_approx(bus);
                 self.clk(10 + m + penalty);
             }
-            CPU_MODEL_486SX => self.clk(5 + penalty),
+            CPU_MODEL_486 => self.clk(5 + penalty),
             _ => {
                 unreachable!("Unhandled CPU_MODEL")
             }
@@ -1911,7 +1911,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 let m = self.next_instruction_length_approx(bus);
                 self.clk(10 + m + penalty);
             }
-            CPU_MODEL_486SX => self.clk(5 + penalty),
+            CPU_MODEL_486 => self.clk(5 + penalty),
             _ => {
                 unreachable!("Unhandled CPU_MODEL")
             }
@@ -1944,7 +1944,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     let m = self.next_instruction_length_approx(bus);
                     self.clk(18 + m + penalty);
                 }
-                CPU_MODEL_486SX => self.clk(13 + penalty),
+                CPU_MODEL_486 => self.clk(13 + penalty),
                 _ => {
                     unreachable!("Unhandled CPU_MODEL")
                 }
@@ -2059,7 +2059,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 let m = self.next_instruction_length_approx(bus);
                 self.clk(18 + m + penalty);
             }
-            CPU_MODEL_486SX => self.clk(13 + penalty),
+            CPU_MODEL_486 => self.clk(13 + penalty),
             _ => {
                 unreachable!("Unhandled CPU_MODEL")
             }
@@ -2095,7 +2095,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     let m = self.next_instruction_length_approx(bus);
                     self.clk(18 + m + penalty);
                 }
-                CPU_MODEL_486SX => self.clk(14 + penalty),
+                CPU_MODEL_486 => self.clk(14 + penalty),
                 _ => {
                     unreachable!("Unhandled CPU_MODEL")
                 }
@@ -2219,7 +2219,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 let m = self.next_instruction_length_approx(bus);
                 self.clk(18 + m + penalty);
             }
-            CPU_MODEL_486SX => self.clk(14 + penalty),
+            CPU_MODEL_486 => self.clk(14 + penalty),
             _ => {
                 unreachable!("Unhandled CPU_MODEL")
             }
@@ -2243,7 +2243,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
         let base = match CPU_MODEL {
             CPU_MODEL_386 => 4,
-            CPU_MODEL_486SX => {
+            CPU_MODEL_486 => {
                 if self.is_protected_mode() && !self.is_virtual_mode() {
                     3
                 } else {
@@ -2276,7 +2276,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
         let base = match CPU_MODEL {
             CPU_MODEL_386 => 5,
-            CPU_MODEL_486SX => {
+            CPU_MODEL_486 => {
                 if self.is_protected_mode() && !self.is_virtual_mode() {
                     6
                 } else {
@@ -2932,7 +2932,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     let m = self.next_instruction_length_approx(bus);
                     self.clk(11 + m);
                 }
-                CPU_MODEL_486SX => self.clk(9),
+                CPU_MODEL_486 => self.clk(9),
                 _ => {
                     unreachable!("Unhandled CPU_MODEL")
                 }
@@ -2961,7 +2961,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     let m = self.next_instruction_length_approx(bus);
                     self.clk(11 + m);
                 }
-                CPU_MODEL_486SX => self.clk(9),
+                CPU_MODEL_486 => self.clk(9),
                 _ => {
                     unreachable!("Unhandled CPU_MODEL")
                 }
@@ -2990,7 +2990,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     let m = self.next_instruction_length_approx(bus);
                     self.clk(11 + m);
                 }
-                CPU_MODEL_486SX => self.clk(7),
+                CPU_MODEL_486 => self.clk(7),
                 _ => {
                     unreachable!("Unhandled CPU_MODEL")
                 }
@@ -3015,7 +3015,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     let m = self.next_instruction_length_approx(bus);
                     self.clk(9 + m);
                 }
-                CPU_MODEL_486SX => self.clk(8),
+                CPU_MODEL_486 => self.clk(8),
                 _ => {
                     unreachable!("Unhandled CPU_MODEL")
                 }
@@ -3271,29 +3271,6 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let val = if self.flags.cf() { 0xFF } else { 0x00 };
         self.regs.set_byte(ByteReg::AL, val);
         self.clk(Self::timing(2, 2));
-    }
-
-    fn fpu_escape(&mut self, bus: &mut impl common::Bus) {
-        match CPU_MODEL {
-            CPU_MODEL_386 => {
-                // 386 with no FPU: consume cycles, ignore instruction.
-                let modrm = self.fetch(bus);
-                if modrm < 0xC0 {
-                    self.calc_ea(modrm, bus);
-                    let penalty = if self.ea & 1 != 0 { 4 } else { 0 };
-                    self.clk(11 + penalty);
-                } else {
-                    self.clk(2);
-                }
-            }
-            CPU_MODEL_486SX => {
-                // 486SX has no FPU; x87 opcodes generate #NM (device not available, INT 7).
-                self.raise_fault(7, bus);
-            }
-            _ => {
-                unreachable!("Unhandled CPU_MODEL")
-            }
-        }
     }
 
     fn clc(&mut self) {

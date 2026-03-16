@@ -1,4 +1,4 @@
-use super::{CPU_MODEL_386, CPU_MODEL_486SX, I386};
+use super::{CPU_MODEL_386, CPU_MODEL_486, I386};
 use crate::{ByteReg, DwordReg, SegReg32, WordReg};
 
 impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
@@ -11,7 +11,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 2 | 3 => (9, 10),
                 _ => (3, 7),
             },
-            CPU_MODEL_486SX => match count_source {
+            CPU_MODEL_486 => match count_source {
                 0 => match extension & 7 {
                     2 | 3 => (8, 9),
                     _ => (2, 4),
@@ -750,7 +750,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                                 self.clk(10 + m + sp_pen + ea_pen);
                             }
                         }
-                        CPU_MODEL_486SX => self.clk(5 + sp_pen),
+                        CPU_MODEL_486 => self.clk(5 + sp_pen),
                         _ => {
                             unreachable!("Unhandled CPU_MODEL")
                         }
@@ -772,7 +772,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                                 self.clk(10 + m + sp_pen + ea_pen);
                             }
                         }
-                        CPU_MODEL_486SX => self.clk(5 + sp_pen),
+                        CPU_MODEL_486 => self.clk(5 + sp_pen),
                         _ => {
                             unreachable!("Unhandled CPU_MODEL")
                         }
@@ -815,7 +815,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                             let ea_pen = if self.ea & 3 != 0 { 4 } else { 0 };
                             self.clk(22 + m + sp_pen + ea_pen);
                         }
-                        CPU_MODEL_486SX => self.clk(17 + sp_pen),
+                        CPU_MODEL_486 => self.clk(17 + sp_pen),
                         _ => {
                             unreachable!("Unhandled CPU_MODEL")
                         }
@@ -852,7 +852,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                             let ea_pen = if self.ea & 1 != 0 { 4 } else { 0 };
                             self.clk(22 + m + sp_pen + ea_pen);
                         }
-                        CPU_MODEL_486SX => self.clk(17 + sp_pen),
+                        CPU_MODEL_486 => self.clk(17 + sp_pen),
                         _ => {
                             unreachable!("Unhandled CPU_MODEL")
                         }
@@ -875,7 +875,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                                 self.clk(10 + m + ea_pen);
                             }
                         }
-                        CPU_MODEL_486SX => self.clk(5),
+                        CPU_MODEL_486 => self.clk(5),
                         _ => {
                             unreachable!("Unhandled CPU_MODEL")
                         }
@@ -895,7 +895,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                                 self.clk(10 + m + ea_pen);
                             }
                         }
-                        CPU_MODEL_486SX => self.clk(5),
+                        CPU_MODEL_486 => self.clk(5),
                         _ => {
                             unreachable!("Unhandled CPU_MODEL")
                         }
@@ -926,7 +926,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                             let penalty = if self.ea & 3 != 0 { 4 } else { 0 };
                             self.clk(43 + m + penalty);
                         }
-                        CPU_MODEL_486SX => self.clk(13),
+                        CPU_MODEL_486 => self.clk(13),
                         _ => {
                             unreachable!("Unhandled CPU_MODEL")
                         }
@@ -958,7 +958,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                             let penalty = if self.ea & 1 != 0 { 4 } else { 0 };
                             self.clk(43 + m + penalty);
                         }
-                        CPU_MODEL_486SX => self.clk(13),
+                        CPU_MODEL_486 => self.clk(13),
                         _ => {
                             unreachable!("Unhandled CPU_MODEL")
                         }

@@ -109,17 +109,17 @@ impl<C: Cpu, T: Tracing> Machine<C, T> {
     }
 }
 
-/// PC-9801VM machine type (V30 CPU at 8 or 10 MHz).
+/// PC-9801VM machine type (V30 CPU at 10 MHz).
 pub type Pc9801Vm = Machine<cpu::V30>;
 
-/// PC-9801VX machine type (80286 CPU at 8 or 10 MHz).
+/// PC-9801VX machine type (80286 CPU at 10 MHz).
 pub type Pc9801Vx = Machine<cpu::I286>;
 
-/// PC-9801RA machine type (80386 CPU at 16 or 20 MHz).
+/// PC-9801RA machine type (80386 SX CPU at 20 MHz).
 pub type Pc9801Ra = Machine<cpu::I386>;
 
-/// PC-9821As machine type (486SX CPU at 25 MHz, IDE, PEGC).
-pub type Pc9821As = Machine<cpu::I386<{ cpu::CPU_MODEL_486SX }>>;
+/// PC-9821As machine type (486DX CPU at 33 MHz, IDE, PEGC).
+pub type Pc9821As = Machine<cpu::I386<{ cpu::CPU_MODEL_486 }>>;
 
 impl<T: Tracing> Machine<cpu::V30, T> {
     /// Captures the full machine state.

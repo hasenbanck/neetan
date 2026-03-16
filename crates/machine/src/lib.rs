@@ -28,6 +28,7 @@ pub use trace::{NoTracing, Tracing};
 pub use crate::{bus::Pc9801Bus, config::ClockConfig, memory::Pc9801MemoryState};
 
 /// CPU state snapshot, discriminated by CPU type.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CpuState {
     /// V30 CPU state.

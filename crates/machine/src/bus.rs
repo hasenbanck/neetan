@@ -493,7 +493,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         let sys_type = match cpu_type {
             CpuType::V30 => 0x00,
             CpuType::I286 => 0x01,
-            CpuType::I386 | CpuType::I486SX => 0x4B,
+            CpuType::I386 | CpuType::I486DX => 0x4B,
         };
         self.memory.state.ram[0x0480] = sys_type;
 
@@ -512,7 +512,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         // BIOS_FLAG3 (0x0481): 386 machines have bit 5 set.
         self.memory.state.ram[0x0481] = match cpu_type {
-            CpuType::I386 | CpuType::I486SX => 0x20,
+            CpuType::I386 | CpuType::I486DX => 0x20,
             CpuType::I286 | CpuType::V30 => 0x00,
         };
 
@@ -4507,6 +4507,11 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
 
     fn reset_pending(&self) -> bool {
         self.reset_pending
+    }
+
+    fn signal_fpu_error(&mut self) {
+        // PC-98: FERR# is routed to IRQ 8 (slave PIC IR0).
+        self.pic.set_irq(8);
     }
 
     fn cpu_should_yield(&self) -> bool {
