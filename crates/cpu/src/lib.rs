@@ -8,7 +8,7 @@ mod i386;
 mod v30;
 
 pub use i286::{I286, I286Flags, I286State};
-pub use i386::{CPU_MODEL_386, CPU_MODEL_486SX, I386, I386Flags, I386State};
+pub use i386::{CPU_MODEL_386, CPU_MODEL_486, I386, I386Flags, I386State};
 pub use v30::{V30, V30Flags, V30State};
 
 pub(crate) const PENDING_IRQ: u8 = 0x01;

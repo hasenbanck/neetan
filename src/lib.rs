@@ -911,8 +911,8 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
             cpu::I386::<{ cpu::CPU_MODEL_386 }>::new(),
             bus,
         )),
-        common::CpuType::I486SX => Box::new(machine::Machine::new(
-            cpu::I386::<{ cpu::CPU_MODEL_486SX }>::new(),
+        common::CpuType::I486DX => Box::new(machine::Machine::new(
+            cpu::I386::<{ cpu::CPU_MODEL_486 }>::new(),
             bus,
         )),
     };

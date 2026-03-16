@@ -12,6 +12,7 @@ verification = ["serde", "serde_json", "flate2"]
 
 [dependencies]
 common = { workspace = true }
+softfloat = { workspace = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }

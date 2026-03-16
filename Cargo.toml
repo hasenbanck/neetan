@@ -18,6 +18,7 @@ graphics_engine = { path = "crates/graphics_engine" }
 machine = { path = "crates/machine" }
 resampler = { path = "crates/resampler" }
 sdl3 = { path = "crates/sdl3" }
+softfloat = { path = "crates/softfloat" }
 ymfm_oxide = { path = "crates/ymfm_oxide" }
 # External dependencies
 jay-ash = { version = "0.3", default-features = false }
@@ -97,6 +98,10 @@ opt-level = 3
 codegen-units = 1
 
 [profile.dev.package.sdl3]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.softfloat]
 opt-level = 3
 codegen-units = 1
 

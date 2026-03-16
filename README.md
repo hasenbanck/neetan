@@ -14,13 +14,13 @@ files is supported, but should provide no additional benefit.
 
 Currently, we aim to support all 16-bit era DOS games and emulate them accurately for 5 idealized machine targets:
 
-| Machine   | CPU      | CPU Speed | RAM     | Extended RAM | Graphics | Interface | CD-ROM | Implementation Status |
-|-----------|----------|-----------|---------|--------------|----------|-----------|--------|-----------------------|
-| PC-9801VM | V30      | 10 Mhz    | 640 KiB | None         | GRCG     | SASI      | No     | Works fine            |
-| PC-9801VX | 80286    | 10 Mhz    | 640 KiB | 4 MiB        | ECG      | SASI      | No     | Works fine            |
-| PC-9801RA | 80386DX  | 20 Mhz    | 640 KiB | 12 MiB       | ECG      | SASI      | No     | Works fine            |
-| PC-9821AS | 80486SX  | 25 Mhz    | 640 KiB | 14 MiB       | PEGC     | IDE       | Yes    | In-progress           |
-| PC-9821AP | 80486DX2 | 66 Mhz    | 640 KiB | 14 MiB       | PEGC     | IDE       | Yes    | Missing               |
+| Machine   | CPU      | CPU Speed | FPU (x87) | RAM     | Extended RAM | Graphics | Interface | CD-ROM | Implementation Status |
+|-----------|----------|-----------|-----------|---------|--------------|----------|-----------|--------|-----------------------|
+| PC-9801VM | V30      | 10 Mhz    | No        | 640 KiB | None         | GRCG     | SASI      | No     | Works                 |
+| PC-9801VX | 80286    | 10 Mhz    | No        | 640 KiB | 4 MiB        | ECG      | SASI      | No     | Works                 |
+| PC-9801RA | 80386DX  | 20 Mhz    | Yes       | 640 KiB | 12 MiB       | ECG      | SASI      | No     | Works                 |
+| PC-9821AS | 80486DX  | 33 Mhz    | Yes       | 640 KiB | 14 MiB       | PEGC     | IDE       | Yes    | In-progress           |
+| PC-9821AP | 80486DX2 | 66 Mhz    | Yes       | 640 KiB | 14 MiB       | PEGC     | IDE       | Yes    | In-progress           |
 
 We also support the following sound cards:
 
@@ -33,7 +33,7 @@ The default for the CLI is the PC-9801VX machine with the PC-9801-86 + PC-9801-2
 
 This machine was release 1986, and it was well-supported until around 1996.
 For older games, or games that targeted the VM standard, we included the V30 based VM machine.
-For newer games, or games that were very resource intensive, we included the RA machine.
+For newer games, or games that were very resource intensive, we included the RA, AS and AP machines.
 
 ## Usage
 
@@ -44,23 +44,23 @@ neetan <COMMAND>
 
 ### Options
 
-| Option                   | Description                                                  | Default    |
-|--------------------------|--------------------------------------------------------------|------------|
-| `-c, --config <PATH>`    | Load configuration from file                                 | —          |
-| `--machine <TYPE>`       | Machine type: `PC9801VM`, `PC9801VX`, `PC9801RA`, `PC9821As` | `PC9801VX` |
-| `--fdd1 <PATH>`          | Floppy disk image for drive 1 (repeatable)                   | —          |
-| `--fdd2 <PATH>`          | Floppy disk image for drive 2 (repeatable)                   | —          |
-| `--hdd1 <PATH>`          | Hard disk image for SASI drive 1                             | —          |
-| `--hdd2 <PATH>`          | Hard disk image for SASI drive 2                             | —          |
-| `--audio-volume <FLOAT>` | Audio volume 0.0–1.0                                         | `1.0`      |
-| `--aspect-mode <MODE>`   | Display aspect mode: `4:3` or `1:1`                          | `4:3`      |
-| `--window-mode <MODE>`   | Window mode: `windowed` or `fullscreen`                      | `windowed` |
-| `--bios-rom <PATH>`      | Path to BIOS ROM file                                        | HLE BIOS   |
-| `--font-rom <PATH>`      | Path to font ROM file                                        | Built-in   |
-| `--soundboard <TYPE>`    | Sound board: `none`, `26k`, `86`, `86+26k`                   | `86+26k`   |
-| `--printer <PATH>`       | Output file for printer (must exist)                         | —          |
-| `-h, --help`             | Print help                                                   | —          |
-| `-V, --version`          | Print version                                                | —          |
+| Option                   | Description                                                              | Default    |
+|--------------------------|--------------------------------------------------------------------------|------------|
+| `-c, --config <PATH>`    | Load configuration from file                                             | —          |
+| `--machine <TYPE>`       | Machine type: `PC9801VM`, `PC9801VX`, `PC9801RA`, `PC9821AS`, `PC9821AP` | `PC9801VX` |
+| `--fdd1 <PATH>`          | Floppy disk image for drive 1 (repeatable)                               | —          |
+| `--fdd2 <PATH>`          | Floppy disk image for drive 2 (repeatable)                               | —          |
+| `--hdd1 <PATH>`          | Hard disk image for SASI drive 1                                         | —          |
+| `--hdd2 <PATH>`          | Hard disk image for SASI drive 2                                         | —          |
+| `--audio-volume <FLOAT>` | Audio volume 0.0–1.0                                                     | `1.0`      |
+| `--aspect-mode <MODE>`   | Display aspect mode: `4:3` or `1:1`                                      | `4:3`      |
+| `--window-mode <MODE>`   | Window mode: `windowed` or `fullscreen`                                  | `windowed` |
+| `--bios-rom <PATH>`      | Path to BIOS ROM file                                                    | HLE BIOS   |
+| `--font-rom <PATH>`      | Path to font ROM file                                                    | Built-in   |
+| `--soundboard <TYPE>`    | Sound board: `none`, `26k`, `86`, `86+26k`                               | `86+26k`   |
+| `--printer <PATH>`       | Output file for printer (must exist)                                     | —          |
+| `-h, --help`             | Print help                                                               | —          |
+| `-V, --version`          | Print version                                                            | —          |
 
 ### Commands
 

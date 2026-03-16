@@ -1,8 +1,8 @@
 //! Implements the Intel 80386+ family emulation.
 //!
 //! The CPU model is selected via the const generic parameter `CPU_MODEL`:
-//! - [`CPU_MODEL_386`] — Intel 80386 DX cycle timings.
-//! - [`CPU_MODEL_486SX`] — Intel 80486SX cycle timings (no FPU).
+//! - [`CPU_MODEL_386`] — Intel 80386DX cycle timings.
+//! - [`CPU_MODEL_486`] — Intel 80486DX cycle timings.
 //!
 //! Following references were used to write the emulator:
 //!
@@ -14,6 +14,9 @@ mod execute;
 mod execute_0f;
 mod execute_group;
 mod flags;
+mod fpu;
+mod fpu_dispatch;
+mod fpu_ops;
 mod interrupt;
 mod modrm;
 mod paging;
@@ -29,10 +32,10 @@ pub use state::I386State;
 
 use crate::{SegReg32, WordReg};
 
-/// CPU model constant for Intel 80386 DX.
+/// CPU model constant for Intel 80386DX.
 pub const CPU_MODEL_386: u8 = 0;
-/// CPU model constant for Intel 80486SX (no FPU).
-pub const CPU_MODEL_486SX: u8 = 1;
+/// CPU model constant for Intel 80486DX.
+pub const CPU_MODEL_486: u8 = 1;
 
 #[derive(Clone, Copy)]
 struct SegmentDescriptor {
@@ -52,7 +55,7 @@ enum TaskType {
 /// Intel 80386+ CPU emulator.
 ///
 /// The const generic `CPU_MODEL` selects the instruction timings and feature set.
-/// Use [`CPU_MODEL_386`] for an 80386 DX or [`CPU_MODEL_486SX`] for an 80486SX.
+/// Use [`CPU_MODEL_386`] for an 80386DX or [`CPU_MODEL_486`] for an 80486DX.
 pub struct I386<const CPU_MODEL: u8 = { CPU_MODEL_386 }> {
     /// Embedded state for save/restore.
     pub state: I386State,
@@ -174,7 +177,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     const fn timing(t386: i32, t486: i32) -> i32 {
         match CPU_MODEL {
             CPU_MODEL_386 => t386,
-            CPU_MODEL_486SX => t486,
+            CPU_MODEL_486 => t486,
             _ => unreachable!(),
         }
     }
@@ -2004,12 +2007,12 @@ impl<const CPU_MODEL: u8> common::Cpu for I386<CPU_MODEL> {
         self.sregs[SegReg32::CS as usize] = 0xFFFF;
         match CPU_MODEL {
             CPU_MODEL_386 => {
-                // 386 reset: ET=1 (387 coprocessor present), all other bits 0.
+                // 386DX reset: ET=1 (80387 coprocessor present).
                 self.cr0 = 0x0000_0010;
             }
-            CPU_MODEL_486SX => {
-                // 486SX reset: ET=0 (no coprocessor).
-                self.cr0 = 0x0000_0000;
+            CPU_MODEL_486 => {
+                // 486DX reset: ET=1 (on-chip FPU present). ET is hardwired on 486.
+                self.cr0 = 0x0000_0010;
             }
             _ => {
                 unreachable!("Unhandled CPU_MODEL")

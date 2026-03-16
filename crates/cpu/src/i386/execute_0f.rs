@@ -1,4 +1,4 @@
-use super::{CPU_MODEL_386, CPU_MODEL_486SX, I386};
+use super::{CPU_MODEL_386, CPU_MODEL_486, I386};
 use crate::{ByteReg, DwordReg, SegReg32, WordReg};
 
 impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
@@ -10,8 +10,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             0x02 => self.lar(bus),
             0x03 => self.lsl_instr(bus),
             0x06 => self.clts(bus),
-            0x08 if CPU_MODEL >= CPU_MODEL_486SX => self.invd(),
-            0x09 if CPU_MODEL >= CPU_MODEL_486SX => self.wbinvd(),
+            0x08 if CPU_MODEL >= CPU_MODEL_486 => self.invd(),
+            0x09 if CPU_MODEL >= CPU_MODEL_486 => self.wbinvd(),
 
             0x20 => self.mov_r32_cr(bus),
             0x21 => self.mov_r32_dr(bus),
@@ -43,14 +43,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             0xBB => self.btc_reg(bus),
             0xBC => self.bsf(bus),
             0xBD => self.bsr(bus),
-            0xB0 if CPU_MODEL >= CPU_MODEL_486SX => self.cmpxchg_byte(bus),
-            0xB1 if CPU_MODEL >= CPU_MODEL_486SX => self.cmpxchg_word(bus),
+            0xB0 if CPU_MODEL >= CPU_MODEL_486 => self.cmpxchg_byte(bus),
+            0xB1 if CPU_MODEL >= CPU_MODEL_486 => self.cmpxchg_word(bus),
             0xBE => self.movsx_rm8(bus),
             0xBF => self.movsx_rm16(bus),
 
-            0xC0 if CPU_MODEL >= CPU_MODEL_486SX => self.xadd_byte(bus),
-            0xC1 if CPU_MODEL >= CPU_MODEL_486SX => self.xadd_word(bus),
-            0xC8..=0xCF if CPU_MODEL >= CPU_MODEL_486SX => self.bswap(sub),
+            0xC0 if CPU_MODEL >= CPU_MODEL_486 => self.xadd_byte(bus),
+            0xC1 if CPU_MODEL >= CPU_MODEL_486 => self.xadd_word(bus),
+            0xC8..=0xCF if CPU_MODEL >= CPU_MODEL_486 => self.bswap(sub),
 
             _ => self.raise_fault(6, bus),
         }
@@ -101,7 +101,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                         let m = self.next_instruction_length_approx(bus);
                         self.clk(7 + m);
                     }
-                    CPU_MODEL_486SX => self.clk(3),
+                    CPU_MODEL_486 => self.clk(3),
                     _ => {
                         unreachable!("Unhandled CPU_MODEL")
                     }
@@ -119,7 +119,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                         let m = self.next_instruction_length_approx(bus);
                         self.clk(7 + m);
                     }
-                    CPU_MODEL_486SX => self.clk(3),
+                    CPU_MODEL_486 => self.clk(3),
                     _ => {
                         unreachable!("Unhandled CPU_MODEL")
                     }
@@ -137,7 +137,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.put_rm_byte(modrm, value, bus);
         match CPU_MODEL {
             CPU_MODEL_386 => self.clk_modrm(modrm, 4, 5),
-            CPU_MODEL_486SX => {
+            CPU_MODEL_486 => {
                 if taken {
                     self.clk_modrm(modrm, 4, 3);
                 } else {
@@ -839,7 +839,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
         match CPU_MODEL {
             CPU_MODEL_386 => self.clk(10 + 3 * n as i32),
-            CPU_MODEL_486SX => self.clk_modrm(modrm, 6, 7),
+            CPU_MODEL_486 => self.clk_modrm(modrm, 6, 7),
             _ => {
                 unreachable!("Unhandled CPU_MODEL")
             }
@@ -876,7 +876,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
         match CPU_MODEL {
             CPU_MODEL_386 => self.clk(10 + 3 * n as i32),
-            CPU_MODEL_486SX => self.clk_modrm(modrm, 6, 7),
+            CPU_MODEL_486 => self.clk_modrm(modrm, 6, 7),
             _ => {
                 unreachable!("Unhandled CPU_MODEL")
             }
@@ -1092,7 +1092,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.cr0 = (self.cr0 & 0xFFFF_FFF0) | (value as u32 & 0x000F) | (self.cr0 & 1);
                 self.clk_modrm(modrm, Self::timing(10, 13), Self::timing(13, 13));
             }
-            7 if CPU_MODEL >= CPU_MODEL_486SX => {
+            7 if CPU_MODEL >= CPU_MODEL_486 => {
                 // INVLPG — invalidate TLB entry for the given memory address.
                 if modrm >= 0xC0 {
                     self.raise_fault(6, bus);
@@ -1359,8 +1359,6 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
         self.clk(Self::timing(22, 10));
     }
-
-    // --- 486SX instructions ---
 
     fn invd(&mut self) {
         // INVD — invalidate cache (NOP: no cache simulation).
