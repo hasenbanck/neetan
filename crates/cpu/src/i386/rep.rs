@@ -7,7 +7,7 @@ pub(super) enum RepType {
     RepE,
 }
 
-impl I386 {
+impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     #[inline(always)]
     fn rep_count(&self) -> u32 {
         if self.address_size_override {
@@ -27,6 +27,7 @@ impl I386 {
     }
 
     fn start_rep(&mut self, rep_type: RepType, bus: &mut impl common::Bus) {
+        self.clk(Self::timing(0, 1));
         self.rep_restart_ip = self.prev_ip;
         let mut next = self.fetch(bus);
 
@@ -79,13 +80,13 @@ impl I386 {
         }
 
         let startup = match next {
-            0xA4 | 0xA5 => 5,  // REP MOVSB/W
-            0xA6 | 0xA7 => 5,  // REP CMPSB/W
-            0xAA | 0xAB => 5,  // REP STOSB/W
-            0xAC | 0xAD => 5,  // REP LODSB/W
-            0xAE | 0xAF => 5,  // REP SCASB/W
-            0x6C | 0x6D => 13, // REP INSB/W
-            0x6E | 0x6F => 5,  // REP OUTSB/W
+            0xA4 | 0xA5 => Self::timing(5, 11),  // REP MOVSB/W
+            0xA6 | 0xA7 => Self::timing(5, 6),   // REP CMPSB/W
+            0xAA | 0xAB => Self::timing(5, 6),   // REP STOSB/W
+            0xAC | 0xAD => Self::timing(5, 6),   // REP LODSB/W
+            0xAE | 0xAF => Self::timing(5, 6),   // REP SCASB/W
+            0x6C | 0x6D => Self::timing(13, 15), // REP INSB/W
+            0x6E | 0x6F => Self::timing(5, 16),  // REP OUTSB/W
             _ => 2,
         };
         self.clk(startup);
@@ -127,12 +128,12 @@ impl I386 {
                 return;
             }
             let per_iteration_adjust = match next {
-                0xA4 | 0xA5 => -3,
-                0xA6 | 0xA7 => -1,
-                0xAA | 0xAB => 1,
-                0xAE | 0xAF => 1,
-                0x6C | 0x6D => -9,
-                0x6E | 0x6F => -2,
+                0xA4 | 0xA5 => Self::timing(-3, -4),
+                0xA6 | 0xA7 => Self::timing(-1, -1),
+                0xAA | 0xAB => Self::timing(1, -1),
+                0xAE | 0xAF => Self::timing(1, -1),
+                0x6C | 0x6D => Self::timing(-9, -3),
+                0x6E | 0x6F => Self::timing(-2, -4),
                 _ => 0,
             };
             if per_iteration_adjust != 0 {

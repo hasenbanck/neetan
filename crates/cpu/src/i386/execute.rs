@@ -1,7 +1,7 @@
-use super::I386;
+use super::{CPU_MODEL_386, CPU_MODEL_486SX, I386};
 use crate::{ByteReg, DwordReg, SegReg32, WordReg};
 
-impl I386 {
+impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     pub(super) fn dispatch(&mut self, opcode: u8, bus: &mut impl common::Bus) {
         if self.fault_pending {
             return;
@@ -196,7 +196,7 @@ impl I386 {
             0x8F => self.pop_rm(bus),
 
             // XCHG AX, reg / NOP
-            0x90 => self.clk(3),
+            0x90 => self.clk(Self::timing(3, 1)),
             0x91 => self.xchg_aw(WordReg::CX),
             0x92 => self.xchg_aw(WordReg::DX),
             0x93 => self.xchg_aw(WordReg::BX),
@@ -211,7 +211,7 @@ impl I386 {
 
             // CALL far, WAIT
             0x9A => self.call_far(bus),
-            0x9B => self.clk(6), // WAIT
+            0x9B => self.clk(Self::timing(6, 1)), // WAIT
             0x9C => self.pushf(bus),
             0x9D => self.popf(bus),
             0x9E => self.sahf(),
@@ -369,6 +369,7 @@ impl I386 {
     fn segment_prefix(&mut self, seg: SegReg32, bus: &mut impl common::Bus) {
         self.seg_prefix = true;
         self.prefix_seg = seg;
+        self.clk(Self::timing(0, 1));
         let opcode = self.fetch(bus);
         self.dispatch(opcode, bus);
     }
@@ -377,12 +378,14 @@ impl I386 {
         // Redundant prefixes are idempotent: always set to the opposite of
         // the code segment default (D-bit), not toggle.
         self.operand_size_override = !self.code_segment_32bit();
+        self.clk(Self::timing(0, 1));
         let opcode = self.fetch(bus);
         self.dispatch(opcode, bus);
     }
 
     fn address_size_prefix(&mut self, bus: &mut impl common::Bus) {
         self.address_size_override = !self.code_segment_32bit();
+        self.clk(Self::timing(0, 1));
         let opcode = self.fetch(bus);
         self.dispatch(opcode, bus);
     }
@@ -393,7 +396,7 @@ impl I386 {
         let dst = self.get_rm_byte(modrm, bus);
         let result = self.alu_add_byte(dst, src);
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_modrm(modrm, 2, 7);
+        self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(7, 3));
     }
 
     fn add_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -403,13 +406,13 @@ impl I386 {
             let dst = self.get_rm_dword(modrm, bus);
             let result = self.alu_add_dword(dst, src);
             self.putback_rm_dword(modrm, result, bus);
-            self.clk_modrm_word(modrm, 2, 7, 4);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
             let src = self.regs.word(self.reg_word(modrm));
             let dst = self.get_rm_word(modrm, bus);
             let result = self.alu_add_word(dst, src);
             self.putback_rm_word(modrm, result, bus);
-            self.clk_modrm_word(modrm, 2, 7, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 2);
         }
     }
 
@@ -420,7 +423,7 @@ impl I386 {
         let result = self.alu_add_byte(dst, src);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, result);
-        self.clk_modrm(modrm, 2, 6);
+        self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(6, 2));
     }
 
     fn add_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -431,14 +434,14 @@ impl I386 {
             let result = self.alu_add_dword(dst, src);
             let reg = self.reg_dword(modrm);
             self.regs.set_dword(reg, result);
-            self.clk_modrm_word(modrm, 2, 6, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 2), 2);
         } else {
             let dst = self.regs.word(self.reg_word(modrm));
             let src = self.get_rm_word(modrm, bus);
             let result = self.alu_add_word(dst, src);
             let reg = self.reg_word(modrm);
             self.regs.set_word(reg, result);
-            self.clk_modrm_word(modrm, 2, 6, 1);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 2), 1);
         }
     }
 
@@ -447,7 +450,7 @@ impl I386 {
         let dst = self.regs.byte(ByteReg::AL);
         let result = self.alu_add_byte(dst, src);
         self.regs.set_byte(ByteReg::AL, result);
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn add_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -462,7 +465,7 @@ impl I386 {
             let result = self.alu_add_word(dst, src);
             self.regs.set_word(WordReg::AX, result);
         }
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn or_br8(&mut self, bus: &mut impl common::Bus) {
@@ -471,7 +474,7 @@ impl I386 {
         let dst = self.get_rm_byte(modrm, bus);
         let result = self.alu_or_byte(dst, src);
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_modrm(modrm, 2, 7);
+        self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(7, 3));
     }
 
     fn or_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -481,13 +484,13 @@ impl I386 {
             let dst = self.get_rm_dword(modrm, bus);
             let result = self.alu_or_dword(dst, src);
             self.putback_rm_dword(modrm, result, bus);
-            self.clk_modrm_word(modrm, 2, 7, 4);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
             let src = self.regs.word(self.reg_word(modrm));
             let dst = self.get_rm_word(modrm, bus);
             let result = self.alu_or_word(dst, src);
             self.putback_rm_word(modrm, result, bus);
-            self.clk_modrm_word(modrm, 2, 7, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 2);
         }
     }
 
@@ -498,7 +501,7 @@ impl I386 {
         let result = self.alu_or_byte(dst, src);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, result);
-        self.clk_modrm(modrm, 2, 6);
+        self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(6, 2));
     }
 
     fn or_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -509,14 +512,14 @@ impl I386 {
             let result = self.alu_or_dword(dst, src);
             let reg = self.reg_dword(modrm);
             self.regs.set_dword(reg, result);
-            self.clk_modrm_word(modrm, 2, 6, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 2), 2);
         } else {
             let dst = self.regs.word(self.reg_word(modrm));
             let src = self.get_rm_word(modrm, bus);
             let result = self.alu_or_word(dst, src);
             let reg = self.reg_word(modrm);
             self.regs.set_word(reg, result);
-            self.clk_modrm_word(modrm, 2, 6, 1);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 2), 1);
         }
     }
 
@@ -525,7 +528,7 @@ impl I386 {
         let dst = self.regs.byte(ByteReg::AL);
         let result = self.alu_or_byte(dst, src);
         self.regs.set_byte(ByteReg::AL, result);
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn or_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -540,7 +543,7 @@ impl I386 {
             let result = self.alu_or_word(dst, src);
             self.regs.set_word(WordReg::AX, result);
         }
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn adc_br8(&mut self, bus: &mut impl common::Bus) {
@@ -550,7 +553,7 @@ impl I386 {
         let cf = self.flags.cf_val();
         let result = self.alu_adc_byte(dst, src, cf);
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_modrm(modrm, 2, 7);
+        self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(7, 3));
     }
 
     fn adc_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -561,13 +564,13 @@ impl I386 {
             let dst = self.get_rm_dword(modrm, bus);
             let result = self.alu_adc_dword(dst, src, cf);
             self.putback_rm_dword(modrm, result, bus);
-            self.clk_modrm_word(modrm, 2, 7, 4);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
             let src = self.regs.word(self.reg_word(modrm));
             let dst = self.get_rm_word(modrm, bus);
             let result = self.alu_adc_word(dst, src, cf);
             self.putback_rm_word(modrm, result, bus);
-            self.clk_modrm_word(modrm, 2, 7, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 2);
         }
     }
 
@@ -579,7 +582,7 @@ impl I386 {
         let result = self.alu_adc_byte(dst, src, cf);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, result);
-        self.clk_modrm(modrm, 2, 6);
+        self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(6, 2));
     }
 
     fn adc_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -591,14 +594,14 @@ impl I386 {
             let result = self.alu_adc_dword(dst, src, cf);
             let reg = self.reg_dword(modrm);
             self.regs.set_dword(reg, result);
-            self.clk_modrm_word(modrm, 2, 6, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 2), 2);
         } else {
             let dst = self.regs.word(self.reg_word(modrm));
             let src = self.get_rm_word(modrm, bus);
             let result = self.alu_adc_word(dst, src, cf);
             let reg = self.reg_word(modrm);
             self.regs.set_word(reg, result);
-            self.clk_modrm_word(modrm, 2, 6, 1);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 2), 1);
         }
     }
 
@@ -608,7 +611,7 @@ impl I386 {
         let cf = self.flags.cf_val();
         let result = self.alu_adc_byte(dst, src, cf);
         self.regs.set_byte(ByteReg::AL, result);
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn adc_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -624,7 +627,7 @@ impl I386 {
             let result = self.alu_adc_word(dst, src, cf);
             self.regs.set_word(WordReg::AX, result);
         }
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn sbb_br8(&mut self, bus: &mut impl common::Bus) {
@@ -634,7 +637,7 @@ impl I386 {
         let cf = self.flags.cf_val();
         let result = self.alu_sbb_byte(dst, src, cf);
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_modrm(modrm, 2, 7);
+        self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(7, 3));
     }
 
     fn sbb_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -645,13 +648,13 @@ impl I386 {
             let dst = self.get_rm_dword(modrm, bus);
             let result = self.alu_sbb_dword(dst, src, cf);
             self.putback_rm_dword(modrm, result, bus);
-            self.clk_modrm_word(modrm, 2, 7, 4);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
             let src = self.regs.word(self.reg_word(modrm));
             let dst = self.get_rm_word(modrm, bus);
             let result = self.alu_sbb_word(dst, src, cf);
             self.putback_rm_word(modrm, result, bus);
-            self.clk_modrm_word(modrm, 2, 7, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 2);
         }
     }
 
@@ -663,7 +666,7 @@ impl I386 {
         let result = self.alu_sbb_byte(dst, src, cf);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, result);
-        self.clk_modrm(modrm, 2, 6);
+        self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(6, 2));
     }
 
     fn sbb_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -675,14 +678,14 @@ impl I386 {
             let result = self.alu_sbb_dword(dst, src, cf);
             let reg = self.reg_dword(modrm);
             self.regs.set_dword(reg, result);
-            self.clk_modrm_word(modrm, 2, 6, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 2), 2);
         } else {
             let dst = self.regs.word(self.reg_word(modrm));
             let src = self.get_rm_word(modrm, bus);
             let result = self.alu_sbb_word(dst, src, cf);
             let reg = self.reg_word(modrm);
             self.regs.set_word(reg, result);
-            self.clk_modrm_word(modrm, 2, 6, 1);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 2), 1);
         }
     }
 
@@ -692,7 +695,7 @@ impl I386 {
         let cf = self.flags.cf_val();
         let result = self.alu_sbb_byte(dst, src, cf);
         self.regs.set_byte(ByteReg::AL, result);
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn sbb_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -708,7 +711,7 @@ impl I386 {
             let result = self.alu_sbb_word(dst, src, cf);
             self.regs.set_word(WordReg::AX, result);
         }
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn and_br8(&mut self, bus: &mut impl common::Bus) {
@@ -717,7 +720,7 @@ impl I386 {
         let dst = self.get_rm_byte(modrm, bus);
         let result = self.alu_and_byte(dst, src);
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_modrm(modrm, 2, 7);
+        self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(7, 3));
     }
 
     fn and_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -727,13 +730,13 @@ impl I386 {
             let dst = self.get_rm_dword(modrm, bus);
             let result = self.alu_and_dword(dst, src);
             self.putback_rm_dword(modrm, result, bus);
-            self.clk_modrm_word(modrm, 2, 7, 4);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
             let src = self.regs.word(self.reg_word(modrm));
             let dst = self.get_rm_word(modrm, bus);
             let result = self.alu_and_word(dst, src);
             self.putback_rm_word(modrm, result, bus);
-            self.clk_modrm_word(modrm, 2, 7, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 2);
         }
     }
 
@@ -744,7 +747,7 @@ impl I386 {
         let result = self.alu_and_byte(dst, src);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, result);
-        self.clk_modrm(modrm, 2, 6);
+        self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(6, 2));
     }
 
     fn and_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -755,14 +758,14 @@ impl I386 {
             let result = self.alu_and_dword(dst, src);
             let reg = self.reg_dword(modrm);
             self.regs.set_dword(reg, result);
-            self.clk_modrm_word(modrm, 2, 6, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 2), 2);
         } else {
             let dst = self.regs.word(self.reg_word(modrm));
             let src = self.get_rm_word(modrm, bus);
             let result = self.alu_and_word(dst, src);
             let reg = self.reg_word(modrm);
             self.regs.set_word(reg, result);
-            self.clk_modrm_word(modrm, 2, 6, 1);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 2), 1);
         }
     }
 
@@ -771,7 +774,7 @@ impl I386 {
         let dst = self.regs.byte(ByteReg::AL);
         let result = self.alu_and_byte(dst, src);
         self.regs.set_byte(ByteReg::AL, result);
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn and_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -786,7 +789,7 @@ impl I386 {
             let result = self.alu_and_word(dst, src);
             self.regs.set_word(WordReg::AX, result);
         }
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn sub_br8(&mut self, bus: &mut impl common::Bus) {
@@ -795,7 +798,7 @@ impl I386 {
         let dst = self.get_rm_byte(modrm, bus);
         let result = self.alu_sub_byte(dst, src);
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_modrm(modrm, 2, 7);
+        self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(7, 3));
     }
 
     fn sub_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -805,13 +808,13 @@ impl I386 {
             let dst = self.get_rm_dword(modrm, bus);
             let result = self.alu_sub_dword(dst, src);
             self.putback_rm_dword(modrm, result, bus);
-            self.clk_modrm_word(modrm, 2, 7, 4);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
             let src = self.regs.word(self.reg_word(modrm));
             let dst = self.get_rm_word(modrm, bus);
             let result = self.alu_sub_word(dst, src);
             self.putback_rm_word(modrm, result, bus);
-            self.clk_modrm_word(modrm, 2, 7, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 2);
         }
     }
 
@@ -822,7 +825,7 @@ impl I386 {
         let result = self.alu_sub_byte(dst, src);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, result);
-        self.clk_modrm(modrm, 2, 6);
+        self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(6, 2));
     }
 
     fn sub_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -833,14 +836,14 @@ impl I386 {
             let result = self.alu_sub_dword(dst, src);
             let reg = self.reg_dword(modrm);
             self.regs.set_dword(reg, result);
-            self.clk_modrm_word(modrm, 2, 6, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 2), 2);
         } else {
             let dst = self.regs.word(self.reg_word(modrm));
             let src = self.get_rm_word(modrm, bus);
             let result = self.alu_sub_word(dst, src);
             let reg = self.reg_word(modrm);
             self.regs.set_word(reg, result);
-            self.clk_modrm_word(modrm, 2, 6, 1);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 2), 1);
         }
     }
 
@@ -849,7 +852,7 @@ impl I386 {
         let dst = self.regs.byte(ByteReg::AL);
         let result = self.alu_sub_byte(dst, src);
         self.regs.set_byte(ByteReg::AL, result);
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn sub_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -864,7 +867,7 @@ impl I386 {
             let result = self.alu_sub_word(dst, src);
             self.regs.set_word(WordReg::AX, result);
         }
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn xor_br8(&mut self, bus: &mut impl common::Bus) {
@@ -873,7 +876,7 @@ impl I386 {
         let dst = self.get_rm_byte(modrm, bus);
         let result = self.alu_xor_byte(dst, src);
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_modrm(modrm, 2, 7);
+        self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(7, 3));
     }
 
     fn xor_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -883,13 +886,13 @@ impl I386 {
             let dst = self.get_rm_dword(modrm, bus);
             let result = self.alu_xor_dword(dst, src);
             self.putback_rm_dword(modrm, result, bus);
-            self.clk_modrm_word(modrm, 2, 7, 4);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
             let src = self.regs.word(self.reg_word(modrm));
             let dst = self.get_rm_word(modrm, bus);
             let result = self.alu_xor_word(dst, src);
             self.putback_rm_word(modrm, result, bus);
-            self.clk_modrm_word(modrm, 2, 7, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 2);
         }
     }
 
@@ -900,7 +903,7 @@ impl I386 {
         let result = self.alu_xor_byte(dst, src);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, result);
-        self.clk_modrm(modrm, 2, 6);
+        self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(6, 2));
     }
 
     fn xor_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -911,14 +914,14 @@ impl I386 {
             let result = self.alu_xor_dword(dst, src);
             let reg = self.reg_dword(modrm);
             self.regs.set_dword(reg, result);
-            self.clk_modrm_word(modrm, 2, 6, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 2), 2);
         } else {
             let dst = self.regs.word(self.reg_word(modrm));
             let src = self.get_rm_word(modrm, bus);
             let result = self.alu_xor_word(dst, src);
             let reg = self.reg_word(modrm);
             self.regs.set_word(reg, result);
-            self.clk_modrm_word(modrm, 2, 6, 1);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 2), 1);
         }
     }
 
@@ -927,7 +930,7 @@ impl I386 {
         let dst = self.regs.byte(ByteReg::AL);
         let result = self.alu_xor_byte(dst, src);
         self.regs.set_byte(ByteReg::AL, result);
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn xor_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -942,7 +945,7 @@ impl I386 {
             let result = self.alu_xor_word(dst, src);
             self.regs.set_word(WordReg::AX, result);
         }
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn cmp_br8(&mut self, bus: &mut impl common::Bus) {
@@ -950,7 +953,7 @@ impl I386 {
         let src = self.regs.byte(self.reg_byte(modrm));
         let dst = self.get_rm_byte(modrm, bus);
         self.alu_sub_byte(dst, src);
-        self.clk_modrm(modrm, 2, 5);
+        self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(5, 2));
     }
 
     fn cmp_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -959,12 +962,12 @@ impl I386 {
             let src = self.regs.dword(self.reg_dword(modrm));
             let dst = self.get_rm_dword(modrm, bus);
             self.alu_sub_dword(dst, src);
-            self.clk_modrm_word(modrm, 2, 5, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(5, 2), 2);
         } else {
             let src = self.regs.word(self.reg_word(modrm));
             let dst = self.get_rm_word(modrm, bus);
             self.alu_sub_word(dst, src);
-            self.clk_modrm_word(modrm, 2, 5, 1);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(5, 2), 1);
         }
     }
 
@@ -973,7 +976,7 @@ impl I386 {
         let dst = self.regs.byte(self.reg_byte(modrm));
         let src = self.get_rm_byte(modrm, bus);
         self.alu_sub_byte(dst, src);
-        self.clk_modrm(modrm, 2, 6);
+        self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(6, 2));
     }
 
     fn cmp_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -982,12 +985,12 @@ impl I386 {
             let dst = self.regs.dword(self.reg_dword(modrm));
             let src = self.get_rm_dword(modrm, bus);
             self.alu_sub_dword(dst, src);
-            self.clk_modrm_word(modrm, 2, 6, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 2), 2);
         } else {
             let dst = self.regs.word(self.reg_word(modrm));
             let src = self.get_rm_word(modrm, bus);
             self.alu_sub_word(dst, src);
-            self.clk_modrm_word(modrm, 2, 6, 1);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 2), 1);
         }
     }
 
@@ -995,7 +998,7 @@ impl I386 {
         let src = self.fetch(bus);
         let dst = self.regs.byte(ByteReg::AL);
         self.alu_sub_byte(dst, src);
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn cmp_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -1008,7 +1011,7 @@ impl I386 {
             let dst = self.regs.word(WordReg::AX);
             self.alu_sub_word(dst, src);
         }
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn inc_word_reg(&mut self, reg: WordReg) {
@@ -1022,7 +1025,7 @@ impl I386 {
             let result = self.alu_inc_word(val);
             self.regs.set_word(reg, result);
         }
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn dec_word_reg(&mut self, reg: WordReg) {
@@ -1036,7 +1039,7 @@ impl I386 {
             let result = self.alu_dec_word(val);
             self.regs.set_word(reg, result);
         }
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn push_word_reg(&mut self, reg: WordReg, bus: &mut impl common::Bus) {
@@ -1049,7 +1052,7 @@ impl I386 {
             let val = self.regs.word(reg);
             self.push(bus, val);
         }
-        self.clk(2 + penalty);
+        self.clk(Self::timing(2, 1) + penalty);
     }
 
     pub(super) fn push_sp(&mut self, bus: &mut impl common::Bus) {
@@ -1061,7 +1064,7 @@ impl I386 {
             let sp = self.regs.word(WordReg::SP);
             self.push(bus, sp);
         }
-        self.clk(2 + penalty);
+        self.clk(Self::timing(2, 1) + penalty);
     }
 
     fn pop_word_reg(&mut self, reg: WordReg, bus: &mut impl common::Bus) {
@@ -1074,7 +1077,7 @@ impl I386 {
             let val = self.pop(bus);
             self.regs.set_word(reg, val);
         }
-        self.clk(4 + penalty);
+        self.clk(Self::timing(4, 4) + penalty);
     }
 
     pub(super) fn push_seg(&mut self, seg: SegReg32, bus: &mut impl common::Bus) {
@@ -1127,7 +1130,7 @@ impl I386 {
         } else {
             self.push(bus, val);
         }
-        self.clk(2 + penalty);
+        self.clk(Self::timing(2, 3) + penalty);
     }
 
     pub(super) fn pop_seg(&mut self, seg: SegReg32, bus: &mut impl common::Bus) {
@@ -1164,7 +1167,7 @@ impl I386 {
         if !self.load_segment(seg, val, bus) {
             return;
         }
-        self.clk(7 + penalty);
+        self.clk(Self::timing(7, 3) + penalty);
     }
 
     fn pusha(&mut self, bus: &mut impl common::Bus) {
@@ -1197,7 +1200,7 @@ impl I386 {
             let iy = self.regs.word(WordReg::DI);
             self.push(bus, iy);
         }
-        self.clk(18 + penalty);
+        self.clk(Self::timing(18, 11) + penalty);
     }
 
     fn popa(&mut self, bus: &mut impl common::Bus) {
@@ -1238,7 +1241,7 @@ impl I386 {
             let aw = self.pop(bus);
             self.regs.set_word(WordReg::AX, aw);
         }
-        self.clk(24 + penalty);
+        self.clk(Self::timing(24, 9) + penalty);
     }
 
     fn bound(&mut self, bus: &mut impl common::Bus) {
@@ -1255,9 +1258,9 @@ impl I386 {
             if val < low || val > high {
                 let sp_pen = self.sp_penalty();
                 self.raise_interrupt(5, bus);
-                self.clk(56 + ea_pen + sp_pen);
+                self.clk(Self::timing(56, 7) + ea_pen + sp_pen);
             } else {
-                self.clk(10 + ea_pen);
+                self.clk(Self::timing(10, 7) + ea_pen);
             }
         } else {
             let val = self.regs.word(self.reg_word(modrm)) as i16;
@@ -1267,9 +1270,9 @@ impl I386 {
             if val < low || val > high {
                 let sp_pen = self.sp_penalty();
                 self.raise_interrupt(5, bus);
-                self.clk(56 + ea_pen + sp_pen);
+                self.clk(Self::timing(56, 7) + ea_pen + sp_pen);
             } else {
-                self.clk(10 + ea_pen);
+                self.clk(Self::timing(10, 7) + ea_pen);
             }
         }
     }
@@ -1291,7 +1294,7 @@ impl I386 {
         } else {
             self.flags.zero_val = 1; // ZF=0
         }
-        self.clk_modrm(modrm, 10, 11);
+        self.clk_modrm(modrm, Self::timing(10, 9), Self::timing(11, 9));
     }
 
     fn push_imm16(&mut self, bus: &mut impl common::Bus) {
@@ -1303,7 +1306,7 @@ impl I386 {
             let val = self.fetchword(bus);
             self.push(bus, val);
         }
-        self.clk(2 + penalty);
+        self.clk(Self::timing(2, 1) + penalty);
     }
 
     fn push_imm8(&mut self, bus: &mut impl common::Bus) {
@@ -1315,7 +1318,7 @@ impl I386 {
             let val = self.fetch(bus) as i8 as u16;
             self.push(bus, val);
         }
-        self.clk(2 + penalty);
+        self.clk(Self::timing(2, 1) + penalty);
     }
 
     fn imul_r16w_imm16(&mut self, bus: &mut impl common::Bus) {
@@ -1345,9 +1348,9 @@ impl I386 {
         };
         self.flags.overflow_val = self.flags.carry_val;
         if self.operand_size_override {
-            self.clk_modrm_word(modrm, 38, 41, 2);
+            self.clk_modrm_word(modrm, Self::timing(38, 13), Self::timing(41, 13), 2);
         } else {
-            self.clk_modrm_word(modrm, 22, 25, 1);
+            self.clk_modrm_word(modrm, Self::timing(22, 13), Self::timing(25, 13), 1);
         }
     }
 
@@ -1378,9 +1381,9 @@ impl I386 {
         };
         self.flags.overflow_val = self.flags.carry_val;
         if self.operand_size_override {
-            self.clk_modrm_word(modrm, 14, 17, 2);
+            self.clk_modrm_word(modrm, Self::timing(14, 13), Self::timing(17, 13), 2);
         } else {
-            self.clk_modrm_word(modrm, 14, 17, 1);
+            self.clk_modrm_word(modrm, Self::timing(14, 13), Self::timing(17, 13), 1);
         }
     }
 
@@ -1389,10 +1392,18 @@ impl I386 {
         if condition {
             self.ip = self.ip.wrapping_add(disp as u16);
             self.ip_upper = 0;
-            let m = self.next_instruction_length_approx(bus);
-            self.clk(7 + m);
+            match CPU_MODEL {
+                CPU_MODEL_386 => {
+                    let m = self.next_instruction_length_approx(bus);
+                    self.clk(7 + m);
+                }
+                CPU_MODEL_486SX => self.clk(3),
+                _ => {
+                    unreachable!("Unhandled CPU_MODEL")
+                }
+            }
         } else {
-            self.clk(3);
+            self.clk(Self::timing(3, 1));
         }
     }
 
@@ -1401,10 +1412,18 @@ impl I386 {
         if condition {
             self.ip = self.ip.wrapping_add(disp as u16);
             self.ip_upper = 0;
-            let m = self.next_instruction_length_approx(bus);
-            self.clk(7 + m);
+            match CPU_MODEL {
+                CPU_MODEL_386 => {
+                    let m = self.next_instruction_length_approx(bus);
+                    self.clk(7 + m);
+                }
+                CPU_MODEL_486SX => self.clk(3),
+                _ => {
+                    unreachable!("Unhandled CPU_MODEL")
+                }
+            }
         } else {
-            self.clk(3);
+            self.clk(Self::timing(3, 1));
         }
     }
 
@@ -1413,7 +1432,7 @@ impl I386 {
         let src = self.regs.byte(self.reg_byte(modrm));
         let dst = self.get_rm_byte(modrm, bus);
         self.alu_and_byte(dst, src);
-        self.clk_modrm(modrm, 2, 5);
+        self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(5, 2));
     }
 
     fn test_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -1422,12 +1441,12 @@ impl I386 {
             let src = self.regs.dword(self.reg_dword(modrm));
             let dst = self.get_rm_dword(modrm, bus);
             self.alu_and_dword(dst, src);
-            self.clk_modrm_word(modrm, 2, 5, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(5, 2), 2);
         } else {
             let src = self.regs.word(self.reg_word(modrm));
             let dst = self.get_rm_word(modrm, bus);
             self.alu_and_word(dst, src);
-            self.clk_modrm_word(modrm, 2, 5, 1);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(5, 2), 1);
         }
     }
 
@@ -1435,7 +1454,7 @@ impl I386 {
         let src = self.fetch(bus);
         let dst = self.regs.byte(ByteReg::AL);
         self.alu_and_byte(dst, src);
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn test_aw_imm16(&mut self, bus: &mut impl common::Bus) {
@@ -1448,7 +1467,7 @@ impl I386 {
             let dst = self.regs.word(WordReg::AX);
             self.alu_and_word(dst, src);
         }
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn xchg_br8(&mut self, bus: &mut impl common::Bus) {
@@ -1458,7 +1477,7 @@ impl I386 {
         let rm_val = self.get_rm_byte(modrm, bus);
         self.regs.set_byte(reg, rm_val);
         self.putback_rm_byte(modrm, reg_val, bus);
-        self.clk_modrm(modrm, 3, 5);
+        self.clk_modrm(modrm, Self::timing(3, 3), Self::timing(5, 5));
     }
 
     fn xchg_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -1469,14 +1488,14 @@ impl I386 {
             let rm_val = self.get_rm_dword(modrm, bus);
             self.regs.set_dword(reg, rm_val);
             self.putback_rm_dword(modrm, reg_val, bus);
-            self.clk_modrm_word(modrm, 3, 5, 4);
+            self.clk_modrm_word(modrm, Self::timing(3, 3), Self::timing(5, 5), 4);
         } else {
             let reg = self.reg_word(modrm);
             let reg_val = self.regs.word(reg);
             let rm_val = self.get_rm_word(modrm, bus);
             self.regs.set_word(reg, rm_val);
             self.putback_rm_word(modrm, reg_val, bus);
-            self.clk_modrm_word(modrm, 3, 5, 2);
+            self.clk_modrm_word(modrm, Self::timing(3, 3), Self::timing(5, 5), 2);
         }
     }
 
@@ -1493,14 +1512,14 @@ impl I386 {
             self.regs.set_word(WordReg::AX, val);
             self.regs.set_word(reg, aw);
         }
-        self.clk(3);
+        self.clk(Self::timing(3, 3));
     }
 
     fn mov_br8(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
         let val = self.regs.byte(self.reg_byte(modrm));
         self.put_rm_byte(modrm, val, bus);
-        self.clk_modrm(modrm, 2, 2);
+        self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(2, 1));
     }
 
     fn mov_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -1508,11 +1527,11 @@ impl I386 {
         if self.operand_size_override {
             let val = self.regs.dword(self.reg_dword(modrm));
             self.put_rm_dword(modrm, val, bus);
-            self.clk_modrm_word(modrm, 2, 2, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(2, 1), 2);
         } else {
             let val = self.regs.word(self.reg_word(modrm));
             self.put_rm_word(modrm, val, bus);
-            self.clk_modrm_word(modrm, 2, 2, 1);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(2, 1), 1);
         }
     }
 
@@ -1521,7 +1540,7 @@ impl I386 {
         let val = self.get_rm_byte(modrm, bus);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, val);
-        self.clk_modrm(modrm, 2, 4);
+        self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(4, 1));
     }
 
     fn mov_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -1530,12 +1549,12 @@ impl I386 {
             let val = self.get_rm_dword(modrm, bus);
             let reg = self.reg_dword(modrm);
             self.regs.set_dword(reg, val);
-            self.clk_modrm_word(modrm, 2, 4, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(4, 1), 2);
         } else {
             let val = self.get_rm_word(modrm, bus);
             let reg = self.reg_word(modrm);
             self.regs.set_word(reg, val);
-            self.clk_modrm_word(modrm, 2, 4, 1);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(4, 1), 1);
         }
     }
 
@@ -1551,10 +1570,10 @@ impl I386 {
         if self.operand_size_override && modrm >= 0xC0 {
             let reg = self.rm_dword(modrm);
             self.regs.set_dword(reg, val as u32);
-            self.clk_modrm_word(modrm, 2, 2, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 3), Self::timing(2, 3), 2);
         } else {
             self.put_rm_word(modrm, val, bus);
-            self.clk_modrm_word(modrm, 2, 2, 1);
+            self.clk_modrm_word(modrm, Self::timing(2, 3), Self::timing(2, 3), 1);
         }
     }
 
@@ -1577,7 +1596,7 @@ impl I386 {
         if seg == SegReg32::SS {
             self.inhibit_all = 1;
         }
-        self.clk_modrm_word(modrm, 2, 5, 1);
+        self.clk_modrm_word(modrm, Self::timing(2, 3), Self::timing(5, 9), 1);
     }
 
     fn lea(&mut self, bus: &mut impl common::Bus) {
@@ -1596,7 +1615,7 @@ impl I386 {
             let val = self.eo;
             self.regs.set_word(reg, val);
         }
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn pop_rm(&mut self, bus: &mut impl common::Bus) {
@@ -1610,16 +1629,20 @@ impl I386 {
             self.put_rm_word(modrm, val, bus);
         }
         if modrm >= 0xC0 {
-            self.clk(4 + sp_pen);
+            self.clk(Self::timing(4, 4) + sp_pen);
         } else {
             let ea_pen = if self.operand_size_override {
-                if self.ea & 3 != 0 { 4 } else { 0 }
+                if self.ea & 3 != 0 {
+                    Self::timing(4, 3)
+                } else {
+                    0
+                }
             } else if self.ea & 1 != 0 {
-                4
+                Self::timing(4, 3)
             } else {
                 0
             };
-            self.clk(5 + sp_pen + ea_pen);
+            self.clk(Self::timing(5, 5) + sp_pen + ea_pen);
         }
     }
 
@@ -1631,7 +1654,7 @@ impl I386 {
             let al = self.regs.byte(ByteReg::AL) as i8 as i16 as u16;
             self.regs.set_word(WordReg::AX, al);
         }
-        self.clk(3);
+        self.clk(Self::timing(3, 3));
     }
 
     fn cwd(&mut self) {
@@ -1644,7 +1667,7 @@ impl I386 {
             self.regs
                 .set_word(WordReg::DX, if aw < 0 { 0xFFFF } else { 0 });
         }
-        self.clk(2);
+        self.clk(Self::timing(2, 3));
     }
 
     fn call_far(&mut self, bus: &mut impl common::Bus) {
@@ -1665,8 +1688,16 @@ impl I386 {
                 self.ip = offset as u16;
                 self.ip_upper = offset & 0xFFFF_0000;
             }
-            let m = self.next_instruction_length_approx(bus);
-            self.clk(17 + m + penalty);
+            match CPU_MODEL {
+                CPU_MODEL_386 => {
+                    let m = self.next_instruction_length_approx(bus);
+                    self.clk(17 + m + penalty);
+                }
+                CPU_MODEL_486SX => self.clk(18 + penalty),
+                _ => {
+                    unreachable!("Unhandled CPU_MODEL")
+                }
+            }
         } else {
             let penalty = self.sp_penalty();
             let offset = self.fetchword(bus);
@@ -1691,8 +1722,16 @@ impl I386 {
                 self.ip = offset;
                 self.ip_upper = 0;
             }
-            let m = self.next_instruction_length_approx(bus);
-            self.clk(17 + m + penalty);
+            match CPU_MODEL {
+                CPU_MODEL_386 => {
+                    let m = self.next_instruction_length_approx(bus);
+                    self.clk(17 + m + penalty);
+                }
+                CPU_MODEL_486SX => self.clk(18 + penalty),
+                _ => {
+                    unreachable!("Unhandled CPU_MODEL")
+                }
+            }
         }
     }
 
@@ -1705,16 +1744,32 @@ impl I386 {
             let target = return_eip.wrapping_add(disp as u32);
             self.ip = target as u16;
             self.ip_upper = target & 0xFFFF_0000;
-            let m = self.next_instruction_length_approx(bus);
-            self.clk(7 + m + penalty);
+            match CPU_MODEL {
+                CPU_MODEL_386 => {
+                    let m = self.next_instruction_length_approx(bus);
+                    self.clk(7 + m + penalty);
+                }
+                CPU_MODEL_486SX => self.clk(3 + penalty),
+                _ => {
+                    unreachable!("Unhandled CPU_MODEL")
+                }
+            }
         } else {
             let penalty = self.sp_penalty();
             let disp = self.fetchword(bus);
             self.push(bus, self.ip);
             self.ip = self.ip.wrapping_add(disp);
             self.ip_upper = 0;
-            let m = self.next_instruction_length_approx(bus);
-            self.clk(7 + m + penalty);
+            match CPU_MODEL {
+                CPU_MODEL_386 => {
+                    let m = self.next_instruction_length_approx(bus);
+                    self.clk(7 + m + penalty);
+                }
+                CPU_MODEL_486SX => self.clk(3 + penalty),
+                _ => {
+                    unreachable!("Unhandled CPU_MODEL")
+                }
+            }
         }
     }
 
@@ -1725,14 +1780,30 @@ impl I386 {
             let target = eip.wrapping_add(disp as u32);
             self.ip = target as u16;
             self.ip_upper = target & 0xFFFF_0000;
-            let m = self.next_instruction_length_approx(bus);
-            self.clk(7 + m);
+            match CPU_MODEL {
+                CPU_MODEL_386 => {
+                    let m = self.next_instruction_length_approx(bus);
+                    self.clk(7 + m);
+                }
+                CPU_MODEL_486SX => self.clk(3),
+                _ => {
+                    unreachable!("Unhandled CPU_MODEL")
+                }
+            }
         } else {
             let disp = self.fetchword(bus);
             self.ip = self.ip.wrapping_add(disp);
             self.ip_upper = 0;
-            let m = self.next_instruction_length_approx(bus);
-            self.clk(7 + m);
+            match CPU_MODEL {
+                CPU_MODEL_386 => {
+                    let m = self.next_instruction_length_approx(bus);
+                    self.clk(7 + m);
+                }
+                CPU_MODEL_486SX => self.clk(3),
+                _ => {
+                    unreachable!("Unhandled CPU_MODEL")
+                }
+            }
         }
     }
 
@@ -1749,8 +1820,16 @@ impl I386 {
                 self.ip = offset as u16;
                 self.ip_upper = offset & 0xFFFF_0000;
             }
-            let m = self.next_instruction_length_approx(bus);
-            self.clk(12 + m);
+            match CPU_MODEL {
+                CPU_MODEL_386 => {
+                    let m = self.next_instruction_length_approx(bus);
+                    self.clk(12 + m);
+                }
+                CPU_MODEL_486SX => self.clk(17),
+                _ => {
+                    unreachable!("Unhandled CPU_MODEL")
+                }
+            }
         } else {
             let offset = self.fetchword(bus);
             let segment = self.fetchword(bus);
@@ -1763,8 +1842,16 @@ impl I386 {
                 self.ip = offset;
                 self.ip_upper = 0;
             }
-            let m = self.next_instruction_length_approx(bus);
-            self.clk(12 + m);
+            match CPU_MODEL {
+                CPU_MODEL_386 => {
+                    let m = self.next_instruction_length_approx(bus);
+                    self.clk(12 + m);
+                }
+                CPU_MODEL_486SX => self.clk(17),
+                _ => {
+                    unreachable!("Unhandled CPU_MODEL")
+                }
+            }
         }
     }
 
@@ -1772,8 +1859,16 @@ impl I386 {
         let disp = self.fetch(bus) as i8 as u16;
         self.ip = self.ip.wrapping_add(disp);
         self.ip_upper = 0;
-        let m = self.next_instruction_length_approx(bus);
-        self.clk(7 + m);
+        match CPU_MODEL {
+            CPU_MODEL_386 => {
+                let m = self.next_instruction_length_approx(bus);
+                self.clk(7 + m);
+            }
+            CPU_MODEL_486SX => self.clk(3),
+            _ => {
+                unreachable!("Unhandled CPU_MODEL")
+            }
+        }
     }
 
     fn ret_near(&mut self, bus: &mut impl common::Bus) {
@@ -1786,8 +1881,16 @@ impl I386 {
             self.ip = self.pop(bus);
             self.ip_upper = 0;
         }
-        let m = self.next_instruction_length_approx(bus);
-        self.clk(10 + m + penalty);
+        match CPU_MODEL {
+            CPU_MODEL_386 => {
+                let m = self.next_instruction_length_approx(bus);
+                self.clk(10 + m + penalty);
+            }
+            CPU_MODEL_486SX => self.clk(5 + penalty),
+            _ => {
+                unreachable!("Unhandled CPU_MODEL")
+            }
+        }
     }
 
     fn ret_near_imm(&mut self, bus: &mut impl common::Bus) {
@@ -1803,8 +1906,16 @@ impl I386 {
         }
         let sp = self.regs.word(WordReg::SP).wrapping_add(imm);
         self.regs.set_word(WordReg::SP, sp);
-        let m = self.next_instruction_length_approx(bus);
-        self.clk(10 + m + penalty);
+        match CPU_MODEL {
+            CPU_MODEL_386 => {
+                let m = self.next_instruction_length_approx(bus);
+                self.clk(10 + m + penalty);
+            }
+            CPU_MODEL_486SX => self.clk(5 + penalty),
+            _ => {
+                unreachable!("Unhandled CPU_MODEL")
+            }
+        }
     }
 
     fn ret_far(&mut self, bus: &mut impl common::Bus) {
@@ -1828,8 +1939,16 @@ impl I386 {
                 self.ip = ip;
                 self.ip_upper = 0;
             }
-            let m = self.next_instruction_length_approx(bus);
-            self.clk(18 + m + penalty);
+            match CPU_MODEL {
+                CPU_MODEL_386 => {
+                    let m = self.next_instruction_length_approx(bus);
+                    self.clk(18 + m + penalty);
+                }
+                CPU_MODEL_486SX => self.clk(13 + penalty),
+                _ => {
+                    unreachable!("Unhandled CPU_MODEL")
+                }
+            }
             return;
         }
 
@@ -1935,8 +2054,16 @@ impl I386 {
             }
         }
 
-        let m = self.next_instruction_length_approx(bus);
-        self.clk(18 + m + penalty);
+        match CPU_MODEL {
+            CPU_MODEL_386 => {
+                let m = self.next_instruction_length_approx(bus);
+                self.clk(18 + m + penalty);
+            }
+            CPU_MODEL_486SX => self.clk(13 + penalty),
+            _ => {
+                unreachable!("Unhandled CPU_MODEL")
+            }
+        }
     }
 
     fn ret_far_imm(&mut self, bus: &mut impl common::Bus) {
@@ -1963,8 +2090,16 @@ impl I386 {
             }
             let sp = self.regs.word(WordReg::SP).wrapping_add(imm);
             self.regs.set_word(WordReg::SP, sp);
-            let m = self.next_instruction_length_approx(bus);
-            self.clk(18 + m + penalty);
+            match CPU_MODEL {
+                CPU_MODEL_386 => {
+                    let m = self.next_instruction_length_approx(bus);
+                    self.clk(18 + m + penalty);
+                }
+                CPU_MODEL_486SX => self.clk(14 + penalty),
+                _ => {
+                    unreachable!("Unhandled CPU_MODEL")
+                }
+            }
             return;
         }
 
@@ -2079,8 +2214,16 @@ impl I386 {
             }
         }
 
-        let m = self.next_instruction_length_approx(bus);
-        self.clk(18 + m + penalty);
+        match CPU_MODEL {
+            CPU_MODEL_386 => {
+                let m = self.next_instruction_length_approx(bus);
+                self.clk(18 + m + penalty);
+            }
+            CPU_MODEL_486SX => self.clk(14 + penalty),
+            _ => {
+                unreachable!("Unhandled CPU_MODEL")
+            }
+        }
     }
 
     fn pushf(&mut self, bus: &mut impl common::Bus) {
@@ -2098,7 +2241,18 @@ impl I386 {
             let flags_val = self.flags.compress();
             self.push(bus, flags_val);
         }
-        self.clk(4 + penalty);
+        let base = match CPU_MODEL {
+            CPU_MODEL_386 => 4,
+            CPU_MODEL_486SX => {
+                if self.is_protected_mode() && !self.is_virtual_mode() {
+                    3
+                } else {
+                    4
+                }
+            }
+            _ => unreachable!("Unhandled CPU_MODEL"),
+        };
+        self.clk(base + penalty);
     }
 
     fn popf(&mut self, bus: &mut impl common::Bus) {
@@ -2120,7 +2274,18 @@ impl I386 {
             let val = self.pop(bus);
             self.flags.load_flags(val, cpl, pm);
         }
-        self.clk(5 + penalty);
+        let base = match CPU_MODEL {
+            CPU_MODEL_386 => 5,
+            CPU_MODEL_486SX => {
+                if self.is_protected_mode() && !self.is_virtual_mode() {
+                    6
+                } else {
+                    9
+                }
+            }
+            _ => unreachable!("Unhandled CPU_MODEL"),
+        };
+        self.clk(base + penalty);
     }
 
     fn sahf(&mut self) {
@@ -2130,13 +2295,13 @@ impl I386 {
         self.flags.aux_val = (ah & 0x10) as u32;
         self.flags.zero_val = if ah & 0x40 != 0 { 0 } else { 1 };
         self.flags.sign_val = if ah & 0x80 != 0 { -1 } else { 0 };
-        self.clk(3);
+        self.clk(Self::timing(3, 2));
     }
 
     fn lahf(&mut self) {
         let flags_val = self.flags.compress() as u8;
         self.regs.set_byte(ByteReg::AH, flags_val);
-        self.clk(2);
+        self.clk(Self::timing(2, 3));
     }
 
     fn mov_al_moffs(&mut self, bus: &mut impl common::Bus) {
@@ -2152,7 +2317,7 @@ impl I386 {
             let val = self.read_byte_seg(bus, seg, offset);
             self.regs.set_byte(ByteReg::AL, val);
         }
-        self.clk(4);
+        self.clk(Self::timing(4, 1));
     }
 
     fn mov_aw_moffs(&mut self, bus: &mut impl common::Bus) {
@@ -2162,13 +2327,21 @@ impl I386 {
             if self.operand_size_override {
                 let val = self.read_dword_linear(bus, linear);
                 self.regs.set_dword(DwordReg::EAX, val);
-                let penalty = if linear & 3 != 0 { 4 } else { 0 };
-                self.clk(4 + penalty);
+                let penalty = if linear & 3 != 0 {
+                    Self::timing(4, 3)
+                } else {
+                    0
+                };
+                self.clk(Self::timing(4, 1) + penalty);
             } else {
                 let val = self.read_word_linear(bus, linear);
                 self.regs.set_word(WordReg::AX, val);
-                let penalty = if linear & 1 != 0 { 4 } else { 0 };
-                self.clk(4 + penalty);
+                let penalty = if linear & 1 != 0 {
+                    Self::timing(4, 3)
+                } else {
+                    0
+                };
+                self.clk(Self::timing(4, 1) + penalty);
             }
         } else {
             let offset = self.fetchword(bus);
@@ -2181,13 +2354,21 @@ impl I386 {
             if self.operand_size_override {
                 let val = self.seg_read_dword(bus);
                 self.regs.set_dword(DwordReg::EAX, val);
-                let penalty = if self.ea & 3 != 0 { 4 } else { 0 };
-                self.clk(4 + penalty);
+                let penalty = if self.ea & 3 != 0 {
+                    Self::timing(4, 3)
+                } else {
+                    0
+                };
+                self.clk(Self::timing(4, 1) + penalty);
             } else {
                 let val = self.seg_read_word(bus);
                 self.regs.set_word(WordReg::AX, val);
-                let penalty = if self.ea & 1 != 0 { 4 } else { 0 };
-                self.clk(4 + penalty);
+                let penalty = if self.ea & 1 != 0 {
+                    Self::timing(4, 3)
+                } else {
+                    0
+                };
+                self.clk(Self::timing(4, 1) + penalty);
             }
         }
     }
@@ -2206,7 +2387,7 @@ impl I386 {
             let offset = self.fetchword(bus) as u32;
             self.write_byte_seg(bus, seg, offset, al);
         }
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn mov_moffs_aw(&mut self, bus: &mut impl common::Bus) {
@@ -2216,13 +2397,21 @@ impl I386 {
             if self.operand_size_override {
                 let val = self.regs.dword(DwordReg::EAX);
                 self.write_dword_linear(bus, linear, val);
-                let penalty = if linear & 3 != 0 { 4 } else { 0 };
-                self.clk(2 + penalty);
+                let penalty = if linear & 3 != 0 {
+                    Self::timing(4, 3)
+                } else {
+                    0
+                };
+                self.clk(Self::timing(2, 1) + penalty);
             } else {
                 let val = self.regs.word(WordReg::AX);
                 self.write_word_linear(bus, linear, val);
-                let penalty = if linear & 1 != 0 { 4 } else { 0 };
-                self.clk(2 + penalty);
+                let penalty = if linear & 1 != 0 {
+                    Self::timing(4, 3)
+                } else {
+                    0
+                };
+                self.clk(Self::timing(2, 1) + penalty);
             }
         } else {
             let offset = self.fetchword(bus);
@@ -2234,12 +2423,20 @@ impl I386 {
             self.ea = base.wrapping_add(offset as u32);
             if self.operand_size_override {
                 self.seg_write_dword(bus, self.regs.dword(DwordReg::EAX));
-                let penalty = if self.ea & 3 != 0 { 4 } else { 0 };
-                self.clk(2 + penalty);
+                let penalty = if self.ea & 3 != 0 {
+                    Self::timing(4, 3)
+                } else {
+                    0
+                };
+                self.clk(Self::timing(2, 1) + penalty);
             } else {
                 self.seg_write_word(bus, self.regs.word(WordReg::AX));
-                let penalty = if self.ea & 1 != 0 { 4 } else { 0 };
-                self.clk(2 + penalty);
+                let penalty = if self.ea & 1 != 0 {
+                    Self::timing(4, 3)
+                } else {
+                    0
+                };
+                self.clk(Self::timing(2, 1) + penalty);
             }
         }
     }
@@ -2247,7 +2444,7 @@ impl I386 {
     fn mov_byte_reg_imm(&mut self, reg: ByteReg, bus: &mut impl common::Bus) {
         let val = self.fetch(bus);
         self.regs.set_byte(reg, val);
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn mov_word_reg_imm(&mut self, reg: WordReg, bus: &mut impl common::Bus) {
@@ -2258,7 +2455,7 @@ impl I386 {
             let val = self.fetchword(bus);
             self.regs.set_word(reg, val);
         }
-        self.clk(2);
+        self.clk(Self::timing(2, 1));
     }
 
     fn mov_rm_imm8(&mut self, bus: &mut impl common::Bus) {
@@ -2275,7 +2472,7 @@ impl I386 {
             };
             bus.write_byte(addr, val);
         }
-        self.clk_modrm(modrm, 2, 2);
+        self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(2, 1));
     }
 
     fn mov_rm_imm16(&mut self, bus: &mut impl common::Bus) {
@@ -2290,7 +2487,7 @@ impl I386 {
                 let val = self.fetchdword(bus);
                 self.seg_write_dword(bus, val);
             }
-            self.clk_modrm_word(modrm, 2, 2, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(2, 1), 2);
         } else {
             if modrm >= 0xC0 {
                 let val = self.fetchword(bus);
@@ -2301,7 +2498,7 @@ impl I386 {
                 let val = self.fetchword(bus);
                 self.seg_write_word(bus, val);
             }
-            self.clk_modrm_word(modrm, 2, 2, 1);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(2, 1), 1);
         }
     }
 
@@ -2320,7 +2517,7 @@ impl I386 {
             }
             let reg = self.reg_dword(modrm);
             self.regs.set_dword(reg, offset);
-            self.clk(7);
+            self.clk(Self::timing(7, 6));
             return;
         }
         let offset = self.seg_read_word(bus);
@@ -2330,7 +2527,7 @@ impl I386 {
         }
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, offset);
-        self.clk(7);
+        self.clk(Self::timing(7, 6));
     }
 
     fn lds(&mut self, bus: &mut impl common::Bus) {
@@ -2348,7 +2545,7 @@ impl I386 {
             }
             let reg = self.reg_dword(modrm);
             self.regs.set_dword(reg, offset);
-            self.clk(7);
+            self.clk(Self::timing(7, 6));
             return;
         }
         let offset = self.seg_read_word(bus);
@@ -2358,7 +2555,7 @@ impl I386 {
         }
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, offset);
-        self.clk(7);
+        self.clk(Self::timing(7, 6));
     }
 
     fn enter(&mut self, bus: &mut impl common::Bus) {
@@ -2398,12 +2595,12 @@ impl I386 {
                 self.regs.set_word(WordReg::SP, sp);
             }
             if level == 0 {
-                self.clk(10 + sp_pen);
+                self.clk(Self::timing(10, 14) + sp_pen);
             } else if level == 1 {
-                self.clk(12 + sp_pen);
+                self.clk(Self::timing(12, 17) + sp_pen);
             } else {
                 let l = level as i32;
-                self.clk(15 + 4 * (l - 1) + sp_pen);
+                self.clk(Self::timing(15 + 4 * (l - 1), 17 + 3 * l) + sp_pen);
             }
         } else {
             let sp_pen = self.sp_penalty();
@@ -2423,12 +2620,12 @@ impl I386 {
             let sp = self.regs.word(WordReg::SP).wrapping_sub(alloc);
             self.regs.set_word(WordReg::SP, sp);
             if level == 0 {
-                self.clk(10 + sp_pen);
+                self.clk(Self::timing(10, 14) + sp_pen);
             } else if level == 1 {
-                self.clk(12 + sp_pen);
+                self.clk(Self::timing(12, 17) + sp_pen);
             } else {
                 let l = level as i32;
-                self.clk(15 + 4 * (l - 1) + sp_pen);
+                self.clk(Self::timing(15 + 4 * (l - 1), 17 + 3 * l) + sp_pen);
             }
         }
     }
@@ -2445,37 +2642,37 @@ impl I386 {
             let penalty = self.sp_penalty();
             let val = self.pop_dword(bus);
             self.regs.set_dword(DwordReg::EBP, val);
-            self.clk(4 + penalty);
+            self.clk(Self::timing(4, 5) + penalty);
         } else {
             let bp = self.regs.word(WordReg::BP);
             self.regs.set_word(WordReg::SP, bp);
             let penalty = self.sp_penalty();
             let val = self.pop(bus);
             self.regs.set_word(WordReg::BP, val);
-            self.clk(4 + penalty);
+            self.clk(Self::timing(4, 5) + penalty);
         }
     }
 
     fn int3(&mut self, bus: &mut impl common::Bus) {
         let penalty = self.sp_penalty();
         self.raise_software_interrupt(3, false, bus);
-        self.clk(33 + penalty);
+        self.clk(Self::timing(33, 26) + penalty);
     }
 
     fn int_imm(&mut self, bus: &mut impl common::Bus) {
         let penalty = self.sp_penalty();
         let vector = self.fetch(bus);
         self.raise_software_interrupt(vector, true, bus);
-        self.clk(37 + penalty);
+        self.clk(Self::timing(37, 30) + penalty);
     }
 
     fn into(&mut self, bus: &mut impl common::Bus) {
         if self.flags.of() {
             let penalty = self.sp_penalty();
             self.raise_software_interrupt(4, false, bus);
-            self.clk(35 + penalty);
+            self.clk(Self::timing(35, 28) + penalty);
         } else {
-            self.clk(3);
+            self.clk(Self::timing(3, 3));
         }
     }
 
@@ -2504,7 +2701,7 @@ impl I386 {
                 self.ip_upper = 0;
                 self.flags.load_flags(flags_val, 0, false);
             }
-            self.clk(22 + penalty);
+            self.clk(Self::timing(22, 15) + penalty);
             return;
         }
 
@@ -2538,7 +2735,7 @@ impl I386 {
                 self.eflags_upper = 0x0002_0000;
             }
 
-            self.clk(22 + penalty);
+            self.clk(Self::timing(22, 15) + penalty);
             return;
         }
 
@@ -2550,7 +2747,7 @@ impl I386 {
             let flags_val = self.flags.compress();
             let cpl = self.cpl();
             self.flags.load_flags(flags_val, cpl, true);
-            self.clk(22 + penalty);
+            self.clk(Self::timing(22, 15) + penalty);
             return;
         }
 
@@ -2606,7 +2803,7 @@ impl I386 {
                 self.sregs[SegReg32::GS as usize] = new_gs;
                 self.set_real_segment_cache(SegReg32::GS, new_gs);
 
-                self.clk(60 + penalty);
+                self.clk(Self::timing(60, 15) + penalty);
                 return;
             }
 
@@ -2713,7 +2910,7 @@ impl I386 {
             }
         }
 
-        self.clk(22 + penalty);
+        self.clk(Self::timing(22, 15) + penalty);
     }
 
     fn loopne(&mut self, bus: &mut impl common::Bus) {
@@ -2730,10 +2927,18 @@ impl I386 {
         if count != 0 && !self.flags.zf() {
             self.ip = self.ip.wrapping_add(disp as u16);
             self.ip_upper = 0;
-            let m = self.next_instruction_length_approx(bus);
-            self.clk(11 + m);
+            match CPU_MODEL {
+                CPU_MODEL_386 => {
+                    let m = self.next_instruction_length_approx(bus);
+                    self.clk(11 + m);
+                }
+                CPU_MODEL_486SX => self.clk(9),
+                _ => {
+                    unreachable!("Unhandled CPU_MODEL")
+                }
+            }
         } else {
-            self.clk(5);
+            self.clk(Self::timing(5, 6));
         }
     }
 
@@ -2751,10 +2956,18 @@ impl I386 {
         if count != 0 && self.flags.zf() {
             self.ip = self.ip.wrapping_add(disp as u16);
             self.ip_upper = 0;
-            let m = self.next_instruction_length_approx(bus);
-            self.clk(11 + m);
+            match CPU_MODEL {
+                CPU_MODEL_386 => {
+                    let m = self.next_instruction_length_approx(bus);
+                    self.clk(11 + m);
+                }
+                CPU_MODEL_486SX => self.clk(9),
+                _ => {
+                    unreachable!("Unhandled CPU_MODEL")
+                }
+            }
         } else {
-            self.clk(5);
+            self.clk(Self::timing(5, 6));
         }
     }
 
@@ -2772,10 +2985,18 @@ impl I386 {
         if count != 0 {
             self.ip = self.ip.wrapping_add(disp as u16);
             self.ip_upper = 0;
-            let m = self.next_instruction_length_approx(bus);
-            self.clk(11 + m);
+            match CPU_MODEL {
+                CPU_MODEL_386 => {
+                    let m = self.next_instruction_length_approx(bus);
+                    self.clk(11 + m);
+                }
+                CPU_MODEL_486SX => self.clk(7),
+                _ => {
+                    unreachable!("Unhandled CPU_MODEL")
+                }
+            }
         } else {
-            self.clk(5);
+            self.clk(Self::timing(5, 6));
         }
     }
 
@@ -2789,10 +3010,18 @@ impl I386 {
         if is_zero {
             self.ip = self.ip.wrapping_add(disp as u16);
             self.ip_upper = 0;
-            let m = self.next_instruction_length_approx(bus);
-            self.clk(9 + m);
+            match CPU_MODEL {
+                CPU_MODEL_386 => {
+                    let m = self.next_instruction_length_approx(bus);
+                    self.clk(9 + m);
+                }
+                CPU_MODEL_486SX => self.clk(8),
+                _ => {
+                    unreachable!("Unhandled CPU_MODEL")
+                }
+            }
         } else {
-            self.clk(5);
+            self.clk(Self::timing(5, 5));
         }
     }
 
@@ -2803,7 +3032,7 @@ impl I386 {
         }
         let val = bus.io_read_byte(port);
         self.regs.set_byte(ByteReg::AL, val);
-        self.clk(12);
+        self.clk(Self::timing(12, 14));
     }
 
     fn in_aw_imm(&mut self, bus: &mut impl common::Bus) {
@@ -2822,7 +3051,7 @@ impl I386 {
             let val = bus.io_read_word(port);
             self.regs.set_word(WordReg::AX, val);
         }
-        self.clk(12);
+        self.clk(Self::timing(12, 14));
     }
 
     fn out_imm_al(&mut self, bus: &mut impl common::Bus) {
@@ -2832,7 +3061,7 @@ impl I386 {
         }
         let val = self.regs.byte(ByteReg::AL);
         bus.io_write_byte(port, val);
-        self.clk(10);
+        self.clk(Self::timing(10, 16));
     }
 
     fn out_imm_aw(&mut self, bus: &mut impl common::Bus) {
@@ -2851,7 +3080,7 @@ impl I386 {
             let val = self.regs.word(WordReg::AX);
             bus.io_write_word(port, val);
         }
-        self.clk(10);
+        self.clk(Self::timing(10, 16));
     }
 
     fn in_al_dw(&mut self, bus: &mut impl common::Bus) {
@@ -2861,7 +3090,7 @@ impl I386 {
         }
         let val = bus.io_read_byte(port);
         self.regs.set_byte(ByteReg::AL, val);
-        self.clk(13);
+        self.clk(Self::timing(13, 14));
     }
 
     fn in_aw_dw(&mut self, bus: &mut impl common::Bus) {
@@ -2880,7 +3109,7 @@ impl I386 {
             let val = bus.io_read_word(port);
             self.regs.set_word(WordReg::AX, val);
         }
-        self.clk(13);
+        self.clk(Self::timing(13, 14));
     }
 
     fn out_dw_al(&mut self, bus: &mut impl common::Bus) {
@@ -2890,7 +3119,7 @@ impl I386 {
         }
         let val = self.regs.byte(ByteReg::AL);
         bus.io_write_byte(port, val);
-        self.clk(11);
+        self.clk(Self::timing(11, 16));
     }
 
     fn out_dw_aw(&mut self, bus: &mut impl common::Bus) {
@@ -2909,7 +3138,7 @@ impl I386 {
             let val = self.regs.word(WordReg::AX);
             bus.io_write_word(port, val);
         }
-        self.clk(11);
+        self.clk(Self::timing(11, 16));
     }
 
     fn xlat(&mut self, bus: &mut impl common::Bus) {
@@ -2925,7 +3154,7 @@ impl I386 {
         };
         let val = self.read_byte_seg(bus, seg, offset);
         self.regs.set_byte(ByteReg::AL, val);
-        self.clk(5);
+        self.clk(Self::timing(5, 4));
     }
 
     fn daa(&mut self, _bus: &mut impl common::Bus) {
@@ -2949,7 +3178,7 @@ impl I386 {
         self.flags.carry_val = u32::from(carry);
         self.regs.set_byte(ByteReg::AL, al);
         self.flags.set_szpf_byte(al as u32);
-        self.clk(4);
+        self.clk(Self::timing(4, 2));
     }
 
     fn das(&mut self, _bus: &mut impl common::Bus) {
@@ -2973,7 +3202,7 @@ impl I386 {
         self.flags.carry_val = u32::from(carry);
         self.regs.set_byte(ByteReg::AL, al);
         self.flags.set_szpf_byte(al as u32);
-        self.clk(4);
+        self.clk(Self::timing(4, 2));
     }
 
     fn aaa(&mut self, _bus: &mut impl common::Bus) {
@@ -2990,7 +3219,7 @@ impl I386 {
             self.flags.aux_val = 0;
             self.flags.carry_val = 0;
         }
-        self.clk(4);
+        self.clk(Self::timing(4, 3));
     }
 
     fn aas(&mut self, _bus: &mut impl common::Bus) {
@@ -3007,7 +3236,7 @@ impl I386 {
             self.flags.aux_val = 0;
             self.flags.carry_val = 0;
         }
-        self.clk(4);
+        self.clk(Self::timing(4, 3));
     }
 
     fn aam(&mut self, bus: &mut impl common::Bus) {
@@ -3016,7 +3245,7 @@ impl I386 {
             self.regs.set_byte(ByteReg::AH, 0xFF);
             let val = self.regs.byte(ByteReg::AL) as u32;
             self.flags.set_szpf_byte(val);
-            self.clk(17);
+            self.clk(Self::timing(17, 15));
             return;
         }
         let al = self.regs.byte(ByteReg::AL);
@@ -3024,7 +3253,7 @@ impl I386 {
         self.regs.set_byte(ByteReg::AL, al % base);
         let val = self.regs.byte(ByteReg::AL) as u32;
         self.flags.set_szpf_byte(val);
-        self.clk(17);
+        self.clk(Self::timing(17, 15));
     }
 
     fn aad(&mut self, bus: &mut impl common::Bus) {
@@ -3035,34 +3264,46 @@ impl I386 {
         self.regs.set_byte(ByteReg::AL, result);
         self.regs.set_byte(ByteReg::AH, 0);
         self.flags.set_szpf_byte(result as u32);
-        self.clk(19);
+        self.clk(Self::timing(19, 14));
     }
 
     fn salc(&mut self) {
         let val = if self.flags.cf() { 0xFF } else { 0x00 };
         self.regs.set_byte(ByteReg::AL, val);
-        self.clk(2);
+        self.clk(Self::timing(2, 2));
     }
 
     fn fpu_escape(&mut self, bus: &mut impl common::Bus) {
-        let modrm = self.fetch(bus);
-        if modrm < 0xC0 {
-            self.calc_ea(modrm, bus);
-            let penalty = if self.ea & 1 != 0 { 4 } else { 0 };
-            self.clk(11 + penalty);
-        } else {
-            self.clk(2);
+        match CPU_MODEL {
+            CPU_MODEL_386 => {
+                // 386 with no FPU: consume cycles, ignore instruction.
+                let modrm = self.fetch(bus);
+                if modrm < 0xC0 {
+                    self.calc_ea(modrm, bus);
+                    let penalty = if self.ea & 1 != 0 { 4 } else { 0 };
+                    self.clk(11 + penalty);
+                } else {
+                    self.clk(2);
+                }
+            }
+            CPU_MODEL_486SX => {
+                // 486SX has no FPU; x87 opcodes generate #NM (device not available, INT 7).
+                self.raise_fault(7, bus);
+            }
+            _ => {
+                unreachable!("Unhandled CPU_MODEL")
+            }
         }
     }
 
     fn clc(&mut self) {
         self.flags.carry_val = 0;
-        self.clk(2);
+        self.clk(Self::timing(2, 2));
     }
 
     fn stc(&mut self) {
         self.flags.carry_val = 1;
-        self.clk(2);
+        self.clk(Self::timing(2, 2));
     }
 
     fn cli(&mut self, bus: &mut impl common::Bus) {
@@ -3071,7 +3312,7 @@ impl I386 {
             return;
         }
         self.flags.if_flag = false;
-        self.clk(3);
+        self.clk(Self::timing(3, 5));
     }
 
     fn sti(&mut self, bus: &mut impl common::Bus) {
@@ -3081,22 +3322,22 @@ impl I386 {
         }
         self.flags.if_flag = true;
         self.no_interrupt = 1;
-        self.clk(3);
+        self.clk(Self::timing(3, 5));
     }
 
     fn cld(&mut self) {
         self.flags.df = false;
-        self.clk(2);
+        self.clk(Self::timing(2, 2));
     }
 
     fn std(&mut self) {
         self.flags.df = true;
-        self.clk(2);
+        self.clk(Self::timing(2, 2));
     }
 
     fn cmc(&mut self) {
         self.flags.carry_val = if self.flags.cf() { 0 } else { 1 };
-        self.clk(2);
+        self.clk(Self::timing(2, 2));
     }
 
     fn hlt(&mut self, bus: &mut impl common::Bus) {
@@ -3105,10 +3346,11 @@ impl I386 {
             return;
         }
         self.halted = true;
-        self.clk(5);
+        self.clk(Self::timing(5, 4));
     }
 
     fn lock_prefix(&mut self, bus: &mut impl common::Bus) {
+        self.clk(Self::timing(0, 1));
         let opcode = self.fetch(bus);
         self.dispatch(opcode, bus);
     }

@@ -357,7 +357,7 @@ fn run_test_file(stem: &str, local_revoked_hashes: &[&str]) {
             s
         };
 
-        let mut cpu = I386::new();
+        let mut cpu: I386 = I386::new();
         cpu.load_state(&initial);
         let mut steps = 0usize;
         while !cpu.halted() && steps < 4096 {
@@ -531,7 +531,7 @@ fn run_test_file(stem: &str, local_revoked_hashes: &[&str]) {
 #[test]
 fn idiv_byte_min_overflow_faults_without_panic() {
     let mut bus = TestBus::new();
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
 
     let initial = {
         let mut s = I386State::default();
@@ -571,7 +571,7 @@ fn idiv_byte_min_overflow_faults_without_panic() {
 #[test]
 fn idiv_word_min_overflow_faults_without_panic() {
     let mut bus = TestBus::new();
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
 
     let initial = {
         let mut s = I386State::default();

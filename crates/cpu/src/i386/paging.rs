@@ -9,7 +9,7 @@ const PTE_USER: u32 = 0x04;
 const PTE_ACCESSED: u32 = 0x20;
 const PTE_DIRTY: u32 = 0x40;
 
-impl I386 {
+impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     #[inline(always)]
     pub(super) fn is_paging_enabled(&self) -> bool {
         self.cr0 & 0x8000_0001 == 0x8000_0001

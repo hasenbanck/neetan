@@ -1,7 +1,7 @@
 use super::I386;
 use crate::{ByteReg, DwordReg, SegReg32, WordReg};
 
-impl I386 {
+impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     #[inline(always)]
     fn string_index_si(&self) -> u32 {
         if self.address_size_override {
@@ -163,7 +163,7 @@ impl I386 {
         bus.write_byte(dst_phys, val);
         self.string_advance_si(1);
         self.string_advance_di(1);
-        self.clk(7);
+        self.clk(Self::timing(7, 7));
     }
 
     pub(super) fn movsw(&mut self, bus: &mut impl common::Bus) {
@@ -187,8 +187,8 @@ impl I386 {
         } else {
             si & 1 != 0 || di & 1 != 0
         };
-        let penalty = if misaligned { 4 } else { 0 };
-        self.clk(7 + penalty);
+        let penalty = if misaligned { Self::timing(4, 3) } else { 0 };
+        self.clk(Self::timing(7, 7) + penalty);
     }
 
     pub(super) fn cmpsb(&mut self, bus: &mut impl common::Bus) {
@@ -203,7 +203,7 @@ impl I386 {
         self.alu_sub_byte(src, dst);
         self.string_advance_si(1);
         self.string_advance_di(1);
-        self.clk(10);
+        self.clk(Self::timing(10, 8));
     }
 
     pub(super) fn cmpsw(&mut self, bus: &mut impl common::Bus) {
@@ -229,8 +229,8 @@ impl I386 {
         } else {
             si & 1 != 0 || di & 1 != 0
         };
-        let penalty = if misaligned { 4 } else { 0 };
-        self.clk(10 + penalty);
+        let penalty = if misaligned { Self::timing(4, 3) } else { 0 };
+        self.clk(Self::timing(10, 8) + penalty);
     }
 
     pub(super) fn stosb(&mut self, bus: &mut impl common::Bus) {
@@ -242,7 +242,7 @@ impl I386 {
         };
         bus.write_byte(addr, al);
         self.string_advance_di(1);
-        self.clk(4);
+        self.clk(Self::timing(4, 5));
     }
 
     pub(super) fn stosw(&mut self, bus: &mut impl common::Bus) {
@@ -260,8 +260,8 @@ impl I386 {
         } else {
             di & 1 != 0
         };
-        let penalty = if misaligned { 4 } else { 0 };
-        self.clk(4 + penalty);
+        let penalty = if misaligned { Self::timing(4, 3) } else { 0 };
+        self.clk(Self::timing(4, 5) + penalty);
     }
 
     pub(super) fn lodsb(&mut self, bus: &mut impl common::Bus) {
@@ -271,7 +271,7 @@ impl I386 {
         let val = bus.read_byte(addr);
         self.regs.set_byte(ByteReg::AL, val);
         self.string_advance_si(1);
-        self.clk(5);
+        self.clk(Self::timing(5, 5));
     }
 
     pub(super) fn lodsw(&mut self, bus: &mut impl common::Bus) {
@@ -291,8 +291,8 @@ impl I386 {
         } else {
             si & 1 != 0
         };
-        let penalty = if misaligned { 4 } else { 0 };
-        self.clk(5 + penalty);
+        let penalty = if misaligned { Self::timing(4, 3) } else { 0 };
+        self.clk(Self::timing(5, 5) + penalty);
     }
 
     pub(super) fn scasb(&mut self, bus: &mut impl common::Bus) {
@@ -303,7 +303,7 @@ impl I386 {
         let al = self.regs.byte(ByteReg::AL);
         self.alu_sub_byte(al, dst);
         self.string_advance_di(1);
-        self.clk(7);
+        self.clk(Self::timing(7, 6));
     }
 
     pub(super) fn scasw(&mut self, bus: &mut impl common::Bus) {
@@ -325,8 +325,8 @@ impl I386 {
         } else {
             di & 1 != 0
         };
-        let penalty = if misaligned { 4 } else { 0 };
-        self.clk(7 + penalty);
+        let penalty = if misaligned { Self::timing(4, 3) } else { 0 };
+        self.clk(Self::timing(7, 6) + penalty);
     }
 
     pub(super) fn insb(&mut self, bus: &mut impl common::Bus) {
@@ -342,7 +342,7 @@ impl I386 {
         };
         bus.write_byte(addr, val);
         self.string_advance_di(1);
-        self.clk(15);
+        self.clk(Self::timing(15, 17));
     }
 
     pub(super) fn insw(&mut self, bus: &mut impl common::Bus) {
@@ -371,8 +371,8 @@ impl I386 {
         } else {
             di & 1 != 0
         };
-        let penalty = if misaligned { 4 } else { 0 };
-        self.clk(15 + penalty);
+        let penalty = if misaligned { Self::timing(4, 3) } else { 0 };
+        self.clk(Self::timing(15, 17) + penalty);
     }
 
     pub(super) fn outsb(&mut self, bus: &mut impl common::Bus) {
@@ -386,7 +386,7 @@ impl I386 {
         let val = bus.read_byte(addr);
         bus.io_write_byte(port, val);
         self.string_advance_si(1);
-        self.clk(14);
+        self.clk(Self::timing(14, 17));
     }
 
     pub(super) fn outsw(&mut self, bus: &mut impl common::Bus) {
@@ -414,7 +414,7 @@ impl I386 {
         } else {
             si & 1 != 0
         };
-        let penalty = if misaligned { 4 } else { 0 };
-        self.clk(14 + penalty);
+        let penalty = if misaligned { Self::timing(4, 3) } else { 0 };
+        self.clk(Self::timing(14, 17) + penalty);
     }
 }

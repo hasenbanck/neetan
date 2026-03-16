@@ -789,8 +789,8 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
     let mut bus: machine::Pc9801Bus<Tracer> = machine::Pc9801Bus::new(model, sample_rate);
     bus.set_host_local_time_fn(host_local_time_bcd);
 
-    if config.bios_rom.is_some() && model == common::MachineModel::PC9821 {
-        bail!("Real BIOS ROM is not supported for PC-9821. Use HLE BIOS mode (omit --bios-rom).");
+    if config.bios_rom.is_some() && model == common::MachineModel::PC9821As {
+        bail!("Real BIOS ROM is not supported for PC-9821As. Use HLE BIOS mode (omit --bios-rom).");
     }
 
     if let Some(ref bios_path) = config.bios_rom {
@@ -907,7 +907,14 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
     let machine: Box<dyn Machine> = match model.cpu_type() {
         common::CpuType::V30 => Box::new(machine::Machine::new(cpu::V30::new(), bus)),
         common::CpuType::I286 => Box::new(machine::Machine::new(cpu::I286::new(), bus)),
-        common::CpuType::I386 => Box::new(machine::Machine::new(cpu::I386::new(), bus)),
+        common::CpuType::I386 => Box::new(machine::Machine::new(
+            cpu::I386::<{ cpu::CPU_MODEL_386 }>::new(),
+            bus,
+        )),
+        common::CpuType::I486SX => Box::new(machine::Machine::new(
+            cpu::I386::<{ cpu::CPU_MODEL_486SX }>::new(),
+            bus,
+        )),
     };
 
     Ok(machine)
@@ -931,7 +938,7 @@ fn validate_hdd_for_machine(
                 geometry.sector_size,
             );
         }
-        MachineModel::PC9821 => {
+        MachineModel::PC9821As => {
             ensure!(
                 geometry.sector_size == 512,
                 "{label} is not compatible with {model} (IDE): \

@@ -52,7 +52,7 @@ use device::{
     disk::{HddFormat, HddGeometry, HddImage},
     floppy::FloppyImage,
 };
-use machine::{Pc9801Ra, Pc9801Vm, Pc9801Vx, Pc9821};
+use machine::{Pc9801Ra, Pc9801Vm, Pc9801Vx, Pc9821As};
 
 type TrackList<'a> = [(u8, u8, &'a [(u8, &'a [u8])])];
 
@@ -220,10 +220,10 @@ fn create_machine_ra() -> Pc9801Ra {
     machine
 }
 
-fn create_machine_pc9821() -> Pc9821 {
-    let mut machine = Pc9821::new(
-        cpu::I386::new(),
-        machine::Pc9801Bus::new(MachineModel::PC9821, 48000),
+fn create_machine_pc9821as() -> Pc9821As {
+    let mut machine = Pc9821As::new(
+        cpu::I386::<{ cpu::CPU_MODEL_486SX }>::new(),
+        machine::Pc9801Bus::new(MachineModel::PC9821As, 48000),
     );
     // TODO: We haven't verified our implementation yet against a real 9821 BIOS.
     machine.bus.load_font_rom(FONT_ROM_DATA);
@@ -248,8 +248,8 @@ fn create_machine_ra_hdd() -> Pc9801Ra {
     machine
 }
 
-fn create_machine_pc9821_hdd() -> Pc9821 {
-    let mut machine = create_machine_pc9821();
+fn create_machine_pc9821as_hdd() -> Pc9821As {
+    let mut machine = create_machine_pc9821as();
     machine.bus.insert_hdd(0, make_halt_boot_ide_hdd(), None);
     machine
 }

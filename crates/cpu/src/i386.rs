@@ -1,11 +1,13 @@
-//! Implements the Intel 80386 emulation.
+//! Implements the Intel 80386+ family emulation.
 //!
-//! We emulate the timings of an 80386 DX.
+//! The CPU model is selected via the const generic parameter `CPU_MODEL`:
+//! - [`CPU_MODEL_386`] — Intel 80386 DX cycle timings.
+//! - [`CPU_MODEL_486SX`] — Intel 80486SX cycle timings (no FPU).
 //!
 //! Following references were used to write the emulator:
 //!
 //! - Intel Corporation, "80386 Programmer's Reference Manual".
-//! - MAME Intel i386 emulator (`devices/cpu/i386/i386.cpp`).
+//! - Intel Corporation, "i486 Processor Programmer's Reference Manual".
 
 mod alu;
 mod execute;
@@ -27,6 +29,11 @@ pub use state::I386State;
 
 use crate::{SegReg32, WordReg};
 
+/// CPU model constant for Intel 80386 DX.
+pub const CPU_MODEL_386: u8 = 0;
+/// CPU model constant for Intel 80486SX (no FPU).
+pub const CPU_MODEL_486SX: u8 = 1;
+
 #[derive(Clone, Copy)]
 struct SegmentDescriptor {
     base: u32,
@@ -42,8 +49,11 @@ enum TaskType {
     Call,
 }
 
-/// Intel 80386 CPU emulator.
-pub struct I386 {
+/// Intel 80386+ CPU emulator.
+///
+/// The const generic `CPU_MODEL` selects the instruction timings and feature set.
+/// Use [`CPU_MODEL_386`] for an 80386 DX or [`CPU_MODEL_486SX`] for an 80486SX.
+pub struct I386<const CPU_MODEL: u8 = { CPU_MODEL_386 }> {
     /// Embedded state for save/restore.
     pub state: I386State,
 
@@ -93,26 +103,26 @@ pub struct I386 {
     shutdown: bool,
 }
 
-impl Deref for I386 {
+impl<const CPU_MODEL: u8> Deref for I386<CPU_MODEL> {
     type Target = I386State;
     fn deref(&self) -> &Self::Target {
         &self.state
     }
 }
 
-impl DerefMut for I386 {
+impl<const CPU_MODEL: u8> DerefMut for I386<CPU_MODEL> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.state
     }
 }
 
-impl Default for I386 {
+impl<const CPU_MODEL: u8> Default for I386<CPU_MODEL> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl I386 {
+impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     /// Creates a new I386 CPU in its reset state.
     pub fn new() -> Self {
         let mut cpu = Self {
@@ -159,6 +169,16 @@ impl I386 {
         cpu
     }
 
+    /// Selects between 386 and 486 cycle counts at compile time.
+    #[inline(always)]
+    const fn timing(t386: i32, t486: i32) -> i32 {
+        match CPU_MODEL {
+            CPU_MODEL_386 => t386,
+            CPU_MODEL_486SX => t486,
+            _ => unreachable!(),
+        }
+    }
+
     #[inline(always)]
     fn clk(&mut self, cycles: i32) {
         self.cycles_remaining -= cycles as i64;
@@ -197,7 +217,7 @@ impl I386 {
                 }
             };
             let misaligned = self.ea & alignment_mask != 0;
-            let penalty = if misaligned { 4 } else { 0 };
+            let penalty = if misaligned { Self::timing(4, 3) } else { 0 };
             self.clk(mem_cycles + penalty);
         }
     }
@@ -214,7 +234,7 @@ impl I386 {
         } else {
             sp & 1 != 0
         };
-        if misaligned { 4 } else { 0 }
+        if misaligned { Self::timing(4, 3) } else { 0 }
     }
 
     #[inline(always)]
@@ -1887,18 +1907,22 @@ impl I386 {
     }
 
     fn decode_descriptor_at(&mut self, addr: u32, bus: &mut impl common::Bus) -> SegmentDescriptor {
-        fn translate_byte(cpu: &mut I386, bus: &mut impl common::Bus, linear: u32) -> u8 {
+        fn translate_byte<const M: u8>(
+            cpu: &mut I386<M>,
+            bus: &mut impl common::Bus,
+            linear: u32,
+        ) -> u8 {
             let phys = cpu.translate_linear(linear, false, bus).unwrap_or(0);
             bus.read_byte(phys)
         }
-        let b0 = translate_byte(self, bus, addr);
-        let b1 = translate_byte(self, bus, addr.wrapping_add(1));
-        let b2 = translate_byte(self, bus, addr.wrapping_add(2));
-        let b3 = translate_byte(self, bus, addr.wrapping_add(3));
-        let b4 = translate_byte(self, bus, addr.wrapping_add(4));
-        let rights = translate_byte(self, bus, addr.wrapping_add(5));
-        let b6 = translate_byte(self, bus, addr.wrapping_add(6));
-        let b7 = translate_byte(self, bus, addr.wrapping_add(7));
+        let b0 = translate_byte::<CPU_MODEL>(self, bus, addr);
+        let b1 = translate_byte::<CPU_MODEL>(self, bus, addr.wrapping_add(1));
+        let b2 = translate_byte::<CPU_MODEL>(self, bus, addr.wrapping_add(2));
+        let b3 = translate_byte::<CPU_MODEL>(self, bus, addr.wrapping_add(3));
+        let b4 = translate_byte::<CPU_MODEL>(self, bus, addr.wrapping_add(4));
+        let rights = translate_byte::<CPU_MODEL>(self, bus, addr.wrapping_add(5));
+        let b6 = translate_byte::<CPU_MODEL>(self, bus, addr.wrapping_add(6));
+        let b7 = translate_byte::<CPU_MODEL>(self, bus, addr.wrapping_add(7));
 
         let raw_limit = b0 as u32 | ((b1 as u32) << 8) | (((b6 & 0x0F) as u32) << 16);
         let base = b2 as u32 | ((b3 as u32) << 8) | ((b4 as u32) << 16) | ((b7 as u32) << 24);
@@ -1972,15 +1996,25 @@ impl I386 {
     }
 }
 
-impl common::Cpu for I386 {
+impl<const CPU_MODEL: u8> common::Cpu for I386<CPU_MODEL> {
     crate::impl_cpu_run_for!();
 
     fn reset(&mut self) {
         self.state = I386State::default();
         self.sregs[SegReg32::CS as usize] = 0xFFFF;
-        // 386 reset: ET=1 (387 coprocessor present), all other bits 0.
-        // Reserved bits 5-15 and 17-30 are always 0 on a 386.
-        self.cr0 = 0x0000_0010;
+        match CPU_MODEL {
+            CPU_MODEL_386 => {
+                // 386 reset: ET=1 (387 coprocessor present), all other bits 0.
+                self.cr0 = 0x0000_0010;
+            }
+            CPU_MODEL_486SX => {
+                // 486SX reset: ET=0 (no coprocessor).
+                self.cr0 = 0x0000_0000;
+            }
+            _ => {
+                unreachable!("Unhandled CPU_MODEL")
+            }
+        }
         self.dr6 = 0xFFFF_0FF0;
 
         self.idt_limit = 0x03FF;

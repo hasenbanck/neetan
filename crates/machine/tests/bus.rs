@@ -656,7 +656,7 @@ fn mouse_timer_fires_regardless_of_ppi_mode_bit3() {
 
 #[test]
 fn sdip_ports_return_parity_correct_defaults_on_pc9821() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
 
     // Most SDIP bytes have per-byte odd parity. The BIOS checks this during
     // POST and shows "SET THE SOFTWARE DIP SWITCH" if any check fails.
@@ -696,7 +696,7 @@ fn sdip_ports_return_parity_correct_defaults_on_pc9821() {
 
 #[test]
 fn sdip_read_write_roundtrip() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
 
     // Write a test value to SDIP port 0x841E and read it back.
     bus.io_write_byte(0x841E, 0x42);
@@ -710,7 +710,7 @@ fn sdip_read_write_roundtrip() {
 
 #[test]
 fn sdip_bank_selection_via_port_f6() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
 
     // Read front bank default at offset 0.
     let _front_default = bus.io_read_byte(0x841E);
@@ -759,7 +759,7 @@ fn sdip_bank_selection_via_port_f6() {
 
 #[test]
 fn sdip_bank_selection_via_port_8f1f() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
 
     // Write to front bank.
     bus.io_write_byte(0x841E, 0xCC);
@@ -784,7 +784,7 @@ fn sdip_ports_not_present_on_pc9801() {
 
 #[test]
 fn wab_relay_default_matches_np21w() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
 
     // NP21W returns 0xFC | relay_state on reads. Initial relay state = 0,
     // so reads return 0xFC (bits [7:2] high, bits [1:0] clear).
@@ -798,7 +798,7 @@ fn wab_relay_default_matches_np21w() {
 
 #[test]
 fn port_31_reads_sdip_front_bank_regardless_of_bank_select() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
 
     // Port 0x31 should always read SDIP front bank register 1.
     // Default front bank register 1 = 0xE3 (GDC 2.5 MHz, HDD, 25 lines, 80 cols).

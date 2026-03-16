@@ -315,7 +315,7 @@ fn make_ring3(state: &mut cpu::I386State) {
 /// Identity-mapped paging: MOV AL,[DS:offset] reads through page tables correctly.
 #[test]
 fn paging_identity_map_read_byte() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -338,7 +338,7 @@ fn paging_identity_map_read_byte() {
 /// Identity-mapped paging: MOV [DS:offset], AL writes through page tables correctly.
 #[test]
 fn paging_identity_map_write_byte() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -366,7 +366,7 @@ fn paging_identity_map_write_byte() {
 /// Identity-mapped paging: word read across page-aligned addresses.
 #[test]
 fn paging_identity_map_read_word() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -385,7 +385,7 @@ fn paging_identity_map_read_word() {
 /// Identity-mapped paging: dword read.
 #[test]
 fn paging_identity_map_read_dword() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -403,7 +403,7 @@ fn paging_identity_map_read_dword() {
 /// Remapped page: linear address maps to a different physical page.
 #[test]
 fn paging_remap_read() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -435,7 +435,7 @@ fn paging_remap_read() {
 /// Remapped page: write goes to remapped physical page.
 #[test]
 fn paging_remap_write() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -469,7 +469,7 @@ fn paging_remap_write() {
 /// Reading a page sets Accessed bit on PDE and PTE.
 #[test]
 fn paging_accessed_bit_on_read() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -513,7 +513,7 @@ fn paging_accessed_bit_on_read() {
 /// Writing a page sets both Accessed and Dirty bits on PTE.
 #[test]
 fn paging_dirty_bit_on_write() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -558,7 +558,7 @@ fn paging_dirty_bit_on_write() {
 /// Uses PDE 1 (linear 0x400000+) for data so clearing it doesn't affect code/stack.
 #[test]
 fn paging_fault_pde_not_present_read() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_paged_protected_mode(&mut bus);
@@ -601,7 +601,7 @@ fn paging_fault_pde_not_present_read() {
 /// #PF on read from a not-present PTE.
 #[test]
 fn paging_fault_pte_not_present_read() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -631,7 +631,7 @@ fn paging_fault_pte_not_present_read() {
 /// #PF on write to a not-present PTE. Error code bit 1 (W/R) set.
 #[test]
 fn paging_fault_pte_not_present_write() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -658,7 +658,7 @@ fn paging_fault_pte_not_present_write() {
 /// Ring-3 read from a supervisor-only page (#PF with P=1, U/S=1).
 #[test]
 fn paging_fault_user_reads_supervisor_page() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_paged_protected_mode(&mut bus);
@@ -710,7 +710,7 @@ fn paging_fault_user_reads_supervisor_page() {
 /// Ring-3 write to a read-only user page (#PF with P=1, W/R=1, U/S=1).
 #[test]
 fn paging_fault_user_writes_readonly_page() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_paged_protected_mode(&mut bus);
@@ -763,7 +763,7 @@ fn paging_fault_user_writes_readonly_page() {
 /// On a 386, supervisor (CPL 0) can write to a page with R/W=0.
 #[test]
 fn paging_supervisor_writes_readonly_page() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -792,7 +792,7 @@ fn paging_supervisor_writes_readonly_page() {
 /// Writing CR3 flushes TLB: remapping a page after a CR3 write takes effect.
 #[test]
 fn paging_cr3_write_flushes_tlb() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -838,7 +838,7 @@ fn paging_cr3_write_flushes_tlb() {
 /// Code fetch goes through paging: remap the code page and verify execution.
 #[test]
 fn paging_code_fetch_through_page_tables() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -867,7 +867,7 @@ fn paging_code_fetch_through_page_tables() {
 /// PUSH/POP go through paging with a remapped stack page.
 #[test]
 fn paging_push_pop_through_page_tables() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_paged_protected_mode(&mut bus);
@@ -915,7 +915,7 @@ fn paging_push_pop_through_page_tables() {
 /// MOVSB copies data between two differently-mapped pages.
 #[test]
 fn paging_movsb_between_remapped_pages() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -969,7 +969,7 @@ fn paging_movsb_between_remapped_pages() {
 /// #PF on instruction fetch from a not-present code page.
 #[test]
 fn paging_fault_on_code_fetch() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -1004,7 +1004,7 @@ fn paging_fault_on_code_fetch() {
 /// Uses ring 3 so the #PF handler gets a TSS stack switch to a valid stack.
 #[test]
 fn paging_fault_on_stack_push() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_paged_protected_mode(&mut bus);
@@ -1053,7 +1053,7 @@ fn paging_fault_on_stack_push() {
 /// access including code fetch. This test verifies the code fetch fault.
 #[test]
 fn paging_fault_user_denied_by_pde() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_paged_protected_mode(&mut bus);
@@ -1092,7 +1092,7 @@ fn paging_fault_user_denied_by_pde() {
 /// Ring-3 read from a user-accessible page succeeds.
 #[test]
 fn paging_user_read_succeeds() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_paged_protected_mode(&mut bus);
@@ -1143,7 +1143,7 @@ fn paging_user_read_succeeds() {
 /// Ring-3 write to a user R/W page succeeds.
 #[test]
 fn paging_user_write_succeeds() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_paged_protected_mode(&mut bus);
@@ -1196,7 +1196,7 @@ fn paging_user_write_succeeds() {
 /// With paging disabled (CR0.PG=0), addresses pass through with 24-bit mask.
 #[test]
 fn paging_disabled_identity_passthrough() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     // Set up protected mode WITHOUT paging (CR0 = PE only).
@@ -1220,7 +1220,7 @@ fn paging_disabled_identity_passthrough() {
 /// MOV CR3, EAX stores the page directory base and flushes TLB.
 #[test]
 fn paging_mov_cr3_changes_page_directory() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -1277,7 +1277,7 @@ fn paging_mov_cr3_changes_page_directory() {
 /// Two distinct linear pages (in the same page table) map to different physical pages.
 #[test]
 fn paging_two_pages_different_physical() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -1325,7 +1325,7 @@ fn paging_two_pages_different_physical() {
 /// Paging requires both CR0.PG=1 AND CR0.PE=1.
 #[test]
 fn paging_requires_pe_and_pg() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     // Set up protected mode with paging.
@@ -1374,7 +1374,7 @@ fn setup_paged_protected_mode_32bit(bus: &mut TestBus) -> cpu::I386State {
 
 #[test]
 fn paging_tlb_hit_read_write() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -1419,7 +1419,7 @@ fn paging_tlb_hit_read_write() {
 
 #[test]
 fn paging_accessed_dirty_bits_already_set() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -1468,7 +1468,7 @@ fn paging_accessed_dirty_bits_already_set() {
 
 #[test]
 fn paging_pde_pte_permission_conflict() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     // Scenario (a): PDE has U/S+R/W, PTE has U/S but NO R/W. User write → error 0x0007.
@@ -1518,7 +1518,7 @@ fn paging_pde_pte_permission_conflict() {
     assert_eq!(error_code, 0x0007, "present + write + user");
 
     // Scenario (b): PDE has NO U/S, PTE has U/S+R/W. User read → error 0x0005.
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_paged_protected_mode(&mut bus);
@@ -1547,7 +1547,7 @@ fn paging_pde_pte_permission_conflict() {
 
 #[test]
 fn paging_stosb_cross_page_boundary() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_paged_protected_mode(&mut bus);
@@ -1592,7 +1592,7 @@ fn paging_stosb_cross_page_boundary() {
 
 #[test]
 fn paging_cmpsb_cross_page_boundary() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_paged_protected_mode(&mut bus);
@@ -1636,7 +1636,7 @@ fn paging_cmpsb_cross_page_boundary() {
 
 #[test]
 fn paging_push_dword_cross_page() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_paged_protected_mode(&mut bus);
@@ -1667,7 +1667,7 @@ fn paging_push_dword_cross_page() {
 
 #[test]
 fn paging_outsb_translates_source() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_paged_protected_mode(&mut bus);
@@ -1705,7 +1705,7 @@ fn paging_outsb_translates_source() {
 
 #[test]
 fn paging_lgdt_from_paged_memory() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -1749,7 +1749,7 @@ fn paging_lgdt_from_paged_memory() {
 #[test]
 fn paging_prefix_66_idempotent() {
     // 16-bit code segment: double 0x66 should still result in 32-bit push (idempotent).
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_paged_protected_mode(&mut bus);
@@ -1773,7 +1773,7 @@ fn paging_prefix_66_idempotent() {
     assert_eq!(pushed, 0x12345678);
 
     // 32-bit code segment: double 0x66 should result in 16-bit push (idempotent override).
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_paged_protected_mode_32bit(&mut bus);
@@ -1799,7 +1799,7 @@ fn paging_prefix_66_idempotent() {
 
 #[test]
 fn paging_prefix_67_idempotent() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -1829,7 +1829,7 @@ fn paging_prefix_67_idempotent() {
 
 #[test]
 fn paging_supervisor_override_ring3_interrupt() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_paged_protected_mode(&mut bus);
@@ -1918,7 +1918,7 @@ fn paging_supervisor_override_ring3_interrupt() {
 
 #[test]
 fn paging_fault_pending_stops_dispatch() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_paged_protected_mode(&mut bus);
@@ -1956,7 +1956,7 @@ fn paging_fault_pending_stops_dispatch() {
 
 #[test]
 fn paging_rep_movsb_fault_mid_operation() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_paged_protected_mode(&mut bus);
