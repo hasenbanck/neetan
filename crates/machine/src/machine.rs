@@ -118,8 +118,8 @@ pub type Pc9801Vx = Machine<cpu::I286>;
 /// PC-9801RA machine type (80386 CPU at 16 or 20 MHz).
 pub type Pc9801Ra = Machine<cpu::I386>;
 
-/// PC-9821 machine type (80386 CPU at 20 MHz, IDE, PEGC).
-pub type Pc9821 = Machine<cpu::I386>;
+/// PC-9821As machine type (486SX CPU at 25 MHz, IDE, PEGC).
+pub type Pc9821As = Machine<cpu::I386<{ cpu::CPU_MODEL_486SX }>>;
 
 impl<T: Tracing> Machine<cpu::V30, T> {
     /// Captures the full machine state.
@@ -153,7 +153,7 @@ impl<T: Tracing> Machine<cpu::I286, T> {
     }
 }
 
-impl<T: Tracing> Machine<cpu::I386, T> {
+impl<const CPU_MODEL: u8, T: Tracing> Machine<cpu::I386<CPU_MODEL>, T> {
     /// Captures the full machine state.
     pub fn save_state(&self) -> MachineState {
         self.bus.save_state(CpuState::I386(self.cpu.state.clone()))
@@ -320,7 +320,7 @@ impl<T: Tracing> common::Machine for Machine<cpu::I286, T> {
     }
 }
 
-impl<T: Tracing> common::Machine for Machine<cpu::I386, T> {
+impl<const CPU_MODEL: u8, T: Tracing> common::Machine for Machine<cpu::I386<CPU_MODEL>, T> {
     fn cpu_clock_hz(&self) -> f64 {
         f64::from(self.bus.cpu_clock_hz())
     }

@@ -200,7 +200,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.pic.state.chips[1].write_icw = 0;
         match self.machine_model {
             MachineModel::PC9801VM => self.pic.state.chips[1].ocw3 = 0x0B,
-            MachineModel::PC9801RA | MachineModel::PC9821 => {
+            MachineModel::PC9801RA | MachineModel::PC9821As => {
                 self.pic.state.chips[0].ocw3 = 0x0B;
             }
             MachineModel::PC9801VX => {}
@@ -239,7 +239,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         // System PPI: machine-specific port_c values.
         self.system_ppi.state.port_c = match self.machine_model {
             MachineModel::PC9801VM => 0x18,
-            MachineModel::PC9801VX | MachineModel::PC9801RA | MachineModel::PC9821 => 0xB8,
+            MachineModel::PC9801VX | MachineModel::PC9801RA | MachineModel::PC9821As => 0xB8,
         };
 
         // NMI gate enabled.
@@ -316,7 +316,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         // Analog palette: indices 0-7 dim, 8 half-bright, 9-15 bright (0x0F).
         let (dim, half_bright) = match self.machine_model {
             MachineModel::PC9801VM => (0x0Au8, [7u8, 7, 7]),
-            MachineModel::PC9801VX | MachineModel::PC9801RA | MachineModel::PC9821 => {
+            MachineModel::PC9801VX | MachineModel::PC9801RA | MachineModel::PC9821As => {
                 (0x07u8, [4u8, 4, 4])
             }
         };
@@ -337,7 +337,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         }
         self.palette.state.index = match self.machine_model {
             MachineModel::PC9801VM => 0x08,
-            MachineModel::PC9801VX | MachineModel::PC9801RA | MachineModel::PC9821 => 0x0F,
+            MachineModel::PC9801VX | MachineModel::PC9801RA | MachineModel::PC9821As => 0x0F,
         };
         self.palette.state.digital = [0x37, 0x15, 0x26, 0x04];
 
@@ -360,7 +360,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         // Printer port C.
         match self.machine_model {
             MachineModel::PC9801VM => self.printer.state.port_c = 0x80,
-            MachineModel::PC9801VX | MachineModel::PC9801RA | MachineModel::PC9821 => {}
+            MachineModel::PC9801VX | MachineModel::PC9801RA | MachineModel::PC9821As => {}
         }
 
         // Sound ROM: install stub if no full ROM was loaded.
@@ -379,7 +379,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.mouse_ppi.state.port_b = 0x00;
         self.mouse_ppi.state.port_c = match self.machine_model {
             MachineModel::PC9801VM => 0xF0,
-            MachineModel::PC9801VX | MachineModel::PC9801RA | MachineModel::PC9821 => 0x00,
+            MachineModel::PC9801VX | MachineModel::PC9801RA | MachineModel::PC9821As => 0x00,
         };
         self.mouse_ppi.state.accumulator_x = 0;
         self.mouse_ppi.state.accumulator_y = 0;
@@ -413,7 +413,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         let year_bcd = (self.host_local_time_fn)()[0];
         let msw3 = match self.machine_model {
             MachineModel::PC9801VM => 0x02,
-            MachineModel::PC9801VX | MachineModel::PC9801RA | MachineModel::PC9821 => 0x04,
+            MachineModel::PC9801VX | MachineModel::PC9801RA | MachineModel::PC9821As => 0x04,
         };
         let msw_values: [u8; 8] = [0x48, 0x05, msw3, 0x00, 0x01, 0x00, 0x00, year_bcd];
         let msw_offsets: [usize; 8] = [

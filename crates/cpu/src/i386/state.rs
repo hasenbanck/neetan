@@ -234,7 +234,7 @@ impl I386State {
     }
 }
 
-impl I386 {
+impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     /// Loads CPU state from a snapshot, resetting runtime flags.
     pub fn load_state(&mut self, state: &I386State) {
         self.state = state.clone();

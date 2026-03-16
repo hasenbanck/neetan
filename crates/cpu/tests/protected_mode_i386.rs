@@ -67,7 +67,7 @@ fn place_code(bus: &mut TestBus, cs: u16, ip: u16, code: &[u8]) {
 /// Real mode: CR0 should have PE=0 after reset.
 #[test]
 fn i386_cr0_after_reset() {
-    let cpu = I386::new();
+    let cpu: I386 = I386::new();
 
     assert_eq!(cpu.cr0 & 1, 0, "PE bit should be clear after reset");
     assert_eq!(
@@ -79,7 +79,7 @@ fn i386_cr0_after_reset() {
 /// Real mode: SMSW reads back the low 16 bits of CR0 (no mode switch).
 #[test]
 fn i386_smsw_returns_cr0_low() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     // SMSW AX (0x0F 0x01 modrm=0xE0: mod=11, /4, rm=AX)
@@ -97,7 +97,7 @@ fn i386_smsw_returns_cr0_low() {
 /// Real mode -> Protected mode: LMSW sets PE bit in CR0.
 #[test]
 fn i386_lmsw_sets_pe() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     // MOV AX, 0x0001
@@ -122,7 +122,7 @@ fn i386_lmsw_sets_pe() {
 /// Protected mode: LMSW cannot clear PE once set (no switch back to real mode).
 #[test]
 fn i386_lmsw_cannot_clear_pe() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     // MOV AX, 1 -> LMSW AX (set PE) -> MOV AX, 0 -> LMSW AX (try to clear PE)
@@ -150,7 +150,7 @@ fn i386_lmsw_cannot_clear_pe() {
 /// Real mode -> Protected mode: MOV CR0 sets PE bit.
 #[test]
 fn i386_mov_cr0_sets_pe() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     // MOV EAX, 1 (66h prefix)
@@ -174,7 +174,7 @@ fn i386_mov_cr0_sets_pe() {
 /// Protected mode -> Unreal mode: MOV CR0 clears PE to return to real mode.
 #[test]
 fn i386_mov_cr0_can_clear_pe() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     // Set up in protected mode at CPL=0 (as on real hardware, MOV CR0 requires CPL=0).
@@ -198,7 +198,7 @@ fn i386_mov_cr0_can_clear_pe() {
 /// MOV CR0 masks reserved bits: only PG(31), ET(4), TS(3), EM(2), MP(1), PE(0) are writable.
 #[test]
 fn i386_mov_cr0_masks_reserved_bits() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     // MOV EAX, 0xFFFFFFFF (66h prefix + B8 imm32)
@@ -225,7 +225,7 @@ fn i386_mov_cr0_masks_reserved_bits() {
 /// Real mode: MOV r32, CR0 reads the current CR0 value (no mode switch).
 #[test]
 fn i386_mov_r32_cr0_reads_cr0() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     // MOV EAX, CR0 (0x0F 0x20 0xC0: mod=11, reg=0 (CR0), rm=0 (EAX))
@@ -244,7 +244,7 @@ fn i386_mov_r32_cr0_reads_cr0() {
 #[test]
 fn i386_invalid_opcode_0x63_triggers_ud() {
     use cpu::I386State;
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let cs: u16 = 0x1000;
@@ -439,7 +439,7 @@ fn write_dword_at(bus: &mut TestBus, addr: u32, value: u32) {
 
 #[test]
 fn i386_lmsw_only_writes_low_4_bits() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     place_code(
@@ -465,7 +465,7 @@ fn i386_lmsw_only_writes_low_4_bits() {
 
 #[test]
 fn i386_mov_al_moffs_protected_mode_reads_correctly() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -482,7 +482,7 @@ fn i386_mov_al_moffs_protected_mode_reads_correctly() {
 
 #[test]
 fn i386_mov_al_moffs_protected_mode_gp_on_limit_violation() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_protected_mode(&mut bus, 0x000F);
@@ -499,7 +499,7 @@ fn i386_mov_al_moffs_protected_mode_gp_on_limit_violation() {
 
 #[test]
 fn i386_mov_moffs_al_protected_mode_writes_correctly() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -515,7 +515,7 @@ fn i386_mov_moffs_al_protected_mode_writes_correctly() {
 
 #[test]
 fn i386_xlat_protected_mode_reads_correctly() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -534,7 +534,7 @@ fn i386_xlat_protected_mode_reads_correctly() {
 
 #[test]
 fn i386_xlat_protected_mode_gp_on_limit_violation() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_protected_mode(&mut bus, 0x000F);
@@ -552,7 +552,7 @@ fn i386_xlat_protected_mode_gp_on_limit_violation() {
 
 #[test]
 fn i386_far_jmp_conforming_code_adjusts_cs_rpl_to_cpl() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -573,7 +573,7 @@ fn i386_far_jmp_conforming_code_adjusts_cs_rpl_to_cpl() {
 
 #[test]
 fn i386_protected_mode_int_dispatches_via_intgate() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -618,7 +618,7 @@ fn i386_protected_mode_int_dispatches_via_intgate() {
 
 #[test]
 fn i386_protected_mode_int_trapgate_preserves_if() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -649,7 +649,7 @@ fn i386_protected_mode_int_trapgate_preserves_if() {
 
 #[test]
 fn i386_protected_mode_int_sets_cs_rpl_correctly() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -678,7 +678,7 @@ fn i386_protected_mode_int_sets_cs_rpl_correctly() {
 
 #[test]
 fn i386_popf_pushf_iopl_nt_roundtrip() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -707,7 +707,7 @@ fn i386_popf_pushf_iopl_nt_roundtrip() {
 
 #[test]
 fn i386_gp_escalates_to_double_fault() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -745,7 +745,7 @@ fn i386_gp_escalates_to_double_fault() {
 
 #[test]
 fn i386_lgdt_at_cpl3_triggers_gp() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -776,7 +776,7 @@ fn i386_lgdt_at_cpl3_triggers_gp() {
 
 #[test]
 fn i386_ltr_marks_386_tss_busy() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -803,7 +803,7 @@ fn i386_ltr_marks_386_tss_busy() {
 
 #[test]
 fn i386_ltr_busy_tss_triggers_gp() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -827,7 +827,7 @@ fn i386_ltr_busy_tss_triggers_gp() {
 
 #[test]
 fn i386_lar_accepts_386_tss_descriptor() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -851,7 +851,7 @@ fn i386_lar_accepts_386_tss_descriptor() {
 
 #[test]
 fn i386_lsl_rejects_call_gate() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -874,7 +874,7 @@ fn i386_lsl_rejects_call_gate() {
 
 #[test]
 fn i386_interrupt_conforming_code_dispatches() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -906,7 +906,7 @@ fn i386_interrupt_conforming_code_dispatches() {
 
 #[test]
 fn i386_load_segment_sets_accessed_bit() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -928,7 +928,7 @@ fn i386_load_segment_sets_accessed_bit() {
 
 #[test]
 fn i386_verr_conforming_code_dpl_exemption() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -966,7 +966,7 @@ fn i386_verr_conforming_code_dpl_exemption() {
 
 #[test]
 fn i386_gate_offset_exceeds_limit_gp_zero() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -1003,7 +1003,7 @@ fn i386_gate_offset_exceeds_limit_gp_zero() {
 
 #[test]
 fn i386_lldt_selector_0x0004_is_nonnull() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -1025,7 +1025,7 @@ fn i386_lldt_selector_0x0004_is_nonnull() {
 
 #[test]
 fn i386_wrong_type_not_present_gives_gp_not_np() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -1059,7 +1059,7 @@ fn i386_wrong_type_not_present_gives_gp_not_np() {
 
 #[test]
 fn i386_indirect_call_far_invalid_segment_sp_unchanged() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -1197,7 +1197,7 @@ fn make_ring3_state(state: &mut cpu::I386State) {
 
 #[test]
 fn i386_ret_far_inter_privilege_ring0_to_ring3() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_with_ring3(&mut bus);
     cpu.load_state(&state);
@@ -1222,7 +1222,7 @@ fn i386_ret_far_inter_privilege_ring0_to_ring3() {
 
 #[test]
 fn i386_ret_far_same_privilege() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_with_ring3(&mut bus);
     cpu.load_state(&state);
@@ -1246,7 +1246,7 @@ fn i386_ret_far_same_privilege() {
 
 #[test]
 fn i386_iret_inter_privilege_ring0_to_ring3() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_with_ring3(&mut bus);
     cpu.load_state(&state);
@@ -1272,7 +1272,7 @@ fn i386_iret_inter_privilege_ring0_to_ring3() {
 
 #[test]
 fn i386_ret_far_rpl_less_than_cpl_faults() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let mut state = setup_protected_mode_with_ring3(&mut bus);
     make_ring3_state(&mut state);
@@ -1293,7 +1293,7 @@ fn i386_ret_far_rpl_less_than_cpl_faults() {
 
 #[test]
 fn i386_ret_far_nonconforming_dpl_ne_rpl_faults() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_with_ring3(&mut bus);
     cpu.load_state(&state);
@@ -1318,7 +1318,7 @@ fn i386_ret_far_nonconforming_dpl_ne_rpl_faults() {
 
 #[test]
 fn i386_interrupt_inter_privilege_ring3_to_ring0() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let mut state = setup_protected_mode_with_ring3(&mut bus);
     make_ring3_state(&mut state);
@@ -1343,7 +1343,7 @@ fn i386_interrupt_inter_privilege_ring3_to_ring0() {
 
 #[test]
 fn i386_interrupt_inter_privilege_ss_fault_uses_ts_vector() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let mut state = setup_protected_mode_with_ring3(&mut bus);
     make_ring3_state(&mut state);
@@ -1380,7 +1380,7 @@ fn i386_interrupt_inter_privilege_ss_fault_uses_ts_vector() {
 
 #[test]
 fn i386_ret_far_imm_inter_privilege_reads_correct_offset() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_with_ring3(&mut bus);
     cpu.load_state(&state);
@@ -1405,7 +1405,7 @@ fn i386_ret_far_imm_inter_privilege_reads_correct_offset() {
 
 #[test]
 fn i386_ret_far_ip_exceeds_limit_faults() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_with_ring3(&mut bus);
     cpu.load_state(&state);
@@ -1432,7 +1432,7 @@ fn i386_ret_far_ip_exceeds_limit_faults() {
 
 #[test]
 fn i386_invalidate_nonconforming_code_in_ds_on_return() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_with_ring3(&mut bus);
     cpu.load_state(&state);
@@ -1458,7 +1458,7 @@ fn i386_invalidate_nonconforming_code_in_ds_on_return() {
 
 #[test]
 fn i386_keep_nonconforming_code_in_ds_when_dpl_sufficient() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_with_ring3(&mut bus);
     cpu.load_state(&state);
@@ -1484,7 +1484,7 @@ fn i386_keep_nonconforming_code_in_ds_when_dpl_sufficient() {
 
 #[test]
 fn i386_keep_conforming_code_in_ds_on_return() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_with_ring3(&mut bus);
     cpu.load_state(&state);
@@ -1510,7 +1510,7 @@ fn i386_keep_conforming_code_in_ds_on_return() {
 
 #[test]
 fn i386_ss_limit_violation_uses_ss_vector() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let mut state = setup_protected_mode_with_ring3(&mut bus);
     make_ring3_state(&mut state);
@@ -1534,7 +1534,7 @@ fn i386_ss_limit_violation_uses_ss_vector() {
 
 #[test]
 fn i386_ds_limit_violation_uses_gp_vector() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_with_ring3(&mut bus);
     cpu.load_state(&state);
@@ -1556,7 +1556,7 @@ fn i386_ds_limit_violation_uses_gp_vector() {
 
 #[test]
 fn i386_hardware_interrupt_error_code_has_ext_bit() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_with_ring3(&mut bus);
     cpu.load_state(&state);
@@ -1581,7 +1581,7 @@ fn i386_hardware_interrupt_error_code_has_ext_bit() {
 
 #[test]
 fn i386_software_interrupt_error_code_no_ext_bit() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_with_ring3(&mut bus);
     cpu.load_state(&state);
@@ -1778,7 +1778,7 @@ fn setup_protected_mode_extended(bus: &mut TestBus) -> cpu::I386State {
 
 #[test]
 fn i386_ss_type_violation_raises_gp_not_ss() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_extended(&mut bus);
     cpu.load_state(&state);
@@ -1797,7 +1797,7 @@ fn i386_ss_type_violation_raises_gp_not_ss() {
 
 #[test]
 fn i386_ss_privilege_violation_raises_gp_not_ss() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_extended(&mut bus);
     cpu.load_state(&state);
@@ -1816,7 +1816,7 @@ fn i386_ss_privilege_violation_raises_gp_not_ss() {
 
 #[test]
 fn i386_ss_not_present_raises_ss() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_extended(&mut bus);
     cpu.load_state(&state);
@@ -1835,7 +1835,7 @@ fn i386_ss_not_present_raises_ss() {
 
 #[test]
 fn i386_ret_far_to_conforming_code_adopts_rpl() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_extended(&mut bus);
     cpu.load_state(&state);
@@ -1859,7 +1859,7 @@ fn i386_ret_far_to_conforming_code_adopts_rpl() {
 
 #[test]
 fn i386_call_far_through_call_gate_same_privilege() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_extended(&mut bus);
     cpu.load_state(&state);
@@ -1897,7 +1897,7 @@ fn i386_call_far_through_call_gate_same_privilege() {
 
 #[test]
 fn i386_call_far_through_call_gate_inter_privilege() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let mut state = setup_protected_mode_extended(&mut bus);
     make_ring3_state(&mut state);
@@ -1948,7 +1948,7 @@ fn i386_call_far_through_call_gate_inter_privilege() {
 
 #[test]
 fn i386_call_far_through_call_gate_with_parameters() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let mut state = setup_protected_mode_extended(&mut bus);
     make_ring3_state(&mut state);
@@ -2000,7 +2000,7 @@ fn i386_call_far_through_call_gate_with_parameters() {
 
 #[test]
 fn i386_jmp_far_through_call_gate_same_privilege() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_extended(&mut bus);
     cpu.load_state(&state);
@@ -2033,7 +2033,7 @@ fn i386_jmp_far_through_call_gate_same_privilege() {
 
 #[test]
 fn i386_jmp_far_call_gate_inner_privilege_faults() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let mut state = setup_protected_mode_extended(&mut bus);
     make_ring3_state(&mut state);
@@ -2056,7 +2056,7 @@ fn i386_jmp_far_call_gate_inner_privilege_faults() {
 
 #[test]
 fn i386_call_gate_dpl_insufficient_faults() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let mut state = setup_protected_mode_extended(&mut bus);
     make_ring3_state(&mut state);
@@ -2079,7 +2079,7 @@ fn i386_call_gate_dpl_insufficient_faults() {
 
 #[test]
 fn i386_jmp_far_to_tss_switches_task() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_extended(&mut bus);
     cpu.load_state(&state);
@@ -2140,7 +2140,7 @@ fn i386_jmp_far_to_tss_switches_task() {
 
 #[test]
 fn i386_call_far_to_tss_sets_nt_and_backlink() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_extended(&mut bus);
     cpu.load_state(&state);
@@ -2193,7 +2193,7 @@ fn i386_call_far_to_tss_sets_nt_and_backlink() {
 
 #[test]
 fn i386_iret_with_nt_returns_to_previous_task() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_extended(&mut bus);
     cpu.load_state(&state);
@@ -2242,7 +2242,7 @@ fn i386_iret_with_nt_returns_to_previous_task() {
 
 #[test]
 fn i386_task_switch_saves_and_restores_registers() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_extended(&mut bus);
     cpu.load_state(&state);
@@ -2304,7 +2304,7 @@ fn i386_task_switch_saves_and_restores_registers() {
 
 #[test]
 fn i386_fs_gs_segment_loading_in_protected_mode() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -2342,7 +2342,7 @@ fn i386_fs_gs_segment_loading_in_protected_mode() {
 
 #[test]
 fn i386_fs_gs_invalidated_on_privilege_return() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_with_ring3(&mut bus);
     cpu.load_state(&state);
@@ -2372,7 +2372,7 @@ fn i386_fs_gs_invalidated_on_privilege_return() {
 
 #[test]
 fn i386_granularity_bit_scales_limit() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -2399,7 +2399,7 @@ fn i386_granularity_bit_scales_limit() {
 /// SS B-bit: push/pop use full ESP when SS descriptor has B-bit (bit 6 of granularity) set.
 #[test]
 fn i386_push_pop_use_esp_with_b_bit() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -2434,7 +2434,7 @@ fn i386_push_pop_use_esp_with_b_bit() {
 /// SS B-bit: push_dword/pop_dword use full ESP.
 #[test]
 fn i386_push_pop_dword_use_esp_with_b_bit() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -2462,7 +2462,7 @@ fn i386_push_pop_dword_use_esp_with_b_bit() {
 /// IRET in protected mode with operand size override pops 32-bit EIP/CS/EFLAGS.
 #[test]
 fn i386_iret_32bit_protected_mode() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -2501,7 +2501,7 @@ fn i386_iret_32bit_protected_mode() {
 /// RETF in protected mode with operand size override pops 32-bit EIP/CS.
 #[test]
 fn i386_retf_32bit_protected_mode() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -2533,7 +2533,7 @@ fn i386_retf_32bit_protected_mode() {
 /// PUSHFD/POPFD preserves upper EFLAGS bits.
 #[test]
 fn i386_pushfd_popfd_upper_eflags() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -2577,7 +2577,7 @@ fn i386_pushfd_popfd_upper_eflags() {
 /// Real-mode POPF can set IOPL and NT bits.
 #[test]
 fn i386_real_mode_popf_sets_iopl_nt() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     // Real mode: push flags with IOPL=3 and NT set, then popf.
@@ -2611,7 +2611,7 @@ fn i386_real_mode_popf_sets_iopl_nt() {
 /// CLTS at CPL != 0 triggers #GP.
 #[test]
 fn i386_clts_gp_at_cpl3() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode_with_ring3(&mut bus);
@@ -2635,7 +2635,7 @@ fn i386_clts_gp_at_cpl3() {
 /// MOV CR0, EAX at CPL != 0 triggers #GP.
 #[test]
 fn i386_mov_cr_gp_at_cpl3() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode_with_ring3(&mut bus);
@@ -2660,7 +2660,7 @@ fn i386_mov_cr_gp_at_cpl3() {
 #[test]
 fn i386_mov_to_cs_triggers_ud() {
     use cpu::I386State;
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let cs: u16 = 0x1000;
@@ -2691,7 +2691,7 @@ fn i386_mov_to_cs_triggers_ud() {
 /// SMSW to register writes full 32-bit CR0.
 #[test]
 fn i386_smsw_register_32bit() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     // SMSW EAX: 66 0F 01 E0 (modrm=0xE0: mod=11, /4, rm=EAX, with 66 prefix)
@@ -2709,7 +2709,7 @@ fn i386_smsw_register_32bit() {
 /// LAR rejects descriptor types 6 and 7 (286 interrupt/trap gates).
 #[test]
 fn i386_lar_rejects_int_trap_gates() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -2746,7 +2746,7 @@ fn i386_lar_rejects_int_trap_gates() {
 /// IDT task gate (type 5) triggers task switch on interrupt.
 #[test]
 fn i386_idt_task_gate_triggers_task_switch() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_protected_mode_extended(&mut bus);
@@ -2800,7 +2800,7 @@ fn i386_idt_task_gate_triggers_task_switch() {
 /// 32-bit segment offsets work correctly (offsets > 0xFFFF).
 #[test]
 fn i386_32bit_segment_offset() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -2832,7 +2832,7 @@ fn i386_32bit_segment_offset() {
 
 #[test]
 fn i386_dbit_32bit_cs_uses_32bit_operand_size() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -2855,7 +2855,7 @@ fn i386_dbit_32bit_cs_uses_32bit_operand_size() {
 
 #[test]
 fn i386_dbit_16bit_cs_uses_16bit_operand_size() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -2881,7 +2881,7 @@ fn i386_dbit_16bit_cs_uses_16bit_operand_size() {
 
 #[test]
 fn i386_far_call_32bit_pushes_dword_cs_eip() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -2930,7 +2930,7 @@ fn i386_far_call_32bit_pushes_dword_cs_eip() {
 
 #[test]
 fn i386_invalidate_segment_checks_rpl() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_protected_mode_with_ring3(&mut bus);
@@ -2974,7 +2974,7 @@ fn i386_invalidate_segment_checks_rpl() {
 
 #[test]
 fn i386_conforming_interrupt_cs_rpl_equals_cpl() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode_with_ring3(&mut bus);
@@ -3013,7 +3013,7 @@ fn i386_conforming_interrupt_cs_rpl_equals_cpl() {
 
 #[test]
 fn i386_task_gate_pushes_error_code() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_protected_mode_extended(&mut bus);
@@ -3078,7 +3078,7 @@ fn i386_task_gate_pushes_error_code() {
 
 #[test]
 fn i386_sldt_32bit_register_zero_extends() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -3103,7 +3103,7 @@ fn i386_sldt_32bit_register_zero_extends() {
 
 #[test]
 fn i386_str_32bit_register_zero_extends() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -3126,7 +3126,7 @@ fn i386_str_32bit_register_zero_extends() {
 
 #[test]
 fn i386_push_seg_32bit_uses_esp_and_writes_4_bytes() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -3159,7 +3159,7 @@ fn i386_push_seg_32bit_uses_esp_and_writes_4_bytes() {
 
 #[test]
 fn i386_pop_seg_32bit_uses_esp() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -3191,7 +3191,7 @@ fn i386_pop_seg_32bit_uses_esp() {
 
 #[test]
 fn i386_iret_cpl3_cannot_set_vm_flag() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode_with_ring3(&mut bus);
@@ -3226,7 +3226,7 @@ fn i386_iret_cpl3_cannot_set_vm_flag() {
 
 #[test]
 fn i386_retf_32bit_inter_privilege_correct_state() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode_with_ring3(&mut bus);
@@ -3257,7 +3257,7 @@ fn i386_retf_32bit_inter_privilege_correct_state() {
 
 #[test]
 fn i386_ltr_rejects_undersized_386_tss() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -3284,7 +3284,7 @@ fn i386_ltr_rejects_undersized_386_tss() {
 
 #[test]
 fn i386_ltr_rejects_undersized_286_tss() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -3311,7 +3311,7 @@ fn i386_ltr_rejects_undersized_286_tss() {
 
 #[test]
 fn i386_ltr_accepts_minimum_size_386_tss() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -3345,7 +3345,7 @@ fn i386_ltr_accepts_minimum_size_386_tss() {
 /// Fix 1: SS not-present during inter-privilege interrupt raises #SS (vector 12), not #TS (vector 10).
 #[test]
 fn i386_interrupt_inter_privilege_ss_not_present_raises_ss() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let mut state = setup_protected_mode_with_ring3(&mut bus);
 
@@ -3402,7 +3402,7 @@ fn i386_interrupt_inter_privilege_ss_not_present_raises_ss() {
 /// Fix 2: MOV CR0 masks WP bit (bit 16) on 386.
 #[test]
 fn i386_mov_cr0_strips_wp_bit() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     // MOV EAX, 0x0001_0001 (PE + WP)
@@ -3429,7 +3429,7 @@ fn i386_mov_cr0_strips_wp_bit() {
 /// Fix 3: Task switch reads full 20-bit LDT limit with granularity.
 #[test]
 fn i386_task_switch_reads_full_ldt_limit() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_extended(&mut bus);
     cpu.load_state(&state);
@@ -3483,7 +3483,7 @@ fn i386_task_switch_reads_full_ldt_limit() {
 /// Fix 3b: Task switch reads LDT limit with granularity bit set.
 #[test]
 fn i386_task_switch_reads_ldt_limit_with_granularity() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let state = setup_protected_mode_extended(&mut bus);
     cpu.load_state(&state);
@@ -3572,7 +3572,7 @@ fn real_mode_stale_ip_upper() -> cpu::I386State {
 /// JMP SHORT (EB xx): 16-bit short jump must clear ip_upper.
 #[test]
 fn i386_jmp_short_clears_ip_upper() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     cpu.load_state(&real_mode_stale_ip_upper());
@@ -3589,7 +3589,7 @@ fn i386_jmp_short_clears_ip_upper() {
 /// JMP NEAR rel16 (E9 xx xx): 16-bit near jump must clear ip_upper.
 #[test]
 fn i386_jmp_near_rel16_clears_ip_upper() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     cpu.load_state(&real_mode_stale_ip_upper());
@@ -3606,7 +3606,7 @@ fn i386_jmp_near_rel16_clears_ip_upper() {
 /// JMP FAR ptr16:16 (EA xx xx xx xx): 16-bit far jump must clear ip_upper.
 #[test]
 fn i386_jmp_far_16bit_clears_ip_upper() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     cpu.load_state(&real_mode_stale_ip_upper());
@@ -3624,7 +3624,7 @@ fn i386_jmp_far_16bit_clears_ip_upper() {
 /// CALL NEAR rel16 (E8 xx xx): 16-bit near call must clear ip_upper.
 #[test]
 fn i386_call_near_rel16_clears_ip_upper() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     cpu.load_state(&real_mode_stale_ip_upper());
@@ -3641,7 +3641,7 @@ fn i386_call_near_rel16_clears_ip_upper() {
 /// CALL FAR ptr16:16 (9A xx xx xx xx): 16-bit far call must clear ip_upper.
 #[test]
 fn i386_call_far_16bit_clears_ip_upper() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     cpu.load_state(&real_mode_stale_ip_upper());
@@ -3659,7 +3659,7 @@ fn i386_call_far_16bit_clears_ip_upper() {
 /// RET NEAR (C3): 16-bit near return must clear ip_upper.
 #[test]
 fn i386_ret_near_clears_ip_upper() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     cpu.load_state(&real_mode_stale_ip_upper());
@@ -3681,7 +3681,7 @@ fn i386_ret_near_clears_ip_upper() {
 /// RET NEAR imm16 (C2 xx xx): 16-bit near return with immediate must clear ip_upper.
 #[test]
 fn i386_ret_near_imm_clears_ip_upper() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     cpu.load_state(&real_mode_stale_ip_upper());
@@ -3703,7 +3703,7 @@ fn i386_ret_near_imm_clears_ip_upper() {
 /// RET FAR (CB): 16-bit far return must clear ip_upper.
 #[test]
 fn i386_ret_far_16bit_clears_ip_upper() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     cpu.load_state(&real_mode_stale_ip_upper());
@@ -3727,7 +3727,7 @@ fn i386_ret_far_16bit_clears_ip_upper() {
 /// RET FAR imm16 (CA xx xx): 16-bit far return with immediate must clear ip_upper.
 #[test]
 fn i386_ret_far_imm_16bit_clears_ip_upper() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     cpu.load_state(&real_mode_stale_ip_upper());
@@ -3751,7 +3751,7 @@ fn i386_ret_far_imm_16bit_clears_ip_upper() {
 /// IRET (CF): 16-bit IRET in real mode must clear ip_upper.
 #[test]
 fn i386_iret_16bit_real_mode_clears_ip_upper() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     cpu.load_state(&real_mode_stale_ip_upper());
@@ -3779,7 +3779,7 @@ fn i386_iret_16bit_real_mode_clears_ip_upper() {
 /// Jcc short (e.g. JE, 74 xx): conditional short jump must clear ip_upper when taken.
 #[test]
 fn i386_jcc_short_clears_ip_upper() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     cpu.load_state(&real_mode_stale_ip_upper());
@@ -3797,7 +3797,7 @@ fn i386_jcc_short_clears_ip_upper() {
 /// Jcc near (0F 84 xx xx): conditional near jump must clear ip_upper when taken.
 #[test]
 fn i386_jcc_near_16bit_clears_ip_upper() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     cpu.load_state(&real_mode_stale_ip_upper());
@@ -3815,7 +3815,7 @@ fn i386_jcc_near_16bit_clears_ip_upper() {
 /// LOOP (E2 xx): loop instruction must clear ip_upper when taken.
 #[test]
 fn i386_loop_clears_ip_upper() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     cpu.load_state(&real_mode_stale_ip_upper());
@@ -3833,7 +3833,7 @@ fn i386_loop_clears_ip_upper() {
 /// JCXZ (E3 xx): jump-if-CX-zero must clear ip_upper when taken.
 #[test]
 fn i386_jcxz_clears_ip_upper() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     cpu.load_state(&real_mode_stale_ip_upper());
@@ -3852,7 +3852,7 @@ fn i386_jcxz_clears_ip_upper() {
 /// MOV CR0 + JMP FAR, verify the game can continue executing at correct addresses.
 #[test]
 fn i386_pm_to_real_mode_jmp_far_clears_ip_upper() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     // Set up a minimal GDT for PM entry.
@@ -4038,7 +4038,7 @@ fn setup_vm86(bus: &mut TestBus) -> cpu::I386State {
 /// the 16-bit SP.
 #[test]
 fn vm86_interrupt_dispatch_uses_pl0_stack_correctly() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_vm86(&mut bus);
@@ -4109,7 +4109,7 @@ fn vm86_interrupt_dispatch_uses_pl0_stack_correctly() {
 /// expand() sets IOPL unconditionally; load_flags(..., 3, true) preserves it.
 #[test]
 fn vm86_iret_cannot_change_iopl() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_vm86(&mut bus);
@@ -4143,7 +4143,7 @@ fn vm86_iret_cannot_change_iopl() {
 /// 32-bit IRETD in VM86 must clear ip_upper (bits 16–31 of EIP are always 0 in VM86).
 #[test]
 fn vm86_iretd_clears_ip_upper() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let state = setup_vm86(&mut bus);
@@ -4187,7 +4187,7 @@ fn vm86_iretd_clears_ip_upper() {
 /// falls exactly at tr_limit raises #GP rather than reading a stale/sentinel byte.
 #[test]
 fn iopb_boundary_raises_gp_at_limit() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     // Use setup_protected_mode as a base (CPL=0 currently; change to CPL=3).
@@ -4246,7 +4246,7 @@ fn iopb_boundary_raises_gp_at_limit() {
 /// IRET from CPL0 returning to VM86 must consume 60 clocks, not 22.
 #[test]
 fn iret_cpl0_to_vm86_clocks_60() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     // Set up CPL0 protected mode.
@@ -4294,7 +4294,7 @@ fn iret_cpl0_to_vm86_clocks_60() {
 /// is allowed.
 #[test]
 fn iopb_32bit_eax_denied_at_port_plus_two() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -4338,7 +4338,7 @@ fn iopb_32bit_eax_denied_at_port_plus_two() {
 /// 32-bit EAX IN succeeds when both `port` and `port+2` are clear in the IOPB.
 #[test]
 fn iopb_32bit_eax_allowed_when_both_ports_clear() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
@@ -4381,7 +4381,7 @@ fn iopb_32bit_eax_allowed_when_both_ports_clear() {
 /// Previously the implementation preserved the old RF bit instead of clearing it.
 #[test]
 fn vm86_iret_16bit_clears_rf() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     let mut state = setup_vm86(&mut bus);
@@ -4423,7 +4423,7 @@ fn vm86_iret_16bit_clears_rf() {
 /// and become 3 after a far return to ring 3.
 #[test]
 fn i386_stored_cpl_tracks_privilege_transitions() {
-    let mut cpu = I386::new();
+    let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
     assert_eq!(cpu.stored_cpl, 0, "stored_cpl should be 0 after reset");

@@ -1,4 +1,4 @@
-use super::{create_machine_pc9821_hdd, read_ram_u16};
+use super::{create_machine_pc9821as_hdd, read_ram_u16};
 
 const BDA_DISK_EQUIP: usize = 0x055C;
 const BDA_F2HD_MODE: usize = 0x0493;
@@ -6,7 +6,7 @@ const BDA_BOOT_DEVICE: usize = 0x0584;
 
 #[test]
 fn ide_initialization_pc9821() {
-    let mut machine = create_machine_pc9821_hdd();
+    let mut machine = create_machine_pc9821as_hdd();
     let _cycles = boot_to_halt_hdd!(machine);
     let state = machine.save_state();
 

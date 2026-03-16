@@ -364,7 +364,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             pegc_mode_active: false,
             dma_access_ctrl: match machine_model {
                 MachineModel::PC9801VM | MachineModel::PC9801VX => DMA_ACCESS_CTRL_20BIT,
-                MachineModel::PC9801RA | MachineModel::PC9821 => 0x00,
+                MachineModel::PC9801RA | MachineModel::PC9821As => 0x00,
             },
             vram_ems_bank: 0x00,
             ram_window: 0x08,
@@ -493,7 +493,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         let sys_type = match cpu_type {
             CpuType::V30 => 0x00,
             CpuType::I286 => 0x01,
-            CpuType::I386 => 0x4B,
+            CpuType::I386 | CpuType::I486SX => 0x4B,
         };
         self.memory.state.ram[0x0480] = sys_type;
 
@@ -512,7 +512,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         // BIOS_FLAG3 (0x0481): 386 machines have bit 5 set.
         self.memory.state.ram[0x0481] = match cpu_type {
-            CpuType::I386 => 0x20,
+            CpuType::I386 | CpuType::I486SX => 0x20,
             CpuType::I286 | CpuType::V30 => 0x00,
         };
 
@@ -525,7 +525,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         // F2DD_POINTER (0x05CC) / F2HD_POINTER (0x05F8): far pointers to format
         // tables in ROM. The offsets differ between BIOS generations (RA vs others).
         let (f2hd_off, f2dd_off): (u16, u16) = match self.machine_model {
-            MachineModel::PC9801RA | MachineModel::PC9821 => (0x1AAF, 0x1AD7),
+            MachineModel::PC9801RA | MachineModel::PC9821As => (0x1AAF, 0x1AD7),
             MachineModel::PC9801VM | MachineModel::PC9801VX => (0x1AB4, 0x1ADC),
         };
         self.memory.state.ram[0x05CC..0x05D0].copy_from_slice(&[
@@ -659,7 +659,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801VM | MachineModel::PC9801VX | MachineModel::PC9801RA => {
                 self.sasi.insert_drive(drive, image, path);
             }
-            MachineModel::PC9821 => {
+            MachineModel::PC9821As => {
                 self.ide.insert_drive(drive, image, path);
             }
         }
@@ -671,7 +671,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801VM | MachineModel::PC9801VX | MachineModel::PC9801RA => {
                 self.sasi.flush_drive(drive);
             }
-            MachineModel::PC9821 => {
+            MachineModel::PC9821As => {
                 self.ide.flush_drive(drive);
             }
         }
@@ -683,7 +683,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801VM | MachineModel::PC9801VX | MachineModel::PC9801RA => {
                 self.sasi.flush_all_drives();
             }
-            MachineModel::PC9821 => {
+            MachineModel::PC9821As => {
                 self.ide.flush_all_drives();
             }
         }
@@ -3623,8 +3623,8 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
 
             // SIMM memory controller.
             // Ref: undoc98 `io_mem.txt` (ports 0x0530/0x0531)
-            0x0530 if self.machine_model == MachineModel::PC9821 => self.simm_address_register,
-            0x0531 if self.machine_model == MachineModel::PC9821 => {
+            0x0530 if self.machine_model == MachineModel::PC9821As => self.simm_address_register,
+            0x0531 if self.machine_model == MachineModel::PC9821As => {
                 let index = self.simm_address_register as usize;
                 let socket = index & 0x0F;
                 let is_limit = index & 0x80 != 0;
@@ -3638,23 +3638,23 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
 
             // Memory bank switching register.
             // Ref: undoc98 `io_mem.txt` (port 0x063C)
-            0x063C if self.machine_model == MachineModel::PC9821 => self.memory_bank_063c,
+            0x063C if self.machine_model == MachineModel::PC9821As => self.memory_bank_063c,
 
             // Flash ROM power voltage control (stub).
             // Ref: undoc98 `io_mem.txt` (port 0x063E)
-            0x063E if self.machine_model == MachineModel::PC9821 => 0x00,
+            0x063E if self.machine_model == MachineModel::PC9821As => 0x00,
 
             // CPU/cache control register.
             // Ref: undoc98 `io_mem.txt` (port 0x063F)
-            0x063F if self.machine_model == MachineModel::PC9821 => self.cache_control_063f,
+            0x063F if self.machine_model == MachineModel::PC9821As => self.cache_control_063f,
 
             // IDE bank select register (port 0x0436).
-            0x0436 if self.machine_model == MachineModel::PC9821 => 0xFF,
+            0x0436 if self.machine_model == MachineModel::PC9821As => 0xFF,
 
             // Window Accelerator Board (WAB) — built-in graphics accelerator.
             // Ref: undoc98 `io_wab.txt`
-            0x0FAA if self.machine_model == MachineModel::PC9821 => self.wab_index,
-            0x0FAB if self.machine_model == MachineModel::PC9821 => {
+            0x0FAA if self.machine_model == MachineModel::PC9821As => self.wab_index,
+            0x0FAB if self.machine_model == MachineModel::PC9821As => {
                 let index = self.wab_index as usize;
                 if index < self.wab_data.len() {
                     self.wab_data[index]
@@ -3662,35 +3662,35 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                     0xFF
                 }
             }
-            0x0FAC if self.machine_model == MachineModel::PC9821 => self.wab_relay,
+            0x0FAC if self.machine_model == MachineModel::PC9821As => self.wab_relay,
 
             // CPU mode / wait control register.
             // Ref: undoc98 `io_cpu.txt` (port 0x0534)
-            0x0534 if self.machine_model == MachineModel::PC9821 => self.cpu_mode_534,
+            0x0534 if self.machine_model == MachineModel::PC9821As => self.cpu_mode_534,
 
             // Memory status register (read-only).
             // Bit 7,6 = 11 → no 2nd cache RAM board.
             // Ref: undoc98 `io_mem.txt` (port 0x063D)
-            0x063D if self.machine_model == MachineModel::PC9821 => 0xFF,
+            0x063D if self.machine_model == MachineModel::PC9821As => 0xFF,
 
             // Hardware wait timing adjustment register.
             // Ref: undoc98 `io_tstmp.txt` (port 0x045F)
-            0x045F if self.machine_model == MachineModel::PC9821 => 0x00,
+            0x045F if self.machine_model == MachineModel::PC9821As => 0x00,
 
             // Graphics accelerator presence detection.
             // 0xFF = no CL-GD5428/5430 accelerator present.
             // Ref: undoc98 `io_wab.txt` (port 0x0CA0)
-            0x0CA0 if self.machine_model == MachineModel::PC9821 => 0xFF,
+            0x0CA0 if self.machine_model == MachineModel::PC9821As => 0xFF,
 
             // MATE-X PCM sound ports (stub, no MATE-X hardware).
-            0xAC6C..=0xAC6F if self.machine_model == MachineModel::PC9821 => 0xFF,
+            0xAC6C..=0xAC6F if self.machine_model == MachineModel::PC9821As => 0xFF,
 
             // Mystery I/O ports (banking mechanism, undocumented).
             // NP21W labels these as "謎のI/Oポート" in pcidev.c.
-            0x18F0 if self.machine_model == MachineModel::PC9821 => 0x00,
-            0x18F1 if self.machine_model == MachineModel::PC9821 => 0x00,
-            0x18F2 if self.machine_model == MachineModel::PC9821 => 0x00,
-            0x18F3 if self.machine_model == MachineModel::PC9821 => 0x00,
+            0x18F0 if self.machine_model == MachineModel::PC9821As => 0x00,
+            0x18F1 if self.machine_model == MachineModel::PC9821As => 0x00,
+            0x18F2 if self.machine_model == MachineModel::PC9821As => 0x00,
+            0x18F3 if self.machine_model == MachineModel::PC9821As => 0x00,
 
             // Software DIP Switch (SDIP) — ports 0x841E–0x8F1E at 0x100 stride.
             // Ref: undoc98 `io_sdip.txt`
@@ -4279,10 +4279,10 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
 
             // SIMM memory controller.
             // Ref: undoc98 `io_mem.txt` (ports 0x0530/0x0531)
-            0x0530 if self.machine_model == MachineModel::PC9821 => {
+            0x0530 if self.machine_model == MachineModel::PC9821As => {
                 self.simm_address_register = value;
             }
-            0x0531 if self.machine_model == MachineModel::PC9821 => {
+            0x0531 if self.machine_model == MachineModel::PC9821As => {
                 let index = self.simm_address_register as usize;
                 let socket = index & 0x0F;
                 let is_limit = index & 0x80 != 0;
@@ -4294,59 +4294,59 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
 
             // Memory bank switching register.
             // Ref: undoc98 `io_mem.txt` (port 0x063C)
-            0x063C if self.machine_model == MachineModel::PC9821 => {
+            0x063C if self.machine_model == MachineModel::PC9821As => {
                 self.memory_bank_063c = value;
             }
 
             // Flash ROM power voltage control (no-op).
             // Ref: undoc98 `io_mem.txt` (port 0x063E)
-            0x063E if self.machine_model == MachineModel::PC9821 => {}
+            0x063E if self.machine_model == MachineModel::PC9821As => {}
 
             // CPU/cache control register.
             // Ref: undoc98 `io_mem.txt` (port 0x063F)
-            0x063F if self.machine_model == MachineModel::PC9821 => {
+            0x063F if self.machine_model == MachineModel::PC9821As => {
                 self.cache_control_063f = value;
             }
 
             // IDE bank select register (port 0x0436).
-            0x0436 if self.machine_model == MachineModel::PC9821 => {}
+            0x0436 if self.machine_model == MachineModel::PC9821As => {}
 
             // Window Accelerator Board (WAB) — built-in graphics accelerator.
             // Ref: undoc98 `io_wab.txt`
-            0x0FAA if self.machine_model == MachineModel::PC9821 => {
+            0x0FAA if self.machine_model == MachineModel::PC9821As => {
                 self.wab_index = value;
             }
-            0x0FAB if self.machine_model == MachineModel::PC9821 => {
+            0x0FAB if self.machine_model == MachineModel::PC9821As => {
                 let index = self.wab_index as usize;
                 if index < self.wab_data.len() {
                     self.wab_data[index] = value;
                 }
             }
-            0x0FAC if self.machine_model == MachineModel::PC9821 => {
+            0x0FAC if self.machine_model == MachineModel::PC9821As => {
                 self.wab_relay = value;
             }
 
             // CPU mode / wait control register.
             // Ref: undoc98 `io_cpu.txt` (port 0x0534)
-            0x0534 if self.machine_model == MachineModel::PC9821 => {
+            0x0534 if self.machine_model == MachineModel::PC9821As => {
                 self.cpu_mode_534 = value;
             }
 
             // Display mode register (PC-9821).
             // Ref: undoc98 `io_disp.txt` (port 0x00A7)
-            0x00A7 if self.machine_model == MachineModel::PC9821 => {}
+            0x00A7 if self.machine_model == MachineModel::PC9821As => {}
 
             // Memory status register (read-only, writes ignored).
             // Ref: undoc98 `io_mem.txt` (port 0x063D)
-            0x063D if self.machine_model == MachineModel::PC9821 => {}
+            0x063D if self.machine_model == MachineModel::PC9821As => {}
 
             // Hardware wait timing adjustment register.
             // Ref: undoc98 `io_tstmp.txt` (port 0x045F)
-            0x045F if self.machine_model == MachineModel::PC9821 => {}
+            0x045F if self.machine_model == MachineModel::PC9821As => {}
 
             // Graphics accelerator attribute controller (no accelerator present).
             // Ref: undoc98 `io_wab.txt` (port 0x0CA0)
-            0x0CA0 if self.machine_model == MachineModel::PC9821 => {}
+            0x0CA0 if self.machine_model == MachineModel::PC9821As => {}
 
             // SCSI controller (WD33C93) — no SCSI present.
             // Ref: undoc98 `io_scsi.txt`
@@ -4354,54 +4354,54 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
 
             // Mouse interrupt vector setting.
             // Ref: undoc98 `io_mouse.txt` (port 0x98D7)
-            0x98D7 if self.machine_model == MachineModel::PC9821 => {}
+            0x98D7 if self.machine_model == MachineModel::PC9821As => {}
 
             // Unknown display register (PC-9821).
-            0x98DB if self.machine_model == MachineModel::PC9821 => {}
+            0x98DB if self.machine_model == MachineModel::PC9821As => {}
 
             // Serial port FIFO control register.
             // Ref: undoc98 `io_rs.txt` (port 0x0138)
-            0x0138 if self.machine_model == MachineModel::PC9821 => {}
+            0x0138 if self.machine_model == MachineModel::PC9821As => {}
 
             // Printer interface control register.
-            0x0149 if self.machine_model == MachineModel::PC9821 => {}
+            0x0149 if self.machine_model == MachineModel::PC9821As => {}
 
             // Extended RS-232C control register.
             // Ref: undoc98 `io_rs.txt` (port 0x0434)
-            0x0434 if self.machine_model == MachineModel::PC9821 => {}
+            0x0434 if self.machine_model == MachineModel::PC9821As => {}
 
             // CPU/system control register (port 0x00F4).
-            0x00F4 if self.machine_model == MachineModel::PC9821 => {}
+            0x00F4 if self.machine_model == MachineModel::PC9821As => {}
 
             // Memory/expansion control registers.
-            0x0448 if self.machine_model == MachineModel::PC9821 => {}
-            0x047B if self.machine_model == MachineModel::PC9821 => {}
-            0x0555 if self.machine_model == MachineModel::PC9821 => {}
+            0x0448 if self.machine_model == MachineModel::PC9821As => {}
+            0x047B if self.machine_model == MachineModel::PC9821As => {}
+            0x0555 if self.machine_model == MachineModel::PC9821As => {}
 
             // Extended DMA control registers (stub).
             0x0E00 | 0x0E01 | 0x0E02 | 0x0E03 | 0x0E0F
-                if self.machine_model == MachineModel::PC9821 => {}
+                if self.machine_model == MachineModel::PC9821As => {}
 
             // 32-bit DMA controller (ORBIT) index/data.
             // Ref: undoc98 `io_dma.txt` (ports 0x002B/0x002D)
-            0x002B | 0x002D if self.machine_model == MachineModel::PC9821 => {}
+            0x002B | 0x002D if self.machine_model == MachineModel::PC9821As => {}
 
             // Pixel mask register (PC-H98 only, ignore on PC-9821).
             // Ref: undoc98 `io_disp.txt` (port 0x09AE)
-            0x09AE if self.machine_model == MachineModel::PC9821 => {}
+            0x09AE if self.machine_model == MachineModel::PC9821As => {}
 
             // Unknown keyboard/display mapping register.
-            0x0535 if self.machine_model == MachineModel::PC9821 => {}
+            0x0535 if self.machine_model == MachineModel::PC9821As => {}
 
             // MATE-X PCM sound ports (stub, no MATE-X hardware).
-            0xAC6C..=0xAC6F if self.machine_model == MachineModel::PC9821 => {}
+            0xAC6C..=0xAC6F if self.machine_model == MachineModel::PC9821As => {}
 
             // Mystery I/O ports (banking mechanism, undocumented).
             // NP21W labels these as "謎のI/Oポート" in pcidev.c.
-            0x18F0 if self.machine_model == MachineModel::PC9821 => {}
-            0x18F1 if self.machine_model == MachineModel::PC9821 => {}
-            0x18F2 if self.machine_model == MachineModel::PC9821 => {}
-            0x18F3 if self.machine_model == MachineModel::PC9821 => {}
+            0x18F0 if self.machine_model == MachineModel::PC9821As => {}
+            0x18F1 if self.machine_model == MachineModel::PC9821As => {}
+            0x18F2 if self.machine_model == MachineModel::PC9821As => {}
+            0x18F3 if self.machine_model == MachineModel::PC9821As => {}
 
             // Software DIP Switch (SDIP) — ports 0x841E–0x8F1E at 0x100 stride.
             // Ref: undoc98 `io_sdip.txt`
@@ -5325,7 +5325,7 @@ mod tests {
     }
 
     fn create_pc9821_bus() -> Pc9801Bus<NoTracing> {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
         bus.display_control.state.mode2 |= 0x01 | 0x08;
         bus.set_graphics_extension_enabled(true);
         bus
@@ -5579,7 +5579,7 @@ mod tests {
 
     #[test]
     fn pegc_port_6a_0x21_blocked_without_mode2_bit3() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
         bus.display_control.state.mode2 |= 0x01;
         bus.set_graphics_extension_enabled(true);
         bus.io_write_byte(0x6A, 0x21);

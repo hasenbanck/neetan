@@ -1,12 +1,30 @@
-use super::I386;
+use super::{CPU_MODEL_386, CPU_MODEL_486SX, I386};
 use crate::{ByteReg, DwordReg, SegReg32, WordReg};
 
-impl I386 {
+impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
+    /// Returns (register_cycles, memory_cycles) for shift/rotate group instructions.
+    /// `count_source`: 0 = imm8 (C0/C1), 1 = literal 1 (D0/D1), 2 = CL (D2/D3).
     #[inline(always)]
-    fn shift_group_timing(extension: u8) -> (i32, i32) {
-        match extension & 7 {
-            2 | 3 => (9, 10),
-            _ => (3, 7),
+    fn shift_group_timing(extension: u8, count_source: u8) -> (i32, i32) {
+        match CPU_MODEL {
+            CPU_MODEL_386 => match extension & 7 {
+                2 | 3 => (9, 10),
+                _ => (3, 7),
+            },
+            CPU_MODEL_486SX => match count_source {
+                0 => match extension & 7 {
+                    2 | 3 => (8, 9),
+                    _ => (2, 4),
+                },
+                1 => (3, 4),
+                _ => match extension & 7 {
+                    2 | 3 => (8, 9),
+                    _ => (3, 4),
+                },
+            },
+            _ => {
+                unreachable!("Unhandled CPU_MODEL")
+            }
         }
     }
 
@@ -31,7 +49,7 @@ impl I386 {
             6 => self.alu_xor_byte(dst, src),
             7 => {
                 self.alu_sub_byte(dst, src);
-                self.clk_modrm(modrm, 2, 5);
+                self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(5, 2));
                 return;
             }
             _ => unreachable!(),
@@ -39,7 +57,7 @@ impl I386 {
         if (modrm >> 3) & 7 != 7 {
             self.putback_rm_byte(modrm, result, bus);
         }
-        self.clk_modrm(modrm, 2, 7);
+        self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(7, 3));
     }
 
     /// Group 0x81: ALU r/m16, imm16
@@ -64,7 +82,7 @@ impl I386 {
                 6 => self.alu_xor_dword(dst, src),
                 7 => {
                     self.alu_sub_dword(dst, src);
-                    self.clk_modrm_word(modrm, 2, 5, 2);
+                    self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(5, 2), 2);
                     return;
                 }
                 _ => unreachable!(),
@@ -72,7 +90,7 @@ impl I386 {
             if (modrm >> 3) & 7 != 7 {
                 self.putback_rm_dword(modrm, result, bus);
             }
-            self.clk_modrm_word(modrm, 2, 7, 4);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
             let dst = self.get_rm_word(modrm, bus);
             let src = self.fetchword(bus);
@@ -92,7 +110,7 @@ impl I386 {
                 6 => self.alu_xor_word(dst, src),
                 7 => {
                     self.alu_sub_word(dst, src);
-                    self.clk_modrm_word(modrm, 2, 5, 1);
+                    self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(5, 2), 1);
                     return;
                 }
                 _ => unreachable!(),
@@ -100,7 +118,7 @@ impl I386 {
             if (modrm >> 3) & 7 != 7 {
                 self.putback_rm_word(modrm, result, bus);
             }
-            self.clk_modrm_word(modrm, 2, 7, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 2);
         }
     }
 
@@ -131,7 +149,7 @@ impl I386 {
                 6 => self.alu_xor_dword(dst, src),
                 7 => {
                     self.alu_sub_dword(dst, src);
-                    self.clk_modrm_word(modrm, 2, 5, 2);
+                    self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(5, 2), 2);
                     return;
                 }
                 _ => unreachable!(),
@@ -139,7 +157,7 @@ impl I386 {
             if (modrm >> 3) & 7 != 7 {
                 self.putback_rm_dword(modrm, result, bus);
             }
-            self.clk_modrm_word(modrm, 2, 7, 4);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
             let dst = self.get_rm_word(modrm, bus);
             let src = self.fetch(bus) as i8 as u16;
@@ -159,7 +177,7 @@ impl I386 {
                 6 => self.alu_xor_word(dst, src),
                 7 => {
                     self.alu_sub_word(dst, src);
-                    self.clk_modrm_word(modrm, 2, 5, 1);
+                    self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(5, 2), 1);
                     return;
                 }
                 _ => unreachable!(),
@@ -167,7 +185,7 @@ impl I386 {
             if (modrm >> 3) & 7 != 7 {
                 self.putback_rm_word(modrm, result, bus);
             }
-            self.clk_modrm_word(modrm, 2, 7, 2);
+            self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 2);
         }
     }
 
@@ -189,7 +207,7 @@ impl I386 {
             _ => unreachable!(),
         };
         self.putback_rm_byte(modrm, result, bus);
-        let (register_cycles, memory_cycles) = Self::shift_group_timing(extension);
+        let (register_cycles, memory_cycles) = Self::shift_group_timing(extension, 0);
         self.clk_modrm(modrm, register_cycles, memory_cycles);
     }
 
@@ -197,7 +215,7 @@ impl I386 {
     pub(super) fn group_c1(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
         let extension = (modrm >> 3) & 7;
-        let (register_cycles, memory_cycles) = Self::shift_group_timing(extension);
+        let (register_cycles, memory_cycles) = Self::shift_group_timing(extension, 0);
         if self.operand_size_override {
             let dst = self.get_rm_dword(modrm, bus);
             let count = self.fetch(bus);
@@ -250,7 +268,7 @@ impl I386 {
             _ => unreachable!(),
         };
         self.putback_rm_byte(modrm, result, bus);
-        let (register_cycles, memory_cycles) = Self::shift_group_timing(extension);
+        let (register_cycles, memory_cycles) = Self::shift_group_timing(extension, 1);
         self.clk_modrm(modrm, register_cycles, memory_cycles);
     }
 
@@ -258,7 +276,7 @@ impl I386 {
     pub(super) fn group_d1(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
         let extension = (modrm >> 3) & 7;
-        let (register_cycles, memory_cycles) = Self::shift_group_timing(extension);
+        let (register_cycles, memory_cycles) = Self::shift_group_timing(extension, 1);
         if self.operand_size_override {
             let dst = self.get_rm_dword(modrm, bus);
             let result = match extension {
@@ -310,7 +328,7 @@ impl I386 {
             _ => unreachable!(),
         };
         self.putback_rm_byte(modrm, result, bus);
-        let (register_cycles, memory_cycles) = Self::shift_group_timing(extension);
+        let (register_cycles, memory_cycles) = Self::shift_group_timing(extension, 2);
         self.clk_modrm(modrm, register_cycles, memory_cycles);
     }
 
@@ -319,7 +337,7 @@ impl I386 {
         let modrm = self.fetch(bus);
         let count = self.regs.byte(ByteReg::CL);
         let extension = (modrm >> 3) & 7;
-        let (register_cycles, memory_cycles) = Self::shift_group_timing(extension);
+        let (register_cycles, memory_cycles) = Self::shift_group_timing(extension, 2);
         if self.operand_size_override {
             let dst = self.get_rm_dword(modrm, bus);
             let result = match extension {
@@ -363,20 +381,20 @@ impl I386 {
                 let dst = self.get_rm_byte(modrm, bus);
                 let src = self.fetch(bus);
                 self.alu_and_byte(dst, src);
-                self.clk_modrm(modrm, 2, 5);
+                self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(5, 2));
             }
             2 => {
                 // NOT r/m8
                 let dst = self.get_rm_byte(modrm, bus);
                 self.putback_rm_byte(modrm, !dst, bus);
-                self.clk_modrm(modrm, 2, 6);
+                self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(6, 3));
             }
             3 => {
                 // NEG r/m8
                 let dst = self.get_rm_byte(modrm, bus);
                 let result = self.alu_neg_byte(dst);
                 self.putback_rm_byte(modrm, result, bus);
-                self.clk_modrm(modrm, 2, 6);
+                self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(6, 3));
             }
             4 => {
                 // MUL r/m8 (unsigned)
@@ -386,7 +404,7 @@ impl I386 {
                 self.regs.set_word(WordReg::AX, result);
                 self.flags.carry_val = if result & 0xFF00 != 0 { 1 } else { 0 };
                 self.flags.overflow_val = self.flags.carry_val;
-                self.clk_modrm(modrm, 14, 17);
+                self.clk_modrm(modrm, Self::timing(14, 13), Self::timing(17, 13));
             }
             5 => {
                 // IMUL r/m8 (signed)
@@ -398,7 +416,7 @@ impl I386 {
                 let al_sign = result as i8;
                 self.flags.carry_val = if ah != (al_sign >> 7) { 1 } else { 0 };
                 self.flags.overflow_val = self.flags.carry_val;
-                self.clk_modrm(modrm, 14, 17);
+                self.clk_modrm(modrm, Self::timing(14, 13), Self::timing(17, 13));
             }
             6 => {
                 // DIV r/m8 (unsigned)
@@ -418,7 +436,9 @@ impl I386 {
                 self.regs.set_byte(ByteReg::AH, remainder as u8);
                 // DIV leaves condition flags undefined; do not preserve prior CF state.
                 self.flags.carry_val = u32::from(!self.flags.cf());
-                self.clk_modrm(modrm, 14, 17);
+                // Toggle AF after division (hardware quirk found by NP21W).
+                self.flags.aux_val ^= 0x10;
+                self.clk_modrm(modrm, Self::timing(14, 16), Self::timing(17, 16));
             }
             7 => {
                 // IDIV r/m8 (signed)
@@ -441,7 +461,9 @@ impl I386 {
                 self.regs.set_byte(ByteReg::AH, remainder as u8);
                 // IDIV leaves condition flags undefined; do not preserve prior CF state.
                 self.flags.carry_val = u32::from(!self.flags.cf());
-                self.clk_modrm(modrm, 19, 19);
+                // Toggle AF after division (hardware quirk found by NP21W).
+                self.flags.aux_val ^= 0x10;
+                self.clk_modrm(modrm, Self::timing(19, 19), Self::timing(19, 20));
             }
             _ => unreachable!(),
         }
@@ -458,20 +480,20 @@ impl I386 {
                     let dst = self.get_rm_dword(modrm, bus);
                     let src = self.fetchdword(bus);
                     self.alu_and_dword(dst, src);
-                    self.clk_modrm_word(modrm, 2, 5, 2);
+                    self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(5, 2), 2);
                 }
                 2 => {
                     // NOT r/m32
                     let dst = self.get_rm_dword(modrm, bus);
                     self.putback_rm_dword(modrm, !dst, bus);
-                    self.clk_modrm_word(modrm, 2, 6, 4);
+                    self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 3), 4);
                 }
                 3 => {
                     // NEG r/m32
                     let dst = self.get_rm_dword(modrm, bus);
                     let result = self.alu_neg_dword(dst);
                     self.putback_rm_dword(modrm, result, bus);
-                    self.clk_modrm_word(modrm, 2, 6, 4);
+                    self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 3), 4);
                 }
                 4 => {
                     // MUL r/m32 (unsigned)
@@ -482,7 +504,7 @@ impl I386 {
                     self.regs.set_dword(DwordReg::EDX, (result >> 32) as u32);
                     self.flags.carry_val = u32::from((result >> 32) != 0);
                     self.flags.overflow_val = self.flags.carry_val;
-                    self.clk_modrm_word(modrm, 38, 41, 2);
+                    self.clk_modrm_word(modrm, Self::timing(38, 13), Self::timing(41, 13), 2);
                 }
                 5 => {
                     // IMUL r/m32 (signed)
@@ -494,7 +516,7 @@ impl I386 {
                     let lower_sign_extended = (result as i32) as i64;
                     self.flags.carry_val = u32::from(result != lower_sign_extended);
                     self.flags.overflow_val = self.flags.carry_val;
-                    self.clk_modrm_word(modrm, 38, 41, 2);
+                    self.clk_modrm_word(modrm, Self::timing(38, 13), Self::timing(41, 13), 2);
                 }
                 6 => {
                     // DIV r/m32 (unsigned)
@@ -516,7 +538,9 @@ impl I386 {
                     self.regs.set_dword(DwordReg::EDX, remainder as u32);
                     // DIV leaves condition flags undefined; do not preserve prior CF state.
                     self.flags.carry_val = u32::from(!self.flags.cf());
-                    self.clk_modrm_word(modrm, 38, 41, 2);
+                    // Toggle AF after division (hardware quirk found by NP21W).
+                    self.flags.aux_val ^= 0x10;
+                    self.clk_modrm_word(modrm, Self::timing(38, 40), Self::timing(41, 40), 2);
                 }
                 7 => {
                     // IDIV r/m32 (signed)
@@ -541,7 +565,9 @@ impl I386 {
                     self.regs.set_dword(DwordReg::EDX, remainder as u32);
                     // IDIV leaves condition flags undefined; do not preserve prior CF state.
                     self.flags.carry_val = u32::from(!self.flags.cf());
-                    self.clk_modrm_word(modrm, 43, 43, 2);
+                    // Toggle AF after division (hardware quirk found by NP21W).
+                    self.flags.aux_val ^= 0x10;
+                    self.clk_modrm_word(modrm, Self::timing(43, 43), Self::timing(43, 44), 2);
                 }
                 _ => unreachable!(),
             }
@@ -552,20 +578,20 @@ impl I386 {
                     let dst = self.get_rm_word(modrm, bus);
                     let src = self.fetchword(bus);
                     self.alu_and_word(dst, src);
-                    self.clk_modrm_word(modrm, 2, 5, 1);
+                    self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(5, 2), 1);
                 }
                 2 => {
                     // NOT r/m16
                     let dst = self.get_rm_word(modrm, bus);
                     self.putback_rm_word(modrm, !dst, bus);
-                    self.clk_modrm_word(modrm, 2, 6, 2);
+                    self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 3), 2);
                 }
                 3 => {
                     // NEG r/m16
                     let dst = self.get_rm_word(modrm, bus);
                     let result = self.alu_neg_word(dst);
                     self.putback_rm_word(modrm, result, bus);
-                    self.clk_modrm_word(modrm, 2, 6, 2);
+                    self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 3), 2);
                 }
                 4 => {
                     // MUL r/m16 (unsigned)
@@ -576,7 +602,7 @@ impl I386 {
                     self.regs.set_word(WordReg::DX, (result >> 16) as u16);
                     self.flags.carry_val = if result & 0xFFFF0000 != 0 { 1 } else { 0 };
                     self.flags.overflow_val = self.flags.carry_val;
-                    self.clk_modrm_word(modrm, 22, 25, 1);
+                    self.clk_modrm_word(modrm, Self::timing(22, 13), Self::timing(25, 13), 1);
                 }
                 5 => {
                     // IMUL r/m16 (signed)
@@ -589,7 +615,7 @@ impl I386 {
                     let lower_sign = result as i16;
                     self.flags.carry_val = if upper != (lower_sign >> 15) { 1 } else { 0 };
                     self.flags.overflow_val = self.flags.carry_val;
-                    self.clk_modrm_word(modrm, 22, 25, 1);
+                    self.clk_modrm_word(modrm, Self::timing(22, 13), Self::timing(25, 13), 1);
                 }
                 6 => {
                     // DIV r/m16 (unsigned)
@@ -611,7 +637,9 @@ impl I386 {
                     self.regs.set_word(WordReg::DX, remainder as u16);
                     // DIV leaves condition flags undefined; do not preserve prior CF state.
                     self.flags.carry_val = u32::from(!self.flags.cf());
-                    self.clk_modrm_word(modrm, 22, 25, 1);
+                    // Toggle AF after division (hardware quirk found by NP21W).
+                    self.flags.aux_val ^= 0x10;
+                    self.clk_modrm_word(modrm, Self::timing(22, 24), Self::timing(25, 24), 1);
                 }
                 7 => {
                     // IDIV r/m16 (signed)
@@ -636,7 +664,9 @@ impl I386 {
                     self.regs.set_word(WordReg::DX, remainder as u16);
                     // IDIV leaves condition flags undefined; do not preserve prior CF state.
                     self.flags.carry_val = u32::from(!self.flags.cf());
-                    self.clk_modrm_word(modrm, 27, 27, 1);
+                    // Toggle AF after division (hardware quirk found by NP21W).
+                    self.flags.aux_val ^= 0x10;
+                    self.clk_modrm_word(modrm, Self::timing(27, 27), Self::timing(27, 28), 1);
                 }
                 _ => unreachable!(),
             }
@@ -652,17 +682,17 @@ impl I386 {
                 let dst = self.get_rm_byte(modrm, bus);
                 let result = self.alu_inc_byte(dst);
                 self.putback_rm_byte(modrm, result, bus);
-                self.clk_modrm(modrm, 2, 6);
+                self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(6, 3));
             }
             1 => {
                 // DEC r/m8
                 let dst = self.get_rm_byte(modrm, bus);
                 let result = self.alu_dec_byte(dst);
                 self.putback_rm_byte(modrm, result, bus);
-                self.clk_modrm(modrm, 2, 6);
+                self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(6, 3));
             }
             _ => {
-                self.clk(2);
+                self.clk(Self::timing(2, 1));
             }
         }
     }
@@ -677,13 +707,13 @@ impl I386 {
                     let dst = self.get_rm_dword(modrm, bus);
                     let result = self.alu_inc_dword(dst);
                     self.putback_rm_dword(modrm, result, bus);
-                    self.clk_modrm_word(modrm, 2, 6, 4);
+                    self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 3), 4);
                 } else {
                     // INC r/m16
                     let dst = self.get_rm_word(modrm, bus);
                     let result = self.alu_inc_word(dst);
                     self.putback_rm_word(modrm, result, bus);
-                    self.clk_modrm_word(modrm, 2, 6, 2);
+                    self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 3), 2);
                 }
             }
             1 => {
@@ -692,13 +722,13 @@ impl I386 {
                     let dst = self.get_rm_dword(modrm, bus);
                     let result = self.alu_dec_dword(dst);
                     self.putback_rm_dword(modrm, result, bus);
-                    self.clk_modrm_word(modrm, 2, 6, 4);
+                    self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 3), 4);
                 } else {
                     // DEC r/m16
                     let dst = self.get_rm_word(modrm, bus);
                     let result = self.alu_dec_word(dst);
                     self.putback_rm_word(modrm, result, bus);
-                    self.clk_modrm_word(modrm, 2, 6, 2);
+                    self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 3), 2);
                 }
             }
             2 => {
@@ -710,12 +740,20 @@ impl I386 {
                     self.push_dword(bus, return_eip);
                     self.ip = dst as u16;
                     self.ip_upper = dst & 0xFFFF_0000;
-                    let m = self.next_instruction_length_approx(bus);
-                    if modrm >= 0xC0 {
-                        self.clk(7 + m + sp_pen);
-                    } else {
-                        let ea_pen = if self.ea & 3 != 0 { 4 } else { 0 };
-                        self.clk(10 + m + sp_pen + ea_pen);
+                    match CPU_MODEL {
+                        CPU_MODEL_386 => {
+                            let m = self.next_instruction_length_approx(bus);
+                            if modrm >= 0xC0 {
+                                self.clk(7 + m + sp_pen);
+                            } else {
+                                let ea_pen = if self.ea & 3 != 0 { 4 } else { 0 };
+                                self.clk(10 + m + sp_pen + ea_pen);
+                            }
+                        }
+                        CPU_MODEL_486SX => self.clk(5 + sp_pen),
+                        _ => {
+                            unreachable!("Unhandled CPU_MODEL")
+                        }
                     }
                 } else {
                     // CALL r/m16 (near indirect)
@@ -724,12 +762,20 @@ impl I386 {
                     self.push(bus, self.ip);
                     self.ip = dst;
                     self.ip_upper = 0;
-                    let m = self.next_instruction_length_approx(bus);
-                    if modrm >= 0xC0 {
-                        self.clk(7 + m + sp_pen);
-                    } else {
-                        let ea_pen = if self.ea & 1 != 0 { 4 } else { 0 };
-                        self.clk(10 + m + sp_pen + ea_pen);
+                    match CPU_MODEL {
+                        CPU_MODEL_386 => {
+                            let m = self.next_instruction_length_approx(bus);
+                            if modrm >= 0xC0 {
+                                self.clk(7 + m + sp_pen);
+                            } else {
+                                let ea_pen = if self.ea & 1 != 0 { 4 } else { 0 };
+                                self.clk(10 + m + sp_pen + ea_pen);
+                            }
+                        }
+                        CPU_MODEL_486SX => self.clk(5 + sp_pen),
+                        _ => {
+                            unreachable!("Unhandled CPU_MODEL")
+                        }
                     }
                 }
             }
@@ -763,9 +809,17 @@ impl I386 {
                             bus,
                         );
                     }
-                    let m = self.next_instruction_length_approx(bus);
-                    let ea_pen = if self.ea & 3 != 0 { 4 } else { 0 };
-                    self.clk(22 + m + sp_pen + ea_pen);
+                    match CPU_MODEL {
+                        CPU_MODEL_386 => {
+                            let m = self.next_instruction_length_approx(bus);
+                            let ea_pen = if self.ea & 3 != 0 { 4 } else { 0 };
+                            self.clk(22 + m + sp_pen + ea_pen);
+                        }
+                        CPU_MODEL_486SX => self.clk(17 + sp_pen),
+                        _ => {
+                            unreachable!("Unhandled CPU_MODEL")
+                        }
+                    }
                 } else {
                     // CALL m16:16 (far indirect)
                     let sp_pen = self.sp_penalty();
@@ -792,9 +846,17 @@ impl I386 {
                             bus,
                         );
                     }
-                    let m = self.next_instruction_length_approx(bus);
-                    let ea_pen = if self.ea & 1 != 0 { 4 } else { 0 };
-                    self.clk(22 + m + sp_pen + ea_pen);
+                    match CPU_MODEL {
+                        CPU_MODEL_386 => {
+                            let m = self.next_instruction_length_approx(bus);
+                            let ea_pen = if self.ea & 1 != 0 { 4 } else { 0 };
+                            self.clk(22 + m + sp_pen + ea_pen);
+                        }
+                        CPU_MODEL_486SX => self.clk(17 + sp_pen),
+                        _ => {
+                            unreachable!("Unhandled CPU_MODEL")
+                        }
+                    }
                 }
             }
             4 => {
@@ -803,24 +865,40 @@ impl I386 {
                     let dst = self.get_rm_dword(modrm, bus);
                     self.ip = dst as u16;
                     self.ip_upper = dst & 0xFFFF_0000;
-                    let m = self.next_instruction_length_approx(bus);
-                    if modrm >= 0xC0 {
-                        self.clk(7 + m);
-                    } else {
-                        let ea_pen = if self.ea & 3 != 0 { 4 } else { 0 };
-                        self.clk(10 + m + ea_pen);
+                    match CPU_MODEL {
+                        CPU_MODEL_386 => {
+                            let m = self.next_instruction_length_approx(bus);
+                            if modrm >= 0xC0 {
+                                self.clk(7 + m);
+                            } else {
+                                let ea_pen = if self.ea & 3 != 0 { 4 } else { 0 };
+                                self.clk(10 + m + ea_pen);
+                            }
+                        }
+                        CPU_MODEL_486SX => self.clk(5),
+                        _ => {
+                            unreachable!("Unhandled CPU_MODEL")
+                        }
                     }
                 } else {
                     // JMP r/m16 (near indirect)
                     let dst = self.get_rm_word(modrm, bus);
                     self.ip = dst;
                     self.ip_upper = 0;
-                    let m = self.next_instruction_length_approx(bus);
-                    if modrm >= 0xC0 {
-                        self.clk(7 + m);
-                    } else {
-                        let ea_pen = if self.ea & 1 != 0 { 4 } else { 0 };
-                        self.clk(10 + m + ea_pen);
+                    match CPU_MODEL {
+                        CPU_MODEL_386 => {
+                            let m = self.next_instruction_length_approx(bus);
+                            if modrm >= 0xC0 {
+                                self.clk(7 + m);
+                            } else {
+                                let ea_pen = if self.ea & 1 != 0 { 4 } else { 0 };
+                                self.clk(10 + m + ea_pen);
+                            }
+                        }
+                        CPU_MODEL_486SX => self.clk(5),
+                        _ => {
+                            unreachable!("Unhandled CPU_MODEL")
+                        }
                     }
                 }
             }
@@ -842,9 +920,17 @@ impl I386 {
                     } else {
                         self.code_descriptor(segment, offset, super::TaskType::Jmp, 0, 0, bus);
                     }
-                    let m = self.next_instruction_length_approx(bus);
-                    let penalty = if self.ea & 3 != 0 { 4 } else { 0 };
-                    self.clk(43 + m + penalty);
+                    match CPU_MODEL {
+                        CPU_MODEL_386 => {
+                            let m = self.next_instruction_length_approx(bus);
+                            let penalty = if self.ea & 3 != 0 { 4 } else { 0 };
+                            self.clk(43 + m + penalty);
+                        }
+                        CPU_MODEL_486SX => self.clk(13),
+                        _ => {
+                            unreachable!("Unhandled CPU_MODEL")
+                        }
+                    }
                 } else {
                     // JMP m16:16 (far indirect)
                     self.calc_ea(modrm, bus);
@@ -866,9 +952,17 @@ impl I386 {
                             bus,
                         );
                     }
-                    let m = self.next_instruction_length_approx(bus);
-                    let penalty = if self.ea & 1 != 0 { 4 } else { 0 };
-                    self.clk(43 + m + penalty);
+                    match CPU_MODEL {
+                        CPU_MODEL_386 => {
+                            let m = self.next_instruction_length_approx(bus);
+                            let penalty = if self.ea & 1 != 0 { 4 } else { 0 };
+                            self.clk(43 + m + penalty);
+                        }
+                        CPU_MODEL_486SX => self.clk(13),
+                        _ => {
+                            unreachable!("Unhandled CPU_MODEL")
+                        }
+                    }
                 }
             }
             6 | 7 => {
@@ -878,10 +972,14 @@ impl I386 {
                     let val = self.get_rm_dword(modrm, bus);
                     self.push_dword(bus, val);
                     if modrm >= 0xC0 {
-                        self.clk(5 + sp_pen);
+                        self.clk(Self::timing(5, 1) + sp_pen);
                     } else {
-                        let ea_pen = if self.ea & 3 != 0 { 4 } else { 0 };
-                        self.clk(5 + sp_pen + ea_pen);
+                        let ea_pen = if self.ea & 3 != 0 {
+                            Self::timing(4, 3)
+                        } else {
+                            0
+                        };
+                        self.clk(Self::timing(5, 4) + sp_pen + ea_pen);
                     }
                 } else {
                     // PUSH r/m16 (7 is undocumented alias)
@@ -889,15 +987,19 @@ impl I386 {
                     let val = self.get_rm_word(modrm, bus);
                     self.push(bus, val);
                     if modrm >= 0xC0 {
-                        self.clk(5 + sp_pen);
+                        self.clk(Self::timing(5, 1) + sp_pen);
                     } else {
-                        let ea_pen = if self.ea & 1 != 0 { 4 } else { 0 };
-                        self.clk(5 + sp_pen + ea_pen);
+                        let ea_pen = if self.ea & 1 != 0 {
+                            Self::timing(4, 3)
+                        } else {
+                            0
+                        };
+                        self.clk(Self::timing(5, 4) + sp_pen + ea_pen);
                     }
                 }
             }
             _ => {
-                self.clk(2);
+                self.clk(Self::timing(2, 1));
             }
         }
     }

@@ -5,7 +5,7 @@ use device::{
 
 use super::{
     TEST_CODE, boot_and_run_ra, boot_and_run_vm, boot_and_run_vx, build_2hd_d88,
-    create_machine_pc9821, create_machine_ra, create_machine_vm, create_machine_vx,
+    create_machine_pc9821as, create_machine_ra, create_machine_vm, create_machine_vx,
     read_ivt_vector, read_ram_u16, write_bytes,
 };
 
@@ -2616,8 +2616,8 @@ fn boot_and_run_ide_pc9821(
     code: &[u8],
     hdd: Option<(usize, HddImage)>,
     budget: u64,
-) -> machine::Pc9821 {
-    let mut machine = create_machine_pc9821();
+) -> machine::Pc9821As {
+    let mut machine = create_machine_pc9821as();
     if let Some((drive, image)) = hdd {
         machine.bus.insert_hdd(drive, image, None);
     }

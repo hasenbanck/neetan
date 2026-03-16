@@ -13,7 +13,7 @@ enum DoubleFaultResult {
     Shutdown,
 }
 
-impl I386 {
+impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     pub(super) fn check_interrupts(&mut self, bus: &mut impl common::Bus) {
         if self.pending_irq & PENDING_NMI != 0 && self.inhibit_all == 0 {
             self.pending_irq &= !PENDING_NMI;
