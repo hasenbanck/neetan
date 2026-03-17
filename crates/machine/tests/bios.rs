@@ -223,7 +223,7 @@ fn create_machine_ra() -> Pc9801Ra {
 fn create_machine_pc9821as() -> Pc9821As {
     let mut machine = Pc9821As::new(
         cpu::I386::<{ cpu::CPU_MODEL_486 }>::new(),
-        machine::Pc9801Bus::new(MachineModel::PC9821As, 48000),
+        machine::Pc9801Bus::new(MachineModel::PC9821AS, 48000),
     );
     // TODO: We haven't verified our implementation yet against a real 9821 BIOS.
     machine.bus.load_font_rom(FONT_ROM_DATA);

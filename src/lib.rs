@@ -5,7 +5,7 @@
 use std::fs::File;
 
 use audio_engine::AudioEngine;
-use common::{Context, Machine, MachineModel, StringError, bail, ensure, error, info, warn};
+use common::{Context, Machine, MachineModel, StringError, ensure, error, info, warn};
 use device::disk::{HddGeometry, load_hdd_image};
 use graphics_engine::{DisplayAspectMode, GraphicsEngine, RenderInstructions};
 use jay_ash::{vk, vk::Handle};
@@ -789,8 +789,8 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
     let mut bus: machine::Pc9801Bus<Tracer> = machine::Pc9801Bus::new(model, sample_rate);
     bus.set_host_local_time_fn(host_local_time_bcd);
 
-    if config.bios_rom.is_some() && model == common::MachineModel::PC9821As {
-        bail!("Real BIOS ROM is not supported for PC-9821As. Use HLE BIOS mode (omit --bios-rom).");
+    if config.bios_rom.is_some() && model.is_pc9821() {
+        warn!("Real BIOS ROM is not supported for PC-9821. Use HLE BIOS mode (omit --bios-rom).");
     }
 
     if let Some(ref bios_path) = config.bios_rom {
@@ -938,7 +938,7 @@ fn validate_hdd_for_machine(
                 geometry.sector_size,
             );
         }
-        MachineModel::PC9821As => {
+        MachineModel::PC9821AS | MachineModel::PC9821AP => {
             ensure!(
                 geometry.sector_size == 512,
                 "{label} is not compatible with {model} (IDE): \
