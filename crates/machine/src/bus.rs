@@ -605,11 +605,6 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.memory.set_shadow_control(0);
         self.vram_ems_bank = 0;
         self.protected_memory_max = 0;
-        // Reset display control to hardware-reset defaults. The real BIOS
-        // expects video_mode and mode2 to start at zero and configures them
-        // via port 0x68/0x6A writes during POST.
-        self.display_control.state.video_mode = 0x00;
-        self.display_control.state.mode2 = 0x0000;
     }
 
     /// Loads a V98-format font ROM into the CGROM buffer.
