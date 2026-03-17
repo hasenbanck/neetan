@@ -157,7 +157,7 @@ func compute_pegc_address(x: uint, y: uint, pitch: uint, is_one_screen: bool, di
             continue;
         }
         if (scanline < line_count) {
-            return (page_base + start_address * 2 + scanline * pitch * 2 + x) & (vram_size - 1);
+            return (page_base + (start_address * 2 + scanline * pitch * 2) * 8 + x) & (vram_size - 1);
         }
         scanline -= line_count;
     }
