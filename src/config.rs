@@ -25,7 +25,7 @@ Commands:
 
 Options:
   -c, --config <PATH>         Load configuration from file
-      --machine <TYPE>        Machine type: PC9801VM, PC9801VX, PC9801RA, PC9821As
+      --machine <TYPE>        Machine type: PC9801VM, PC9801VX, PC9801RA, PC9821AS, PC9821AP
       --fdd1 <PATH>           Floppy disk image for drive 1 (repeatable)
       --fdd2 <PATH>           Floppy disk image for drive 2 (repeatable)
       --hdd1 <PATH>           Hard disk image for drive 1 (SASI or IDE)

@@ -118,8 +118,11 @@ pub type Pc9801Vx = Machine<cpu::I286>;
 /// PC-9801RA machine type (80386 SX CPU at 20 MHz).
 pub type Pc9801Ra = Machine<cpu::I386>;
 
-/// PC-9821As machine type (486DX CPU at 33 MHz, IDE, PEGC).
+/// PC-9821AS machine type (486DX CPU at 33 MHz, IDE, PEGC).
 pub type Pc9821As = Machine<cpu::I386<{ cpu::CPU_MODEL_486 }>>;
+
+/// PC-9821AP machine type (486DX2 CPU at 66 MHz, IDE, PEGC).
+pub type Pc9821Ap = Machine<cpu::I386<{ cpu::CPU_MODEL_486 }>>;
 
 impl<T: Tracing> Machine<cpu::V30, T> {
     /// Captures the full machine state.

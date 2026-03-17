@@ -84,7 +84,7 @@ impl IdeTestFrame {
 
 #[test]
 fn ide_rom_mapped_at_d8000_when_hdd_inserted() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
 
     // Before inserting HDD, D8000 should return 0xFF (unmapped).
     assert_eq!(bus.read_byte(0xD8000), 0xFF);
@@ -107,7 +107,7 @@ fn ide_rom_mapped_at_d8000_when_hdd_inserted() {
 
 #[test]
 fn ide_read_single_sector_via_pio() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // Select drive 0, LBA mode, LBA bits 24-27 = 0.
@@ -142,7 +142,7 @@ fn ide_read_single_sector_via_pio() {
 
 #[test]
 fn ide_read_sector_at_nonzero_lba() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // Select drive 0, LBA mode.
@@ -170,7 +170,7 @@ fn ide_read_sector_at_nonzero_lba() {
 
 #[test]
 fn ide_write_single_sector_via_pio() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // Select drive 0, LBA mode, LBA 10 = 0x0A.
@@ -216,7 +216,7 @@ fn ide_write_single_sector_via_pio() {
 
 #[test]
 fn ide_read_nonexistent_drive_returns_error() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
     // No drive inserted.
 
     bus.io_write_byte(0x064C, 0xE0);
@@ -238,7 +238,7 @@ fn ide_read_nonexistent_drive_returns_error() {
 
 #[test]
 fn ide_identify_device() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // Select drive 0.
@@ -263,7 +263,7 @@ fn ide_identify_device() {
 
 #[test]
 fn ide_recalibrate() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     bus.io_write_byte(0x064C, 0xE0);
@@ -278,7 +278,7 @@ fn ide_recalibrate() {
 
 #[test]
 fn ide_presence_detection() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
 
     // No drives: bit 1 set (0x02).
     let presence = bus.io_read_byte(0x0433);
@@ -292,7 +292,7 @@ fn ide_presence_detection() {
 
 #[test]
 fn ide_hle_trap_port_triggers() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     assert!(!bus.ide_hle_pending());
@@ -304,7 +304,7 @@ fn ide_hle_trap_port_triggers() {
 
 #[test]
 fn ide_hle_init_sets_disk_equipment_word() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // AH=0x03 (init), AL=0x80 (drive 0).
@@ -329,7 +329,7 @@ fn ide_hle_init_sets_disk_equipment_word() {
 
 #[test]
 fn ide_hle_read_copies_sector_to_memory() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // Clear destination buffer at ES:BP = 0x2000:0x0000 = 0x20000.
@@ -354,7 +354,7 @@ fn ide_hle_read_copies_sector_to_memory() {
 
 #[test]
 fn ide_hle_write_modifies_drive_image() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // Fill source buffer at 0x20000 with 0xCC.
@@ -387,7 +387,7 @@ fn ide_hle_write_modifies_drive_image() {
 
 #[test]
 fn ide_hle_sense_returns_media_type() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // AH=0x04 (legacy sense), AL=0x80 (drive 0).
@@ -413,7 +413,7 @@ fn ide_hle_sense_returns_media_type() {
 
 #[test]
 fn ide_hle_new_sense_84_returns_geometry_in_registers() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // AH=0x84 (new sense), AL=0x80 (drive 0).
@@ -451,7 +451,7 @@ fn ide_hle_new_sense_84_returns_geometry_in_registers() {
 
 #[test]
 fn ide_hle_read_no_drive_sets_error_and_carry() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
     // No drive inserted.
 
     let frame = IdeTestFrame::new(&mut bus, 0x0680, 0x0200, 0x0000, 0x0000, 0x0000, 0x2000);
@@ -468,7 +468,7 @@ fn ide_hle_read_no_drive_sets_error_and_carry() {
 
 #[test]
 fn ide_hle_yield_flag_triggers_and_clears() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // Initially no yield pending.
@@ -490,7 +490,7 @@ fn ide_hle_yield_flag_triggers_and_clears() {
 
 #[test]
 fn ide_hle_unsupported_function_returns_error() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // AH=0x02 is unsupported. Should return 0x40 (Equipment Check) with CF set.
@@ -507,7 +507,7 @@ fn ide_hle_unsupported_function_returns_error() {
 
 #[test]
 fn ide_hle_check_power_mode() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // AH=0xD0 (check power mode), AL=0x80 (drive 0).
@@ -524,7 +524,7 @@ fn ide_hle_check_power_mode() {
 
 #[test]
 fn ide_hle_motor_on() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // AH=0xE0 (motor on), AL=0x80 (drive 0).
@@ -541,7 +541,7 @@ fn ide_hle_motor_on() {
 
 #[test]
 fn ide_hle_motor_off() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     // AH=0xF0 (motor off), AL=0x80 (drive 0).
@@ -585,7 +585,7 @@ fn setup_ide_page_tables(bus: &mut Pc9801Bus<NoTracing>) {
 
 #[test]
 fn ide_hle_read_with_paging() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     setup_ide_page_tables(&mut bus);
@@ -631,7 +631,7 @@ fn ide_hle_read_with_paging() {
 
 #[test]
 fn ide_hle_write_with_paging() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821As, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
 
     setup_ide_page_tables(&mut bus);
