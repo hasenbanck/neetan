@@ -345,7 +345,10 @@ func compute_text_pixel(x: uint, y: uint, out pixel_on: bool, out color_index: u
 
         if (previous_is_kanji) {
             let previous_row_code = previous_char_low & 0x7F;
-            let previous_is_trail_code = (previous_char_low & 0x80) != 0;
+            // Trail bytes (kanji right-half cells) have bit 7 set in at least one byte.
+            // Some programs set it in char_low, others in char_high. A genuine kanji
+            // left half never has bit 7 in either byte (row 0x01-0x5D, ten 0x21-0x7E).
+            let previous_is_trail_code = ((previous_char_low | previous_char_high) & 0x80) != 0;
             let previous_is_gaiji = (previous_row_code == 0x56) || (previous_row_code == 0x57);
             previous_has_right_half =
                 !previous_is_trail_code &&

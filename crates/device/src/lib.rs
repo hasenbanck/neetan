@@ -5,6 +5,7 @@
 
 pub mod beeper;
 pub mod bios;
+pub mod cdrom;
 pub mod cgrom;
 pub mod disk;
 pub mod disk_hle;

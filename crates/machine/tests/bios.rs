@@ -49,6 +49,7 @@ macro_rules! boot_to_halt_hdd {
 
 use common::{Bus, Cpu};
 use device::{
+    cdrom::CdImage,
     disk::{HddFormat, HddGeometry, HddImage},
     floppy::FloppyImage,
 };
@@ -137,6 +138,60 @@ fn make_halt_boot_ide_hdd() -> HddImage {
     HddImage::from_raw(geometry, HddFormat::Hdi, data)
 }
 
+fn make_empty_boot_hdd() -> HddImage {
+    let geometry = HddGeometry {
+        cylinders: 153,
+        heads: 4,
+        sectors_per_track: 33,
+        sector_size: 256,
+    };
+    let total = geometry.total_bytes() as usize;
+    let data = vec![0u8; total];
+    HddImage::from_raw(geometry, HddFormat::Thd, data)
+}
+
+fn make_empty_boot_ide_hdd() -> HddImage {
+    let geometry = HddGeometry {
+        cylinders: 20,
+        heads: 4,
+        sectors_per_track: 17,
+        sector_size: 512,
+    };
+    let total = geometry.total_bytes() as usize;
+    let data = vec![0u8; total];
+    HddImage::from_raw(geometry, HddFormat::Hdi, data)
+}
+
+fn make_halt_boot_cdimage() -> CdImage {
+    let cue = "FILE \"test.bin\" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n";
+    let mut sector = vec![0u8; 2048];
+    sector[0] = 0xFA; // CLI
+    sector[1] = 0xF4; // HLT
+    sector[0x3FE] = 0x55; // Boot signature
+    sector[0x3FF] = 0xAA;
+    CdImage::from_cue(cue, sector).expect("boot CD image")
+}
+
+fn make_non_bootable_cdimage() -> CdImage {
+    let cue = "FILE \"test.bin\" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n";
+    let mut sector = vec![0u8; 2048];
+    sector[0] = 0xFA; // CLI
+    sector[1] = 0xF4; // HLT
+    CdImage::from_cue(cue, sector).expect("non-bootable CD image")
+}
+
+fn create_machine_pc9821as_cdrom() -> Pc9821As {
+    let mut machine = create_machine_pc9821as();
+    machine.bus.insert_cdrom(make_halt_boot_cdimage());
+    machine
+}
+
+fn create_machine_pc9821as_non_bootable_cdrom() -> Pc9821As {
+    let mut machine = create_machine_pc9821as();
+    machine.bus.insert_cdrom(make_non_bootable_cdimage());
+    machine
+}
+
 #[path = "bios/data.rs"]
 mod data;
 
@@ -151,6 +206,9 @@ mod sasi_boot;
 
 #[path = "bios/ide_boot.rs"]
 mod ide_boot;
+
+#[path = "bios/cdrom_boot.rs"]
+mod cdrom_boot;
 
 #[path = "bios/int18h.rs"]
 mod int18h;
@@ -251,6 +309,18 @@ fn create_machine_ra_hdd() -> Pc9801Ra {
 fn create_machine_pc9821as_hdd() -> Pc9821As {
     let mut machine = create_machine_pc9821as();
     machine.bus.insert_hdd(0, make_halt_boot_ide_hdd(), None);
+    machine
+}
+
+fn create_machine_vm_empty_hdd() -> Pc9801Vm {
+    let mut machine = create_machine_vm();
+    machine.bus.insert_hdd(0, make_empty_boot_hdd(), None);
+    machine
+}
+
+fn create_machine_pc9821as_empty_hdd() -> Pc9821As {
+    let mut machine = create_machine_pc9821as();
+    machine.bus.insert_hdd(0, make_empty_boot_ide_hdd(), None);
     machine
 }
 

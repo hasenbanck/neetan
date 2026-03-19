@@ -191,6 +191,32 @@ fn insert_floppy_impl<T: Tracing>(
     Ok(description)
 }
 
+fn insert_cdrom_impl<T: Tracing>(
+    bus: &mut Pc9801Bus<T>,
+    path: &std::path::Path,
+) -> Result<String, String> {
+    let cue_content = std::fs::read_to_string(path)
+        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+    let bin_filename = device::cdrom::extract_bin_filename(&cue_content)
+        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
+    let bin_path = path
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join(&bin_filename);
+    let bin_data = std::fs::read(&bin_path)
+        .map_err(|error| format!("Failed to read {}: {error}", bin_path.display()))?;
+    let image = device::cdrom::CdImage::from_cue(&cue_content, bin_data)
+        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
+    let track_count = image.track_count();
+    let total_sectors = image.total_sectors();
+    let description = format!(
+        "{} ({} tracks, {} sectors)",
+        bin_filename, track_count, total_sectors
+    );
+    bus.insert_cdrom(image);
+    Ok(description)
+}
+
 impl<T: Tracing> common::Machine for Machine<cpu::V30, T> {
     fn cpu_clock_hz(&self) -> f64 {
         f64::from(self.bus.cpu_clock_hz())
@@ -242,6 +268,14 @@ impl<T: Tracing> common::Machine for Machine<cpu::V30, T> {
 
     fn eject_floppy(&mut self, drive: usize) {
         self.bus.eject_floppy(drive);
+    }
+
+    fn insert_cdrom(&mut self, path: &std::path::Path) -> Result<String, String> {
+        insert_cdrom_impl(&mut self.bus, path)
+    }
+
+    fn eject_cdrom(&mut self) {
+        self.bus.eject_cdrom();
     }
 
     fn flush_floppies(&mut self) {
@@ -310,6 +344,14 @@ impl<T: Tracing> common::Machine for Machine<cpu::I286, T> {
         self.bus.eject_floppy(drive);
     }
 
+    fn insert_cdrom(&mut self, path: &std::path::Path) -> Result<String, String> {
+        insert_cdrom_impl(&mut self.bus, path)
+    }
+
+    fn eject_cdrom(&mut self) {
+        self.bus.eject_cdrom();
+    }
+
     fn flush_floppies(&mut self) {
         self.bus.flush_all_floppies();
     }
@@ -374,6 +416,14 @@ impl<const CPU_MODEL: u8, T: Tracing> common::Machine for Machine<cpu::I386<CPU_
 
     fn eject_floppy(&mut self, drive: usize) {
         self.bus.eject_floppy(drive);
+    }
+
+    fn insert_cdrom(&mut self, path: &std::path::Path) -> Result<String, String> {
+        insert_cdrom_impl(&mut self.bus, path)
+    }
+
+    fn eject_cdrom(&mut self) {
+        self.bus.eject_cdrom();
     }
 
     fn flush_floppies(&mut self) {

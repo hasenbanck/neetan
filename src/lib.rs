@@ -21,13 +21,13 @@ use sdl3::{
 use crate::{
     config::{AspectMode, EmulatorConfig, WindowMode},
     errors::Error,
-    floppy_selector::{FloppyEntry, FloppySelector},
+    image_selector::{ImageEntry, ImageSelector, MediaType},
 };
 
 pub mod config;
 pub mod create;
 mod errors;
-mod floppy_selector;
+mod image_selector;
 mod keymap;
 
 #[cfg(feature = "tracing")]
@@ -276,15 +276,19 @@ struct Application {
     /// Host-to-PC-98 key mapping.
     key_map: keymap::KeyMap,
     /// Floppy disk image entries for drive 1.
-    fdd1_entries: Vec<FloppyEntry>,
+    fdd1_entries: Vec<ImageEntry>,
     /// Current index into fdd1_entries, or `None` if no floppy is loaded.
     fdd1_index: Option<usize>,
     /// Floppy disk image entries for drive 2.
-    fdd2_entries: Vec<FloppyEntry>,
+    fdd2_entries: Vec<ImageEntry>,
     /// Current index into fdd2_entries, or `None` if no floppy is loaded.
     fdd2_index: Option<usize>,
-    /// Active floppy disk selection screen, if open.
-    floppy_selector: Option<FloppySelector>,
+    /// CD-ROM disc image entries.
+    cdrom_entries: Vec<ImageEntry>,
+    /// Current index into cdrom_entries, or `None` if no disc is loaded.
+    cdrom_index: Option<usize>,
+    /// Active image selection screen, if open.
+    image_selector: Option<ImageSelector>,
     /// Whether the window is currently in fullscreen mode.
     fullscreen: bool,
 }
@@ -309,10 +313,12 @@ impl Application {
         let audio_engine = AudioEngine::new(audio_subsystem, config.audio_volume)
             .context("Failed to initialize audio")?;
 
-        let fdd1_entries: Vec<FloppyEntry> =
-            config.fdd1.iter().cloned().map(FloppyEntry::new).collect();
-        let fdd2_entries: Vec<FloppyEntry> =
-            config.fdd2.iter().cloned().map(FloppyEntry::new).collect();
+        let fdd1_entries: Vec<ImageEntry> =
+            config.fdd1.iter().cloned().map(ImageEntry::new).collect();
+        let fdd2_entries: Vec<ImageEntry> =
+            config.fdd2.iter().cloned().map(ImageEntry::new).collect();
+        let cdrom_entries: Vec<ImageEntry> =
+            config.cdrom.iter().cloned().map(ImageEntry::new).collect();
 
         let mut machine = initialize_machine(&config, audio_engine::SAMPLE_RATE as u32)?;
         let key_map = config.key_map;
@@ -333,6 +339,16 @@ impl Application {
                 Ok(desc) => {
                     info!("Inserted FDD2: {desc} from {}", entry.path.display());
                     fdd2_index = Some(0);
+                }
+                Err(e) => return Err(Error::from(StringError(e))),
+            }
+        }
+        let mut cdrom_index = None;
+        if let Some(entry) = cdrom_entries.first() {
+            match machine.insert_cdrom(&entry.path) {
+                Ok(desc) => {
+                    info!("Inserted CD-ROM: {desc} from {}", entry.path.display());
+                    cdrom_index = Some(0);
                 }
                 Err(e) => return Err(Error::from(StringError(e))),
             }
@@ -371,7 +387,9 @@ impl Application {
             fdd1_index,
             fdd2_entries,
             fdd2_index,
-            floppy_selector: None,
+            cdrom_entries,
+            cdrom_index,
+            image_selector: None,
             fullscreen: config.window_mode == WindowMode::Fullscreen,
         })
     }
@@ -437,7 +455,7 @@ impl Application {
                 win_event: WindowEvent::FocusGained,
                 ..
             } => {
-                if self.floppy_selector.is_none() {
+                if self.image_selector.is_none() {
                     self.audio_engine.resume();
                 }
             }
@@ -456,7 +474,7 @@ impl Application {
                 repeat,
                 ..
             } => {
-                if self.floppy_selector.is_some() {
+                if self.image_selector.is_some() {
                     if !repeat {
                         self.handle_selector_key(*scancode, keymod.alt_gui());
                     }
@@ -480,9 +498,11 @@ impl Application {
                             }
                         }
                     } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F9) {
-                        self.open_or_toggle_selector(0);
+                        self.open_or_toggle_selector(MediaType::Floppy(0));
                     } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F10) {
-                        self.open_or_toggle_selector(1);
+                        self.open_or_toggle_selector(MediaType::Floppy(1));
+                    } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F11) {
+                        self.open_or_toggle_selector(MediaType::CdRom);
                     } else if !repeat
                         && let Some(code) = (*scancode).map(|sc| self.key_map.lookup(sc))
                     {
@@ -493,7 +513,7 @@ impl Application {
             Event::KeyUp {
                 scancode, repeat, ..
             } => {
-                if self.floppy_selector.is_none()
+                if self.image_selector.is_none()
                     && !repeat
                     && let Some(code) = (*scancode).map(|sc| self.key_map.lookup(sc))
                 {
@@ -609,33 +629,60 @@ impl Application {
         }
     }
 
-    fn open_or_toggle_selector(&mut self, drive: usize) {
-        if let Some(ref selector) = self.floppy_selector
-            && selector.active_drive() == drive
+    fn eject_cdrom(&mut self) {
+        self.machine.eject_cdrom();
+        self.cdrom_index = None;
+        info!("Ejected CD-ROM");
+    }
+
+    fn select_cdrom(&mut self, index: usize) {
+        if index >= self.cdrom_entries.len() {
+            return;
+        }
+
+        self.machine.eject_cdrom();
+
+        let path = &self.cdrom_entries[index].path;
+        match self.machine.insert_cdrom(path) {
+            Ok(desc) => info!("Selected CD-ROM: {desc} from {}", path.display()),
+            Err(error) => error!("Failed to select CD-ROM: {error}"),
+        }
+
+        self.cdrom_index = Some(index);
+    }
+
+    fn open_or_toggle_selector(&mut self, media_type: MediaType) {
+        if let Some(ref selector) = self.image_selector
+            && *selector.media_type() == media_type
         {
             self.close_selector();
             return;
         }
 
-        let (entries, current_index) = match drive {
-            0 => (&self.fdd1_entries, self.fdd1_index),
-            _ => (&self.fdd2_entries, self.fdd2_index),
+        let (entries, current_index) = match &media_type {
+            MediaType::Floppy(0) => (&self.fdd1_entries, self.fdd1_index),
+            MediaType::Floppy(_) => (&self.fdd2_entries, self.fdd2_index),
+            MediaType::CdRom => (&self.cdrom_entries, self.cdrom_index),
         };
 
         // Display position: None (empty) → 0, Some(n) → n + 1.
         let display_cursor = current_index.map_or(0, |n| n + 1);
         let display_count = entries.len() + 1;
 
-        if let Some(ref mut selector) = self.floppy_selector {
-            selector.switch_drive(drive, display_cursor, display_count);
+        if let Some(ref mut selector) = self.image_selector {
+            selector.switch_media(media_type, display_cursor, display_count);
         } else {
             self.audio_engine.pause();
-            self.floppy_selector = Some(FloppySelector::new(drive, display_cursor, display_count));
+            self.image_selector = Some(ImageSelector::new(
+                media_type,
+                display_cursor,
+                display_count,
+            ));
         }
     }
 
     fn close_selector(&mut self) {
-        self.floppy_selector = None;
+        self.image_selector = None;
         self.audio_engine.resume();
     }
 
@@ -644,27 +691,39 @@ impl Application {
 
         match code {
             Scancode::Up => {
-                if let Some(ref mut selector) = self.floppy_selector {
+                if let Some(ref mut selector) = self.image_selector {
                     selector.move_up();
                 }
             }
             Scancode::Down => {
-                if let Some(ref mut selector) = self.floppy_selector {
-                    let count = match selector.active_drive() {
-                        0 => self.fdd1_entries.len() + 1,
-                        _ => self.fdd2_entries.len() + 1,
+                if let Some(ref mut selector) = self.image_selector {
+                    let count = match selector.media_type() {
+                        MediaType::Floppy(0) => self.fdd1_entries.len() + 1,
+                        MediaType::Floppy(_) => self.fdd2_entries.len() + 1,
+                        MediaType::CdRom => self.cdrom_entries.len() + 1,
                     };
                     selector.move_down(count);
                 }
             }
             Scancode::Return | Scancode::KpEnter => {
-                if let Some(ref selector) = self.floppy_selector {
-                    let drive = selector.active_drive();
+                if let Some(ref selector) = self.image_selector {
+                    let media_type = selector.media_type().clone();
                     let cursor = selector.cursor();
-                    if cursor == 0 {
-                        self.eject_floppy(drive);
-                    } else {
-                        self.select_floppy(drive, cursor - 1);
+                    match &media_type {
+                        MediaType::Floppy(drive) => {
+                            if cursor == 0 {
+                                self.eject_floppy(*drive);
+                            } else {
+                                self.select_floppy(*drive, cursor - 1);
+                            }
+                        }
+                        MediaType::CdRom => {
+                            if cursor == 0 {
+                                self.eject_cdrom();
+                            } else {
+                                self.select_cdrom(cursor - 1);
+                            }
+                        }
                     }
                 }
                 self.close_selector();
@@ -673,17 +732,20 @@ impl Application {
                 self.close_selector();
             }
             Scancode::F9 if alt_gui_held => {
-                self.open_or_toggle_selector(0);
+                self.open_or_toggle_selector(MediaType::Floppy(0));
             }
             Scancode::F10 if alt_gui_held => {
-                self.open_or_toggle_selector(1);
+                self.open_or_toggle_selector(MediaType::Floppy(1));
+            }
+            Scancode::F11 if alt_gui_held => {
+                self.open_or_toggle_selector(MediaType::CdRom);
             }
             _ => {}
         }
     }
 
     fn run_emulation(&mut self) {
-        if self.floppy_selector.is_some() {
+        if self.image_selector.is_some() {
             return;
         }
 
@@ -734,14 +796,11 @@ impl Application {
                 .update_font_rom(self.machine.font_rom_data());
         }
 
-        let display_snapshot = if let Some(ref mut selector) = self.floppy_selector {
-            let entries = match selector.active_drive() {
-                0 => &self.fdd1_entries,
-                _ => &self.fdd2_entries,
-            };
-            let loaded_index = match selector.active_drive() {
-                0 => self.fdd1_index,
-                _ => self.fdd2_index,
+        let display_snapshot = if let Some(ref mut selector) = self.image_selector {
+            let (entries, loaded_index) = match selector.media_type() {
+                MediaType::Floppy(0) => (&self.fdd1_entries, self.fdd1_index),
+                MediaType::Floppy(_) => (&self.fdd2_entries, self.fdd2_index),
+                MediaType::CdRom => (&self.cdrom_entries, self.cdrom_index),
             };
             selector.ensure_snapshot(entries, loaded_index);
             selector.snapshot()

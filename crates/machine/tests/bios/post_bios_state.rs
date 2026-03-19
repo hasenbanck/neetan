@@ -1054,3 +1054,272 @@ fn post_bios_state_ra() {
 
     report_failures(&f, "RA");
 }
+
+#[test]
+fn post_bios_state_pc9821as_ide() {
+    let mut machine = super::create_machine_pc9821as_hdd();
+    let _cycles = boot_to_halt_hdd!(machine);
+    let state = machine.save_state();
+    let mut f: Vec<String> = Vec::new();
+
+    // === Clocks ===
+    check!(f, state.clocks.cpu_clock_hz, 33_000_000, "CPU clock");
+    check!(f, state.clocks.pit_clock_hz, 1_996_800, "PIT clock");
+
+    // === PIC ===
+    check!(
+        f,
+        state.pic.chips[0].icw,
+        [0x11, 0x08, 0x80, 0x1D],
+        "Master PIC ICW"
+    );
+    check!(f, state.pic.chips[0].imr, 0x3D, "Master PIC IMR");
+    check!(f, state.pic.chips[0].isr, 0x00, "Master PIC ISR");
+    check!(f, state.pic.chips[0].ocw3, 0x0B, "Master PIC OCW3");
+    check!(
+        f,
+        state.pic.chips[1].icw,
+        [0x11, 0x10, 0x07, 0x09],
+        "Slave PIC ICW"
+    );
+    // IDE expansion ROM init unmasks IRQ 9 (slave IR1): 0xF7 & !0x02 = 0xF5.
+    check!(f, state.pic.chips[1].imr, 0xF5, "Slave PIC IMR");
+    check!(f, state.pic.chips[1].isr, 0x00, "Slave PIC ISR");
+
+    // === PIT ===
+    check!(f, state.pit.channels[0].ctrl, 0x30, "PIT ch0 ctrl");
+    check!(f, state.pit.channels[0].value, 0x0000, "PIT ch0 value");
+    check!(f, state.pit.channels[1].ctrl, 0x36, "PIT ch1 ctrl");
+    check!(f, state.pit.channels[1].value, 0x03E6, "PIT ch1 value");
+    check!(f, state.pit.channels[2].ctrl, 0x76, "PIT ch2 ctrl");
+    check!(f, state.pit.channels[2].value, 0x0000, "PIT ch2 value");
+
+    // === GDC Master ===
+    check_true!(
+        f,
+        state.gdc_master.display_enabled,
+        "Master GDC display enabled"
+    );
+    check!(f, state.gdc_master.pitch, 80, "Master GDC pitch");
+    check!(f, state.gdc_master.al, 400, "Master GDC AL");
+    check!(
+        f,
+        state.gdc_master.lines_per_row,
+        16,
+        "Master GDC lines per row"
+    );
+    check!(
+        f,
+        state.gdc_master.scroll[0].start_address,
+        0,
+        "Master GDC scroll[0] start"
+    );
+    check!(
+        f,
+        state.gdc_master.scroll[0].line_count,
+        0x1FF,
+        "Master GDC scroll[0] lines"
+    );
+    check_true!(
+        f,
+        state.gdc_master.draw_on_retrace,
+        "Master GDC draw on retrace"
+    );
+    check!(f, state.gdc_master.aw, 80, "Master GDC AW");
+    check!(f, state.gdc_master.hs, 8, "Master GDC HS");
+    check!(f, state.gdc_master.vs, 8, "Master GDC VS");
+    check!(f, state.gdc_master.hfp, 10, "Master GDC HFP");
+    check!(f, state.gdc_master.hbp, 8, "Master GDC HBP");
+    check!(f, state.gdc_master.vfp, 7, "Master GDC VFP");
+    check!(f, state.gdc_master.vbp, 25, "Master GDC VBP");
+    check!(f, state.gdc_master.cursor_top, 0, "Master GDC cursor top");
+    check!(
+        f,
+        state.gdc_master.cursor_bottom,
+        15,
+        "Master GDC cursor bottom"
+    );
+    check!(
+        f,
+        state.gdc_master.cursor_blink_rate,
+        12,
+        "Master GDC blink rate"
+    );
+    check!(f, state.gdc_master.fifo.count, 0, "Master GDC FIFO empty");
+
+    // === GDC Slave ===
+    check_false!(
+        f,
+        state.gdc_slave.display_enabled,
+        "Slave GDC display disabled"
+    );
+    check!(f, state.gdc_slave.pitch, 40, "Slave GDC pitch");
+    check!(f, state.gdc_slave.mask, 1, "Slave GDC mask");
+    check!(f, state.gdc_slave.al, 400, "Slave GDC AL");
+    check!(
+        f,
+        state.gdc_slave.lines_per_row,
+        2,
+        "Slave GDC lines per row"
+    );
+    check_true!(
+        f,
+        state.gdc_slave.draw_on_retrace,
+        "Slave GDC draw on retrace"
+    );
+    check!(f, state.gdc_slave.aw, 40, "Slave GDC AW");
+    check!(f, state.gdc_slave.hs, 4, "Slave GDC HS");
+    check!(f, state.gdc_slave.vs, 8, "Slave GDC VS");
+    check!(f, state.gdc_slave.hfp, 5, "Slave GDC HFP");
+    check!(f, state.gdc_slave.hbp, 4, "Slave GDC HBP");
+    check!(f, state.gdc_slave.vfp, 7, "Slave GDC VFP");
+    check!(f, state.gdc_slave.vbp, 25, "Slave GDC VBP");
+    check!(f, state.gdc_slave.fifo.count, 0, "Slave GDC FIFO empty");
+
+    // === NMI / A20 / misc ===
+    check_true!(f, state.nmi_enabled, "NMI enabled");
+    check_false!(f, state.a20_enabled, "A20 disabled");
+    check!(f, state.fdc_media, 3, "FDC media");
+    check!(f, state.vram_ems_bank, 0x20, "VRAM EMS bank");
+    check!(f, state.ram_window, 8, "RAM window");
+    check_true!(f, state.b_bank_ems, "B-bank EMS");
+    check!(f, state.protected_memory_max, 0xE0, "Protected memory max");
+    check!(f, state.tram_wait, 1, "TRAM wait");
+    check!(f, state.vram_wait, 6, "VRAM wait");
+    check!(f, state.grcg_wait, 8, "GRCG wait");
+
+    // === Keyboard ===
+    check!(f, state.keyboard.mode, 0x5E, "KB mode");
+    check!(f, state.keyboard.command, 0x16, "KB command");
+    check!(f, state.keyboard.data, 0xFF, "KB data");
+    check_false!(f, state.keyboard.rx_ready, "KB rx not ready");
+    check_false!(f, state.keyboard.expect_mode, "KB not expecting mode");
+
+    // === Serial ===
+    check!(f, state.serial.mode, 0x02, "Serial mode");
+    check!(f, state.serial.command, 0x40, "Serial command");
+    check_true!(f, state.serial.expect_mode, "Serial expecting mode");
+
+    // === System PPI ===
+    check!(f, state.system_ppi.port_b, 0xA8, "System PPI port B");
+    check!(f, state.system_ppi.port_c, 0xB8, "System PPI port C");
+
+    // === FDC 1MB ===
+    check!(f, state.fdc_1mb.status, 0x80, "FDC 1MB MSR");
+    check!(f, state.fdc_1mb.srt, 12, "FDC 1MB SRT");
+    check!(f, state.fdc_1mb.hut, 15, "FDC 1MB HUT");
+    check!(f, state.fdc_1mb.hlt, 18, "FDC 1MB HLT");
+
+    // === FDC 640K ===
+    check!(f, state.fdc_640k.status, 0x80, "FDC 640K MSR");
+    check!(f, state.fdc_640k.control, 0x48, "FDC 640K control");
+
+    // === GRCG ===
+    check!(f, state.grcg.mode, 0x00, "GRCG mode");
+    check!(f, state.grcg.tile, [51, 85, 0, 0], "GRCG tile");
+    check!(f, state.grcg.chip, 3, "GRCG chip (EGC)");
+
+    // === Display control ===
+    check!(f, state.display_control.video_mode, 0x99, "Video mode");
+    check!(
+        f,
+        state.display_control.display_line_count,
+        1,
+        "Display line count"
+    );
+
+    // === Palette ===
+    check!(f, state.palette.index, 15, "Palette index");
+    check!(f, state.palette.analog[0], [0, 0, 0], "Analog palette 0");
+    check!(f, state.palette.analog[1], [0, 0, 7], "Analog palette 1");
+    check!(f, state.palette.analog[8], [4, 4, 4], "Analog palette 8");
+
+    // === Scheduler: PIT Timer0 must be scheduled ===
+    check_true!(
+        f,
+        state.scheduler.fire_cycles[common::EventKind::PitTimer0 as usize].is_some(),
+        "PIT Timer0 event scheduled"
+    );
+
+    // === Beeper ===
+    check_false!(f, state.beeper.buzzer_enabled, "Beeper disabled");
+    check!(f, state.beeper.pit_reload, 998, "Beeper PIT reload");
+
+    // === Mouse PPI ===
+    check!(f, state.mouse_ppi.mode, 0x93, "Mouse PPI mode");
+    check!(f, state.mouse_ppi.port_c, 0x00, "Mouse PPI port C");
+
+    // === IDE ===
+    // IVT[0x11] should point to the IDE ROM's IRQ 9 handler at D800:008D.
+    check!(
+        f,
+        read_ram_u16(&state.memory.ram, 0x0044),
+        0x008D,
+        "IVT[0x11] offset (IDE IRQ handler)"
+    );
+    check!(
+        f,
+        read_ram_u16(&state.memory.ram, 0x0046),
+        0xD800,
+        "IVT[0x11] segment (IDE ROM)"
+    );
+    // IDE ROM presence markers.
+    check!(
+        f,
+        state.memory.ram[0x04B0],
+        0xD8,
+        "IDE ROM presence marker 0x04B0"
+    );
+    check!(
+        f,
+        state.memory.ram[0x04B8],
+        0xD8,
+        "IDE ROM presence marker 0x04B8"
+    );
+
+    // === Memory: BDA fields ===
+    check!(f, state.memory.ram[0x0400], 0x00, "BDA byte 0x0400");
+    check!(f, state.memory.ram[0x0401], 0x70, "BDA EXPMMSZ");
+    check!(f, state.memory.ram[0x0493], 0xFF, "BDA F2HD_MODE");
+    check!(f, state.memory.ram[0x054C], 0x4E, "BDA PRXCRT");
+    check!(f, state.memory.ram[0x054D], 0x50, "BDA PRXDUPD");
+    check!(f, state.memory.ram[0x0584], 0x80, "BDA BOOT_DEVICE");
+    check!(
+        f,
+        read_ram_u16(&state.memory.ram, 0x0522),
+        0x0B28,
+        "KB shift table pointer"
+    );
+    check!(f, state.memory.ram[0x05CA], 0xFF, "BDA F2DD_MODE");
+
+    // === Memory: Boot sector ===
+    check!(
+        f,
+        state.memory.ram[0x1FC00],
+        0xFA,
+        "Boot sector byte 0 (CLI)"
+    );
+    check!(
+        f,
+        state.memory.ram[0x1FC01],
+        0xF4,
+        "Boot sector byte 1 (HLT)"
+    );
+
+    // === Text VRAM attributes ===
+    for i in (0x2000..0x3FC0).step_by(2) {
+        let attr = state.memory.text_vram[i];
+        if attr != 0xE1 && attr != 0xE5 {
+            f.push(format!(
+                "Text VRAM attr at {i:#06X}: expected 0xE1 or 0xE5, got {attr:#04X}"
+            ));
+            break;
+        }
+    }
+
+    // === Memory state ===
+    check_false!(f, state.memory.e_plane_enabled, "E-plane disabled");
+    check!(f, state.memory.shadow_control, 0x46, "Shadow control");
+
+    report_failures(&f, "PC9821AS+IDE");
+}
