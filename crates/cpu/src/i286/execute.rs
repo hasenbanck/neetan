@@ -54,7 +54,7 @@ impl I286 {
             0x23 => self.and_r16w(bus),
             0x24 => self.and_ald8(bus),
             0x25 => self.and_axd16(bus),
-            0x26 => self.segment_prefix(SegReg16::ES, bus),
+            0x26 => self.invalid(bus),
             0x27 => self.daa(bus),
 
             // SUB
@@ -64,7 +64,7 @@ impl I286 {
             0x2B => self.sub_r16w(bus),
             0x2C => self.sub_ald8(bus),
             0x2D => self.sub_axd16(bus),
-            0x2E => self.segment_prefix(SegReg16::CS, bus),
+            0x2E => self.invalid(bus),
             0x2F => self.das(bus),
 
             // XOR
@@ -74,7 +74,7 @@ impl I286 {
             0x33 => self.xor_r16w(bus),
             0x34 => self.xor_ald8(bus),
             0x35 => self.xor_axd16(bus),
-            0x36 => self.segment_prefix(SegReg16::SS, bus),
+            0x36 => self.invalid(bus),
             0x37 => self.aaa(bus),
 
             // CMP
@@ -84,7 +84,7 @@ impl I286 {
             0x3B => self.cmp_r16w(bus),
             0x3C => self.cmp_ald8(bus),
             0x3D => self.cmp_axd16(bus),
-            0x3E => self.segment_prefix(SegReg16::DS, bus),
+            0x3E => self.invalid(bus),
             0x3F => self.aas(bus),
 
             // INC word registers
@@ -331,8 +331,7 @@ impl I286 {
             0xEE => self.out_dw_al(bus),
             0xEF => self.out_dw_aw(bus),
 
-            // LOCK prefix
-            0xF0 => self.lock_prefix(bus),
+            0xF0 => self.invalid(bus),
             0xF1 => self.invalid(bus),
 
             // REPNE, REPE
@@ -361,14 +360,6 @@ impl I286 {
             0xFE => self.group_fe(bus),
             0xFF => self.group_ff(bus),
         }
-    }
-
-    fn segment_prefix(&mut self, seg: SegReg16, bus: &mut impl common::Bus) {
-        self.seg_prefix = true;
-        self.prefix_seg = seg;
-        self.clk(2);
-        let opcode = self.fetch(bus);
-        self.dispatch(opcode, bus);
     }
 
     fn add_br8(&mut self, bus: &mut impl common::Bus) {
@@ -1912,12 +1903,6 @@ impl I286 {
     fn hlt(&mut self) {
         self.halted = true;
         self.clk(2);
-    }
-
-    fn lock_prefix(&mut self, bus: &mut impl common::Bus) {
-        self.clk(2);
-        let opcode = self.fetch(bus);
-        self.dispatch(opcode, bus);
     }
 
     fn invalid(&mut self, bus: &mut impl common::Bus) {
