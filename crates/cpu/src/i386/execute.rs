@@ -57,7 +57,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             0x23 => self.and_r16w(bus),
             0x24 => self.and_ald8(bus),
             0x25 => self.and_axd16(bus),
-            0x26 => self.segment_prefix(SegReg32::ES, bus),
+            0x26 => self.invalid(bus),
             0x27 => self.daa(bus),
 
             // SUB
@@ -67,7 +67,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             0x2B => self.sub_r16w(bus),
             0x2C => self.sub_ald8(bus),
             0x2D => self.sub_axd16(bus),
-            0x2E => self.segment_prefix(SegReg32::CS, bus),
+            0x2E => self.invalid(bus),
             0x2F => self.das(bus),
 
             // XOR
@@ -77,7 +77,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             0x33 => self.xor_r16w(bus),
             0x34 => self.xor_ald8(bus),
             0x35 => self.xor_axd16(bus),
-            0x36 => self.segment_prefix(SegReg32::SS, bus),
+            0x36 => self.invalid(bus),
             0x37 => self.aaa(bus),
 
             // CMP
@@ -87,7 +87,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             0x3B => self.cmp_r16w(bus),
             0x3C => self.cmp_ald8(bus),
             0x3D => self.cmp_axd16(bus),
-            0x3E => self.segment_prefix(SegReg32::DS, bus),
+            0x3E => self.invalid(bus),
             0x3F => self.aas(bus),
 
             // INC word registers
@@ -135,10 +135,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             0x61 => self.popa(bus),
             0x62 => self.bound(bus),
             0x63 => self.arpl(bus),
-            0x64 => self.segment_prefix(SegReg32::FS, bus),
-            0x65 => self.segment_prefix(SegReg32::GS, bus),
-            0x66 => self.operand_size_prefix(bus),
-            0x67 => self.address_size_prefix(bus),
+            0x64 => self.invalid(bus),
+            0x65 => self.invalid(bus),
+            0x66 => self.invalid(bus),
+            0x67 => self.invalid(bus),
             0x68 => self.push_imm16(bus),
             0x69 => self.imul_r16w_imm16(bus),
             0x6A => self.push_imm8(bus),
@@ -334,8 +334,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             0xEE => self.out_dw_al(bus),
             0xEF => self.out_dw_aw(bus),
 
-            // LOCK prefix
-            0xF0 => self.lock_prefix(bus),
+            0xF0 => self.invalid(bus),
             0xF1 => self.invalid(bus),
 
             // REPNE, REPE
@@ -364,30 +363,6 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             0xFE => self.group_fe(bus),
             0xFF => self.group_ff(bus),
         }
-    }
-
-    fn segment_prefix(&mut self, seg: SegReg32, bus: &mut impl common::Bus) {
-        self.seg_prefix = true;
-        self.prefix_seg = seg;
-        self.clk(Self::timing(0, 1));
-        let opcode = self.fetch(bus);
-        self.dispatch(opcode, bus);
-    }
-
-    fn operand_size_prefix(&mut self, bus: &mut impl common::Bus) {
-        // Redundant prefixes are idempotent: always set to the opposite of
-        // the code segment default (D-bit), not toggle.
-        self.operand_size_override = !self.code_segment_32bit();
-        self.clk(Self::timing(0, 1));
-        let opcode = self.fetch(bus);
-        self.dispatch(opcode, bus);
-    }
-
-    fn address_size_prefix(&mut self, bus: &mut impl common::Bus) {
-        self.address_size_override = !self.code_segment_32bit();
-        self.clk(Self::timing(0, 1));
-        let opcode = self.fetch(bus);
-        self.dispatch(opcode, bus);
     }
 
     fn add_br8(&mut self, bus: &mut impl common::Bus) {
@@ -3324,12 +3299,6 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
         self.halted = true;
         self.clk(Self::timing(5, 4));
-    }
-
-    fn lock_prefix(&mut self, bus: &mut impl common::Bus) {
-        self.clk(Self::timing(0, 1));
-        let opcode = self.fetch(bus);
-        self.dispatch(opcode, bus);
     }
 
     fn invalid(&mut self, bus: &mut impl common::Bus) {
