@@ -435,7 +435,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     fn is_contributory_exception(vector: u8) -> bool {
-        matches!(vector, 0 | 10 | 11 | 12 | 13)
+        matches!(vector, 0 | 10 | 11 | 12 | 13 | 14)
     }
 
     fn check_double_fault(&mut self, vector: u8) -> DoubleFaultResult {

@@ -1965,9 +1965,64 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         if self.rep_active {
             self.continue_rep(bus);
         } else {
-            let opcode = self.fetch(bus);
-            if !self.fault_pending {
-                self.dispatch(opcode, bus);
+            let mut opcode = self.fetch(bus);
+            while !self.fault_pending {
+                match opcode {
+                    0x26 => {
+                        self.seg_prefix = true;
+                        self.prefix_seg = SegReg32::ES;
+                        self.clk(Self::timing(0, 1));
+                        opcode = self.fetch(bus);
+                    }
+                    0x2E => {
+                        self.seg_prefix = true;
+                        self.prefix_seg = SegReg32::CS;
+                        self.clk(Self::timing(0, 1));
+                        opcode = self.fetch(bus);
+                    }
+                    0x36 => {
+                        self.seg_prefix = true;
+                        self.prefix_seg = SegReg32::SS;
+                        self.clk(Self::timing(0, 1));
+                        opcode = self.fetch(bus);
+                    }
+                    0x3E => {
+                        self.seg_prefix = true;
+                        self.prefix_seg = SegReg32::DS;
+                        self.clk(Self::timing(0, 1));
+                        opcode = self.fetch(bus);
+                    }
+                    0x64 => {
+                        self.seg_prefix = true;
+                        self.prefix_seg = SegReg32::FS;
+                        self.clk(Self::timing(0, 1));
+                        opcode = self.fetch(bus);
+                    }
+                    0x65 => {
+                        self.seg_prefix = true;
+                        self.prefix_seg = SegReg32::GS;
+                        self.clk(Self::timing(0, 1));
+                        opcode = self.fetch(bus);
+                    }
+                    0x66 => {
+                        self.operand_size_override = !self.code_segment_32bit();
+                        self.clk(Self::timing(0, 1));
+                        opcode = self.fetch(bus);
+                    }
+                    0x67 => {
+                        self.address_size_override = !self.code_segment_32bit();
+                        self.clk(Self::timing(0, 1));
+                        opcode = self.fetch(bus);
+                    }
+                    0xF0 => {
+                        self.clk(Self::timing(0, 1));
+                        opcode = self.fetch(bus);
+                    }
+                    _ => {
+                        self.dispatch(opcode, bus);
+                        break;
+                    }
+                }
             }
         }
     }
