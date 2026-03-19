@@ -1172,8 +1172,43 @@ impl I286 {
         if self.rep_active {
             self.continue_rep(bus);
         } else {
-            let opcode = self.fetch(bus);
-            self.dispatch(opcode, bus);
+            let mut opcode = self.fetch(bus);
+            loop {
+                match opcode {
+                    0x26 => {
+                        self.seg_prefix = true;
+                        self.prefix_seg = SegReg16::ES;
+                        self.clk(2);
+                        opcode = self.fetch(bus);
+                    }
+                    0x2E => {
+                        self.seg_prefix = true;
+                        self.prefix_seg = SegReg16::CS;
+                        self.clk(2);
+                        opcode = self.fetch(bus);
+                    }
+                    0x36 => {
+                        self.seg_prefix = true;
+                        self.prefix_seg = SegReg16::SS;
+                        self.clk(2);
+                        opcode = self.fetch(bus);
+                    }
+                    0x3E => {
+                        self.seg_prefix = true;
+                        self.prefix_seg = SegReg16::DS;
+                        self.clk(2);
+                        opcode = self.fetch(bus);
+                    }
+                    0xF0 => {
+                        self.clk(2);
+                        opcode = self.fetch(bus);
+                    }
+                    _ => {
+                        self.dispatch(opcode, bus);
+                        break;
+                    }
+                }
+            }
         }
     }
 
