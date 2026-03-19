@@ -783,6 +783,14 @@ pub trait Machine {
     /// Ejects the floppy disk from the specified drive, flushing any dirty data first.
     fn eject_floppy(&mut self, drive: usize);
 
+    /// Inserts a CD-ROM disc image (CUE/BIN) into the IDE CD-ROM drive.
+    /// Reads the CUE file, resolves the referenced BIN file, and inserts.
+    /// Returns a description string on success.
+    fn insert_cdrom(&mut self, path: &std::path::Path) -> Result<String, String>;
+
+    /// Ejects the CD-ROM disc from the IDE CD-ROM drive.
+    fn eject_cdrom(&mut self);
+
     /// Flushes any dirty floppy disk images to their backing files.
     fn flush_floppies(&mut self);
 

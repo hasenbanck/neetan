@@ -52,6 +52,7 @@ neetan <COMMAND>
 | `--fdd2 <PATH>`          | Floppy disk image for drive 2 (repeatable)                               | —          |
 | `--hdd1 <PATH>`          | Hard disk image for SASI drive 1                                         | —          |
 | `--hdd2 <PATH>`          | Hard disk image for SASI drive 2                                         | —          |
+| `--cdrom <PATH>`         | CD-ROM disc image CUE file (repeatable, PC-9821 only)                    | —          |
 | `--audio-volume <FLOAT>` | Audio volume 0.0–1.0                                                     | `1.0`      |
 | `--aspect-mode <MODE>`   | Display aspect mode: `4:3` or `1:1`                                      | `4:3`      |
 | `--window-mode <MODE>`   | Window mode: `windowed` or `fullscreen`                                  | `windowed` |
@@ -98,6 +99,7 @@ fdd1 = /path/to/disk_a.d88
 fdd1 = /path/to/disk_b.d88
 fdd2 = /path/to/save_game.d88
 hdd1 = /path/to/harddrive.hdi
+cdrom = /path/to/game.cue
 ```
 
 Command-line arguments override values from the configuration file.
@@ -111,6 +113,7 @@ Command-line arguments override values from the configuration file.
 | GUI + Alt + Escape | Quit the emulator                |
 | GUI + Alt + F9     | Open floppy selector for drive 1 |
 | GUI + Alt + F10    | Open floppy selector for drive 2 |
+| GUI + Alt + F11    | Open CD-ROM selector             |
 
 (GUI is the Windows / Command key)
 
@@ -124,18 +127,26 @@ Command-line arguments override values from the configuration file.
 
 Only D88 images preserve modifications written by the emulated software. HDM and NFD images are currently read-only.
 
-## Multiple floppy disk images
+### Supported CD-ROM disc image formats
+
+| Format  | Extensions | Description                                      |
+|---------|------------|--------------------------------------------------|
+| CUE/BIN | `.cue`    | CUE sheet referencing a raw BIN image (PC-9821)  |
+
+## Multiple disk images
 
 Many PC-98 games ship on multiple floppy disks and ask you to swap disks during gameplay.
+Some CD-ROM games also come as multiple disc images.
 neetan handles this by letting you assign several disk images to each drive up front, then swap
 between them at runtime.
 
 ### Providing multiple disks
 
-Use the `--fdd1` / `--fdd2` flags more than once to register all disks for a drive:
+Use the `--fdd1` / `--fdd2` / `--cdrom` flags more than once to register all images for a drive:
 
 ```bash
 neetan --fdd1 floppy_disk1.d88 --fdd1 floppy_disk2.d88 --fdd1 floppy_disk3.d88
+neetan --cdrom disc1.cue --cdrom disc2.cue
 ```
 
 Or equivalently in a configuration file:
@@ -144,23 +155,20 @@ Or equivalently in a configuration file:
 fdd1 = floppy_disk1.d88
 fdd1 = floppy_disk2.d88
 fdd1 = floppy_disk3.d88
+cdrom = disc1.cue
+cdrom = disc2.cue
 ```
 
 The first image in each list is automatically inserted at startup.
 
 ### Swapping disks at runtime
 
-Press **GUI + Alt + F9** (drive 1) or **GUI + Alt + F10** (drive 2) to open the floppy selector.
+Press **GUI + Alt + F9** (drive 1), **GUI + Alt + F10** (drive 2), or **GUI + Alt + F11** (CD-ROM) to open the image selector.
 
 ## Planned features
 
 * Simple runtime savestates.
 * 256 KB ADPCM RAM option for PC-9801-86
-* PC-9821 support
-  * 486 DX CPU
-  * 256 color graphics
-  * IDE HDD
-  * ATAPI CDROM
 * Support for more sound cards
 
 ## FAQ

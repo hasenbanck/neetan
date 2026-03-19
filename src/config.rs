@@ -30,6 +30,7 @@ Options:
       --fdd2 <PATH>           Floppy disk image for drive 2 (repeatable)
       --hdd1 <PATH>           Hard disk image for drive 1 (SASI or IDE)
       --hdd2 <PATH>           Hard disk image for drive 2 (SASI or IDE)
+      --cdrom <PATH>          CD-ROM disc image CUE file (repeatable, PC-9821 only)
       --audio-volume <FLOAT>  Audio volume 0.0-1.0
       --aspect-mode <MODE>    Display aspect mode: 4:3 or 1:1
       --window-mode <MODE>    Window mode: windowed or fullscreen
@@ -283,6 +284,7 @@ pub fn parse_args() -> crate::Result<Action> {
             "--fdd2" => config.fdd2.push(PathBuf::from(value(&flag)?)),
             "--hdd1" => config.hdd1 = Some(PathBuf::from(value(&flag)?)),
             "--hdd2" => config.hdd2 = Some(PathBuf::from(value(&flag)?)),
+            "--cdrom" => config.cdrom.push(PathBuf::from(value(&flag)?)),
             "--audio-volume" => {
                 let val = value(&flag)?;
                 config.audio_volume = val
@@ -324,6 +326,11 @@ fn validate_paths(config: &EmulatorConfig) -> crate::Result<()> {
             bail!("fdd2 image not found: {}", path.display());
         }
     }
+    for path in &config.cdrom {
+        if !path.exists() {
+            bail!("cdrom image not found: {}", path.display());
+        }
+    }
     if let Some(ref path) = config.hdd1
         && !path.exists()
     {
@@ -343,6 +350,7 @@ pub struct EmulatorConfig {
     pub fdd2: Vec<PathBuf>,
     pub hdd1: Option<PathBuf>,
     pub hdd2: Option<PathBuf>,
+    pub cdrom: Vec<PathBuf>,
     pub aspect_mode: AspectMode,
     pub window_mode: WindowMode,
     pub audio_volume: f32,
@@ -361,6 +369,7 @@ impl Default for EmulatorConfig {
             fdd2: Vec::new(),
             hdd1: None,
             hdd2: None,
+            cdrom: Vec::new(),
             aspect_mode: AspectMode::Aspect4By3,
             window_mode: WindowMode::Windowed,
             audio_volume: 1.0,
@@ -398,6 +407,7 @@ pub fn parse_config_file(path: &Path) -> crate::Result<EmulatorConfig> {
             "fdd2" => config.fdd2.push(PathBuf::from(val)),
             "hdd1" => config.hdd1 = Some(PathBuf::from(val)),
             "hdd2" => config.hdd2 = Some(PathBuf::from(val)),
+            "cdrom" => config.cdrom.push(PathBuf::from(val)),
             "aspect-mode" => match val.parse::<AspectMode>() {
                 Ok(mode) => config.aspect_mode = mode,
                 Err(_) => warn!("Unknown aspect mode in config: {val}"),

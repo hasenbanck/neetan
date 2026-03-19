@@ -20,12 +20,18 @@ const BOX_BOTTOM_LEFT: JisChar = JisChar::from_u16(0x2826);
 const BOX_T_LEFT: JisChar = JisChar::from_u16(0x2827);
 const BOX_T_RIGHT: JisChar = JisChar::from_u16(0x2829);
 
-pub struct FloppyEntry {
+#[derive(Clone, PartialEq, Eq)]
+pub enum MediaType {
+    Floppy(usize),
+    CdRom,
+}
+
+pub struct ImageEntry {
     pub path: PathBuf,
     pub jis_filename: Vec<JisChar>,
 }
 
-impl FloppyEntry {
+impl ImageEntry {
     pub fn new(path: PathBuf) -> Self {
         let filename = path
             .file_name()
@@ -36,8 +42,8 @@ impl FloppyEntry {
     }
 }
 
-pub struct FloppySelector {
-    active_drive: usize,
+pub struct ImageSelector {
+    media_type: MediaType,
     cursor: usize,
     scroll_offset: usize,
     snapshot: Box<DisplaySnapshotUpload>,
@@ -45,17 +51,17 @@ pub struct FloppySelector {
     dirty: bool,
 }
 
-impl FloppySelector {
-    pub fn new(active_drive: usize, initial_cursor: usize, entry_count: usize) -> Self {
+impl ImageSelector {
+    pub fn new(media_type: MediaType, initial_cursor: usize, entry_count: usize) -> Self {
         let cursor = initial_cursor.min(entry_count.saturating_sub(1));
         let scroll_offset = if cursor >= VISIBLE_ITEMS {
             cursor - VISIBLE_ITEMS + 1
         } else {
             0
         };
-        let title_jis = str_to_jis(drive_title(active_drive));
+        let title_jis = str_to_jis(media_title(&media_type));
         Self {
-            active_drive,
+            media_type,
             cursor,
             scroll_offset,
             snapshot: Box::new(DisplaySnapshotUpload::zeroed()),
@@ -64,23 +70,28 @@ impl FloppySelector {
         }
     }
 
-    pub fn active_drive(&self) -> usize {
-        self.active_drive
+    pub fn media_type(&self) -> &MediaType {
+        &self.media_type
     }
 
     pub fn cursor(&self) -> usize {
         self.cursor
     }
 
-    pub fn switch_drive(&mut self, drive: usize, initial_cursor: usize, entry_count: usize) {
-        self.active_drive = drive;
+    pub fn switch_media(
+        &mut self,
+        media_type: MediaType,
+        initial_cursor: usize,
+        entry_count: usize,
+    ) {
+        self.media_type = media_type;
         self.cursor = initial_cursor.min(entry_count.saturating_sub(1));
         self.scroll_offset = if self.cursor >= VISIBLE_ITEMS {
             self.cursor - VISIBLE_ITEMS + 1
         } else {
             0
         };
-        self.title_jis = str_to_jis(drive_title(drive));
+        self.title_jis = str_to_jis(media_title(&self.media_type));
         self.dirty = true;
     }
 
@@ -104,7 +115,7 @@ impl FloppySelector {
         }
     }
 
-    pub fn ensure_snapshot(&mut self, entries: &[FloppyEntry], current_index: Option<usize>) {
+    pub fn ensure_snapshot(&mut self, entries: &[ImageEntry], current_index: Option<usize>) {
         if !self.dirty {
             return;
         }
@@ -231,17 +242,17 @@ fn draw_vertical_borders(snapshot: &mut DisplaySnapshotUpload, row: usize, attr:
     write_fullwidth_cell(snapshot, row, 78, BOX_VERTICAL, attr);
 }
 
-fn drive_title(active_drive: usize) -> &'static str {
-    if active_drive == 0 {
-        "FDD1: Select Disk Image"
-    } else {
-        "FDD2: Select Disk Image"
+fn media_title(media_type: &MediaType) -> &'static str {
+    match media_type {
+        MediaType::Floppy(0) => "FDD1: Select Disk Image",
+        MediaType::Floppy(_) => "FDD2: Select Disk Image",
+        MediaType::CdRom => "CD-ROM: Select Disc Image",
     }
 }
 
 fn rebuild_snapshot(
     snapshot: &mut DisplaySnapshotUpload,
-    entries: &[FloppyEntry],
+    entries: &[ImageEntry],
     title_jis: &[JisChar],
     cursor: usize,
     scroll_offset: usize,
@@ -370,6 +381,7 @@ fn jis_display_width(chars: &[JisChar]) -> usize {
 }
 
 fn truncate_jis(chars: &[JisChar], max_cols: usize) -> Vec<JisChar> {
+    // TOOD: Remove allocation from hot path. Instead have a truncation buffer or truncate on load.
     let mut result = Vec::new();
     let mut width = 0;
     for &c in chars {

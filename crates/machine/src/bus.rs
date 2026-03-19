@@ -13,6 +13,7 @@ use common::{
 };
 use device::{
     beeper::Beeper,
+    cdrom::CdImage,
     cgrom::Cgrom,
     disk::HddImage,
     display_control::DisplayControl,
@@ -684,6 +685,26 @@ impl<T: Tracing> Pc9801Bus<T> {
                 self.ide.flush_all_drives();
             }
         }
+    }
+
+    /// Inserts a CD-ROM image into the IDE controller (channel 1).
+    /// Only available on PC-9821 models with IDE.
+    pub fn insert_cdrom(&mut self, image: CdImage) {
+        if self.machine_model.has_ide() {
+            self.ide.insert_cdrom(image);
+        }
+    }
+
+    /// Ejects the CD-ROM image from the IDE controller.
+    pub fn eject_cdrom(&mut self) {
+        if self.machine_model.has_ide() {
+            self.ide.eject_cdrom();
+        }
+    }
+
+    /// Returns true if a CD-ROM image is loaded.
+    pub fn has_cdrom(&self) -> bool {
+        self.ide.has_cdrom()
     }
 
     /// Attaches a file handle for printer output.
@@ -3473,8 +3494,15 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                 }
             }
 
-            // System status register (no sound board, no IDE).
-            0xF0 => SYSTEM_STATUS_DEFAULT,
+            // System status register.
+            // Bit 5: 1 = no built-in IDE HDD (PC-9821 only).
+            0xF0 => {
+                let mut status = SYSTEM_STATUS_DEFAULT;
+                if self.machine_model.has_ide() && !self.ide.has_any_hdd() {
+                    status |= 0x20;
+                }
+                status
+            }
             // A20 gate state: 0xFF when enabled, 0xFE when disabled.
             0xF2 => 0xFF - (!self.a20_enabled as u8),
             // A20 line control status (386+ CPU port).
@@ -3596,8 +3624,8 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             // detect monitor frequency support. No 31 kHz monitor attached.
             0x09A8 => 0x00,
 
-            // IDE bank select and presence detection
-            0x0430 if self.machine_model.has_ide() => self.ide.read_bank(0),
+            // IDE bank status and select registers, presence detection
+            0x0430 if self.machine_model.has_ide() => self.ide.read_bank0_status(),
             0x0432 if self.machine_model.has_ide() => self.ide.read_bank(1),
             0x0433 if self.machine_model.has_ide() => self.ide.read_presence(),
             0x0435 if self.machine_model.has_ide() => self.ide.read_additional_status(),
@@ -3609,7 +3637,13 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             0x0648 if self.machine_model.has_ide() => self.ide.read_cylinder_low(),
             0x064A if self.machine_model.has_ide() => self.ide.read_cylinder_high(),
             0x064C if self.machine_model.has_ide() => self.ide.read_device_head(),
-            0x064E if self.machine_model.has_ide() => self.ide.read_status(),
+            0x064E if self.machine_model.has_ide() => {
+                let (status, clear_irq) = self.ide.read_status();
+                if clear_irq {
+                    self.pic.clear_irq(9);
+                }
+                status
+            }
 
             // IDE CS1 registers
             0x074C if self.machine_model.has_ide() => self.ide.read_alt_status(),
@@ -4254,6 +4288,8 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             // IDE bank select
             0x0430 if self.machine_model.has_ide() => self.ide.write_bank(0, value),
             0x0432 if self.machine_model.has_ide() => self.ide.write_bank(1, value),
+            // IDE presence detection register (no-op on write).
+            0x0433 if self.machine_model.has_ide() => {}
 
             // IDE CS0 registers
             0x0642 if self.machine_model.has_ide() => self.ide.write_features(value),
@@ -4428,7 +4464,9 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             // IDE 16-bit data register.
             0x0640 if self.machine_model.has_ide() => {
                 self.pending_wait_cycles += IO_WAIT_CYCLES;
-                self.ide.read_data_word()
+                let (word, action) = self.ide.read_data_word();
+                self.process_ide_action(action);
+                word
             }
             _ => {
                 let low = self.io_read_byte(port) as u16;

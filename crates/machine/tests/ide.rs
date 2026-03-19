@@ -280,14 +280,22 @@ fn ide_recalibrate() {
 fn ide_presence_detection() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
 
-    // No drives: bit 1 set (0x02).
+    // Channel 1 not selected: always returns 0x00.
     let presence = bus.io_read_byte(0x0433);
-    assert_eq!(presence & 0x02, 0x02, "no drives should set bit 1");
+    assert_eq!(
+        presence & 0x02,
+        0x00,
+        "channel 1 not selected should return 0x00"
+    );
 
-    // Insert drive 0.
-    bus.insert_hdd(0, make_test_drive(), None);
+    // Select channel 1 (bank[1] bit 0 set), no CD-ROM: still 0x00.
+    bus.io_write_byte(0x0432, 0x01);
     let presence = bus.io_read_byte(0x0433);
-    assert_eq!(presence & 0x02, 0x00, "drive present should clear bit 1");
+    assert_eq!(
+        presence & 0x02,
+        0x00,
+        "channel 1 selected without CD-ROM should return 0x00"
+    );
 }
 
 #[test]

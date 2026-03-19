@@ -134,6 +134,20 @@ impl SasiController {
         )
     }
 
+    /// Reads the boot sector (LBA 0, 1024 bytes) from the specified drive
+    /// into a local buffer and returns it.
+    pub fn read_boot_sector(&self, drive_idx: usize) -> Option<Vec<u8>> {
+        let geometry = self.drive_geometry(drive_idx)?;
+        let pos = crate::disk_hle::sector_position(0x80 | drive_idx as u8, 0, 0, &geometry);
+        let mut buf = vec![0u8; 0x0400];
+        let mut offset = 0usize;
+        let result = self.execute_read(drive_idx, 0x0400, pos, 0, |_addr, byte| {
+            buf[offset] = byte;
+            offset += 1;
+        });
+        if result < 0x20 { Some(buf) } else { None }
+    }
+
     /// Executes a BIOS write: reads from memory via closure and writes sectors.
     /// Marks the drive dirty on success.
     pub fn execute_write(

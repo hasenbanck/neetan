@@ -329,6 +329,11 @@ impl Pc9801Memory {
         self.rom[offset]
     }
 
+    /// Writes a byte directly into the ROM buffer at the given ROM-relative offset.
+    pub(crate) fn set_rom_byte(&mut self, offset: usize, value: u8) {
+        self.rom[offset] = value;
+    }
+
     /// Writes keyboard translation tables into the ROM at the BIOS code segment.
     pub(crate) fn install_keyboard_tables(&mut self, tables: &[[u8; 0x60]; 8], offset: usize) {
         let rom_offset = 0xFD800 + offset - 0xE8000;
