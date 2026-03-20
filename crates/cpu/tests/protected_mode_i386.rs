@@ -6041,3 +6041,171 @@ fn i386_access_via_null_ds_raises_gp() {
     assert!(cpu.halted());
     assert_eq!(cpu.ip(), PM_GP_HANDLER_IP as u32 + 1);
 }
+#[test]
+fn i386_lea_reg_indirect() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    cpu.state.set_ebx(0x1234);
+
+    // 8D 03 = LEA AX, [BP+DI] in 16-bit — but we need LEA AX, [BX]
+    // In 16-bit mode: LEA AX, [BX] = 8D 07
+    // F4 = HLT
+    place_at(&mut bus, PM_CODE_BASE, &[0x8D, 0x07, 0xF4]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    // 16-bit addressing: LEA AX, [BX] uses BX (low 16 bits of EBX)
+    assert_eq!(cpu.eax() & 0xFFFF, 0x1234);
+}
+
+#[test]
+fn i386_lea_reg_plus_disp8() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    cpu.state.set_ebx(0x1000);
+
+    // 16-bit mode: LEA AX, [BX+0x10] = 8D 47 10
+    // F4 = HLT
+    place_at(&mut bus, PM_CODE_BASE, &[0x8D, 0x47, 0x10, 0xF4]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.eax() & 0xFFFF, 0x1010);
+}
+
+#[test]
+fn i386_lea_reg_plus_disp16() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    cpu.state.set_ebx(0x1000);
+
+    // 16-bit mode: LEA AX, [BX+0x2000] = 8D 87 00 20
+    // F4 = HLT
+    place_at(&mut bus, PM_CODE_BASE, &[0x8D, 0x87, 0x00, 0x20, 0xF4]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.eax() & 0xFFFF, 0x3000);
+}
+
+#[test]
+fn i386_lea_sib_base_index() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    cpu.state.set_ebx(0x1000);
+    cpu.state.set_ecx(0x0200);
+
+    // 67 prefix for 32-bit addressing in 16-bit code segment:
+    // 67 8D 04 0B = LEA AX, [EBX+ECX] (SIB: scale=0, index=ECX, base=EBX)
+    // F4 = HLT
+    place_at(&mut bus, PM_CODE_BASE, &[0x67, 0x8D, 0x04, 0x0B, 0xF4]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.eax() & 0xFFFF, 0x1200);
+}
+
+#[test]
+fn i386_lea_sib_scale_2() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    cpu.state.set_ebx(0x1000);
+    cpu.state.set_ecx(0x0100);
+
+    // 67 8D 04 4B = LEA AX, [EBX+ECX*2] (SIB: scale=1, index=ECX, base=EBX)
+    // F4 = HLT
+    place_at(&mut bus, PM_CODE_BASE, &[0x67, 0x8D, 0x04, 0x4B, 0xF4]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.eax() & 0xFFFF, 0x1200);
+}
+
+#[test]
+fn i386_lea_sib_scale_4() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    cpu.state.set_ebx(0x1000);
+    cpu.state.set_ecx(0x0040);
+
+    // 67 8D 04 8B = LEA AX, [EBX+ECX*4] (SIB: scale=2, index=ECX, base=EBX)
+    // F4 = HLT
+    place_at(&mut bus, PM_CODE_BASE, &[0x67, 0x8D, 0x04, 0x8B, 0xF4]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.eax() & 0xFFFF, 0x1100);
+}
+
+#[test]
+fn i386_lea_sib_scale_8() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    cpu.state.set_ebx(0x1000);
+    cpu.state.set_ecx(0x0020);
+
+    // 67 8D 04 CB = LEA AX, [EBX+ECX*8] (SIB: scale=3, index=ECX, base=EBX)
+    // F4 = HLT
+    place_at(&mut bus, PM_CODE_BASE, &[0x67, 0x8D, 0x04, 0xCB, 0xF4]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.eax() & 0xFFFF, 0x1100);
+}
+
+#[test]
+fn i386_lea_disp32_only() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // 67 8D 05 78 56 34 12 = LEA AX, [0x12345678] (ModRM: mod=00, rm=101 → disp32)
+    // F4 = HLT
+    place_at(
+        &mut bus,
+        PM_CODE_BASE,
+        &[0x67, 0x8D, 0x05, 0x78, 0x56, 0x34, 0x12, 0xF4],
+    );
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.eax() & 0xFFFF, 0x5678);
+}
