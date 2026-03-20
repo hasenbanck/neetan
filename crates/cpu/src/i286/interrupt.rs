@@ -346,6 +346,7 @@ impl I286 {
             self.trap_level += 1;
             if self.trap_level >= 3 {
                 self.shutdown = true;
+                self.halted = true;
                 return DoubleFaultResult::Shutdown;
             }
             if self.trap_level >= 2 {
