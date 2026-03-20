@@ -5913,3 +5913,131 @@ fn i386_repe_cmpsb() {
     assert_eq!(cpu.state.esi(), 0x0103);
     assert_eq!(cpu.state.edi(), 0x0203);
 }
+#[test]
+fn i386_load_null_ds_succeeds() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // B8 00 00 = MOV AX, 0x0000
+    // 8E D8 = MOV DS, AX
+    // F4 = HLT
+    place_at(
+        &mut bus,
+        PM_CODE_BASE,
+        &[0xB8, 0x00, 0x00, 0x8E, 0xD8, 0xF4],
+    );
+
+    cpu.step(&mut bus); // MOV AX, 0
+    cpu.step(&mut bus); // MOV DS, AX
+    cpu.step(&mut bus); // HLT
+
+    assert!(cpu.halted());
+    assert_eq!(
+        cpu.ip(),
+        0x0006,
+        "Loading null selector into DS at CPL=0 should succeed"
+    );
+}
+
+#[test]
+fn i386_load_null_fs_succeeds() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // B8 00 00 = MOV AX, 0x0000
+    // 8E E0 = MOV FS, AX
+    // F4 = HLT
+    place_at(
+        &mut bus,
+        PM_CODE_BASE,
+        &[0xB8, 0x00, 0x00, 0x8E, 0xE0, 0xF4],
+    );
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(
+        cpu.ip(),
+        0x0006,
+        "Loading null selector into FS should succeed"
+    );
+}
+
+#[test]
+fn i386_load_null_gs_succeeds() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // B8 00 00 = MOV AX, 0x0000
+    // 8E E8 = MOV GS, AX
+    // F4 = HLT
+    place_at(
+        &mut bus,
+        PM_CODE_BASE,
+        &[0xB8, 0x00, 0x00, 0x8E, 0xE8, 0xF4],
+    );
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(
+        cpu.ip(),
+        0x0006,
+        "Loading null selector into GS should succeed"
+    );
+}
+
+#[test]
+fn i386_load_null_ss_at_cpl0_raises_gp() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // B8 00 00 = MOV AX, 0x0000
+    // 8E D0 = MOV SS, AX
+    place_at(&mut bus, PM_CODE_BASE, &[0xB8, 0x00, 0x00, 0x8E, 0xD0]);
+
+    cpu.step(&mut bus); // MOV AX, 0
+    cpu.step(&mut bus); // MOV SS, AX → #GP
+    cpu.step(&mut bus); // HLT in GP handler
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_GP_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_access_via_null_ds_raises_gp() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // Load null into DS, then try to read through it
+    // B8 00 00 = MOV AX, 0x0000
+    // 8E D8 = MOV DS, AX
+    // A0 00 00 = MOV AL, [0x0000] (uses DS)
+    place_at(
+        &mut bus,
+        PM_CODE_BASE,
+        &[0xB8, 0x00, 0x00, 0x8E, 0xD8, 0xA0, 0x00, 0x00],
+    );
+
+    cpu.step(&mut bus); // MOV AX, 0
+    cpu.step(&mut bus); // MOV DS, AX
+    cpu.step(&mut bus); // MOV AL, [0x0000] → #GP (null DS)
+    cpu.step(&mut bus); // HLT in GP handler
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_GP_HANDLER_IP as u32 + 1);
+}

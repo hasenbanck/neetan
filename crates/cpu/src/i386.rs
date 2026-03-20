@@ -650,7 +650,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             return true;
         }
         if selector & 0xFFFC == 0 {
-            self.raise_segment_protection(seg, selector, bus);
+            // Null selector for CS or SS: always #GP(0) per 386 manual.
+            self.raise_fault_with_code(13, 0, bus);
             return false;
         }
 
