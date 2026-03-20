@@ -6483,3 +6483,196 @@ fn i386_lock_not_mem_executes() {
     assert!(cpu.halted());
     assert_ne!(cpu.ip(), PM_UD_HANDLER_IP as u32 + 1);
 }
+
+#[test]
+fn iopb_word_io_checks_two_consecutive_bits() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode(&mut bus, 0xFFFF);
+    state.set_cs(PM_CS_SEL | 3);
+    state.flags.iopl = 0;
+
+    const TSS_BASE: u32 = 0xC0000;
+    const TSS_SEL: u16 = 0x0028;
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 5, TSS_BASE, 0x6A, 0x89);
+    state.gdt_limit = 6 * 8 - 1;
+
+    write_dword_at(&mut bus, TSS_BASE + 0x04, 0xFF00);
+    write_word_at(&mut bus, TSS_BASE + 0x08, PM_SS_SEL);
+    write_word_at(&mut bus, TSS_BASE + 0x66, 0x0068);
+    // bit 1 set → port 1 denied; word IN from port 0 checks ports 0 and 1
+    bus.ram[(TSS_BASE + 0x68) as usize] = 0x02;
+
+    state.tr = TSS_SEL;
+    state.tr_base = TSS_BASE;
+    state.tr_limit = 0x6A;
+    state.tr_rights = 0x89;
+    cpu.load_state(&state);
+
+    // E5 00 = IN AX, 0 (word I/O, checks ports 0-1)
+    place_at(&mut bus, PM_CODE_BASE, &[0xE5, 0x00]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    assert!(
+        cpu.halted(),
+        "IN AX,0 must raise #GP when port 1 is denied in IOPB"
+    );
+    assert_eq!(cpu.ip(), PM_GP_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn iopb_dword_io_checks_four_consecutive_bits() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode(&mut bus, 0xFFFF);
+    state.set_cs(PM_CS_SEL | 3);
+    state.flags.iopl = 0;
+
+    const TSS_BASE: u32 = 0xC0000;
+    const TSS_SEL: u16 = 0x0028;
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 5, TSS_BASE, 0x6A, 0x89);
+    state.gdt_limit = 6 * 8 - 1;
+
+    write_dword_at(&mut bus, TSS_BASE + 0x04, 0xFF00);
+    write_word_at(&mut bus, TSS_BASE + 0x08, PM_SS_SEL);
+    write_word_at(&mut bus, TSS_BASE + 0x66, 0x0068);
+    // bit 3 set → port 3 denied; dword IN from port 0 checks ports 0-3
+    bus.ram[(TSS_BASE + 0x68) as usize] = 0x08;
+
+    state.tr = TSS_SEL;
+    state.tr_base = TSS_BASE;
+    state.tr_limit = 0x6A;
+    state.tr_rights = 0x89;
+    cpu.load_state(&state);
+
+    // 66 E5 00 = IN EAX, 0 (dword I/O, checks ports 0-3)
+    place_at(&mut bus, PM_CODE_BASE, &[0x66, 0xE5, 0x00]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    assert!(
+        cpu.halted(),
+        "IN EAX,0 must raise #GP when port 3 is denied in IOPB"
+    );
+    assert_eq!(cpu.ip(), PM_GP_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn iopb_dword_io_checks_port_plus_one() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode(&mut bus, 0xFFFF);
+    state.set_cs(PM_CS_SEL | 3);
+    state.flags.iopl = 0;
+
+    const TSS_BASE: u32 = 0xC0000;
+    const TSS_SEL: u16 = 0x0028;
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 5, TSS_BASE, 0x6A, 0x89);
+    state.gdt_limit = 6 * 8 - 1;
+
+    write_dword_at(&mut bus, TSS_BASE + 0x04, 0xFF00);
+    write_word_at(&mut bus, TSS_BASE + 0x08, PM_SS_SEL);
+    write_word_at(&mut bus, TSS_BASE + 0x66, 0x0068);
+    // only bit 1 set → port 1 denied; dword IN from port 0 must check port 1 too
+    bus.ram[(TSS_BASE + 0x68) as usize] = 0x02;
+
+    state.tr = TSS_SEL;
+    state.tr_base = TSS_BASE;
+    state.tr_limit = 0x6A;
+    state.tr_rights = 0x89;
+    cpu.load_state(&state);
+
+    // 66 E5 00 = IN EAX, 0 (dword I/O, checks ports 0-3)
+    place_at(&mut bus, PM_CODE_BASE, &[0x66, 0xE5, 0x00]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    assert!(
+        cpu.halted(),
+        "IN EAX,0 must raise #GP when port 1 is denied (old code only checked port and port+2)"
+    );
+    assert_eq!(cpu.ip(), PM_GP_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn iopb_cross_byte_boundary() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode(&mut bus, 0xFFFF);
+    state.set_cs(PM_CS_SEL | 3);
+    state.flags.iopl = 0;
+
+    const TSS_BASE: u32 = 0xC0000;
+    const TSS_SEL: u16 = 0x0028;
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 5, TSS_BASE, 0x6B, 0x89);
+    state.gdt_limit = 6 * 8 - 1;
+
+    write_dword_at(&mut bus, TSS_BASE + 0x04, 0xFF00);
+    write_word_at(&mut bus, TSS_BASE + 0x08, PM_SS_SEL);
+    write_word_at(&mut bus, TSS_BASE + 0x66, 0x0068);
+    // byte 0 (ports 0-7): all clear
+    bus.ram[(TSS_BASE + 0x68) as usize] = 0x00;
+    // byte 1 (ports 8-15): bit 0 set → port 8 denied
+    // Word IN from port 7 checks bit 7 of byte 0 and bit 0 of byte 1
+    bus.ram[(TSS_BASE + 0x69) as usize] = 0x01;
+
+    state.tr = TSS_SEL;
+    state.tr_base = TSS_BASE;
+    state.tr_limit = 0x6B;
+    state.tr_rights = 0x89;
+    cpu.load_state(&state);
+
+    // E5 07 = IN AX, 7 (word I/O from port 7, crosses byte boundary)
+    place_at(&mut bus, PM_CODE_BASE, &[0xE5, 0x07]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    assert!(
+        cpu.halted(),
+        "IN AX,7 must raise #GP when port 8 (bit 0 of second IOPB byte) is denied"
+    );
+    assert_eq!(cpu.ip(), PM_GP_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn iopb_word_io_allowed_when_bits_clear() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode(&mut bus, 0xFFFF);
+    state.set_cs(PM_CS_SEL | 3);
+    state.flags.iopl = 0;
+
+    const TSS_BASE: u32 = 0xC0000;
+    const TSS_SEL: u16 = 0x0028;
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 5, TSS_BASE, 0x6A, 0x89);
+    state.gdt_limit = 6 * 8 - 1;
+
+    write_dword_at(&mut bus, TSS_BASE + 0x04, 0xFF00);
+    write_word_at(&mut bus, TSS_BASE + 0x08, PM_SS_SEL);
+    write_word_at(&mut bus, TSS_BASE + 0x66, 0x0068);
+    // all bits clear → all ports allowed
+    bus.ram[(TSS_BASE + 0x68) as usize] = 0x00;
+
+    state.tr = TSS_SEL;
+    state.tr_base = TSS_BASE;
+    state.tr_limit = 0x6A;
+    state.tr_rights = 0x89;
+    cpu.load_state(&state);
+
+    // E5 00 = IN AX, 0 (word I/O, ports 0-1 both allowed)
+    place_at(&mut bus, PM_CODE_BASE, &[0xE5, 0x00]);
+
+    cpu.step(&mut bus);
+
+    assert!(
+        !cpu.halted(),
+        "IN AX,0 must succeed when both port bits are clear in IOPB"
+    );
+    assert_eq!(cpu.ip() as u16, 2, "IP must advance past 2-byte IN AX");
+}

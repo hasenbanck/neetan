@@ -470,7 +470,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     /// Returns `true` if the current privilege level and IOPL allow I/O access to `port`.
     /// When access is denied and the IOPB does not grant it, raises #GP(0) and returns `false`.
     /// CLI/STI/HLT use separate IOPL/CPL checks — this function is only for I/O port instructions.
-    fn check_io_privilege(&mut self, port: u16, bus: &mut impl common::Bus) -> bool {
+    fn check_io_privilege(&mut self, port: u16, size: u8, bus: &mut impl common::Bus) -> bool {
         if !self.is_protected_mode() {
             return true;
         }
@@ -485,17 +485,21 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
         let iopb = self.read_word_linear(bus, self.tr_base.wrapping_add(0x66)) as u32;
         let byte_idx = iopb.wrapping_add(u32::from(port) / 8);
-        // Intel spec requires a 0xFF sentinel byte immediately after the IOPB inside
-        // the TSS. Using >= (rather than >) ensures the sentinel at byte_idx+1 also
-        // fits within the TSS limit, consistent with MAME's behaviour.
-        if byte_idx >= self.tr_limit {
+        // Read two consecutive bytes from the IOPB to handle accesses that span a
+        // byte boundary (e.g. a dword access starting at port 7 touches bits in two
+        // bytes). The +1 also satisfies the Intel spec requirement for a 0xFF sentinel
+        // byte immediately after the IOPB inside the TSS.
+        if byte_idx + 1 > self.tr_limit {
             self.raise_fault_with_code(13, 0, bus);
             return false;
         }
         let linear = self.tr_base.wrapping_add(byte_idx);
         let phys = self.translate_linear(linear, false, bus).unwrap_or(0);
-        let map = bus.read_byte(phys);
-        if (map >> (port & 7)) & 1 != 0 {
+        let lo = bus.read_byte(phys) as u16;
+        let hi = bus.read_byte(phys.wrapping_add(1) & 0x00FF_FFFF) as u16;
+        let map = lo | (hi << 8);
+        let mask = (1u16 << size) - 1;
+        if (map >> (port & 7)) & mask != 0 {
             self.raise_fault_with_code(13, 0, bus);
             return false;
         }
