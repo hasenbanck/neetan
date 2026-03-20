@@ -5115,3 +5115,36 @@ fn i386_div_by_zero_no_error_code_pushed() {
         "#DE should not push an error code"
     );
 }
+#[test]
+fn i386_lock_nop_raises_ud() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // F0 90 = LOCK NOP
+    place_at(&mut bus, PM_CODE_BASE, &[0xF0, 0x90]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_UD_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_lock_mov_raises_ud() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // F0 89 C0 = LOCK MOV EAX, EAX
+    place_at(&mut bus, PM_CODE_BASE, &[0xF0, 0x89, 0xC0]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_UD_HANDLER_IP as u32 + 1);
+}
