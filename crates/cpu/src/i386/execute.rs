@@ -1253,7 +1253,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     fn arpl(&mut self, bus: &mut impl common::Bus) {
-        if !self.is_protected_mode() {
+        if !self.is_protected_mode() || self.is_virtual_mode() {
             self.raise_fault(6, bus);
             return;
         }
