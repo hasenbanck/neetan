@@ -5148,3 +5148,180 @@ fn i386_lock_mov_raises_ud() {
     assert!(cpu.halted());
     assert_eq!(cpu.ip(), PM_UD_HANDLER_IP as u32 + 1);
 }
+fn setup_protected_mode_ring3_with_exception_handlers(bus: &mut TestBus) -> cpu::I386State {
+    write_gdt_entry16(bus, PM_GDT_BASE, 0, 0, 0, 0);
+    write_gdt_entry16(bus, PM_GDT_BASE, 1, PM_CODE_BASE, 0xFFFF, 0x9B);
+    write_gdt_entry16(bus, PM_GDT_BASE, 2, PM_DATA_BASE, 0xFFFF, 0x93);
+    write_gdt_entry16(bus, PM_GDT_BASE, 3, PM_STACK_BASE, 0xFFFF, 0x93);
+    write_gdt_entry16(bus, PM_GDT_BASE, 4, PM_RING3_CODE_BASE, 0xFFFF, 0xFB);
+    write_gdt_entry16(bus, PM_GDT_BASE, 5, PM_DATA_BASE, 0xFFFF, 0xF3);
+    write_gdt_entry16(bus, PM_GDT_BASE, 6, PM_RING3_STACK_BASE, 0xFFFF, 0xF3);
+    write_gdt_entry16(bus, PM_GDT_BASE, 7, PM_TSS_BASE, 103, 0x89);
+
+    // Vector 0: #DE
+    write_idt_gate(
+        bus,
+        PM_IDT_BASE,
+        0,
+        PM_DE_HANDLER_IP as u32,
+        PM_CS_SEL,
+        14,
+        0,
+    );
+    // Vector 6: #UD
+    write_idt_gate(
+        bus,
+        PM_IDT_BASE,
+        6,
+        PM_UD_HANDLER_IP as u32,
+        PM_CS_SEL,
+        14,
+        0,
+    );
+    // Vector 13: #GP
+    write_idt_gate(
+        bus,
+        PM_IDT_BASE,
+        13,
+        PM_GP_HANDLER_IP as u32,
+        PM_CS_SEL,
+        14,
+        0,
+    );
+
+    bus.ram[(PM_CODE_BASE + PM_DE_HANDLER_IP as u32) as usize] = 0xF4;
+    bus.ram[(PM_CODE_BASE + PM_UD_HANDLER_IP as u32) as usize] = 0xF4;
+    bus.ram[(PM_CODE_BASE + PM_GP_HANDLER_IP as u32) as usize] = 0xF4;
+
+    write_dword_at(bus, PM_TSS_BASE + 4, 0xFFF0);
+    write_word_at(bus, PM_TSS_BASE + 8, PM_SS_SEL);
+    // IOPB offset at TSS+0x66: point past TSS limit so no port is permitted
+    write_word_at(bus, PM_TSS_BASE + 0x66, 0x0068);
+
+    let mut state = cpu::I386State {
+        cr0: 0x0001,
+        ip: 0x0000,
+        ..Default::default()
+    };
+
+    state.set_esp(0xFFF0);
+    state.set_cs(PM_RING3_CS_SEL);
+    state.set_ds(PM_RING3_DS_SEL);
+    state.set_ss(PM_RING3_SS_SEL);
+    state.set_es(PM_RING3_DS_SEL);
+
+    state.seg_bases[cpu::SegReg32::ES as usize] = PM_DATA_BASE;
+    state.seg_bases[cpu::SegReg32::CS as usize] = PM_RING3_CODE_BASE;
+    state.seg_bases[cpu::SegReg32::SS as usize] = PM_RING3_STACK_BASE;
+    state.seg_bases[cpu::SegReg32::DS as usize] = PM_DATA_BASE;
+
+    state.seg_limits = [0xFFFF; 6];
+    state.seg_rights[cpu::SegReg32::ES as usize] = 0xF3;
+    state.seg_rights[cpu::SegReg32::CS as usize] = 0xFB;
+    state.seg_rights[cpu::SegReg32::SS as usize] = 0xF3;
+    state.seg_rights[cpu::SegReg32::DS as usize] = 0xF3;
+    state.seg_valid = [true, true, true, true, false, false];
+
+    state.gdt_base = PM_GDT_BASE;
+    state.gdt_limit = 8 * 8 - 1;
+    state.idt_base = PM_IDT_BASE;
+    state.idt_limit = 256 * 8 - 1;
+
+    state.tr = PM_TSS_SEL;
+    state.tr_base = PM_TSS_BASE;
+    state.tr_limit = 103;
+    state.tr_rights = 0x8B;
+
+    state.flags.iopl = 0;
+
+    state
+}
+
+#[test]
+fn i386_in_at_cpl3_raises_gp() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_ring3_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // E4 42 = IN AL, 0x42
+    place_at(&mut bus, PM_RING3_CODE_BASE, &[0xE4, 0x42]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_GP_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_out_at_cpl3_raises_gp() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_ring3_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // E6 42 = OUT 0x42, AL
+    place_at(&mut bus, PM_RING3_CODE_BASE, &[0xE6, 0x42]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_GP_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_rep_insb_at_cpl3_raises_gp() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_ring3_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    cpu.state.set_ecx(1);
+    cpu.state.set_edx(0x0042);
+    // F3 6C = REP INSB
+    place_at(&mut bus, PM_RING3_CODE_BASE, &[0xF3, 0x6C]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_GP_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_rep_outsb_at_cpl3_raises_gp() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_ring3_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    cpu.state.set_ecx(1);
+    cpu.state.set_edx(0x0042);
+    // F3 6E = REP OUTSB
+    place_at(&mut bus, PM_RING3_CODE_BASE, &[0xF3, 0x6E]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_GP_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_hlt_at_cpl3_raises_gp() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_ring3_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // F4 = HLT
+    place_at(&mut bus, PM_RING3_CODE_BASE, &[0xF4]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_GP_HANDLER_IP as u32 + 1);
+}
