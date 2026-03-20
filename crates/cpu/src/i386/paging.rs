@@ -1,4 +1,4 @@
-use super::{I386, CPU_MODEL_486};
+use super::{CPU_MODEL_486, I386};
 
 const TLB_SIZE: usize = 64;
 const TLB_MASK: u32 = (TLB_SIZE as u32) - 1;

@@ -6682,7 +6682,15 @@ const VM86_UD_HANDLER_IP: u16 = 0x0200;
 fn setup_vm86_with_ud_handler(bus: &mut TestBus) -> cpu::I386State {
     let mut state = setup_vm86(bus);
 
-    write_idt_gate(bus, VM86_IDT_BASE, 6, VM86_UD_HANDLER_IP as u32, VM86_CS_SEL, 14, 0);
+    write_idt_gate(
+        bus,
+        VM86_IDT_BASE,
+        6,
+        VM86_UD_HANDLER_IP as u32,
+        VM86_CS_SEL,
+        14,
+        0,
+    );
     bus.ram[(VM86_CODE_BASE + VM86_UD_HANDLER_IP as u32) as usize] = 0xF4;
 
     // Extend TSS limit to cover ESP0/SS0 properly for the stack switch
@@ -6864,14 +6872,21 @@ fn task_switch_tss_t_bit_raises_debug_trap() {
         PM_SS_SEL,
         target_ip as u32,
         0x0002,
-        0, 0, 0, 0,
+        0,
+        0,
+        0,
+        0,
         0xEE00,
-        0, 0, 0,
+        0,
+        0,
+        0,
         PM_DS_SEL,
         PM_CS_SEL,
         PM_SS_SEL,
         PM_DS_SEL,
-        0, 0, 0,
+        0,
+        0,
+        0,
     );
     // Set T-bit at TSS2 offset 100 (0x64), bit 0.
     write_word_at(&mut bus, PM_TSS2_BASE + 100, 0x0001);
@@ -6925,14 +6940,21 @@ fn task_switch_tss_t_bit_clear_no_debug_trap() {
         PM_SS_SEL,
         target_ip as u32,
         0x0002,
-        0, 0, 0, 0,
+        0,
+        0,
+        0,
+        0,
         0xEE00,
-        0, 0, 0,
+        0,
+        0,
+        0,
         PM_DS_SEL,
         PM_CS_SEL,
         PM_SS_SEL,
         PM_DS_SEL,
-        0, 0, 0,
+        0,
+        0,
+        0,
     );
     // T-bit clear (default 0).
 
@@ -6983,14 +7005,21 @@ fn task_switch_tss_t_bit_sets_dr6_bt() {
         PM_SS_SEL,
         target_ip as u32,
         0x0002,
-        0, 0, 0, 0,
+        0,
+        0,
+        0,
+        0,
         0xEE00,
-        0, 0, 0,
+        0,
+        0,
+        0,
         PM_DS_SEL,
         PM_CS_SEL,
         PM_SS_SEL,
         PM_DS_SEL,
-        0, 0, 0,
+        0,
+        0,
+        0,
     );
     write_word_at(&mut bus, PM_TSS2_BASE + 100, 0x0001);
     bus.ram[(PM_CODE_BASE + target_ip as u32) as usize] = 0xF4;
@@ -7004,11 +7033,7 @@ fn task_switch_tss_t_bit_sets_dr6_bt() {
     cpu.step(&mut bus); // HLT at #DB handler
 
     assert!(cpu.halted());
-    assert_eq!(
-        cpu.dr6 & 0x8000,
-        0x8000,
-        "DR6.BT (bit 15) must be set"
-    );
+    assert_eq!(cpu.dr6 & 0x8000, 0x8000, "DR6.BT (bit 15) must be set");
     // B0-B3 (bits 0-3) should remain 0 since no breakpoint register matched.
     assert_eq!(
         cpu.dr6 & 0x000F,
