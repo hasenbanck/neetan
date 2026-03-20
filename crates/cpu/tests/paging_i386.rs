@@ -1,5 +1,5 @@
 use common::Cpu as _;
-use cpu::I386;
+use cpu::{CPU_MODEL_486, I386};
 
 const RAM_SIZE: usize = 2 * 1024 * 1024;
 const ADDRESS_MASK: u32 = 0x001F_FFFF;
@@ -2013,4 +2013,136 @@ fn paging_rep_movsb_fault_mid_operation() {
 
     // ECX should reflect remaining count (4 remaining).
     assert_eq!(cpu.cx(), 4, "CX should be 4 (4 iterations remaining)");
+}
+
+#[test]
+fn cr0_wp_bit_masked_on_386() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_paged_protected_mode(&mut bus);
+    cpu.load_state(&state);
+
+    // MOV EAX, 0xFFFFFFFF ; 66 B8 FF FF FF FF
+    // MOV CR0, EAX        ; 0F 22 C0
+    place_at(
+        &mut bus,
+        PG_CODE_BASE,
+        &[0x66, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F, 0x22, 0xC0],
+    );
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert_eq!(
+        cpu.cr0 & 0x0001_0000,
+        0,
+        "WP bit (16) must be masked off on 386"
+    );
+}
+
+#[test]
+fn cr0_wp_bit_accepted_on_486() {
+    let mut cpu: I386<{ CPU_MODEL_486 }> = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_paged_protected_mode(&mut bus);
+    cpu.load_state(&state);
+
+    // MOV EAX, 0xFFFFFFFF ; 66 B8 FF FF FF FF
+    // MOV CR0, EAX        ; 0F 22 C0
+    place_at(
+        &mut bus,
+        PG_CODE_BASE,
+        &[0x66, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F, 0x22, 0xC0],
+    );
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert_ne!(
+        cpu.cr0 & 0x0001_0000,
+        0,
+        "WP bit (16) must be accepted on 486"
+    );
+}
+
+#[test]
+fn supervisor_write_to_readonly_page_without_wp() {
+    let mut cpu: I386<{ CPU_MODEL_486 }> = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_paged_protected_mode(&mut bus);
+    cpu.load_state(&state);
+    // WP=0 (default): supervisor writes to read-only pages should succeed.
+
+    let pte_index = PG_DATA_BASE >> 12;
+    write_dword_at(
+        &mut bus,
+        PG_PAGE_TABLE_0 + pte_index * 4,
+        PG_DATA_BASE | PTE_P,
+    );
+
+    // MOV BYTE [0x0050], 0xCC ; C6 06 50 00 CC
+    place_at(&mut bus, PG_CODE_BASE, &[0xC6, 0x06, 0x50, 0x00, 0xCC]);
+    cpu.step(&mut bus);
+
+    assert_eq!(bus.ram[(PG_DATA_BASE + 0x50) as usize], 0xCC);
+    assert!(!cpu.halted(), "486 supervisor with WP=0 must write read-only pages");
+}
+
+#[test]
+fn supervisor_write_to_readonly_page_with_wp() {
+    let mut cpu: I386<{ CPU_MODEL_486 }> = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_paged_protected_mode(&mut bus);
+    // Set WP bit (16) in CR0.
+    state.cr0 |= 0x0001_0000;
+    cpu.load_state(&state);
+
+    let pte_index = PG_DATA_BASE >> 12;
+    write_dword_at(
+        &mut bus,
+        PG_PAGE_TABLE_0 + pte_index * 4,
+        PG_DATA_BASE | PTE_P,
+    );
+
+    // MOV BYTE [0x0050], 0xCC ; C6 06 50 00 CC
+    place_at(&mut bus, PG_CODE_BASE, &[0xC6, 0x06, 0x50, 0x00, 0xCC]);
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted(), "486 supervisor with WP=1 must fault on write to read-only page");
+    assert_eq!(cpu.ip(), PG_PF_HANDLER_IP as u32 + 1);
+
+    // Error code: P=1 (protection violation), W/R=1 (write), U/S=0 (supervisor).
+    // That's bits 0 and 1 = 0x03.
+    let handler_esp = cpu.esp();
+    let error_code = read_dword_at(&bus, PG_STACK_BASE + handler_esp);
+    assert_eq!(error_code, 0x03, "error code should be P=1, W/R=1, U/S=0");
+}
+
+#[test]
+fn supervisor_read_from_readonly_page_with_wp() {
+    let mut cpu: I386<{ CPU_MODEL_486 }> = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_paged_protected_mode(&mut bus);
+    state.cr0 |= 0x0001_0000;
+    cpu.load_state(&state);
+
+    let pte_index = PG_DATA_BASE >> 12;
+    write_dword_at(
+        &mut bus,
+        PG_PAGE_TABLE_0 + pte_index * 4,
+        PG_DATA_BASE | PTE_P,
+    );
+
+    bus.ram[(PG_DATA_BASE + 0x50) as usize] = 0xAB;
+
+    // MOV AL, [0x0050] ; A0 50 00
+    place_at(&mut bus, PG_CODE_BASE, &[0xA0, 0x50, 0x00]);
+    cpu.step(&mut bus);
+
+    assert!(!cpu.halted(), "WP only affects writes, reads should succeed");
+    assert_eq!(cpu.al(), 0xAB);
 }

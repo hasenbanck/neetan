@@ -1,4 +1,4 @@
-use super::I386;
+use super::{I386, CPU_MODEL_486};
 
 const TLB_SIZE: usize = 64;
 const TLB_MASK: u32 = (TLB_SIZE as u32) - 1;
@@ -83,9 +83,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             return None;
         }
 
-        // 386 permission check: user mode needs U/S=1 on both PDE and PTE.
+        // Permission check: user mode needs U/S=1 on both PDE and PTE.
         // For writes in user mode, both R/W bits must be set.
-        // Supervisor (CPL 0-2) can always write regardless of R/W on a 386 (no WP bit).
+        // Supervisor (CPL 0-2) can always write regardless of R/W on a 386.
+        // On 486, CR0.WP (bit 16) enforces R/W checks even in supervisor mode.
         // System table accesses (IDT, GDT, TSS) during interrupt delivery use
         // supervisor privilege regardless of current CPL.
         let is_user = self.cpl() == 3 && !self.supervisor_override;
@@ -98,6 +99,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.raise_page_fault(linear, write, true, bus);
                 return None;
             }
+        } else if write
+            && CPU_MODEL == CPU_MODEL_486
+            && self.cr0 & 0x0001_0000 != 0
+            && (pde & PTE_WRITABLE == 0 || pte & PTE_WRITABLE == 0)
+        {
+            self.raise_page_fault(linear, write, true, bus);
+            return None;
         }
 
         // Set accessed bit on PDE if not already set.
@@ -123,8 +131,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.tlb_valid[slot] = true;
         self.tlb_tag[slot] = page;
         self.tlb_phys[slot] = physical_page;
-        // Writable in TLB if both PDE and PTE allow writes (or supervisor on 386).
-        self.tlb_writable[slot] = !is_user || (pde & PTE_WRITABLE != 0 && pte & PTE_WRITABLE != 0);
+        // Writable in TLB if both PDE and PTE allow writes (or supervisor without WP).
+        let wp_enforced = CPU_MODEL == CPU_MODEL_486 && self.cr0 & 0x0001_0000 != 0;
+        self.tlb_writable[slot] = if is_user || wp_enforced {
+            pde & PTE_WRITABLE != 0 && pte & PTE_WRITABLE != 0
+        } else {
+            true
+        };
 
         Some(physical & 0x00FF_FFFF)
     }
