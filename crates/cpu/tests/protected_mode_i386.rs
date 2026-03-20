@@ -4506,3 +4506,195 @@ fn i386_triple_fault_halts_cpu() {
 
     assert!(cpu.halted(), "CPU must be halted after triple fault");
 }
+
+const PM_DF_HANDLER_IP: u16 = 0xC000;
+
+/// Protected mode: contributory + contributory → double fault.
+///
+/// Per Intel 386 manual Table 9-4: when a contributory exception occurs
+/// while dispatching another contributory exception, the CPU escalates
+/// to a double fault (#DF, vector 8).
+///
+/// Setup: IDT entry for #DE (vector 0, contributory) points to a selector
+/// beyond the GDT limit. Dispatching #DE fails with #GP (vector 13,
+/// contributory). Contributory + contributory escalates to #DF.
+#[test]
+fn i386_double_fault_contributory_plus_contributory() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 0, 0, 0, 0);
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 1, PM_CODE_BASE, 0xFFFF, 0x9B);
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 2, PM_DATA_BASE, 0xFFFF, 0x93);
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 3, PM_STACK_BASE, 0xFFFF, 0x93);
+
+    // IDT entry 0 (#DE): selector 0x28 (index 5) beyond GDT limit -> #GP on dispatch.
+    write_idt_gate(&mut bus, PM_IDT_BASE, 0, 0x0000, 0x28, 14, 0);
+    // IDT entry 8 (#DF): valid handler.
+    write_idt_gate(
+        &mut bus,
+        PM_IDT_BASE,
+        8,
+        PM_DF_HANDLER_IP as u32,
+        PM_CS_SEL,
+        14,
+        0,
+    );
+    // IDT entry 13 (#GP): valid handler (should NOT be reached).
+    write_idt_gate(
+        &mut bus,
+        PM_IDT_BASE,
+        13,
+        PM_GP_HANDLER_IP as u32,
+        PM_CS_SEL,
+        14,
+        0,
+    );
+
+    bus.ram[(PM_CODE_BASE + PM_DF_HANDLER_IP as u32) as usize] = 0xF4; // HLT
+    bus.ram[(PM_CODE_BASE + PM_GP_HANDLER_IP as u32) as usize] = 0xF4; // HLT
+
+    let mut state = cpu::I386State {
+        cr0: 0x0001,
+        ip: 0x0000,
+        ..Default::default()
+    };
+    state.set_esp(0xFFF0);
+    state.set_cs(PM_CS_SEL);
+    state.set_ds(PM_DS_SEL);
+    state.set_ss(PM_SS_SEL);
+    state.set_es(PM_DS_SEL);
+
+    state.seg_bases[cpu::SegReg32::ES as usize] = PM_DATA_BASE;
+    state.seg_bases[cpu::SegReg32::CS as usize] = PM_CODE_BASE;
+    state.seg_bases[cpu::SegReg32::SS as usize] = PM_STACK_BASE;
+    state.seg_bases[cpu::SegReg32::DS as usize] = PM_DATA_BASE;
+
+    state.seg_limits = [0xFFFF; 6];
+    state.seg_rights[cpu::SegReg32::ES as usize] = 0x93;
+    state.seg_rights[cpu::SegReg32::CS as usize] = 0x9B;
+    state.seg_rights[cpu::SegReg32::SS as usize] = 0x93;
+    state.seg_rights[cpu::SegReg32::DS as usize] = 0x93;
+    state.seg_valid = [true, true, true, true, false, false];
+
+    state.gdt_base = PM_GDT_BASE;
+    state.gdt_limit = 4 * 8 - 1;
+    state.idt_base = PM_IDT_BASE;
+    state.idt_limit = 256 * 8 - 1;
+
+    cpu.load_state(&state);
+
+    // DIV CL with AX=1, CL=0 → #DE (vector 0, contributory).
+    // F6 F1 = DIV CL
+    place_at(
+        &mut bus,
+        PM_CODE_BASE,
+        &[
+            0xB0, 0x01, // MOV AL, 1
+            0xB1, 0x00, // MOV CL, 0
+            0xF6, 0xF1, // DIV CL
+        ],
+    );
+
+    cpu.step(&mut bus); // MOV AL, 1
+    cpu.step(&mut bus); // MOV CL, 0
+    cpu.step(&mut bus); // DIV CL → #DE → #GP → #DF
+    cpu.step(&mut bus); // HLT in #DF handler
+
+    assert!(cpu.halted(), "CPU must be halted in #DF handler");
+    assert_eq!(
+        cpu.ip(),
+        PM_DF_HANDLER_IP as u32 + 1,
+        "IP should be in #DF handler (after HLT)"
+    );
+}
+
+/// Protected mode: benign + contributory → normal (no escalation).
+///
+/// Per Intel 386 manual Table 9-4: when a contributory exception occurs
+/// while dispatching a benign exception, the CPU handles it normally
+/// (no escalation to double fault).
+///
+/// Setup: IDT entry for #UD (vector 6, benign) points to a selector
+/// beyond the GDT limit. Dispatching #UD fails with #GP (vector 13,
+/// contributory). Benign + contributory = OK, so #GP is dispatched
+/// normally via the #GP handler.
+#[test]
+fn i386_no_double_fault_benign_plus_contributory() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 0, 0, 0, 0);
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 1, PM_CODE_BASE, 0xFFFF, 0x9B);
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 2, PM_DATA_BASE, 0xFFFF, 0x93);
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 3, PM_STACK_BASE, 0xFFFF, 0x93);
+
+    // IDT entry 6 (#UD): selector 0x28 (index 5) beyond GDT limit -> #GP on dispatch.
+    write_idt_gate(&mut bus, PM_IDT_BASE, 6, 0x0000, 0x28, 14, 0);
+    // IDT entry 8 (#DF): valid handler (should NOT be reached).
+    write_idt_gate(
+        &mut bus,
+        PM_IDT_BASE,
+        8,
+        PM_DF_HANDLER_IP as u32,
+        PM_CS_SEL,
+        14,
+        0,
+    );
+    // IDT entry 13 (#GP): valid handler (SHOULD be reached).
+    write_idt_gate(
+        &mut bus,
+        PM_IDT_BASE,
+        13,
+        PM_GP_HANDLER_IP as u32,
+        PM_CS_SEL,
+        14,
+        0,
+    );
+
+    bus.ram[(PM_CODE_BASE + PM_DF_HANDLER_IP as u32) as usize] = 0xF4; // HLT
+    bus.ram[(PM_CODE_BASE + PM_GP_HANDLER_IP as u32) as usize] = 0xF4; // HLT
+
+    let mut state = cpu::I386State {
+        cr0: 0x0001,
+        ip: 0x0000,
+        ..Default::default()
+    };
+    state.set_esp(0xFFF0);
+    state.set_cs(PM_CS_SEL);
+    state.set_ds(PM_DS_SEL);
+    state.set_ss(PM_SS_SEL);
+    state.set_es(PM_DS_SEL);
+
+    state.seg_bases[cpu::SegReg32::ES as usize] = PM_DATA_BASE;
+    state.seg_bases[cpu::SegReg32::CS as usize] = PM_CODE_BASE;
+    state.seg_bases[cpu::SegReg32::SS as usize] = PM_STACK_BASE;
+    state.seg_bases[cpu::SegReg32::DS as usize] = PM_DATA_BASE;
+
+    state.seg_limits = [0xFFFF; 6];
+    state.seg_rights[cpu::SegReg32::ES as usize] = 0x93;
+    state.seg_rights[cpu::SegReg32::CS as usize] = 0x9B;
+    state.seg_rights[cpu::SegReg32::SS as usize] = 0x93;
+    state.seg_rights[cpu::SegReg32::DS as usize] = 0x93;
+    state.seg_valid = [true, true, true, true, false, false];
+
+    state.gdt_base = PM_GDT_BASE;
+    state.gdt_limit = 4 * 8 - 1;
+    state.idt_base = PM_IDT_BASE;
+    state.idt_limit = 256 * 8 - 1;
+
+    cpu.load_state(&state);
+
+    // 0F FF is an undefined opcode → #UD (vector 6, benign).
+    place_at(&mut bus, PM_CODE_BASE, &[0x0F, 0xFF]);
+
+    cpu.step(&mut bus); // #UD → dispatch fails → #GP (benign + contrib = OK)
+    cpu.step(&mut bus); // HLT in #GP handler
+
+    assert!(cpu.halted(), "CPU must be halted in #GP handler");
+    assert_eq!(
+        cpu.ip(),
+        PM_GP_HANDLER_IP as u32 + 1,
+        "IP should be in #GP handler (not #DF)"
+    );
+}

@@ -13,6 +13,34 @@ enum DoubleFaultResult {
     Shutdown,
 }
 
+/// Exception classification per Intel 386 Programmer's Reference Manual,
+/// Table 9-3.
+///
+///   0 = benign (INT 1/2/3/4/5/6/7/16)
+///   1 = contributory (#DE=0, #CSO=9, #TS=10, #NP=11, #SS=12, #GP=13)
+///   2 = page fault (#PF=14)
+///   3 = double fault (#DF=8)
+const fn exception_class(vector: u8) -> u8 {
+    match vector {
+        0 | 9 | 10 | 11 | 12 | 13 => 1,
+        14 => 2,
+        8 => 3,
+        _ => 0,
+    }
+}
+
+/// Escalation table: `ESCALATION[prev_class][current_class]` is `true` when
+/// the combination should escalate to a double fault (or shutdown if prev was DF).
+///
+/// Matches the Intel 386 manual Table 9-4.
+const ESCALATION: [[bool; 4]; 4] = [
+    //             benign  contrib  PF     DF
+    /* benign  */ [false, false, false, true],
+    /* contrib */ [false, true, false, true],
+    /* PF      */ [false, true, true, true],
+    /* DF      */ [true, true, true, true],
+];
+
 impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     pub(super) fn check_interrupts(&mut self, bus: &mut impl common::Bus) {
         if self.pending_irq & PENDING_NMI != 0 && self.inhibit_all == 0 {
@@ -90,9 +118,21 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
         let gate_addr = self.idt_base.wrapping_add(gate_offset);
         let w0 = self.read_word_linear(bus, gate_addr);
+        if self.fault_pending {
+            return;
+        }
         let w1 = self.read_word_linear(bus, gate_addr.wrapping_add(2));
+        if self.fault_pending {
+            return;
+        }
         let w2 = self.read_word_linear(bus, gate_addr.wrapping_add(4));
+        if self.fault_pending {
+            return;
+        }
         let w3 = self.read_word_linear(bus, gate_addr.wrapping_add(6));
+        if self.fault_pending {
+            return;
+        }
 
         let gate_selector = w1;
         let rights_byte = (w2 >> 8) as u8;
@@ -165,6 +205,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.raise_fault_with_code(13, Self::segment_error_code(gate_selector) + ext, bus);
             return;
         };
+        if self.fault_pending {
+            return;
+        }
 
         let rights = descriptor.rights;
         if !Self::descriptor_is_code(rights) || !Self::descriptor_is_segment(rights) {
@@ -212,7 +255,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     return;
                 }
                 let esp = self.read_dword_linear(bus, self.tr_base.wrapping_add(tss_esp_offset));
+                if self.fault_pending {
+                    return;
+                }
                 let ss = self.read_word_linear(bus, self.tr_base.wrapping_add(tss_ss_offset));
+                if self.fault_pending {
+                    return;
+                }
                 (esp, ss)
             } else {
                 let tss_sp_offset = 2 + new_dpl as u32 * 4;
@@ -222,7 +271,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     return;
                 }
                 let sp = self.read_word_linear(bus, self.tr_base.wrapping_add(tss_sp_offset));
+                if self.fault_pending {
+                    return;
+                }
                 let ss = self.read_word_linear(bus, self.tr_base.wrapping_add(tss_ss_offset));
+                if self.fault_pending {
+                    return;
+                }
                 (sp as u32, ss)
             };
 
@@ -248,6 +303,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.raise_fault_with_code(10, ss_error_code, bus);
                 return;
             };
+            if self.fault_pending {
+                return;
+            }
             let ss_rights = ss_descriptor.rights;
             let ss_dpl = Self::descriptor_dpl(ss_rights);
             let ss_rpl = new_ss & 0x0003;
@@ -275,32 +333,92 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             if is_386_gate {
                 if from_vm86 {
                     self.push_dword(bus, old_gs as u32);
+                    if self.fault_pending {
+                        return;
+                    }
                     self.push_dword(bus, old_fs as u32);
+                    if self.fault_pending {
+                        return;
+                    }
                     self.push_dword(bus, old_ds as u32);
+                    if self.fault_pending {
+                        return;
+                    }
                     self.push_dword(bus, old_es as u32);
+                    if self.fault_pending {
+                        return;
+                    }
                 }
                 self.push_dword(bus, old_ss as u32);
+                if self.fault_pending {
+                    return;
+                }
                 self.push_dword(bus, old_sp);
+                if self.fault_pending {
+                    return;
+                }
                 self.push_dword(bus, old_eflags);
+                if self.fault_pending {
+                    return;
+                }
                 self.push_dword(bus, old_cs as u32);
+                if self.fault_pending {
+                    return;
+                }
                 self.push_dword(bus, return_eip);
+                if self.fault_pending {
+                    return;
+                }
                 if let Some(code) = error_code {
                     self.push_dword(bus, code as u32);
+                    if self.fault_pending {
+                        return;
+                    }
                 }
             } else {
                 if from_vm86 {
                     self.push(bus, old_gs);
+                    if self.fault_pending {
+                        return;
+                    }
                     self.push(bus, old_fs);
+                    if self.fault_pending {
+                        return;
+                    }
                     self.push(bus, old_ds);
+                    if self.fault_pending {
+                        return;
+                    }
                     self.push(bus, old_es);
+                    if self.fault_pending {
+                        return;
+                    }
                 }
                 self.push(bus, old_ss);
+                if self.fault_pending {
+                    return;
+                }
                 self.push(bus, old_sp as u16);
+                if self.fault_pending {
+                    return;
+                }
                 self.push(bus, old_eflags as u16);
+                if self.fault_pending {
+                    return;
+                }
                 self.push(bus, old_cs);
+                if self.fault_pending {
+                    return;
+                }
                 self.push(bus, return_eip as u16);
+                if self.fault_pending {
+                    return;
+                }
                 if let Some(code) = error_code {
                     self.push(bus, code);
+                    if self.fault_pending {
+                        return;
+                    }
                 }
             }
 
@@ -330,19 +448,43 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             let eflags = self.eflags_upper | self.flags.compress() as u32;
             let cs = self.sregs[SegReg32::CS as usize];
             self.push_dword(bus, eflags);
+            if self.fault_pending {
+                return;
+            }
             self.push_dword(bus, cs as u32);
+            if self.fault_pending {
+                return;
+            }
             self.push_dword(bus, return_eip);
+            if self.fault_pending {
+                return;
+            }
             if let Some(code) = error_code {
                 self.push_dword(bus, code as u32);
+                if self.fault_pending {
+                    return;
+                }
             }
         } else {
             let flags_val = self.flags.compress();
             let cs = self.sregs[SegReg32::CS as usize];
             self.push(bus, flags_val);
+            if self.fault_pending {
+                return;
+            }
             self.push(bus, cs);
+            if self.fault_pending {
+                return;
+            }
             self.push(bus, return_eip as u16);
+            if self.fault_pending {
+                return;
+            }
             if let Some(code) = error_code {
                 self.push(bus, code);
+                if self.fault_pending {
+                    return;
+                }
             }
         }
 
@@ -393,6 +535,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         if self.shutdown {
             return;
         }
+        let saved_fault_pending = self.fault_pending;
+        self.fault_pending = false;
         let return_eip = self.prev_ip_upper | self.prev_ip as u32;
         if self.is_protected_mode() {
             match self.check_double_fault(vector) {
@@ -400,6 +544,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 DoubleFaultResult::DoubleFault => {
                     self.interrupt_with_return_eip(8, return_eip, Some(0), false, false, bus);
                     self.trap_level = 0;
+                    self.fault_pending = true;
                     return;
                 }
                 DoubleFaultResult::Normal => {}
@@ -407,6 +552,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
         self.interrupt_with_return_eip(vector, return_eip, None, false, false, bus);
         self.trap_level = 0;
+        self.fault_pending = saved_fault_pending || self.fault_pending;
     }
 
     pub(super) fn raise_fault_with_code(
@@ -418,6 +564,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         if self.shutdown {
             return;
         }
+        let saved_fault_pending = self.fault_pending;
+        self.fault_pending = false;
         let return_eip = self.prev_ip_upper | self.prev_ip as u32;
         if self.is_protected_mode() {
             match self.check_double_fault(vector) {
@@ -425,6 +573,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 DoubleFaultResult::DoubleFault => {
                     self.interrupt_with_return_eip(8, return_eip, Some(0), false, false, bus);
                     self.trap_level = 0;
+                    self.fault_pending = true;
                     return;
                 }
                 DoubleFaultResult::Normal => {}
@@ -432,24 +581,31 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
         self.interrupt_with_return_eip(vector, return_eip, Some(error_code), false, false, bus);
         self.trap_level = 0;
-    }
-
-    fn is_contributory_exception(vector: u8) -> bool {
-        matches!(vector, 0 | 10 | 11 | 12 | 13 | 14)
+        self.fault_pending = saved_fault_pending || self.fault_pending;
     }
 
     fn check_double_fault(&mut self, vector: u8) -> DoubleFaultResult {
-        if Self::is_contributory_exception(vector) || vector == 8 {
-            self.trap_level += 1;
-            if self.trap_level >= 3 {
-                self.shutdown = true;
-                self.halted = true;
-                return DoubleFaultResult::Shutdown;
-            }
-            if self.trap_level >= 2 {
+        let current_class = exception_class(vector);
+        self.trap_level += 1;
+
+        // Triple fault: 3+ consecutive exceptions, or any exception during DF delivery.
+        if self.trap_level >= 3 || (self.trap_level >= 2 && self.prev_exception_class == 3) {
+            self.shutdown = true;
+            self.halted = true;
+            return DoubleFaultResult::Shutdown;
+        }
+
+        // Double fault: check the escalation table for the prev/current combination.
+        if self.trap_level >= 2 {
+            let prev = self.prev_exception_class as usize;
+            let curr = current_class as usize;
+            if ESCALATION[prev][curr] {
+                self.prev_exception_class = 3;
                 return DoubleFaultResult::DoubleFault;
             }
         }
+
+        self.prev_exception_class = current_class;
         DoubleFaultResult::Normal
     }
 }
