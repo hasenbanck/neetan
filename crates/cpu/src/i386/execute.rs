@@ -2995,7 +2995,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     fn in_al_imm(&mut self, bus: &mut impl common::Bus) {
         let port = self.fetch(bus) as u16;
-        if !self.check_io_privilege(port, bus) {
+        if !self.check_io_privilege(port, 1, bus) {
             return;
         }
         let val = bus.io_read_byte(port);
@@ -3005,13 +3005,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     fn in_aw_imm(&mut self, bus: &mut impl common::Bus) {
         let port = self.fetch(bus) as u16;
-        if !self.check_io_privilege(port, bus) {
+        let size = if self.operand_size_override { 4 } else { 2 };
+        if !self.check_io_privilege(port, size, bus) {
             return;
         }
         if self.operand_size_override {
-            if !self.check_io_privilege(port.wrapping_add(2), bus) {
-                return;
-            }
             let low = bus.io_read_word(port) as u32;
             let high = bus.io_read_word(port.wrapping_add(2)) as u32;
             self.regs.set_dword(DwordReg::EAX, low | (high << 16));
@@ -3024,7 +3022,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     fn out_imm_al(&mut self, bus: &mut impl common::Bus) {
         let port = self.fetch(bus) as u16;
-        if !self.check_io_privilege(port, bus) {
+        if !self.check_io_privilege(port, 1, bus) {
             return;
         }
         let val = self.regs.byte(ByteReg::AL);
@@ -3034,13 +3032,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     fn out_imm_aw(&mut self, bus: &mut impl common::Bus) {
         let port = self.fetch(bus) as u16;
-        if !self.check_io_privilege(port, bus) {
+        let size = if self.operand_size_override { 4 } else { 2 };
+        if !self.check_io_privilege(port, size, bus) {
             return;
         }
         if self.operand_size_override {
-            if !self.check_io_privilege(port.wrapping_add(2), bus) {
-                return;
-            }
             let val = self.regs.dword(DwordReg::EAX);
             bus.io_write_word(port, val as u16);
             bus.io_write_word(port.wrapping_add(2), (val >> 16) as u16);
@@ -3053,7 +3049,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     fn in_al_dw(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
-        if !self.check_io_privilege(port, bus) {
+        if !self.check_io_privilege(port, 1, bus) {
             return;
         }
         let val = bus.io_read_byte(port);
@@ -3063,13 +3059,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     fn in_aw_dw(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
-        if !self.check_io_privilege(port, bus) {
+        let size = if self.operand_size_override { 4 } else { 2 };
+        if !self.check_io_privilege(port, size, bus) {
             return;
         }
         if self.operand_size_override {
-            if !self.check_io_privilege(port.wrapping_add(2), bus) {
-                return;
-            }
             let low = bus.io_read_word(port) as u32;
             let high = bus.io_read_word(port.wrapping_add(2)) as u32;
             self.regs.set_dword(DwordReg::EAX, low | (high << 16));
@@ -3082,7 +3076,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     fn out_dw_al(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
-        if !self.check_io_privilege(port, bus) {
+        if !self.check_io_privilege(port, 1, bus) {
             return;
         }
         let val = self.regs.byte(ByteReg::AL);
@@ -3092,13 +3086,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     fn out_dw_aw(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
-        if !self.check_io_privilege(port, bus) {
+        let size = if self.operand_size_override { 4 } else { 2 };
+        if !self.check_io_privilege(port, size, bus) {
             return;
         }
         if self.operand_size_override {
-            if !self.check_io_privilege(port.wrapping_add(2), bus) {
-                return;
-            }
             let val = self.regs.dword(DwordReg::EAX);
             bus.io_write_word(port, val as u16);
             bus.io_write_word(port.wrapping_add(2), (val >> 16) as u16);

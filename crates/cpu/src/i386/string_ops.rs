@@ -331,7 +331,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     pub(super) fn insb(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
-        if !self.check_io_privilege(port, bus) {
+        if !self.check_io_privilege(port, 1, bus) {
             return;
         }
         let di = self.string_index_di();
@@ -347,15 +347,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     pub(super) fn insw(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
-        if !self.check_io_privilege(port, bus) {
+        let size = if self.operand_size_override { 4 } else { 2 };
+        if !self.check_io_privilege(port, size, bus) {
             return;
         }
         let di = self.string_index_di();
         let base = self.seg_base(SegReg32::ES);
         if self.operand_size_override {
-            if !self.check_io_privilege(port.wrapping_add(2), bus) {
-                return;
-            }
             let low = bus.io_read_word(port) as u32;
             let high = bus.io_read_word(port.wrapping_add(2)) as u32;
             let val = low | (high << 16);
@@ -377,7 +375,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     pub(super) fn outsb(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
-        if !self.check_io_privilege(port, bus) {
+        if !self.check_io_privilege(port, 1, bus) {
             return;
         }
         let si = self.string_index_si();
@@ -391,15 +389,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     pub(super) fn outsw(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
-        if !self.check_io_privilege(port, bus) {
+        let size = if self.operand_size_override { 4 } else { 2 };
+        if !self.check_io_privilege(port, size, bus) {
             return;
         }
         let si = self.string_index_si();
         let base = self.default_base(SegReg32::DS);
         if self.operand_size_override {
-            if !self.check_io_privilege(port.wrapping_add(2), bus) {
-                return;
-            }
             let val = self.string_read_dword(bus, base, si);
             bus.io_write_word(port, val as u16);
             bus.io_write_word(port.wrapping_add(2), (val >> 16) as u16);
