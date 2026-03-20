@@ -3751,6 +3751,20 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             // Undocumented port (probed by Windows 3.1 during hardware detection).
             0x0879 => 0xFF,
 
+            // Epson PC-98 compatible system control ports (machine detection).
+            // 0xFF = not an Epson machine.
+            0x0C00 | 0x0C01 | 0x0C02 | 0x0C05 => 0xFF,
+
+            // Undocumented ports (probed by Windows 95 during hardware detection).
+            0x0D00 | 0x0D01 | 0x0D02 | 0x0D05 | 0x0D0A => 0xFF,
+
+            // Undocumented system register ports (probed by Windows 95).
+            0x8D08 | 0x8D0E => 0xFF,
+
+            // Video Board (PC-9801-72 / PC-98GS-02) detection ports.
+            // Ref: undoc98 `io_vbrd.txt` — 0xFF = board not present.
+            0xAF66 | 0xAF67 | 0xAF6A | 0xAF6B => 0xFF,
+
             _ => {
                 self.tracer.trace_io_unhandled_read(port);
                 warn!("Unhandled I/O read: port={port:#06X}");
@@ -4470,6 +4484,19 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             0x8F1F if self.machine_model.has_sdip() => {
                 self.sdip.select_bank_from_bit6(value);
             }
+
+            // Epson PC-98 compatible system control ports (ignored, not an Epson machine).
+            0x0C05 => {}
+
+            // Undocumented ports (probed by Windows 95 during hardware detection).
+            0x0D00..=0x0D03 => {}
+
+            // Undocumented system register ports (probed by Windows 95).
+            0x8D08 | 0x8D0E => {}
+
+            // Video Board (PC-9801-72 / PC-98GS-02) control ports (ignored, no video board).
+            // Ref: undoc98 `io_vbrd.txt`
+            0xAF67 | 0xAF6A | 0xAF6B => {}
 
             _ => {
                 self.tracer.trace_io_unhandled_write(port, value);
