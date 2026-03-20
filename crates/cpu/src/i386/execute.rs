@@ -1365,8 +1365,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     fn jcc(&mut self, bus: &mut impl common::Bus, condition: bool) {
         let disp = self.fetch(bus) as i8;
         if condition {
-            self.ip = self.ip.wrapping_add(disp as u16);
-            self.ip_upper = 0;
+            self.apply_branch_disp8(disp);
             match CPU_MODEL {
                 CPU_MODEL_386 => {
                     let m = self.next_instruction_length_approx(bus);
@@ -1385,8 +1384,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     fn jcc_swapped(&mut self, bus: &mut impl common::Bus, condition: bool) {
         let disp = self.fetch(bus) as i8;
         if condition {
-            self.ip = self.ip.wrapping_add(disp as u16);
-            self.ip_upper = 0;
+            self.apply_branch_disp8(disp);
             match CPU_MODEL {
                 CPU_MODEL_386 => {
                     let m = self.next_instruction_length_approx(bus);
@@ -1831,9 +1829,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     fn jmp_short(&mut self, bus: &mut impl common::Bus) {
-        let disp = self.fetch(bus) as i8 as u16;
-        self.ip = self.ip.wrapping_add(disp);
-        self.ip_upper = 0;
+        let disp = self.fetch(bus) as i8;
+        self.apply_branch_disp8(disp);
         match CPU_MODEL {
             CPU_MODEL_386 => {
                 let m = self.next_instruction_length_approx(bus);
@@ -2889,7 +2886,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     fn loopne(&mut self, bus: &mut impl common::Bus) {
-        let disp = self.fetch(bus) as i8 as i32 as u32;
+        let disp = self.fetch(bus) as i8;
         let count = if self.address_size_override {
             let value = self.regs.dword(DwordReg::ECX).wrapping_sub(1);
             self.regs.set_dword(DwordReg::ECX, value);
@@ -2900,8 +2897,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             value as u32
         };
         if count != 0 && !self.flags.zf() {
-            self.ip = self.ip.wrapping_add(disp as u16);
-            self.ip_upper = 0;
+            self.apply_branch_disp8(disp);
             match CPU_MODEL {
                 CPU_MODEL_386 => {
                     let m = self.next_instruction_length_approx(bus);
@@ -2918,7 +2914,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     fn loope(&mut self, bus: &mut impl common::Bus) {
-        let disp = self.fetch(bus) as i8 as i32 as u32;
+        let disp = self.fetch(bus) as i8;
         let count = if self.address_size_override {
             let value = self.regs.dword(DwordReg::ECX).wrapping_sub(1);
             self.regs.set_dword(DwordReg::ECX, value);
@@ -2929,8 +2925,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             value as u32
         };
         if count != 0 && self.flags.zf() {
-            self.ip = self.ip.wrapping_add(disp as u16);
-            self.ip_upper = 0;
+            self.apply_branch_disp8(disp);
             match CPU_MODEL {
                 CPU_MODEL_386 => {
                     let m = self.next_instruction_length_approx(bus);
@@ -2947,7 +2942,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     fn loop_(&mut self, bus: &mut impl common::Bus) {
-        let disp = self.fetch(bus) as i8 as i32 as u32;
+        let disp = self.fetch(bus) as i8;
         let count = if self.address_size_override {
             let value = self.regs.dword(DwordReg::ECX).wrapping_sub(1);
             self.regs.set_dword(DwordReg::ECX, value);
@@ -2958,8 +2953,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             value as u32
         };
         if count != 0 {
-            self.ip = self.ip.wrapping_add(disp as u16);
-            self.ip_upper = 0;
+            self.apply_branch_disp8(disp);
             match CPU_MODEL {
                 CPU_MODEL_386 => {
                     let m = self.next_instruction_length_approx(bus);
@@ -2976,15 +2970,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     fn jcxz(&mut self, bus: &mut impl common::Bus) {
-        let disp = self.fetch(bus) as i8 as i32 as u32;
+        let disp = self.fetch(bus) as i8;
         let is_zero = if self.address_size_override {
             self.regs.dword(DwordReg::ECX) == 0
         } else {
             self.regs.word(WordReg::CX) == 0
         };
         if is_zero {
-            self.ip = self.ip.wrapping_add(disp as u16);
-            self.ip_upper = 0;
+            self.apply_branch_disp8(disp);
             match CPU_MODEL {
                 CPU_MODEL_386 => {
                     let m = self.next_instruction_length_approx(bus);
