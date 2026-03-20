@@ -103,6 +103,7 @@ pub struct I386<const CPU_MODEL: u8 = { CPU_MODEL_386 }> {
     tlb_phys: [u32; 64],
     tlb_writable: [bool; 64],
 
+    debug_trap_pending: bool,
     trap_level: u8,
     prev_exception_class: u8,
     shutdown: bool,
@@ -167,6 +168,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             tlb_tag: [0; 64],
             tlb_phys: [0; 64],
             tlb_writable: [false; 64],
+            debug_trap_pending: false,
             trap_level: 0,
             prev_exception_class: 0,
             shutdown: false,
@@ -1631,6 +1633,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
         self.cr0 |= 8;
 
+        // TSS T-bit (offset 100, bit 0): schedule a debug trap (#DB) after the
+        // first instruction of the new task. Sets DR6.BT (bit 15).
+        if is_386_tss {
+            let debug_trap_word = self.read_word_linear(bus, new_base.wrapping_add(100));
+            if debug_trap_word & 1 != 0 {
+                self.debug_trap_pending = true;
+            }
+        }
+
         if is_386_tss && (ntss_eflags & 0x0002_0000) != 0 {
             // VM86 task: segment selectors are interpreted with real-mode
             // bases/limits, not protected-mode descriptors.
@@ -2088,6 +2099,12 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
 
         if tf_was_set && !self.fault_pending && !inhibit {
+            self.raise_trap(1, bus);
+        }
+
+        if self.debug_trap_pending && !self.fault_pending {
+            self.debug_trap_pending = false;
+            self.dr6 |= 0x8000; // BT (bit 15) — task switch debug trap
             self.raise_trap(1, bus);
         }
     }
