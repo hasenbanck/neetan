@@ -2002,9 +2002,12 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         if self.no_interrupt > 0 {
             self.no_interrupt -= 1;
         }
+        let inhibit = self.inhibit_all > 0;
         if self.inhibit_all > 0 {
             self.inhibit_all -= 1;
         }
+
+        let tf_was_set = self.flags.tf;
 
         self.seg_prefix = false;
         self.lock_prefix = false;
@@ -2079,6 +2082,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     }
                 }
             }
+        }
+
+        if tf_was_set && !self.fault_pending && !inhibit {
+            self.raise_trap(1, bus);
         }
     }
 
