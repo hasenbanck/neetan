@@ -531,6 +531,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.interrupt_with_return_eip(vector, return_eip, None, true, false, bus);
     }
 
+    pub(super) fn raise_trap(&mut self, vector: u8, bus: &mut impl common::Bus) {
+        let return_eip = if self.rep_active {
+            self.ip_upper | self.rep_restart_ip as u32
+        } else {
+            self.ip_upper | self.ip as u32
+        };
+        self.interrupt_with_return_eip(vector, return_eip, None, false, false, bus);
+    }
+
     pub(super) fn raise_fault(&mut self, vector: u8, bus: &mut impl common::Bus) {
         if self.shutdown {
             return;

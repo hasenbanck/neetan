@@ -5494,3 +5494,67 @@ fn i386_bound_above_raises_br() {
     assert!(cpu.halted());
     assert_eq!(cpu.ip(), PM_BR_HANDLER_IP as u32 + 1);
 }
+#[test]
+fn i386_tf_single_step_raises_db() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // Set TF=1
+    cpu.state.flags.tf = true;
+
+    // 90 = NOP
+    place_at(&mut bus, PM_CODE_BASE, &[0x90]);
+
+    cpu.step(&mut bus); // NOP — after execution, TF fires #DB
+    cpu.step(&mut bus); // HLT in handler
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_DB_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_tf_cleared_in_handler() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    cpu.state.flags.tf = true;
+
+    // 90 = NOP
+    place_at(&mut bus, PM_CODE_BASE, &[0x90]);
+
+    cpu.step(&mut bus); // NOP
+    cpu.step(&mut bus); // HLT in handler
+
+    assert!(cpu.halted());
+    assert!(
+        !cpu.state.flags.tf,
+        "TF should be cleared in the #DB handler"
+    );
+}
+
+#[test]
+fn i386_tf_set_in_pushed_eflags() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    cpu.state.flags.tf = true;
+
+    // 90 = NOP
+    place_at(&mut bus, PM_CODE_BASE, &[0x90]);
+
+    cpu.step(&mut bus); // NOP
+    cpu.step(&mut bus); // HLT in handler
+
+    assert!(cpu.halted());
+
+    // Stack: EIP, CS, EFLAGS (pushed by interrupt gate, 32-bit pushes)
+    let sp = cpu.esp();
+    let pushed_eflags = read_dword_at(&bus, PM_STACK_BASE + sp + 8);
+    assert_ne!(pushed_eflags & 0x0100, 0, "Pushed EFLAGS should have TF=1");
+}
