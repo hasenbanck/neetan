@@ -31,6 +31,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     /// Group 0x80: ALU r/m8, imm8
     pub(super) fn group_80(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
+        if self.lock_prefix && (modrm >> 3) & 7 == 7 {
+            self.raise_fault(6, bus);
+            return;
+        }
         let dst = self.get_rm_byte(modrm, bus);
         let src = self.fetch(bus);
         let result = match (modrm >> 3) & 7 {
@@ -63,6 +67,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     /// Group 0x81: ALU r/m16, imm16
     pub(super) fn group_81(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
+        if self.lock_prefix && (modrm >> 3) & 7 == 7 {
+            self.raise_fault(6, bus);
+            return;
+        }
         if self.operand_size_override {
             let dst = self.get_rm_dword(modrm, bus);
             let src = self.fetchdword(bus);
@@ -130,6 +138,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     /// Group 0x83: ALU r/m16, sign-extended imm8
     pub(super) fn group_83(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
+        if self.lock_prefix && (modrm >> 3) & 7 == 7 {
+            self.raise_fault(6, bus);
+            return;
+        }
         if self.operand_size_override {
             let dst = self.get_rm_dword(modrm, bus);
             let src = self.fetch(bus) as i8 as i32 as u32;
@@ -375,6 +387,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     pub(super) fn group_f6(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
         let op = (modrm >> 3) & 7;
+        if self.lock_prefix && !matches!(op, 2 | 3) {
+            self.raise_fault(6, bus);
+            return;
+        }
         match op {
             0 | 1 => {
                 // TEST r/m8, imm8
@@ -473,6 +489,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     pub(super) fn group_f7(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
         let op = (modrm >> 3) & 7;
+        if self.lock_prefix && !matches!(op, 2 | 3) {
+            self.raise_fault(6, bus);
+            return;
+        }
         if self.operand_size_override {
             match op {
                 0 | 1 => {
@@ -676,6 +696,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     /// Group 0xFE: INC/DEC r/m8
     pub(super) fn group_fe(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
+        if self.lock_prefix && (modrm >> 3) & 7 >= 2 {
+            self.raise_fault(6, bus);
+            return;
+        }
         match (modrm >> 3) & 7 {
             0 => {
                 // INC r/m8
@@ -700,6 +724,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     /// Group 0xFF: various word operations
     pub(super) fn group_ff(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
+        if self.lock_prefix && (modrm >> 3) & 7 >= 2 {
+            self.raise_fault(6, bus);
+            return;
+        }
         match (modrm >> 3) & 7 {
             0 => {
                 if self.operand_size_override {

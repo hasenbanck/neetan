@@ -527,8 +527,6 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             | 0xF6 | 0xF7
             // INC/DEC r/m (FE /0, /1 and FF /0, /1)
             | 0xFE | 0xFF
-            // 0F-prefixed: BT/BTS/BTR/BTC
-            | 0x0F
         )
     }
 
@@ -2074,7 +2072,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                         opcode = self.fetch(bus);
                     }
                     _ => {
-                        if self.lock_prefix && !Self::is_lockable(opcode) {
+                        if self.lock_prefix && opcode != 0x0F && !Self::is_lockable(opcode) {
                             self.raise_fault(6, bus);
                         } else {
                             self.dispatch(opcode, bus);

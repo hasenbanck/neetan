@@ -4,6 +4,19 @@ use crate::{ByteReg, DwordReg, SegReg32, WordReg};
 impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     pub(super) fn extended_0f(&mut self, bus: &mut impl common::Bus) {
         let sub = self.fetch(bus);
+        if self.lock_prefix {
+            let lockable = matches!(
+                sub,
+                0xAB | 0xB3 | 0xBB // BTS/BTR/BTC r/m, r
+                | 0xBA             // group BA (sub-op validated in group_ba)
+                | 0xB0 | 0xB1      // CMPXCHG (486+)
+                | 0xC0 | 0xC1 // XADD (486+)
+            );
+            if !lockable {
+                self.raise_fault(6, bus);
+                return;
+            }
+        }
         match sub {
             0x00 => self.group_0f00(bus),
             0x01 => self.group_0f01(bus),
@@ -444,6 +457,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     fn group_ba(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
+        if self.lock_prefix && (modrm >> 3) & 7 == 4 {
+            self.raise_fault(6, bus);
+            return;
+        }
         self.ip = self.ip.wrapping_sub(1);
         match (modrm >> 3) & 7 {
             4 => self.bit_modify_imm(
