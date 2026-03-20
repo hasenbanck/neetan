@@ -5325,3 +5325,96 @@ fn i386_hlt_at_cpl3_raises_gp() {
     assert!(cpu.halted());
     assert_eq!(cpu.ip(), PM_GP_HANDLER_IP as u32 + 1);
 }
+#[test]
+fn i386_int3_raises_bp() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // CC = INT3
+    place_at(&mut bus, PM_CODE_BASE, &[0xCC]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_BP_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_int3_return_ip_after_instruction() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // CC = INT3 (1 byte)
+    place_at(&mut bus, PM_CODE_BASE, &[0xCC]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+
+    // Pushed EIP should point after the 1-byte INT3 (i.e., 0x0001)
+    let sp = cpu.esp();
+    let pushed_eip = read_dword_at(&bus, PM_STACK_BASE + sp);
+    assert_eq!(
+        pushed_eip, 0x0001,
+        "INT3 is a trap; pushed EIP should point after the instruction"
+    );
+}
+
+#[test]
+fn i386_into_with_overflow_raises_of() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // Set OF=1: ADD 0x7FFF + 1 overflows a signed 16-bit
+    // B8 FF 7F = MOV AX, 0x7FFF
+    // 05 01 00 = ADD AX, 1
+    // CE = INTO
+    place_at(
+        &mut bus,
+        PM_CODE_BASE,
+        &[
+            0xB8, 0xFF, 0x7F, // MOV AX, 0x7FFF
+            0x05, 0x01, 0x00, // ADD AX, 1
+            0xCE, // INTO
+        ],
+    );
+
+    cpu.step(&mut bus); // MOV AX, 0x7FFF
+    cpu.step(&mut bus); // ADD AX, 1 → OF=1
+    cpu.step(&mut bus); // INTO → vector 4
+    cpu.step(&mut bus); // HLT
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_OF_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_into_without_overflow_is_nop() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // OF=0 (default), INTO should be a no-op, then HLT
+    // CE = INTO
+    // F4 = HLT
+    place_at(&mut bus, PM_CODE_BASE, &[0xCE, 0xF4]);
+
+    cpu.step(&mut bus); // INTO — OF=0, no trap
+    cpu.step(&mut bus); // HLT
+
+    assert!(cpu.halted());
+    assert_eq!(
+        cpu.ip(),
+        0x0002,
+        "INTO with OF=0 should fall through to next instruction"
+    );
+}
