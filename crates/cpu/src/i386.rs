@@ -286,6 +286,21 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.ip_upper = next & 0xFFFF_0000;
     }
 
+    /// Applies a signed 8-bit branch displacement to EIP, respecting the
+    /// current operand size: 32-bit mode preserves the full EIP, while
+    /// 16-bit mode truncates to 16 bits.
+    #[inline(always)]
+    fn apply_branch_disp8(&mut self, disp: i8) {
+        if self.operand_size_override {
+            let eip = self.effective_eip().wrapping_add(disp as i32 as u32);
+            self.ip = eip as u16;
+            self.ip_upper = eip & 0xFFFF_0000;
+        } else {
+            self.ip = self.ip.wrapping_add(disp as u16);
+            self.ip_upper = 0;
+        }
+    }
+
     #[inline(always)]
     fn next_instruction_length_approx(&self, bus: &mut impl common::Bus) -> i32 {
         let code_32bit = self.code_segment_32bit();

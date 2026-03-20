@@ -4698,3 +4698,190 @@ fn i386_no_double_fault_benign_plus_contributory() {
         "IP should be in #GP handler (not #DF)"
     );
 }
+
+/// 32-bit code segment: JMP short (EB rel8) at EIP > 0xFFFF preserves upper EIP bits.
+///
+/// Per Intel 386 Programmer's Reference Manual §3.5.1.1:
+/// "The processor forms an effective address by adding this relative
+/// displacement to the address contained in EIP."
+///
+/// A short branch must add the signed 8-bit displacement to the full 32-bit
+/// EIP, not just the lower 16-bit IP.
+#[test]
+fn i386_jmp_short_preserves_eip_upper_in_32bit_mode() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    // 32-bit code segment: base=0, limit=0xFFFFF (page granularity = 4GB),
+    // D-bit set (granularity byte 0xC0 = page granularity + 32-bit default).
+    write_gdt_entry(&mut bus, PM_GDT_BASE, 0, 0, 0, 0, 0);
+    write_gdt_entry(&mut bus, PM_GDT_BASE, 1, 0, 0xFFFFF, 0x9B, 0xC0);
+    write_gdt_entry(&mut bus, PM_GDT_BASE, 3, PM_STACK_BASE, 0xFFFF, 0x93, 0);
+    write_idt_gate(
+        &mut bus,
+        PM_IDT_BASE,
+        13,
+        PM_GP_HANDLER_IP as u32,
+        PM_CS_SEL,
+        14,
+        0,
+    );
+
+    let start_eip: u32 = 0x1_0004;
+
+    let mut state = cpu::I386State {
+        cr0: 0x0001,
+        ..Default::default()
+    };
+    state.set_eip(start_eip);
+    state.set_esp(0xFFF0);
+    state.set_cs(PM_CS_SEL);
+    state.set_ss(PM_SS_SEL);
+
+    state.seg_bases[cpu::SegReg32::CS as usize] = 0;
+    state.seg_bases[cpu::SegReg32::SS as usize] = PM_STACK_BASE;
+    state.seg_limits[cpu::SegReg32::CS as usize] = 0xFFFF_FFFF;
+    state.seg_limits[cpu::SegReg32::SS as usize] = 0xFFFF;
+    state.seg_rights[cpu::SegReg32::CS as usize] = 0x9B;
+    state.seg_rights[cpu::SegReg32::SS as usize] = 0x93;
+    state.seg_granularity[cpu::SegReg32::CS as usize] = 0xC0;
+    state.seg_valid = [false, true, true, false, false, false];
+
+    state.gdt_base = PM_GDT_BASE;
+    state.gdt_limit = 4 * 8 - 1;
+    state.idt_base = PM_IDT_BASE;
+    state.idt_limit = 256 * 8 - 1;
+
+    cpu.load_state(&state);
+
+    // JMP short -4 (EB FC) at EIP=0x10004.
+    bus.ram[start_eip as usize] = 0xEB; // JMP short
+    bus.ram[start_eip as usize + 1] = 0xFC; // rel8 = -4
+
+    // Place HLT at target (0x10002).
+    bus.ram[0x1_0002] = 0xF4; // HLT
+
+    cpu.step(&mut bus); // JMP short → EIP = 0x10002
+    cpu.step(&mut bus); // HLT
+
+    assert!(cpu.halted(), "CPU must halt after JMP short → HLT");
+    assert_eq!(
+        cpu.ip(),
+        0x1_0003,
+        "EIP should be 0x10003 (0x10002 + 1 for HLT), upper bits preserved"
+    );
+}
+
+/// 32-bit code segment: Jcc short (e.g., JZ rel8) at EIP > 0xFFFF preserves upper EIP bits.
+#[test]
+fn i386_jcc_short_preserves_eip_upper_in_32bit_mode() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    write_gdt_entry(&mut bus, PM_GDT_BASE, 0, 0, 0, 0, 0);
+    write_gdt_entry(&mut bus, PM_GDT_BASE, 1, 0, 0xFFFFF, 0x9B, 0xC0);
+    write_gdt_entry(&mut bus, PM_GDT_BASE, 3, PM_STACK_BASE, 0xFFFF, 0x93, 0);
+
+    let start_eip: u32 = 0x1_0000;
+
+    let mut state = cpu::I386State {
+        cr0: 0x0001,
+        ..Default::default()
+    };
+    state.set_eip(start_eip);
+    state.set_esp(0xFFF0);
+    state.set_cs(PM_CS_SEL);
+    state.set_ss(PM_SS_SEL);
+
+    state.seg_bases[cpu::SegReg32::CS as usize] = 0;
+    state.seg_bases[cpu::SegReg32::SS as usize] = PM_STACK_BASE;
+    state.seg_limits[cpu::SegReg32::CS as usize] = 0xFFFF_FFFF;
+    state.seg_limits[cpu::SegReg32::SS as usize] = 0xFFFF;
+    state.seg_rights[cpu::SegReg32::CS as usize] = 0x9B;
+    state.seg_rights[cpu::SegReg32::SS as usize] = 0x93;
+    state.seg_granularity[cpu::SegReg32::CS as usize] = 0xC0;
+    state.seg_valid = [false, true, true, false, false, false];
+
+    state.gdt_base = PM_GDT_BASE;
+    state.gdt_limit = 4 * 8 - 1;
+    state.idt_base = PM_IDT_BASE;
+    state.idt_limit = 256 * 8 - 1;
+
+    cpu.load_state(&state);
+
+    // XOR EAX, EAX (sets ZF=1) then JZ +4 at EIP=0x10002.
+    // After JZ instruction (2 bytes), IP = 0x10004. Disp +4 → EIP = 0x10008.
+    bus.ram[start_eip as usize] = 0x31; // XOR AX, AX (2 bytes: 31 C0)
+    bus.ram[start_eip as usize + 1] = 0xC0;
+    bus.ram[start_eip as usize + 2] = 0x74; // JZ rel8
+    bus.ram[start_eip as usize + 3] = 0x04; // +4
+    bus.ram[0x1_0008] = 0xF4; // HLT at target
+
+    cpu.step(&mut bus); // XOR AX, AX (ZF=1)
+    cpu.step(&mut bus); // JZ +4 → EIP = 0x10008
+    cpu.step(&mut bus); // HLT
+
+    assert!(cpu.halted());
+    assert_eq!(
+        cpu.ip(),
+        0x1_0009,
+        "EIP should be 0x10009 (after HLT at 0x10008), upper bits preserved"
+    );
+}
+
+/// 32-bit code segment: LOOP at EIP > 0xFFFF preserves upper EIP bits.
+#[test]
+fn i386_loop_preserves_eip_upper_in_32bit_mode() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    write_gdt_entry(&mut bus, PM_GDT_BASE, 0, 0, 0, 0, 0);
+    write_gdt_entry(&mut bus, PM_GDT_BASE, 1, 0, 0xFFFFF, 0x9B, 0xC0);
+    write_gdt_entry(&mut bus, PM_GDT_BASE, 3, PM_STACK_BASE, 0xFFFF, 0x93, 0);
+
+    let start_eip: u32 = 0x1_0000;
+
+    let mut state = cpu::I386State {
+        cr0: 0x0001,
+        ..Default::default()
+    };
+    state.set_eip(start_eip);
+    state.set_esp(0xFFF0);
+    state.set_ecx(1); // LOOP will decrement to 0 and NOT branch
+    state.set_cs(PM_CS_SEL);
+    state.set_ss(PM_SS_SEL);
+
+    state.seg_bases[cpu::SegReg32::CS as usize] = 0;
+    state.seg_bases[cpu::SegReg32::SS as usize] = PM_STACK_BASE;
+    state.seg_limits[cpu::SegReg32::CS as usize] = 0xFFFF_FFFF;
+    state.seg_limits[cpu::SegReg32::SS as usize] = 0xFFFF;
+    state.seg_rights[cpu::SegReg32::CS as usize] = 0x9B;
+    state.seg_rights[cpu::SegReg32::SS as usize] = 0x93;
+    state.seg_granularity[cpu::SegReg32::CS as usize] = 0xC0;
+    state.seg_valid = [false, true, true, false, false, false];
+
+    state.gdt_base = PM_GDT_BASE;
+    state.gdt_limit = 4 * 8 - 1;
+    state.idt_base = PM_IDT_BASE;
+    state.idt_limit = 256 * 8 - 1;
+
+    cpu.load_state(&state);
+
+    // ECX=2: LOOP -2 at EIP=0x10000. First iteration branches back to 0x10000.
+    // Second iteration CX=0, falls through to HLT at 0x10002.
+    state.set_ecx(2);
+    cpu.load_state(&state);
+
+    bus.ram[start_eip as usize] = 0xE2; // LOOP rel8
+    bus.ram[start_eip as usize + 1] = 0xFE; // -2 (back to self)
+    bus.ram[0x1_0002] = 0xF4; // HLT
+
+    cpu.step(&mut bus); // LOOP: ECX 2→1, branch to 0x10000
+    assert_eq!(cpu.ip(), 0x1_0000, "LOOP should branch back to 0x10000");
+
+    cpu.step(&mut bus); // LOOP: ECX 1→0, fall through to 0x10002
+    assert_eq!(cpu.ip(), 0x1_0002, "LOOP should fall through to 0x10002");
+
+    cpu.step(&mut bus); // HLT
+    assert!(cpu.halted());
+}
