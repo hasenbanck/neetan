@@ -5115,6 +5115,7 @@ fn i386_div_by_zero_no_error_code_pushed() {
         "#DE should not push an error code"
     );
 }
+
 #[test]
 fn i386_lock_nop_raises_ud() {
     let mut cpu: I386 = I386::new();
@@ -5148,6 +5149,7 @@ fn i386_lock_mov_raises_ud() {
     assert!(cpu.halted());
     assert_eq!(cpu.ip(), PM_UD_HANDLER_IP as u32 + 1);
 }
+
 fn setup_protected_mode_ring3_with_exception_handlers(bus: &mut TestBus) -> cpu::I386State {
     write_gdt_entry16(bus, PM_GDT_BASE, 0, 0, 0, 0);
     write_gdt_entry16(bus, PM_GDT_BASE, 1, PM_CODE_BASE, 0xFFFF, 0x9B);
@@ -5325,6 +5327,7 @@ fn i386_hlt_at_cpl3_raises_gp() {
     assert!(cpu.halted());
     assert_eq!(cpu.ip(), PM_GP_HANDLER_IP as u32 + 1);
 }
+
 #[test]
 fn i386_int3_raises_bp() {
     let mut cpu: I386 = I386::new();
@@ -5418,6 +5421,7 @@ fn i386_into_without_overflow_is_nop() {
         "INTO with OF=0 should fall through to next instruction"
     );
 }
+
 #[test]
 fn i386_bound_in_range_succeeds() {
     let mut cpu: I386 = I386::new();
@@ -5494,6 +5498,7 @@ fn i386_bound_above_raises_br() {
     assert!(cpu.halted());
     assert_eq!(cpu.ip(), PM_BR_HANDLER_IP as u32 + 1);
 }
+
 #[test]
 fn i386_tf_single_step_raises_db() {
     let mut cpu: I386 = I386::new();
@@ -5558,6 +5563,7 @@ fn i386_tf_set_in_pushed_eflags() {
     let pushed_eflags = read_dword_at(&bus, PM_STACK_BASE + sp + 8);
     assert_ne!(pushed_eflags & 0x0100, 0, "Pushed EFLAGS should have TF=1");
 }
+
 #[test]
 fn i386_movsb_forward() {
     let mut cpu: I386 = I386::new();
@@ -5913,6 +5919,7 @@ fn i386_repe_cmpsb() {
     assert_eq!(cpu.state.esi(), 0x0103);
     assert_eq!(cpu.state.edi(), 0x0203);
 }
+
 #[test]
 fn i386_load_null_ds_succeeds() {
     let mut cpu: I386 = I386::new();
@@ -6041,6 +6048,7 @@ fn i386_access_via_null_ds_raises_gp() {
     assert!(cpu.halted());
     assert_eq!(cpu.ip(), PM_GP_HANDLER_IP as u32 + 1);
 }
+
 #[test]
 fn i386_lea_reg_indirect() {
     let mut cpu: I386 = I386::new();
@@ -6208,4 +6216,48 @@ fn i386_lea_disp32_only() {
 
     assert!(cpu.halted());
     assert_eq!(cpu.eax() & 0xFFFF, 0x5678);
+}
+
+#[test]
+fn i386_xchg_reg_reg() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    cpu.state.set_eax(0x1111);
+    cpu.state.set_ebx(0x2222);
+
+    // 93 = XCHG AX, BX (short form: 90+reg)
+    // F4 = HLT
+    place_at(&mut bus, PM_CODE_BASE, &[0x93, 0xF4]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.eax() & 0xFFFF, 0x2222);
+    assert_eq!(cpu.state.ebx() & 0xFFFF, 0x1111);
+}
+
+#[test]
+fn i386_xchg_reg_mem() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    cpu.state.set_eax(0x00AA);
+    write_word_at(&mut bus, PM_DATA_BASE + 0x50, 0x00BB);
+
+    // 87 06 50 00 = XCHG AX, [0x0050]
+    // F4 = HLT
+    place_at(&mut bus, PM_CODE_BASE, &[0x87, 0x06, 0x50, 0x00, 0xF4]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.eax() & 0xFFFF, 0x00BB);
+    assert_eq!(read_word_at(&bus, PM_DATA_BASE + 0x50), 0x00AA);
 }
