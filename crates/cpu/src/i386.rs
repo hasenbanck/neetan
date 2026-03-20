@@ -66,6 +66,7 @@ pub struct I386<const CPU_MODEL: u8 = { CPU_MODEL_386 }> {
     prefix_seg: SegReg32,
     operand_size_override: bool,
     address_size_override: bool,
+    lock_prefix: bool,
 
     halted: bool,
     fault_pending: bool,
@@ -136,6 +137,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             prefix_seg: SegReg32::DS,
             operand_size_override: false,
             address_size_override: false,
+            lock_prefix: false,
             halted: false,
             fault_pending: false,
             supervisor_override: false,
@@ -498,6 +500,36 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             return false;
         }
         true
+    }
+
+    fn is_lockable(opcode: u8) -> bool {
+        matches!(
+            opcode,
+            // ADD r/m, r | ADD r/m, imm (via 80/81/83)
+            0x00 | 0x01
+            // OR r/m, r
+            | 0x08 | 0x09
+            // ADC r/m, r
+            | 0x10 | 0x11
+            // SBB r/m, r
+            | 0x18 | 0x19
+            // AND r/m, r
+            | 0x20 | 0x21
+            // SUB r/m, r
+            | 0x28 | 0x29
+            // XOR r/m, r
+            | 0x30 | 0x31
+            // ADD/OR/ADC/SBB/AND/SUB/XOR/CMP r/m, imm
+            | 0x80 | 0x81 | 0x83
+            // XCHG r/m, r
+            | 0x86 | 0x87
+            // NOT/NEG r/m (F6 /2, /3 and F7 /2, /3)
+            | 0xF6 | 0xF7
+            // INC/DEC r/m (FE /0, /1 and FF /0, /1)
+            | 0xFE | 0xFF
+            // 0F-prefixed: BT/BTS/BTR/BTC
+            | 0x0F
+        )
     }
 
     #[inline(always)]
@@ -1975,6 +2007,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
 
         self.seg_prefix = false;
+        self.lock_prefix = false;
         let d_bit = self.code_segment_32bit();
         self.operand_size_override = d_bit;
         self.address_size_override = d_bit;
@@ -2032,11 +2065,16 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                         opcode = self.fetch(bus);
                     }
                     0xF0 => {
+                        self.lock_prefix = true;
                         self.clk(Self::timing(0, 1));
                         opcode = self.fetch(bus);
                     }
                     _ => {
-                        self.dispatch(opcode, bus);
+                        if self.lock_prefix && !Self::is_lockable(opcode) {
+                            self.raise_fault(6, bus);
+                        } else {
+                            self.dispatch(opcode, bus);
+                        }
                         break;
                     }
                 }
