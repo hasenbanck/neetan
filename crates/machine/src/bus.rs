@@ -3182,6 +3182,10 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             // Ref: undoc98 io_dma.txt: READ 禁止 for 0x21/0x23/0x25/0x27.
             0x21 | 0x23 | 0x25 | 0x27 => 0xFF,
 
+            // µPD4990A RTC Set Register (write-only on µPD4990A; open-bus on read).
+            // Ref: undoc98 `io_cal.txt` (port 0x0020)
+            0x20 => 0xFF,
+
             // Undocumented RTC control/mode latch.
             // Used by some TSRs/boot utilities during CPU probing.
             0x22 => self.rtc_control_22,
@@ -3698,6 +3702,9 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             // CPU mode / wait control register.
             // Ref: undoc98 `io_cpu.txt` (port 0x0534)
             0x0534 if self.machine_model.is_pc9821() => self.cpu_mode_534,
+
+            // Undocumented PC-9821 system register (probed by Windows 95).
+            0x0549 if self.machine_model.is_pc9821() => 0xFF,
 
             // Memory status register (read-only).
             // Bit 7,6 = 11 → no 2nd cache RAM board.
@@ -4409,6 +4416,7 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             // Memory/expansion control registers.
             0x0448 if self.machine_model.is_pc9821() => {}
             0x047B if self.machine_model.is_pc9821() => {}
+            0x0549 if self.machine_model.is_pc9821() => {}
             0x0555 if self.machine_model.is_pc9821() => {}
 
             // Extended DMA control registers (stub).
