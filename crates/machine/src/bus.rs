@@ -3503,8 +3503,8 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                 }
                 status
             }
-            // A20 gate state: 0xFF when enabled, 0xFE when disabled.
-            0xF2 => 0xFF - (!self.a20_enabled as u8),
+            // A20 gate state: bit 0 = 1 when masked (disabled), 0 when unmasked (enabled).
+            0xF2 => 0xFF - (self.a20_enabled as u8),
             // A20 line control status (386+ CPU port).
             // Bit 0: A20 mask state (1=masked), bit 1: NMI enable (1=enabled).
             0xF6 => {
@@ -5211,6 +5211,30 @@ mod tests {
         assert_eq!(bus.io_read_byte(0xF6) & 1, 1);
         bus.io_write_byte(0xF6, 0x02);
         assert_eq!(bus.io_read_byte(0xF6) & 1, 0);
+    }
+
+    #[test]
+    fn port_00f2_a20_status_readback() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        // After reset A20 is masked: bit 0 = 1.
+        assert_eq!(bus.io_read_byte(0xF2) & 1, 1, "A20 masked: bit 0 must be 1");
+        // Write anything to 0xF2 to unmask A20.
+        bus.io_write_byte(0xF2, 0x00);
+        assert!(bus.a20_enabled);
+        // Bit 0 must now be 0 (unmasked).
+        assert_eq!(
+            bus.io_read_byte(0xF2) & 1,
+            0,
+            "A20 unmasked: bit 0 must be 0"
+        );
+        // 0xF0 write re-masks A20.
+        bus.io_write_byte(0xF0, 0x00);
+        assert!(!bus.a20_enabled);
+        assert_eq!(
+            bus.io_read_byte(0xF2) & 1,
+            1,
+            "A20 masked again: bit 0 must be 1"
+        );
     }
 
     #[test]
