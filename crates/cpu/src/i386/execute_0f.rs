@@ -902,7 +902,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     fn group_0f00(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
-        if !self.is_protected_mode() {
+        if !self.is_protected_mode() || self.is_virtual_mode() {
             self.raise_fault(6, bus);
             return;
         }
@@ -1134,7 +1134,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     fn lar(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
-        if !self.is_protected_mode() {
+        if !self.is_protected_mode() || self.is_virtual_mode() {
             self.raise_fault(6, bus);
             return;
         }
@@ -1180,7 +1180,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     fn lsl_instr(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
-        if !self.is_protected_mode() {
+        if !self.is_protected_mode() || self.is_virtual_mode() {
             self.raise_fault(6, bus);
             return;
         }

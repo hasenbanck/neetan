@@ -6676,3 +6676,162 @@ fn iopb_word_io_allowed_when_bits_clear() {
     );
     assert_eq!(cpu.ip() as u16, 2, "IP must advance past 2-byte IN AX");
 }
+
+const VM86_UD_HANDLER_IP: u16 = 0x0200;
+
+fn setup_vm86_with_ud_handler(bus: &mut TestBus) -> cpu::I386State {
+    let mut state = setup_vm86(bus);
+
+    write_idt_gate(bus, VM86_IDT_BASE, 6, VM86_UD_HANDLER_IP as u32, VM86_CS_SEL, 14, 0);
+    bus.ram[(VM86_CODE_BASE + VM86_UD_HANDLER_IP as u32) as usize] = 0xF4;
+
+    // Extend TSS limit to cover ESP0/SS0 properly for the stack switch
+    state.tr_limit = 103;
+    write_gdt_entry16(bus, VM86_GDT_BASE, 4, VM86_TSS_BASE, 103, 0x89);
+
+    state
+}
+
+#[test]
+fn vm86_arpl_raises_ud() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_vm86_with_ud_handler(&mut bus);
+    cpu.load_state(&state);
+
+    // 63 C0 = ARPL AX, AX
+    place_code(&mut bus, 0x1000, 0x0000, &[0x63, 0xC0]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), VM86_UD_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn vm86_sldt_raises_ud() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_vm86_with_ud_handler(&mut bus);
+    cpu.load_state(&state);
+
+    // 0F 00 C0 = SLDT AX (modrm=C0: mod=11, reg=0, rm=0)
+    place_code(&mut bus, 0x1000, 0x0000, &[0x0F, 0x00, 0xC0]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), VM86_UD_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn vm86_str_raises_ud() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_vm86_with_ud_handler(&mut bus);
+    cpu.load_state(&state);
+
+    // 0F 00 C8 = STR AX (modrm=C8: mod=11, reg=1, rm=0)
+    place_code(&mut bus, 0x1000, 0x0000, &[0x0F, 0x00, 0xC8]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), VM86_UD_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn vm86_lldt_raises_ud() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_vm86_with_ud_handler(&mut bus);
+    cpu.load_state(&state);
+
+    // 0F 00 D0 = LLDT AX (modrm=D0: mod=11, reg=2, rm=0)
+    place_code(&mut bus, 0x1000, 0x0000, &[0x0F, 0x00, 0xD0]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), VM86_UD_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn vm86_ltr_raises_ud() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_vm86_with_ud_handler(&mut bus);
+    cpu.load_state(&state);
+
+    // 0F 00 D8 = LTR AX (modrm=D8: mod=11, reg=3, rm=0)
+    place_code(&mut bus, 0x1000, 0x0000, &[0x0F, 0x00, 0xD8]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), VM86_UD_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn vm86_verr_raises_ud() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_vm86_with_ud_handler(&mut bus);
+    cpu.load_state(&state);
+
+    // 0F 00 E0 = VERR AX (modrm=E0: mod=11, reg=4, rm=0)
+    place_code(&mut bus, 0x1000, 0x0000, &[0x0F, 0x00, 0xE0]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), VM86_UD_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn vm86_verw_raises_ud() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_vm86_with_ud_handler(&mut bus);
+    cpu.load_state(&state);
+
+    // 0F 00 E8 = VERW AX (modrm=E8: mod=11, reg=5, rm=0)
+    place_code(&mut bus, 0x1000, 0x0000, &[0x0F, 0x00, 0xE8]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), VM86_UD_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn vm86_lar_raises_ud() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_vm86_with_ud_handler(&mut bus);
+    cpu.load_state(&state);
+
+    // 0F 02 C0 = LAR AX, AX
+    place_code(&mut bus, 0x1000, 0x0000, &[0x0F, 0x02, 0xC0]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), VM86_UD_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn vm86_lsl_raises_ud() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_vm86_with_ud_handler(&mut bus);
+    cpu.load_state(&state);
+
+    // 0F 03 C0 = LSL AX, AX
+    place_code(&mut bus, 0x1000, 0x0000, &[0x0F, 0x03, 0xC0]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), VM86_UD_HANDLER_IP as u32 + 1);
+}
