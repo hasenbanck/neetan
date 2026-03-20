@@ -4885,3 +4885,233 @@ fn i386_loop_preserves_eip_upper_in_32bit_mode() {
     cpu.step(&mut bus); // HLT
     assert!(cpu.halted());
 }
+
+const PM_DE_HANDLER_IP: u16 = 0xD000;
+const PM_UD_HANDLER_IP: u16 = 0xD100;
+const PM_BP_HANDLER_IP: u16 = 0xD200;
+const PM_OF_HANDLER_IP: u16 = 0xD300;
+const PM_BR_HANDLER_IP: u16 = 0xD400;
+const PM_DB_HANDLER_IP: u16 = 0xD500;
+
+fn setup_protected_mode_with_exception_handlers(bus: &mut TestBus) -> cpu::I386State {
+    write_gdt_entry16(bus, PM_GDT_BASE, 0, 0, 0, 0);
+    write_gdt_entry16(bus, PM_GDT_BASE, 1, PM_CODE_BASE, 0xFFFF, 0x9B);
+    write_gdt_entry16(bus, PM_GDT_BASE, 2, PM_DATA_BASE, 0xFFFF, 0x93);
+    write_gdt_entry16(bus, PM_GDT_BASE, 3, PM_STACK_BASE, 0xFFFF, 0x93);
+
+    // Vector 0: #DE
+    write_idt_gate(
+        bus,
+        PM_IDT_BASE,
+        0,
+        PM_DE_HANDLER_IP as u32,
+        PM_CS_SEL,
+        14,
+        0,
+    );
+    // Vector 1: #DB
+    write_idt_gate(
+        bus,
+        PM_IDT_BASE,
+        1,
+        PM_DB_HANDLER_IP as u32,
+        PM_CS_SEL,
+        14,
+        0,
+    );
+    // Vector 3: #BP (trap gate so EIP points after INT3)
+    write_idt_gate(
+        bus,
+        PM_IDT_BASE,
+        3,
+        PM_BP_HANDLER_IP as u32,
+        PM_CS_SEL,
+        15,
+        0,
+    );
+    // Vector 4: #OF (trap gate)
+    write_idt_gate(
+        bus,
+        PM_IDT_BASE,
+        4,
+        PM_OF_HANDLER_IP as u32,
+        PM_CS_SEL,
+        15,
+        0,
+    );
+    // Vector 5: #BR
+    write_idt_gate(
+        bus,
+        PM_IDT_BASE,
+        5,
+        PM_BR_HANDLER_IP as u32,
+        PM_CS_SEL,
+        14,
+        0,
+    );
+    // Vector 6: #UD
+    write_idt_gate(
+        bus,
+        PM_IDT_BASE,
+        6,
+        PM_UD_HANDLER_IP as u32,
+        PM_CS_SEL,
+        14,
+        0,
+    );
+    // Vector 13: #GP
+    write_idt_gate(
+        bus,
+        PM_IDT_BASE,
+        13,
+        PM_GP_HANDLER_IP as u32,
+        PM_CS_SEL,
+        14,
+        0,
+    );
+
+    bus.ram[(PM_CODE_BASE + PM_DE_HANDLER_IP as u32) as usize] = 0xF4;
+    bus.ram[(PM_CODE_BASE + PM_UD_HANDLER_IP as u32) as usize] = 0xF4;
+    bus.ram[(PM_CODE_BASE + PM_BP_HANDLER_IP as u32) as usize] = 0xF4;
+    bus.ram[(PM_CODE_BASE + PM_OF_HANDLER_IP as u32) as usize] = 0xF4;
+    bus.ram[(PM_CODE_BASE + PM_BR_HANDLER_IP as u32) as usize] = 0xF4;
+    bus.ram[(PM_CODE_BASE + PM_DB_HANDLER_IP as u32) as usize] = 0xF4;
+    bus.ram[(PM_CODE_BASE + PM_GP_HANDLER_IP as u32) as usize] = 0xF4;
+
+    let mut state = cpu::I386State {
+        cr0: 0x0001,
+        ip: 0x0000,
+        ..Default::default()
+    };
+    state.set_esp(0xFFF0);
+    state.set_cs(PM_CS_SEL);
+    state.set_ds(PM_DS_SEL);
+    state.set_ss(PM_SS_SEL);
+    state.set_es(PM_DS_SEL);
+
+    state.seg_bases[cpu::SegReg32::ES as usize] = PM_DATA_BASE;
+    state.seg_bases[cpu::SegReg32::CS as usize] = PM_CODE_BASE;
+    state.seg_bases[cpu::SegReg32::SS as usize] = PM_STACK_BASE;
+    state.seg_bases[cpu::SegReg32::DS as usize] = PM_DATA_BASE;
+
+    state.seg_limits = [0xFFFF; 6];
+    state.seg_rights[cpu::SegReg32::ES as usize] = 0x93;
+    state.seg_rights[cpu::SegReg32::CS as usize] = 0x9B;
+    state.seg_rights[cpu::SegReg32::SS as usize] = 0x93;
+    state.seg_rights[cpu::SegReg32::DS as usize] = 0x93;
+    state.seg_valid = [true, true, true, true, false, false];
+
+    state.gdt_base = PM_GDT_BASE;
+    state.gdt_limit = 4 * 8 - 1;
+    state.idt_base = PM_IDT_BASE;
+    state.idt_limit = 256 * 8 - 1;
+
+    state
+}
+
+#[test]
+fn i386_div_by_zero_byte_raises_de() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // DIV CL with CL=0, AX=1
+    cpu.state.set_eax(0x0001);
+    cpu.state.set_ecx(0x0000);
+    // F6 F1 = DIV CL
+    place_at(&mut bus, PM_CODE_BASE, &[0xF6, 0xF1]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_DE_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_div_by_zero_word_raises_de() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // DIV CX with CX=0, DX:AX=1
+    cpu.state.set_eax(0x0001);
+    cpu.state.set_edx(0x0000);
+    cpu.state.set_ecx(0x0000);
+    // F7 F1 = DIV CX
+    place_at(&mut bus, PM_CODE_BASE, &[0xF7, 0xF1]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_DE_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_div_by_zero_dword_raises_de() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // 66 F7 F1 = DIV ECX (with operand size prefix for 32-bit)
+    cpu.state.set_eax(0x0000_0001);
+    cpu.state.set_edx(0x0000_0000);
+    cpu.state.set_ecx(0x0000_0000);
+    place_at(&mut bus, PM_CODE_BASE, &[0x66, 0xF7, 0xF1]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_DE_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_idiv_overflow_raises_de() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // IDIV CL with AX=0x8000 (-32768), CL=0xFF (-1) → quotient 32768 overflows signed byte
+    cpu.state.set_eax(0x8000);
+    cpu.state.set_ecx(0x00FF);
+    // F6 F9 = IDIV CL
+    place_at(&mut bus, PM_CODE_BASE, &[0xF6, 0xF9]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_DE_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_div_by_zero_no_error_code_pushed() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    let sp_before = cpu.esp();
+
+    cpu.state.set_eax(0x0001);
+    cpu.state.set_ecx(0x0000);
+    place_at(&mut bus, PM_CODE_BASE, &[0xF6, 0xF1]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    // #DE pushes no error code: only EFLAGS + CS + EIP = 12 bytes (3 dwords)
+    let sp_after = cpu.esp();
+    assert_eq!(
+        sp_before - sp_after,
+        12,
+        "#DE should not push an error code"
+    );
+}
