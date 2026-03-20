@@ -6261,3 +6261,225 @@ fn i386_xchg_reg_mem() {
     assert_eq!(cpu.eax() & 0xFFFF, 0x00BB);
     assert_eq!(read_word_at(&bus, PM_DATA_BASE + 0x50), 0x00AA);
 }
+
+#[test]
+fn i386_lock_jcc_near_raises_ud() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // F0 0F 80 00 00 = LOCK JO near (rel16=0)
+    place_at(&mut bus, PM_CODE_BASE, &[0xF0, 0x0F, 0x80, 0x00, 0x00]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_UD_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_lock_movzx_raises_ud() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // F0 0F B6 06 50 00 = LOCK MOVZX AX, byte [0x0050]
+    place_at(
+        &mut bus,
+        PM_CODE_BASE,
+        &[0xF0, 0x0F, 0xB6, 0x06, 0x50, 0x00],
+    );
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_UD_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_lock_bt_reg_raises_ud() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // F0 0F A3 06 50 00 = LOCK BT [0x0050], AX
+    place_at(
+        &mut bus,
+        PM_CODE_BASE,
+        &[0xF0, 0x0F, 0xA3, 0x06, 0x50, 0x00],
+    );
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_UD_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_lock_bt_imm_raises_ud() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // F0 0F BA 26 50 00 00 = LOCK BT [0x0050], 0 (group BA, reg=4)
+    place_at(
+        &mut bus,
+        PM_CODE_BASE,
+        &[0xF0, 0x0F, 0xBA, 0x26, 0x50, 0x00, 0x00],
+    );
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_UD_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_lock_cmp_imm_raises_ud() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // F0 83 3E 50 00 00 = LOCK CMP word [0x0050], 0 (group 83, reg=7)
+    place_at(
+        &mut bus,
+        PM_CODE_BASE,
+        &[0xF0, 0x83, 0x3E, 0x50, 0x00, 0x00],
+    );
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_UD_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_lock_test_raises_ud() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // F0 F6 06 50 00 01 = LOCK TEST byte [0x0050], 0x01 (group F6, reg=0)
+    place_at(
+        &mut bus,
+        PM_CODE_BASE,
+        &[0xF0, 0xF6, 0x06, 0x50, 0x00, 0x01],
+    );
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_UD_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_lock_mul_raises_ud() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // F0 F6 26 50 00 = LOCK MUL byte [0x0050] (group F6, reg=4)
+    place_at(&mut bus, PM_CODE_BASE, &[0xF0, 0xF6, 0x26, 0x50, 0x00]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_UD_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_lock_call_indirect_raises_ud() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // F0 FF 16 50 00 = LOCK CALL [0x0050] (group FF, reg=2)
+    place_at(&mut bus, PM_CODE_BASE, &[0xF0, 0xFF, 0x16, 0x50, 0x00]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_UD_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_lock_add_mem_executes() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // F0 01 06 50 00 = LOCK ADD [0x0050], AX
+    // F4 = HLT
+    place_at(
+        &mut bus,
+        PM_CODE_BASE,
+        &[0xF0, 0x01, 0x06, 0x50, 0x00, 0xF4],
+    );
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_ne!(cpu.ip(), PM_UD_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_lock_bts_mem_executes() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // F0 0F AB 06 50 00 = LOCK BTS [0x0050], AX
+    // F4 = HLT
+    place_at(
+        &mut bus,
+        PM_CODE_BASE,
+        &[0xF0, 0x0F, 0xAB, 0x06, 0x50, 0x00, 0xF4],
+    );
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_ne!(cpu.ip(), PM_UD_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_lock_not_mem_executes() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // F0 F6 16 50 00 = LOCK NOT byte [0x0050] (group F6, reg=2)
+    // F4 = HLT
+    place_at(
+        &mut bus,
+        PM_CODE_BASE,
+        &[0xF0, 0xF6, 0x16, 0x50, 0x00, 0xF4],
+    );
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_ne!(cpu.ip(), PM_UD_HANDLER_IP as u32 + 1);
+}
