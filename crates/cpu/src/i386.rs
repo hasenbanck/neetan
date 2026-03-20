@@ -103,6 +103,7 @@ pub struct I386<const CPU_MODEL: u8 = { CPU_MODEL_386 }> {
     tlb_writable: [bool; 64],
 
     trap_level: u8,
+    prev_exception_class: u8,
     shutdown: bool,
 }
 
@@ -165,6 +166,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             tlb_phys: [0; 64],
             tlb_writable: [false; 64],
             trap_level: 0,
+            prev_exception_class: 0,
             shutdown: false,
             prev_ip_upper: 0,
         };
