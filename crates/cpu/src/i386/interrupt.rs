@@ -443,6 +443,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.trap_level += 1;
             if self.trap_level >= 3 {
                 self.shutdown = true;
+                self.halted = true;
                 return DoubleFaultResult::Shutdown;
             }
             if self.trap_level >= 2 {

@@ -4455,3 +4455,54 @@ fn i386_stored_cpl_tracks_privilege_transitions() {
         "stored_cpl should be 3 after far return to ring 3"
     );
 }
+
+/// Protected mode: triple fault (no valid IDT entries) causes CPU shutdown+halt.
+///
+/// Per Intel 386 Programmer's Reference Manual §9.8.8:
+/// "If any other exception occurs while attempting to invoke the double-fault
+/// handler, the processor shuts down."
+///
+/// Fault cascade with IDT limit = 0:
+///  1. INT 3 → interrupt_protected → IDT too small → #GP (trap_level 1)
+///  2. #GP dispatch → IDT too small → #DF (trap_level 2)
+///  3. #DF dispatch → IDT too small → shutdown (trap_level 3, CPU halts)
+#[test]
+fn i386_triple_fault_halts_cpu() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 0, 0, 0, 0);
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 1, PM_CODE_BASE, 0xFFFF, 0x9B);
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 3, PM_STACK_BASE, 0xFFFF, 0x93);
+
+    let mut state = cpu::I386State {
+        cr0: 0x0001,
+        ip: 0x0000,
+        ..Default::default()
+    };
+    state.set_esp(0xFFF0);
+    state.set_cs(PM_CS_SEL);
+    state.set_ss(PM_SS_SEL);
+
+    state.seg_bases[cpu::SegReg32::CS as usize] = PM_CODE_BASE;
+    state.seg_bases[cpu::SegReg32::SS as usize] = PM_STACK_BASE;
+    state.seg_limits[cpu::SegReg32::CS as usize] = 0xFFFF;
+    state.seg_limits[cpu::SegReg32::SS as usize] = 0xFFFF;
+    state.seg_rights[cpu::SegReg32::CS as usize] = 0x9B;
+    state.seg_rights[cpu::SegReg32::SS as usize] = 0x93;
+    state.seg_valid = [false, true, true, false, false, false];
+
+    state.gdt_base = PM_GDT_BASE;
+    state.gdt_limit = 4 * 8 - 1;
+    state.idt_base = PM_IDT_BASE;
+    state.idt_limit = 0;
+
+    cpu.load_state(&state);
+
+    // INT 3 with no valid IDT entries triggers the triple-fault cascade.
+    place_at(&mut bus, PM_CODE_BASE, &[0xCC]);
+
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted(), "CPU must be halted after triple fault");
+}
