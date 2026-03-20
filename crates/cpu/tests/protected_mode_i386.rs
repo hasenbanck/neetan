@@ -6835,3 +6835,184 @@ fn vm86_lsl_raises_ud() {
     assert!(cpu.halted());
     assert_eq!(cpu.ip(), VM86_UD_HANDLER_IP as u32 + 1);
 }
+
+#[test]
+fn task_switch_tss_t_bit_raises_debug_trap() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_extended(&mut bus);
+    cpu.load_state(&state);
+
+    // Add #DB handler (vector 1) to IDT.
+    write_idt_gate(
+        &mut bus,
+        PM_IDT_BASE,
+        1,
+        PM_DB_HANDLER_IP as u32,
+        PM_CS_SEL,
+        14,
+        0,
+    );
+    bus.ram[(PM_CODE_BASE + PM_DB_HANDLER_IP as u32) as usize] = 0xF4;
+
+    let target_ip: u16 = 0x0300;
+    write_tss386(
+        &mut bus,
+        PM_TSS2_BASE,
+        0,
+        0xFFF0,
+        PM_SS_SEL,
+        target_ip as u32,
+        0x0002,
+        0, 0, 0, 0,
+        0xEE00,
+        0, 0, 0,
+        PM_DS_SEL,
+        PM_CS_SEL,
+        PM_SS_SEL,
+        PM_DS_SEL,
+        0, 0, 0,
+    );
+    // Set T-bit at TSS2 offset 100 (0x64), bit 0.
+    write_word_at(&mut bus, PM_TSS2_BASE + 100, 0x0001);
+
+    bus.ram[(PM_CODE_BASE + target_ip as u32) as usize] = 0xF4;
+
+    // EA 00 00 48 00 = JMP FAR 0x0048:0x0000
+    place_at(&mut bus, PM_CODE_BASE, &[0xEA, 0x00, 0x00, 0x48, 0x00]);
+
+    cpu.step(&mut bus); // JMP FAR → task switch, debug trap fires
+    cpu.step(&mut bus); // HLT at #DB handler
+
+    assert!(cpu.halted());
+    assert_eq!(
+        cpu.ip(),
+        PM_DB_HANDLER_IP as u32 + 1,
+        "should halt at #DB handler"
+    );
+    assert_ne!(
+        cpu.dr6 & 0x8000,
+        0,
+        "DR6.BT (bit 15) must be set after T-bit debug trap"
+    );
+}
+
+#[test]
+fn task_switch_tss_t_bit_clear_no_debug_trap() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_extended(&mut bus);
+    cpu.load_state(&state);
+
+    // Add #DB handler just in case (should NOT be reached).
+    write_idt_gate(
+        &mut bus,
+        PM_IDT_BASE,
+        1,
+        PM_DB_HANDLER_IP as u32,
+        PM_CS_SEL,
+        14,
+        0,
+    );
+    bus.ram[(PM_CODE_BASE + PM_DB_HANDLER_IP as u32) as usize] = 0xF4;
+
+    let target_ip: u16 = 0x0300;
+    write_tss386(
+        &mut bus,
+        PM_TSS2_BASE,
+        0,
+        0xFFF0,
+        PM_SS_SEL,
+        target_ip as u32,
+        0x0002,
+        0, 0, 0, 0,
+        0xEE00,
+        0, 0, 0,
+        PM_DS_SEL,
+        PM_CS_SEL,
+        PM_SS_SEL,
+        PM_DS_SEL,
+        0, 0, 0,
+    );
+    // T-bit clear (default 0).
+
+    bus.ram[(PM_CODE_BASE + target_ip as u32) as usize] = 0xF4;
+
+    place_at(&mut bus, PM_CODE_BASE, &[0xEA, 0x00, 0x00, 0x48, 0x00]);
+
+    cpu.step(&mut bus); // JMP FAR → task switch, no debug trap
+    cpu.step(&mut bus); // HLT at new task's first instruction
+
+    assert!(cpu.halted());
+    assert_eq!(
+        cpu.ip(),
+        target_ip as u32 + 1,
+        "should halt at new task's first instruction, not #DB handler"
+    );
+    assert_eq!(
+        cpu.dr6 & 0x8000,
+        0,
+        "DR6.BT must NOT be set when T-bit is clear"
+    );
+}
+
+#[test]
+fn task_switch_tss_t_bit_sets_dr6_bt() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_extended(&mut bus);
+    cpu.load_state(&state);
+
+    write_idt_gate(
+        &mut bus,
+        PM_IDT_BASE,
+        1,
+        PM_DB_HANDLER_IP as u32,
+        PM_CS_SEL,
+        14,
+        0,
+    );
+    bus.ram[(PM_CODE_BASE + PM_DB_HANDLER_IP as u32) as usize] = 0xF4;
+
+    let target_ip: u16 = 0x0300;
+    write_tss386(
+        &mut bus,
+        PM_TSS2_BASE,
+        0,
+        0xFFF0,
+        PM_SS_SEL,
+        target_ip as u32,
+        0x0002,
+        0, 0, 0, 0,
+        0xEE00,
+        0, 0, 0,
+        PM_DS_SEL,
+        PM_CS_SEL,
+        PM_SS_SEL,
+        PM_DS_SEL,
+        0, 0, 0,
+    );
+    write_word_at(&mut bus, PM_TSS2_BASE + 100, 0x0001);
+    bus.ram[(PM_CODE_BASE + target_ip as u32) as usize] = 0xF4;
+
+    place_at(&mut bus, PM_CODE_BASE, &[0xEA, 0x00, 0x00, 0x48, 0x00]);
+
+    // Clear DR6 lower bits to verify only BT gets set.
+    cpu.dr6 = 0xFFFF_0FF0;
+
+    cpu.step(&mut bus); // JMP FAR → task switch + debug trap
+    cpu.step(&mut bus); // HLT at #DB handler
+
+    assert!(cpu.halted());
+    assert_eq!(
+        cpu.dr6 & 0x8000,
+        0x8000,
+        "DR6.BT (bit 15) must be set"
+    );
+    // B0-B3 (bits 0-3) should remain 0 since no breakpoint register matched.
+    assert_eq!(
+        cpu.dr6 & 0x000F,
+        0,
+        "DR6 B0-B3 bits should not be set for T-bit trap"
+    );
+}
