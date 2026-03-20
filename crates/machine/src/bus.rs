@@ -3740,6 +3740,17 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                 self.sdip.read(offset)
             }
 
+            // Extended RS-232C channel 2/3 status (board detection).
+            // Ref: undoc98 `io_rs.txt` — 0xFF = no extended serial board present.
+            0xB3 | 0xBB => 0xFF,
+
+            // NOTE series notebook control register (not present on desktop models).
+            // Ref: undoc98 `io_note.txt` (port 0xBE8E)
+            0xBE8E => 0xFF,
+
+            // Undocumented port (probed by Windows 3.1 during hardware detection).
+            0x0879 => 0xFF,
+
             _ => {
                 self.tracer.trace_io_unhandled_read(port);
                 warn!("Unhandled I/O read: port={port:#06X}");
