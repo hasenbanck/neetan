@@ -2086,7 +2086,10 @@ fn supervisor_write_to_readonly_page_without_wp() {
     cpu.step(&mut bus);
 
     assert_eq!(bus.ram[(PG_DATA_BASE + 0x50) as usize], 0xCC);
-    assert!(!cpu.halted(), "486 supervisor with WP=0 must write read-only pages");
+    assert!(
+        !cpu.halted(),
+        "486 supervisor with WP=0 must write read-only pages"
+    );
 }
 
 #[test]
@@ -2111,7 +2114,10 @@ fn supervisor_write_to_readonly_page_with_wp() {
     cpu.step(&mut bus);
     cpu.step(&mut bus);
 
-    assert!(cpu.halted(), "486 supervisor with WP=1 must fault on write to read-only page");
+    assert!(
+        cpu.halted(),
+        "486 supervisor with WP=1 must fault on write to read-only page"
+    );
     assert_eq!(cpu.ip(), PG_PF_HANDLER_IP as u32 + 1);
 
     // Error code: P=1 (protection violation), W/R=1 (write), U/S=0 (supervisor).
@@ -2143,6 +2149,9 @@ fn supervisor_read_from_readonly_page_with_wp() {
     place_at(&mut bus, PG_CODE_BASE, &[0xA0, 0x50, 0x00]);
     cpu.step(&mut bus);
 
-    assert!(!cpu.halted(), "WP only affects writes, reads should succeed");
+    assert!(
+        !cpu.halted(),
+        "WP only affects writes, reads should succeed"
+    );
     assert_eq!(cpu.al(), 0xAB);
 }
