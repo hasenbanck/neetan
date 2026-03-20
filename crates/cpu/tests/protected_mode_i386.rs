@@ -5418,3 +5418,79 @@ fn i386_into_without_overflow_is_nop() {
         "INTO with OF=0 should fall through to next instruction"
     );
 }
+#[test]
+fn i386_bound_in_range_succeeds() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // Set up bounds in memory at DS:0x0000 — lower=0x0000, upper=0x00FF
+    write_word_at(&mut bus, PM_DATA_BASE, 0x0000);
+    write_word_at(&mut bus, PM_DATA_BASE + 2, 0x00FF);
+
+    // AX = 0x0050 (within [0, 0xFF])
+    cpu.state.set_eax(0x0050);
+
+    // 62 06 00 00 = BOUND AX, [0x0000]
+    // F4 = HLT
+    place_at(&mut bus, PM_CODE_BASE, &[0x62, 0x06, 0x00, 0x00, 0xF4]);
+
+    cpu.step(&mut bus); // BOUND — in range, no exception
+    cpu.step(&mut bus); // HLT
+
+    assert!(cpu.halted());
+    assert_eq!(
+        cpu.ip(),
+        0x0005,
+        "BOUND in range should continue to next instruction"
+    );
+}
+
+#[test]
+fn i386_bound_below_raises_br() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // Bounds: lower=0x0010, upper=0x00FF
+    write_word_at(&mut bus, PM_DATA_BASE, 0x0010);
+    write_word_at(&mut bus, PM_DATA_BASE + 2, 0x00FF);
+
+    // AX = 0x0005 (below lower bound)
+    cpu.state.set_eax(0x0005);
+
+    // 62 06 00 00 = BOUND AX, [0x0000]
+    place_at(&mut bus, PM_CODE_BASE, &[0x62, 0x06, 0x00, 0x00]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_BR_HANDLER_IP as u32 + 1);
+}
+
+#[test]
+fn i386_bound_above_raises_br() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // Bounds: lower=0x0000, upper=0x00FF
+    write_word_at(&mut bus, PM_DATA_BASE, 0x0000);
+    write_word_at(&mut bus, PM_DATA_BASE + 2, 0x00FF);
+
+    // AX = 0x0100 (above upper bound)
+    cpu.state.set_eax(0x0100);
+
+    // 62 06 00 00 = BOUND AX, [0x0000]
+    place_at(&mut bus, PM_CODE_BASE, &[0x62, 0x06, 0x00, 0x00]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_BR_HANDLER_IP as u32 + 1);
+}
