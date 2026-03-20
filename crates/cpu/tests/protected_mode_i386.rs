@@ -5558,3 +5558,358 @@ fn i386_tf_set_in_pushed_eflags() {
     let pushed_eflags = read_dword_at(&bus, PM_STACK_BASE + sp + 8);
     assert_ne!(pushed_eflags & 0x0100, 0, "Pushed EFLAGS should have TF=1");
 }
+#[test]
+fn i386_movsb_forward() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // Source byte at DS:0x100
+    bus.ram[(PM_DATA_BASE + 0x100) as usize] = 0xAB;
+    cpu.state.set_esi(0x0100);
+    cpu.state.set_edi(0x0200);
+    cpu.state.flags.df = false; // DF=0 → forward
+
+    // A4 = MOVSB, F4 = HLT
+    place_at(&mut bus, PM_CODE_BASE, &[0xA4, 0xF4]);
+
+    cpu.step(&mut bus); // MOVSB
+    cpu.step(&mut bus); // HLT
+
+    assert!(cpu.halted());
+    assert_eq!(bus.ram[(PM_DATA_BASE + 0x200) as usize], 0xAB);
+    assert_eq!(cpu.state.esi(), 0x0101);
+    assert_eq!(cpu.state.edi(), 0x0201);
+}
+
+#[test]
+fn i386_movsb_backward() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    bus.ram[(PM_DATA_BASE + 0x100) as usize] = 0xCD;
+    cpu.state.set_esi(0x0100);
+    cpu.state.set_edi(0x0200);
+    cpu.state.flags.df = true; // DF=1 → backward
+
+    place_at(&mut bus, PM_CODE_BASE, &[0xA4, 0xF4]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(bus.ram[(PM_DATA_BASE + 0x200) as usize], 0xCD);
+    assert_eq!(cpu.state.esi(), 0x00FF);
+    assert_eq!(cpu.state.edi(), 0x01FF);
+}
+
+#[test]
+fn i386_rep_movsb() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    let src = 0x0100u32;
+    let dst = 0x0200u32;
+    let count = 5u32;
+
+    for i in 0..count {
+        bus.ram[(PM_DATA_BASE + src + i) as usize] = (0x10 + i) as u8;
+    }
+
+    cpu.state.set_esi(src);
+    cpu.state.set_edi(dst);
+    cpu.state.set_ecx(count);
+    cpu.state.flags.df = false;
+
+    // F3 A4 = REP MOVSB, F4 = HLT
+    place_at(&mut bus, PM_CODE_BASE, &[0xF3, 0xA4, 0xF4]);
+
+    for _ in 0..20 {
+        cpu.step(&mut bus);
+        if cpu.halted() {
+            break;
+        }
+    }
+
+    assert!(cpu.halted());
+    for i in 0..count {
+        assert_eq!(
+            bus.ram[(PM_DATA_BASE + dst + i) as usize],
+            (0x10 + i) as u8,
+            "REP MOVSB: byte {i} should match"
+        );
+    }
+    assert_eq!(cpu.state.ecx(), 0);
+    assert_eq!(cpu.state.esi(), src + count);
+    assert_eq!(cpu.state.edi(), dst + count);
+}
+
+#[test]
+fn i386_rep_movsw() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    let src = 0x0100u32;
+    let dst = 0x0200u32;
+    let count = 3u32;
+
+    for i in 0..count {
+        write_word_at(&mut bus, PM_DATA_BASE + src + i * 2, (0xAA00 + i) as u16);
+    }
+
+    cpu.state.set_esi(src);
+    cpu.state.set_edi(dst);
+    cpu.state.set_ecx(count);
+    cpu.state.flags.df = false;
+
+    // F3 A5 = REP MOVSW, F4 = HLT
+    place_at(&mut bus, PM_CODE_BASE, &[0xF3, 0xA5, 0xF4]);
+
+    for _ in 0..20 {
+        cpu.step(&mut bus);
+        if cpu.halted() {
+            break;
+        }
+    }
+
+    assert!(cpu.halted());
+    for i in 0..count {
+        assert_eq!(
+            read_word_at(&bus, PM_DATA_BASE + dst + i * 2),
+            (0xAA00 + i) as u16,
+            "REP MOVSW: word {i} should match"
+        );
+    }
+    assert_eq!(cpu.state.ecx(), 0);
+}
+
+#[test]
+fn i386_rep_movsd() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    let src = 0x0100u32;
+    let dst = 0x0200u32;
+    let count = 2u32;
+
+    write_dword_at(&mut bus, PM_DATA_BASE + src, 0xDEAD_BEEF);
+    write_dword_at(&mut bus, PM_DATA_BASE + src + 4, 0xCAFE_BABE);
+
+    cpu.state.set_esi(src);
+    cpu.state.set_edi(dst);
+    cpu.state.set_ecx(count);
+    cpu.state.flags.df = false;
+
+    // 66 prefix for 32-bit operand: F3 66 A5 = REP MOVSD, F4 = HLT
+    place_at(&mut bus, PM_CODE_BASE, &[0xF3, 0x66, 0xA5, 0xF4]);
+
+    for _ in 0..20 {
+        cpu.step(&mut bus);
+        if cpu.halted() {
+            break;
+        }
+    }
+
+    assert!(cpu.halted());
+    assert_eq!(read_dword_at(&bus, PM_DATA_BASE + dst), 0xDEAD_BEEF);
+    assert_eq!(read_dword_at(&bus, PM_DATA_BASE + dst + 4), 0xCAFE_BABE);
+    assert_eq!(cpu.state.ecx(), 0);
+}
+
+#[test]
+fn i386_stosb() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    cpu.state.set_eax(0x42);
+    cpu.state.set_edi(0x0300);
+    cpu.state.flags.df = false;
+
+    // AA = STOSB, F4 = HLT
+    place_at(&mut bus, PM_CODE_BASE, &[0xAA, 0xF4]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(bus.ram[(PM_DATA_BASE + 0x300) as usize], 0x42);
+    assert_eq!(cpu.state.edi(), 0x0301);
+}
+
+#[test]
+fn i386_rep_stosb() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    cpu.state.set_eax(0xFF);
+    cpu.state.set_edi(0x0300);
+    cpu.state.set_ecx(4);
+    cpu.state.flags.df = false;
+
+    // F3 AA = REP STOSB, F4 = HLT
+    place_at(&mut bus, PM_CODE_BASE, &[0xF3, 0xAA, 0xF4]);
+
+    for _ in 0..20 {
+        cpu.step(&mut bus);
+        if cpu.halted() {
+            break;
+        }
+    }
+
+    assert!(cpu.halted());
+    for i in 0..4u32 {
+        assert_eq!(bus.ram[(PM_DATA_BASE + 0x300 + i) as usize], 0xFF);
+    }
+    assert_eq!(cpu.state.ecx(), 0);
+    assert_eq!(cpu.state.edi(), 0x0304);
+}
+
+#[test]
+fn i386_lodsb() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    bus.ram[(PM_DATA_BASE + 0x100) as usize] = 0x77;
+    cpu.state.set_esi(0x0100);
+    cpu.state.set_eax(0x0000);
+    cpu.state.flags.df = false;
+
+    // AC = LODSB, F4 = HLT
+    place_at(&mut bus, PM_CODE_BASE, &[0xAC, 0xF4]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.al(), 0x77);
+    assert_eq!(cpu.state.esi(), 0x0101);
+}
+
+#[test]
+fn i386_scasb_equal() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    bus.ram[(PM_DATA_BASE + 0x200) as usize] = 0x42;
+    cpu.state.set_eax(0x42);
+    cpu.state.set_edi(0x0200);
+    cpu.state.flags.df = false;
+
+    // AE = SCASB, F4 = HLT
+    place_at(&mut bus, PM_CODE_BASE, &[0xAE, 0xF4]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert!(
+        cpu.state.flags.zf(),
+        "SCASB should set ZF when AL matches ES:EDI byte"
+    );
+    assert_eq!(cpu.state.edi(), 0x0201);
+}
+
+#[test]
+fn i386_repne_scasb() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // Place string "ABCDE" at ES:0x200
+    let data = b"ABCDE";
+    for (i, &b) in data.iter().enumerate() {
+        bus.ram[(PM_DATA_BASE + 0x200 + i as u32) as usize] = b;
+    }
+
+    cpu.state.set_eax(b'C' as u32); // Search for 'C'
+    cpu.state.set_edi(0x0200);
+    cpu.state.set_ecx(5);
+    cpu.state.flags.df = false;
+
+    // F2 AE = REPNE SCASB, F4 = HLT
+    place_at(&mut bus, PM_CODE_BASE, &[0xF2, 0xAE, 0xF4]);
+
+    for _ in 0..20 {
+        cpu.step(&mut bus);
+        if cpu.halted() {
+            break;
+        }
+    }
+
+    assert!(cpu.halted());
+    assert!(
+        cpu.state.flags.zf(),
+        "REPNE SCASB should find 'C' and set ZF"
+    );
+    assert_eq!(
+        cpu.state.edi(),
+        0x0203,
+        "EDI should point past the found byte"
+    );
+    assert_eq!(cpu.state.ecx(), 2, "ECX should reflect remaining count");
+}
+
+#[test]
+fn i386_repe_cmpsb() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    // Source string at DS:0x100 = "ABXDE"
+    // Compare string at ES:0x200 = "ABCDE"
+    let src = b"ABXDE";
+    let cmp = b"ABCDE";
+    for (i, &b) in src.iter().enumerate() {
+        bus.ram[(PM_DATA_BASE + 0x100 + i as u32) as usize] = b;
+    }
+    for (i, &b) in cmp.iter().enumerate() {
+        bus.ram[(PM_DATA_BASE + 0x200 + i as u32) as usize] = b;
+    }
+
+    cpu.state.set_esi(0x0100);
+    cpu.state.set_edi(0x0200);
+    cpu.state.set_ecx(5);
+    cpu.state.flags.df = false;
+
+    // F3 A6 = REPE CMPSB, F4 = HLT
+    place_at(&mut bus, PM_CODE_BASE, &[0xF3, 0xA6, 0xF4]);
+
+    for _ in 0..20 {
+        cpu.step(&mut bus);
+        if cpu.halted() {
+            break;
+        }
+    }
+
+    assert!(cpu.halted());
+    assert!(
+        !cpu.state.flags.zf(),
+        "REPE CMPSB should clear ZF on mismatch"
+    );
+    assert_eq!(
+        cpu.state.ecx(),
+        2,
+        "ECX should reflect remaining count after mismatch at index 2"
+    );
+    assert_eq!(cpu.state.esi(), 0x0103);
+    assert_eq!(cpu.state.edi(), 0x0203);
+}
