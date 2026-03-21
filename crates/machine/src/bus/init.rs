@@ -476,6 +476,8 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.pit.state.channels[0].value = 0;
         self.pit.state.channels[0].flag = 0;
         self.pit.state.channels[0].last_load_cycle = self.current_cycle;
+        self.pit.state.channels[0].output = true;
+        self.pit.state.channels[0].reload_pending = None;
         self.pit.schedule_timer0(
             &mut self.scheduler,
             self.clocks.cpu_clock_hz,

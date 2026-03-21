@@ -1,5 +1,5 @@
 use common::Scheduler;
-use device::i8253_pit::{I8253Pit, PIT_FLAG_I};
+use device::i8253_pit::{I8253Pit, PIT_FLAG_I, WriteResult};
 
 const CPU_HZ: u32 = 8_000_000;
 const PIT_HZ: u32 = 1_996_800;
@@ -48,10 +48,10 @@ fn word_mode_write_toggle() {
     // Program channel 0: word access, mode 3
     pit.write_control(0, 0x36, 0, CPU_HZ, PIT_HZ);
 
-    // First byte (LSB): should return true (incomplete).
-    assert!(pit.write_counter(0, 0xE8));
-    // Second byte (MSB): should return false (complete).
-    assert!(!pit.write_counter(0, 0x03));
+    // First byte (LSB): should return Skip (incomplete).
+    assert_eq!(pit.write_counter(0, 0xE8), WriteResult::Skip);
+    // Second byte (MSB): should return InitialLoad (complete).
+    assert_eq!(pit.write_counter(0, 0x03), WriteResult::InitialLoad);
 
     assert_eq!(pit.channels[0].value, 0x03E8);
 }
@@ -82,7 +82,7 @@ fn low_byte_access_mode() {
 
     // Channel 0: low byte only, mode 2
     pit.write_control(0, 0x14, 0, CPU_HZ, PIT_HZ);
-    assert!(!pit.write_counter(0, 0x64)); // value = 100
+    assert_eq!(pit.write_counter(0, 0x64), WriteResult::InitialLoad); // value = 100
     assert_eq!(pit.channels[0].value, 100);
 }
 
@@ -92,7 +92,7 @@ fn high_byte_access_mode() {
 
     // Channel 0: high byte only, mode 2
     pit.write_control(0, 0x24, 0, CPU_HZ, PIT_HZ);
-    assert!(!pit.write_counter(0, 0x04)); // value = 0x0400 = 1024
+    assert_eq!(pit.write_counter(0, 0x04), WriteResult::InitialLoad); // value = 0x0400 = 1024
     assert_eq!(pit.channels[0].value, 0x0400);
 }
 
@@ -222,9 +222,11 @@ fn mode3_periodic() {
     pit.write_counter(0, 0x03); // reload = 1000
     pit.channels[0].last_load_cycle = 0;
 
-    // Same periodic logic as mode 2
-    // At cpu_cycles=5000: elapsed_pit = 1248, pos = 248, count = 752
-    assert_eq!(pit.get_count(0, 5000, CPU_HZ, PIT_HZ), 752);
+    // Mode 3 decrements by 2 per PIT tick.
+    // At cpu_cycles=5000: elapsed_pit = 1248, period = 1000, half = 500
+    // pos = 1248 % 1000 = 248, pos_in_half = 248 % 500 = 248
+    // count = 1000 - 248 * 2 = 504
+    assert_eq!(pit.get_count(0, 5000, CPU_HZ, PIT_HZ), 504);
 }
 
 #[test]
@@ -573,20 +575,28 @@ fn mode1_inhibit_behavior() {
     pit.channels[0].flag |= 0x20; // PIT_FLAG_I
 
     // Write LSB (first byte of word).
-    assert!(pit.write_counter(0, 0x64)); // returns true (first byte, incomplete)
+    assert_eq!(pit.write_counter(0, 0x64), WriteResult::Skip);
 
-    // Write MSB (second byte). Mode 1 + PIT_FLAG_I → should return true (inhibit).
-    let inhibit = pit.write_counter(0, 0x00);
-    assert!(inhibit, "mode 1 with PIT_FLAG_I should inhibit");
+    // Write MSB (second byte). Mode 1 + PIT_FLAG_I → should return Skip (inhibit).
+    let result = pit.write_counter(0, 0x00);
+    assert_eq!(
+        result,
+        WriteResult::Skip,
+        "mode 1 with PIT_FLAG_I should inhibit"
+    );
     assert_eq!(pit.channels[0].value, 100);
 
-    // Without PIT_FLAG_I, same mode should return false.
+    // Without PIT_FLAG_I, same mode should return InitialLoad.
     pit.channels[0].flag &= !0x20; // clear PIT_FLAG_I
     // Need to set PIT_STAT_CMD again so write_counter works.
     pit.write_control(0, 0x32, 0, CPU_HZ, PIT_HZ);
     pit.write_counter(0, 0x64);
-    let inhibit = pit.write_counter(0, 0x00);
-    assert!(!inhibit, "mode 1 without PIT_FLAG_I should not inhibit");
+    let result = pit.write_counter(0, 0x00);
+    assert_eq!(
+        result,
+        WriteResult::InitialLoad,
+        "mode 1 without PIT_FLAG_I should not inhibit"
+    );
 }
 
 #[test]
@@ -724,4 +734,445 @@ fn on_timer0_event_mode0_does_not_rearm() {
     // Second event: should NOT raise IRQ (one-shot expired).
     let raised = pit.on_timer0_event(&mut scheduler, CPU_HZ, PIT_HZ, 1000);
     assert!(!raised, "second event should NOT raise IRQ in mode 0");
+}
+
+#[test]
+fn mode3_decrement_by_2_half_period_boundary() {
+    let mut pit = I8253Pit::new_zeroed();
+
+    // Channel 0: word access, mode 3, reload = 1000
+    pit.write_control(0, 0x36, 0, CPU_HZ, PIT_HZ);
+    pit.write_counter(0, 0xE8);
+    pit.write_counter(0, 0x03);
+    pit.channels[0].last_load_cycle = 0;
+
+    // cpu_cycles = 2004 → elapsed_pit = 500 (half-period boundary, counter reloads).
+    let count = pit.get_count(0, 2004, CPU_HZ, PIT_HZ);
+    assert_eq!(
+        count, 1000,
+        "at half-period boundary, counter should reload"
+    );
+}
+
+#[test]
+fn mode3_decrement_by_2_second_half() {
+    let mut pit = I8253Pit::new_zeroed();
+
+    // Channel 0: word access, mode 3, reload = 1000
+    pit.write_control(0, 0x36, 0, CPU_HZ, PIT_HZ);
+    pit.write_counter(0, 0xE8);
+    pit.write_counter(0, 0x03);
+    pit.channels[0].last_load_cycle = 0;
+
+    // In the second half (pos=600): pos_in_low = 600 - 500 = 100
+    // count = 1000 - 100 * 2 = 800
+    // cpu_cycles = 2404 → elapsed_pit = 2404 * 1996800 / 8000000 = 600
+    let count = pit.get_count(0, 2404, CPU_HZ, PIT_HZ);
+    assert_eq!(count, 800);
+}
+
+#[test]
+fn mode3_zero_reload() {
+    let mut pit = I8253Pit::new_zeroed();
+
+    // Mode 3, reload = 0 → period = 65536
+    pit.write_control(0, 0x36, 0, CPU_HZ, PIT_HZ);
+    pit.write_counter(0, 0x00);
+    pit.write_counter(0, 0x00);
+    pit.channels[0].last_load_cycle = 0;
+
+    // At cycle 0: returns 0 (the programmed value)
+    assert_eq!(pit.get_count(0, 0, CPU_HZ, PIT_HZ), 0);
+
+    // At cycle 401: elapsed_pit = 100, period = 65536, half = 32768
+    // pos_in_half = 100, count = 65536 - 100 * 2 = 65336
+    assert_eq!(pit.get_count(0, 401, CPU_HZ, PIT_HZ), 65336);
+}
+
+#[test]
+fn mode2_vs_mode3_different_counts() {
+    let mut pit = I8253Pit::new_zeroed();
+
+    // Mode 2, reload = 100
+    pit.write_control(0, 0x34, 0, CPU_HZ, PIT_HZ);
+    pit.write_counter(0, 0x64);
+    pit.write_counter(0, 0x00);
+    pit.channels[0].last_load_cycle = 0;
+
+    // cpu_cycles = 41 → elapsed_pit = 41 * 1996800 / 8000000 = 10
+    // mode 2 count = 100 - 10 = 90
+    let mode2_count = pit.get_count(0, 41, CPU_HZ, PIT_HZ);
+    assert_eq!(mode2_count, 90);
+
+    // Same reload in mode 3
+    pit.write_control(0, 0x36, 0, CPU_HZ, PIT_HZ);
+    pit.write_counter(0, 0x64);
+    pit.write_counter(0, 0x00);
+    pit.channels[0].last_load_cycle = 0;
+
+    // elapsed_pit = 10: mode 3 pos_in_half = 10 % 50 = 10, count = 100 - 10 * 2 = 80
+    let mode3_count = pit.get_count(0, 41, CPU_HZ, PIT_HZ);
+    assert_eq!(mode3_count, 80);
+}
+
+#[test]
+fn output_state_mode0_initial() {
+    let mut pit = I8253Pit::new_zeroed();
+
+    // Mode 0: output starts LOW after mode set
+    pit.write_control(0, 0x30, 0, CPU_HZ, PIT_HZ);
+    assert!(!pit.channels[0].output, "mode 0 output should start LOW");
+}
+
+#[test]
+fn output_state_mode2_initial() {
+    let mut pit = I8253Pit::new_zeroed();
+
+    // Mode 2: output starts HIGH after mode set
+    pit.write_control(0, 0x34, 0, CPU_HZ, PIT_HZ);
+    assert!(pit.channels[0].output, "mode 2 output should start HIGH");
+}
+
+#[test]
+fn output_state_mode3_initial() {
+    let mut pit = I8253Pit::new_zeroed();
+
+    // Mode 3: output starts HIGH after mode set
+    pit.write_control(0, 0x36, 0, CPU_HZ, PIT_HZ);
+    assert!(pit.channels[0].output, "mode 3 output should start HIGH");
+}
+
+#[test]
+fn get_output_mode0() {
+    let mut pit = I8253Pit::new_zeroed();
+
+    pit.write_control(0, 0x30, 0, CPU_HZ, PIT_HZ);
+    pit.write_counter(0, 0x0A);
+    pit.write_counter(0, 0x00); // reload = 10
+    pit.channels[0].last_load_cycle = 0;
+
+    // Before terminal count: output LOW
+    assert!(!pit.get_output(0, 0, CPU_HZ, PIT_HZ));
+
+    // After terminal count: output HIGH
+    // 10 PIT ticks = 41 cpu cycles
+    assert!(pit.get_output(0, 100, CPU_HZ, PIT_HZ));
+}
+
+#[test]
+fn get_output_mode3_halves() {
+    let mut pit = I8253Pit::new_zeroed();
+
+    pit.write_control(0, 0x36, 0, CPU_HZ, PIT_HZ);
+    pit.write_counter(0, 0x64);
+    pit.write_counter(0, 0x00); // reload = 100
+    pit.channels[0].last_load_cycle = 0;
+
+    // First half (pos < 50): output HIGH
+    // elapsed_pit = 25: cpu_cycles = 25 * 8000000 / 1996800 ≈ 100
+    assert!(pit.get_output(0, 100, CPU_HZ, PIT_HZ));
+
+    // Second half (pos >= 50): output LOW
+    // elapsed_pit = 75: cpu_cycles = 75 * 8000000 / 1996800 ≈ 300
+    assert!(!pit.get_output(0, 301, CPU_HZ, PIT_HZ));
+}
+
+#[test]
+fn mode0_lsb_write_drops_output() {
+    let mut pit = I8253Pit::new_zeroed();
+
+    // Mode 0, word access
+    pit.write_control(0, 0x30, 0, CPU_HZ, PIT_HZ);
+    assert!(!pit.channels[0].output);
+
+    // Set output HIGH to simulate post-terminal-count state
+    pit.channels[0].output = true;
+
+    // Writing the LSB of a word write should drop output LOW
+    pit.write_counter(0, 0x64);
+    assert!(
+        !pit.channels[0].output,
+        "mode 0 LSB write should drop output LOW"
+    );
+}
+
+#[test]
+fn on_timer0_mode3_toggles_output() {
+    let mut pit = I8253Pit::new_zeroed();
+    let mut scheduler = Scheduler::new();
+
+    pit.channels[0].ctrl = 0x36; // mode 3
+    pit.channels[0].flag = PIT_FLAG_I;
+    pit.channels[0].value = 1000;
+    pit.channels[0].output = true;
+
+    // First event: output toggles to false
+    pit.on_timer0_event(&mut scheduler, CPU_HZ, PIT_HZ, 0);
+    assert!(
+        !pit.channels[0].output,
+        "mode 3 first event should toggle output"
+    );
+
+    // Second event: output toggles back to true
+    pit.on_timer0_event(&mut scheduler, CPU_HZ, PIT_HZ, 4000);
+    assert!(
+        pit.channels[0].output,
+        "mode 3 second event should toggle output back"
+    );
+}
+
+#[test]
+fn on_timer0_mode0_sets_output_high() {
+    let mut pit = I8253Pit::new_zeroed();
+    let mut scheduler = Scheduler::new();
+
+    pit.channels[0].ctrl = 0x30; // mode 0
+    pit.channels[0].flag = PIT_FLAG_I;
+    pit.channels[0].value = 1000;
+    pit.channels[0].output = false;
+
+    pit.on_timer0_event(&mut scheduler, CPU_HZ, PIT_HZ, 0);
+    assert!(
+        pit.channels[0].output,
+        "mode 0 terminal count should set output HIGH"
+    );
+}
+
+#[test]
+fn deferred_reload_mode2() {
+    let mut pit = I8253Pit::new_zeroed();
+    let mut scheduler = Scheduler::new();
+
+    // Initial load: mode 2, reload = 1000
+    pit.write_control(0, 0x34, 0, CPU_HZ, PIT_HZ);
+    pit.write_counter(0, 0xE8);
+    pit.write_counter(0, 0x03);
+    pit.channels[0].last_load_cycle = 0;
+    pit.channels[0].flag |= PIT_FLAG_I;
+    pit.schedule_timer0(&mut scheduler, CPU_HZ, PIT_HZ, 0);
+
+    // Subsequent load: write new value 500. Since mode 2 is periodic,
+    // write_counter returns SubsequentLoad.
+    let result = pit.write_counter(0, 0xF4);
+    assert_eq!(result, WriteResult::Skip); // first byte (LSB)
+    let result = pit.write_counter(0, 0x01);
+    assert_eq!(result, WriteResult::SubsequentLoad);
+
+    // The value field holds 500 but reload_pending is not set here
+    // (that's the bus layer's job). Simulate what the bus does:
+    pit.channels[0].reload_pending = Some(500);
+
+    // Timer event with old period: apply pending reload.
+    pit.on_timer0_event(&mut scheduler, CPU_HZ, PIT_HZ, 4000);
+    assert_eq!(
+        pit.channels[0].value, 500,
+        "pending reload should be applied"
+    );
+    assert!(
+        pit.channels[0].reload_pending.is_none(),
+        "reload_pending should be cleared"
+    );
+}
+
+#[test]
+fn deferred_reload_mode3() {
+    let mut pit = I8253Pit::new_zeroed();
+    let mut scheduler = Scheduler::new();
+
+    // Initial load: mode 3, reload = 1000
+    pit.write_control(0, 0x36, 0, CPU_HZ, PIT_HZ);
+    pit.write_counter(0, 0xE8);
+    pit.write_counter(0, 0x03);
+    pit.channels[0].last_load_cycle = 0;
+    pit.channels[0].flag |= PIT_FLAG_I;
+
+    // Simulate bus setting reload_pending
+    pit.channels[0].reload_pending = Some(500);
+
+    // Timer event: apply pending reload and toggle output.
+    let initial_output = pit.channels[0].output;
+    pit.on_timer0_event(&mut scheduler, CPU_HZ, PIT_HZ, 4000);
+    assert_eq!(pit.channels[0].value, 500);
+    assert_eq!(pit.channels[0].output, !initial_output);
+}
+
+#[test]
+fn bcd_to_binary_conversion() {
+    let mut pit = I8253Pit::new_zeroed();
+
+    // Mode 2, BCD mode (ctrl bit 0 = 1): reload = 0x1000 BCD → 1000 decimal ticks.
+    // Control word: RL=11 (0x30), mode 2 (0x04), BCD (0x01) → 0x35
+    pit.write_control(0, 0x35, 0, CPU_HZ, PIT_HZ);
+    pit.write_counter(0, 0x00); // LSB = 0x00
+    pit.write_counter(0, 0x10); // MSB = 0x10 → value = 0x1000
+    pit.channels[0].last_load_cycle = 0;
+
+    assert_eq!(pit.channels[0].value, 0x1000);
+
+    // At cycle 0: count should be 0x1000 (the BCD reload value)
+    assert_eq!(pit.get_count(0, 0, CPU_HZ, PIT_HZ), 0x1000);
+
+    // cpu_cycles = 401 → elapsed_pit = 100. Count = 1000 - 100 = 900 → 0x0900 BCD
+    assert_eq!(pit.get_count(0, 401, CPU_HZ, PIT_HZ), 0x0900);
+}
+
+#[test]
+fn bcd_zero_reload_is_10000() {
+    let mut pit = I8253Pit::new_zeroed();
+
+    // BCD mode, reload = 0 → period = 10000 decimal ticks
+    pit.write_control(0, 0x35, 0, CPU_HZ, PIT_HZ);
+    pit.write_counter(0, 0x00);
+    pit.write_counter(0, 0x00);
+    pit.channels[0].last_load_cycle = 0;
+
+    // At cycle 0: returns 0 (the programmed value)
+    assert_eq!(pit.get_count(0, 0, CPU_HZ, PIT_HZ), 0);
+
+    // After 100 PIT ticks: count = 10000 - 100 = 9900 → 0x9900 BCD
+    assert_eq!(pit.get_count(0, 401, CPU_HZ, PIT_HZ), 0x9900);
+}
+
+#[test]
+fn bcd_mode3_decrement_by_2() {
+    let mut pit = I8253Pit::new_zeroed();
+
+    // Mode 3, BCD, reload = 0x0100 BCD (100 decimal)
+    // Control word: RL=11 (0x30), mode 3 (0x06), BCD (0x01) → 0x37
+    pit.write_control(0, 0x37, 0, CPU_HZ, PIT_HZ);
+    pit.write_counter(0, 0x00); // LSB
+    pit.write_counter(0, 0x01); // MSB → 0x0100
+    pit.channels[0].last_load_cycle = 0;
+
+    // Period = 100 decimal ticks, half = 50.
+    // After 10 PIT ticks: pos_in_half = 10, count = 100 - 10*2 = 80 → 0x0080 BCD
+    // cpu_cycles for 10 PIT ticks: ~41
+    assert_eq!(pit.get_count(0, 41, CPU_HZ, PIT_HZ), 0x0080);
+}
+
+#[test]
+fn bcd_schedule_timer0() {
+    let mut pit = I8253Pit::new_zeroed();
+    let mut scheduler = Scheduler::new();
+
+    // BCD mode, reload = 0x1000 (1000 decimal) → period = 1000 PIT ticks
+    pit.channels[0].ctrl = 0x35; // mode 2, BCD
+    pit.channels[0].value = 0x1000;
+
+    pit.schedule_timer0(&mut scheduler, CPU_HZ, PIT_HZ, 0);
+
+    // Expected: 1000 * 8000000 / 1996800 = 4006 cpu cycles (integer division)
+    let next = scheduler.next_event_cycle().unwrap();
+    assert_eq!(next, 4006);
+}
+
+#[test]
+fn write_result_initial_vs_subsequent() {
+    let mut pit = I8253Pit::new_zeroed();
+
+    // Mode 2, word access — first load
+    pit.write_control(0, 0x34, 0, CPU_HZ, PIT_HZ);
+    pit.write_counter(0, 0xE8); // LSB → Skip
+    let result = pit.write_counter(0, 0x03); // MSB → InitialLoad
+    assert_eq!(result, WriteResult::InitialLoad);
+
+    // Second load without new control word → SubsequentLoad
+    pit.write_counter(0, 0xF4); // LSB → Skip
+    let result = pit.write_counter(0, 0x01); // MSB → SubsequentLoad
+    assert_eq!(result, WriteResult::SubsequentLoad);
+}
+
+#[test]
+fn latch_not_cleared_by_mode_set() {
+    let mut pit = I8253Pit::new_zeroed();
+
+    // Mode 2, reload = 1000
+    pit.write_control(0, 0x34, 0, CPU_HZ, PIT_HZ);
+    pit.write_counter(0, 0xE8);
+    pit.write_counter(0, 0x03);
+    pit.channels[0].last_load_cycle = 0;
+
+    // Latch the counter
+    pit.write_control(0, 0x00, 0, CPU_HZ, PIT_HZ);
+
+    // New mode set should clear the latch flag
+    pit.write_control(0, 0x36, 0, CPU_HZ, PIT_HZ);
+    assert_eq!(
+        pit.channels[0].flag & 0x10,
+        0,
+        "mode set should clear latch flag"
+    );
+}
+
+#[test]
+fn reload_pending_cleared_on_mode_set() {
+    let mut pit = I8253Pit::new_zeroed();
+
+    pit.write_control(0, 0x36, 0, CPU_HZ, PIT_HZ);
+    pit.write_counter(0, 0xE8);
+    pit.write_counter(0, 0x03);
+    pit.channels[0].reload_pending = Some(500);
+
+    // Mode set clears reload_pending
+    pit.write_control(0, 0x36, 0, CPU_HZ, PIT_HZ);
+    assert!(pit.channels[0].reload_pending.is_none());
+}
+
+#[test]
+fn mode3_odd_reload_period() {
+    let mut pit = I8253Pit::new_zeroed();
+
+    // Mode 3, low-byte only (RL=01), reload = 101 (odd).
+    // Control word: RL=01 (0x10), mode 3 (0x06) → 0x16
+    pit.write_control(0, 0x16, 0, CPU_HZ, PIT_HZ);
+    pit.write_counter(0, 101);
+    pit.channels[0].last_load_cycle = 0;
+
+    // The 8253 mode 3 odd-reload behavior:
+    //   HIGH half: (101+1)/2 = 51 ticks
+    //     tick 0: CE = 101
+    //     tick 1: CE = 100 (decremented by 1 to make even)
+    //     tick 2: CE = 98  (then by 2)
+    //     tick k (k>=1): CE = 101 + 1 - k*2 = 102 - 2k
+    //   LOW half: (101-1)/2 = 50 ticks
+    //     tick 0: CE = 101 (reloaded)
+    //     tick 1: CE = 98  (decremented by 3 to make even)
+    //     tick k (k>=1): CE = 101 - 1 - k*2 = 100 - 2k
+    //   Total period: 51 + 50 = 101 PIT ticks (correct, not 100).
+
+    // Use a direct PIT-tick ratio for easy reasoning: set CPU_HZ = PIT_HZ
+    // so 1 CPU cycle = 1 PIT tick.
+    let hz = 1_000_000;
+
+    // At tick 0: count = 101
+    assert_eq!(pit.get_count(0, 0, hz, hz), 101);
+
+    // At tick 1 (HIGH half): CE = 102 - 2*1 = 100
+    assert_eq!(pit.get_count(0, 1, hz, hz), 100);
+
+    // At tick 25 (HIGH half): CE = 102 - 2*25 = 52
+    assert_eq!(pit.get_count(0, 25, hz, hz), 52);
+
+    // At tick 50 (HIGH half, last tick): CE = 102 - 2*50 = 2
+    assert_eq!(pit.get_count(0, 50, hz, hz), 2);
+
+    // At tick 51 (LOW half, tick 0): CE = 101 (reloaded)
+    assert_eq!(pit.get_count(0, 51, hz, hz), 101);
+
+    // At tick 52 (LOW half, tick 1): CE = 100 - 2*1 = 98
+    assert_eq!(pit.get_count(0, 52, hz, hz), 98);
+
+    // At tick 100 (LOW half, last tick): pos_in_low = 100-51 = 49
+    // CE = 100 - 2*49 = 2
+    assert_eq!(pit.get_count(0, 100, hz, hz), 2);
+
+    // At tick 101: new period starts, CE = 101 (reloaded)
+    assert_eq!(pit.get_count(0, 101, hz, hz), 101);
+
+    // Verify output state: HIGH for first 51 ticks, LOW for next 50.
+    assert!(pit.get_output(0, 0, hz, hz)); // tick 0: HIGH
+    assert!(pit.get_output(0, 50, hz, hz)); // tick 50: still HIGH
+    assert!(!pit.get_output(0, 51, hz, hz)); // tick 51: LOW
+    assert!(!pit.get_output(0, 100, hz, hz)); // tick 100: still LOW
+    assert!(pit.get_output(0, 101, hz, hz)); // tick 101: HIGH again
 }

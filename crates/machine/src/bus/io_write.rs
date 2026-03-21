@@ -1,7 +1,7 @@
 use common::{EventKind, MachineModel, debug, warn};
 use device::{
     grcg,
-    i8253_pit::PIT_FLAG_I,
+    i8253_pit::{PIT_FLAG_I, WriteResult},
     sasi::{SasiAction, SasiPhase},
     upd765a_fdc::FdcAction,
     upd7220_gdc,
@@ -752,9 +752,21 @@ impl<T: Tracing> Pc9801Bus<T> {
     }
 
     fn write_pit_counter(&mut self, channel: usize, value: u8) {
-        if self.pit.write_counter(channel, value) {
+        let result = self.pit.write_counter(channel, value);
+        if result == WriteResult::Skip {
             return;
         }
+
+        let mode = (self.pit.channels[channel].ctrl >> 1) & 7;
+        let is_subsequent = result == WriteResult::SubsequentLoad;
+        let is_periodic = mode == 2 || mode == 3;
+
+        if is_subsequent && is_periodic {
+            // In modes 2/3, a subsequent load is deferred until terminal count.
+            self.pit.channels[channel].reload_pending = Some(self.pit.channels[channel].value);
+            return;
+        }
+
         self.pit.channels[channel].last_load_cycle = self.current_cycle;
         if channel == 1 {
             self.beeper
