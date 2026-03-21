@@ -5,8 +5,8 @@
 //! No GATE handling is needed. See `undoc98/io_tcu.txt`.
 //!
 //! The BIOS programs channel 0 in mode 3 (square wave) for the 100 Hz
-//! interval timer. Modes 2 and 3 are treated identically here because the
-//! PC-98 system timer only observes the output-low edge, not the duty cycle.
+//! interval timer. Counting uses lazy evaluation: the current count is
+//! computed on-demand from the reload value and elapsed CPU cycles.
 
 use std::ops::{Deref, DerefMut};
 
@@ -33,6 +33,17 @@ pub const PIT_FLAG_L: u8 = 0x04;
 pub const PIT_FLAG_C: u8 = 0x10;
 /// Channel flag: interrupt pending (output not yet asserted).
 pub const PIT_FLAG_I: u8 = 0x20;
+
+/// Result of a counter write operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteResult {
+    /// Caller should skip event scheduling (incomplete word write or mode 1 inhibit).
+    Skip,
+    /// First load after a control word — always takes effect immediately.
+    InitialLoad,
+    /// Reload while already counting — in modes 2/3, should be deferred.
+    SubsequentLoad,
+}
 
 /// Channel 0 control word.
 /// Bits: SC=01, RL=01 (LSB only), M=011 (mode 3, square wave), BCD=0.
@@ -65,6 +76,10 @@ pub struct I8253PitChannelState {
     pub latch: u16,
     /// CPU cycle when counter was last loaded.
     pub last_load_cycle: u64,
+    /// Current output pin state.
+    pub output: bool,
+    /// Pending reload value for modes 2/3 (applied at next terminal count).
+    pub reload_pending: Option<u16>,
 }
 
 /// Snapshot of the i8253 PIT (all 3 channels).
@@ -123,6 +138,8 @@ impl I8253Pit {
                         value: 0,
                         latch: 0,
                         last_load_cycle: 0,
+                        output: true,
+                        reload_pending: None,
                     },
                     // Channel 1: beep tone generator.
                     // Counter value is lineage-dependent; ctrl/flag zeroed.
@@ -132,6 +149,8 @@ impl I8253Pit {
                         value: beep_counter,
                         latch: 0,
                         last_load_cycle: 0,
+                        output: false,
+                        reload_pending: None,
                     },
                     // Channel 2: RS-232C baud rate generator.
                     // BIOS programs mode 3 (square wave) via control word 0xB6.
@@ -141,6 +160,8 @@ impl I8253Pit {
                         value: 0,
                         latch: 0,
                         last_load_cycle: 0,
+                        output: true,
+                        reload_pending: None,
                     },
                 ],
             },
@@ -158,6 +179,8 @@ impl I8253Pit {
                         value: 0,
                         latch: 0,
                         last_load_cycle: 0,
+                        output: false,
+                        reload_pending: None,
                     },
                     I8253PitChannelState {
                         ctrl: 0,
@@ -165,6 +188,8 @@ impl I8253Pit {
                         value: 0,
                         latch: 0,
                         last_load_cycle: 0,
+                        output: false,
+                        reload_pending: None,
                     },
                     I8253PitChannelState {
                         ctrl: 0,
@@ -172,6 +197,8 @@ impl I8253Pit {
                         value: 0,
                         latch: 0,
                         last_load_cycle: 0,
+                        output: false,
+                        reload_pending: None,
                     },
                 ],
             },
@@ -193,6 +220,9 @@ impl I8253Pit {
             // Mode set
             ch.ctrl = (value & 0x3F) | PIT_STAT_CMD;
             ch.flag &= !(PIT_FLAG_R | PIT_FLAG_W | PIT_FLAG_L | PIT_FLAG_C);
+            ch.reload_pending = None;
+            let mode = (value >> 1) & 7;
+            ch.output = mode != 0;
         } else {
             // Latch command: snapshot current count
             let count = get_count(ch, current_cycle, cpu_clock_hz, pit_clock_hz);
@@ -203,10 +233,14 @@ impl I8253Pit {
     }
 
     /// Writes a byte to a channel's counter register.
-    /// Returns `true` if the caller should skip event scheduling
-    /// (word mode first byte, or mode 1 inhibit).
-    pub fn write_counter(&mut self, channel: usize, value: u8) -> bool {
+    ///
+    /// Returns `WriteResult::Skip` if the caller should skip event scheduling
+    /// (word mode first byte, or mode 1 inhibit), `WriteResult::InitialLoad`
+    /// for the first load after a control word, or `WriteResult::SubsequentLoad`
+    /// for a reload while already counting.
+    pub fn write_counter(&mut self, channel: usize, value: u8) -> WriteResult {
         let ch = &mut self.channels[channel];
+        let is_initial = ch.ctrl & PIT_STAT_CMD != 0;
 
         match ch.ctrl & PIT_CTRL_RL {
             PIT_RL_L => {
@@ -218,9 +252,13 @@ impl I8253Pit {
             PIT_RL_ALL => {
                 ch.flag ^= PIT_FLAG_W;
                 if ch.flag & PIT_FLAG_W != 0 {
-                    // First byte (LSB)
+                    // First byte (LSB): in mode 0, output drops LOW immediately.
+                    let mode = (ch.ctrl >> 1) & 7;
+                    if mode == 0 {
+                        ch.output = false;
+                    }
                     ch.value = (ch.value & 0xFF00) | value as u16;
-                    return true;
+                    return WriteResult::Skip;
                 }
                 // Second byte (MSB)
                 ch.value = (ch.value & 0x00FF) | ((value as u16) << 8);
@@ -232,10 +270,14 @@ impl I8253Pit {
 
         // Mode 1 with I flag: don't restart
         if (ch.ctrl & 0x06) == 0x02 && (ch.flag & PIT_FLAG_I != 0) {
-            return true;
+            return WriteResult::Skip;
         }
 
-        false
+        if is_initial {
+            WriteResult::InitialLoad
+        } else {
+            WriteResult::SubsequentLoad
+        }
     }
 
     /// Reads a byte from a channel's counter register.
@@ -290,6 +332,45 @@ impl I8253Pit {
         )
     }
 
+    /// Computes the current output pin state for a channel.
+    pub fn get_output(
+        &self,
+        channel: usize,
+        current_cycle: u64,
+        cpu_clock_hz: u32,
+        pit_clock_hz: u32,
+    ) -> bool {
+        let ch = &self.channels[channel];
+        let count_period = count_period(ch);
+        let elapsed_cpu = current_cycle.saturating_sub(ch.last_load_cycle);
+        if elapsed_cpu == 0 {
+            return ch.output;
+        }
+        let elapsed_pit = elapsed_cpu * pit_clock_hz as u64 / cpu_clock_hz as u64;
+        let mode = (ch.ctrl >> 1) & 7;
+        match mode {
+            0 => elapsed_pit >= count_period,
+            2 => {
+                let pos = elapsed_pit % count_period;
+                pos != count_period - 1
+            }
+            3 => {
+                let high_half = count_period.div_ceil(2);
+                let pos = elapsed_pit % count_period;
+                pos < high_half
+            }
+            4 => {
+                if elapsed_pit >= count_period {
+                    let past = elapsed_pit - count_period;
+                    past >= 1
+                } else {
+                    true
+                }
+            }
+            _ => ch.output,
+        }
+    }
+
     /// Schedules the next timer 0 event based on the current reload value.
     pub fn schedule_timer0(
         &self,
@@ -299,11 +380,7 @@ impl I8253Pit {
         current_cycle: u64,
     ) {
         let ch = &self.channels[0];
-        let reload = if ch.value == 0 {
-            0x10000u64
-        } else {
-            ch.value as u64
-        };
+        let reload = count_period(ch);
         let cpu_cycles = reload * cpu_clock_hz as u64 / pit_clock_hz as u64;
         scheduler.schedule(EventKind::PitTimer0, current_cycle + cpu_cycles);
     }
@@ -321,15 +398,24 @@ impl I8253Pit {
         if raise_irq {
             ch.flag &= !PIT_FLAG_I;
         }
+
+        let mode = (ch.ctrl >> 1) & 7;
+
+        // Apply pending reload if one was deferred from a subsequent write.
+        if let Some(pending) = ch.reload_pending.take() {
+            ch.value = pending;
+        }
+
+        // Update output state at terminal count.
+        match mode {
+            0 => ch.output = true,
+            2 => {} // Output goes LOW for 1 tick then back HIGH; stays HIGH at reload.
+            3 => ch.output = !ch.output,
+            _ => {}
+        }
+
         // Always reschedule ch0 so get_count() keeps working, but only
         // re-arm the interrupt flag for periodic modes (2 and 3).
-        //
-        // NP21W's systimer() does the same: mode 2 re-arms PIT_FLAG_I and
-        // reschedules with the programmed count; all other modes reschedule
-        // without arming the interrupt. We extend this to mode 3 as well
-        // because the PC-98 ITF programs ch0 in mode 3 (periodic square
-        // wave) for the system interval timer.
-        let mode = (ch.ctrl >> 1) & 7;
         if mode == 2 || mode == 3 {
             ch.flag |= PIT_FLAG_I;
         }
@@ -339,6 +425,45 @@ impl I8253Pit {
     }
 }
 
+/// Returns the effective count period in PIT ticks, handling the 0 → max convention
+/// and BCD mode.
+fn count_period(ch: &I8253PitChannelState) -> u64 {
+    if ch.ctrl & 1 != 0 {
+        // BCD mode: 0 means 10000 decimal ticks.
+        if ch.value == 0 {
+            10000
+        } else {
+            bcd_to_binary(ch.value)
+        }
+    } else if ch.value == 0 {
+        0x10000u64
+    } else {
+        ch.value as u64
+    }
+}
+
+/// Converts a 4-digit BCD value to its binary equivalent.
+/// e.g. 0x1234 → 1234, 0x9999 → 9999.
+fn bcd_to_binary(bcd: u16) -> u64 {
+    let d0 = (bcd & 0x000F) as u64;
+    let d1 = ((bcd >> 4) & 0x000F) as u64;
+    let d2 = ((bcd >> 8) & 0x000F) as u64;
+    let d3 = ((bcd >> 12) & 0x000F) as u64;
+    d3 * 1000 + d2 * 100 + d1 * 10 + d0
+}
+
+/// Converts a binary value (0..=9999) to 4-digit BCD.
+/// e.g. 1234 → 0x1234, 9999 → 0x9999.
+fn binary_to_bcd(mut bin: u64) -> u16 {
+    let d3 = bin / 1000;
+    bin %= 1000;
+    let d2 = bin / 100;
+    bin %= 100;
+    let d1 = bin / 10;
+    let d0 = bin % 10;
+    ((d3 << 12) | (d2 << 8) | (d1 << 4) | d0) as u16
+}
+
 /// Computes the current count value for a channel via lazy evaluation.
 fn get_count(
     ch: &I8253PitChannelState,
@@ -346,11 +471,7 @@ fn get_count(
     cpu_clock_hz: u32,
     pit_clock_hz: u32,
 ) -> u16 {
-    let count_period = if ch.value == 0 {
-        0x10000u64
-    } else {
-        ch.value as u64
-    };
+    let period = count_period(ch);
 
     let elapsed_cpu = current_cycle.saturating_sub(ch.last_load_cycle);
     if elapsed_cpu == 0 {
@@ -358,25 +479,51 @@ fn get_count(
     }
 
     let elapsed_pit = elapsed_cpu * pit_clock_hz as u64 / cpu_clock_hz as u64;
+    let is_bcd = ch.ctrl & 1 != 0;
 
     let mode = (ch.ctrl >> 1) & 7;
-    match mode {
-        2 | 3 => {
-            // Periodic modes: counter wraps at reload value
-            let pos = elapsed_pit % count_period;
+    let binary_count = match mode {
+        2 => {
+            let pos = elapsed_pit % period;
+            if pos == 0 { period } else { period - pos }
+        }
+        3 => {
+            // Square wave: counting element decrements by 2 per PIT tick.
+            // For odd reload values, the 8253 uses asymmetric half-periods:
+            //   HIGH half: (N+1)/2 ticks — first tick decrements by 1, then by 2
+            //   LOW  half: (N-1)/2 ticks — first tick decrements by 3, then by 2
+            // For even values both halves are N/2 ticks, decrement by 2 throughout.
+            let is_odd = period & 1 != 0;
+            let high_half = period.div_ceil(2);
+            let pos = elapsed_pit % period;
             if pos == 0 {
-                ch.value
+                period
+            } else if pos < high_half {
+                if is_odd {
+                    period + 1 - pos * 2
+                } else {
+                    period - pos * 2
+                }
             } else {
-                (count_period - pos) as u16
+                let pos_in_low = pos - high_half;
+                if pos_in_low == 0 {
+                    period
+                } else if is_odd {
+                    period - 1 - pos_in_low * 2
+                } else {
+                    period - pos_in_low * 2
+                }
             }
         }
         _ => {
-            // One-shot / other modes: count down to 0
-            if elapsed_pit >= count_period {
-                0
-            } else {
-                (count_period - elapsed_pit) as u16
-            }
+            // One-shot / other modes: count down to 0.
+            period.saturating_sub(elapsed_pit)
         }
+    };
+
+    if is_bcd {
+        binary_to_bcd(binary_count)
+    } else {
+        binary_count as u16
     }
 }
