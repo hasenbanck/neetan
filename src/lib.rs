@@ -907,13 +907,13 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
             info!("Installed PC-9801-26K sound board (YM2203 OPN)");
         }
         config::SoundboardType::Sb86 => {
-            bus.install_soundboard_86(None);
+            bus.install_soundboard_86(None, config.adpcm_ram);
             info!("Installed PC-9801-86 sound board (YM2608 OPNA + PCM86)");
         }
         config::SoundboardType::Sb86And26k => {
             bus.install_soundboard_26k(true);
             info!("Installed PC-9801-26K sound board (YM2203 OPN) at alternate ports");
-            bus.install_soundboard_86(None);
+            bus.install_soundboard_86(None, config.adpcm_ram);
             info!("Installed PC-9801-86 sound board (YM2608 OPNA + PCM86)");
         }
     }
