@@ -1,4 +1,4 @@
-//! PEGC (Packed-pixel Extended Graphics Controller) — 256-color graphics for PC-9821.
+//! PEGC (Packed-pixel Extended Graphics Controller) - 256-color graphics for PC-9821.
 //!
 //! Provides two operating modes:
 //! - **Packed pixel mode**: Each VRAM byte = one 8-bit palette index.

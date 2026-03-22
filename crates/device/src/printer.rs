@@ -1,7 +1,7 @@
 //! Centronics printer interface (i8255 PPI at ports 0x40/0x42/0x44/0x46).
 //!
 //! Port A (0x40, R/W): printer data latch.
-//! Port C (0x44, R/W): printer control — bit 7 is PSTB# (active-high strobe).
+//! Port C (0x44, R/W): printer control - bit 7 is PSTB# (active-high strobe).
 //! Control (0x46, W): i8255 mode set / BSR register.
 //!
 //! Ref: undoc98 `io_prn.txt`.
@@ -13,7 +13,7 @@ use std::io::Write;
 pub struct PrinterState {
     /// Last byte written to port 0x40 (data latch).
     pub data: u8,
-    /// Port C register — bit 7 is PSTB# strobe signal.
+    /// Port C register - bit 7 is PSTB# strobe signal.
     pub port_c: u8,
     /// Whether a printer output is attached.
     pub attached: bool,
@@ -86,7 +86,7 @@ impl Printer {
 
     /// Writes the i8255 control register (port 0x46 write).
     ///
-    /// Bit 7=1: mode set command — resets port C to 0.
+    /// Bit 7=1: mode set command - resets port C to 0.
     /// Bit 7=0: BSR (bit set/reset) on port C.
     pub fn write_control(&mut self, value: u8) {
         let old = self.state.port_c;

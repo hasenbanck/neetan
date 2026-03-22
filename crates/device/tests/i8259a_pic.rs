@@ -278,7 +278,7 @@ fn icw_init_without_icw4() {
     pic.write_port2(0, 0x08);
     assert_eq!(pic.chips[0].icw[1], 0x08);
 
-    // ICW3: cascade mask — sequence complete (3 + 0 = 3 ICWs)
+    // ICW3: cascade mask - sequence complete (3 + 0 = 3 ICWs)
     pic.write_port2(0, 0x80);
     assert_eq!(pic.chips[0].icw[2], 0x80);
     assert_eq!(pic.chips[0].write_icw, 0);
@@ -520,7 +520,7 @@ fn slave_irq_blocked_by_master_isr() {
     pic.acknowledge();
     assert_eq!(pic.chips[0].isr, 0x08);
 
-    // Set slave IRQ 8 (slave IR0) — cascade on IR7
+    // Set slave IRQ 8 (slave IR0) - cascade on IR7
     pic.set_irq(8);
 
     // Cascade IR7 is lower priority than ISR'd IRQ 3 → blocked
@@ -581,7 +581,7 @@ fn clear_irq_while_in_service() {
     assert_eq!(pic.chips[0].isr, 0x10);
     assert_eq!(pic.chips[0].irr, 0x00);
 
-    // Clear IRQ 4 — ISR must be unaffected
+    // Clear IRQ 4 - ISR must be unaffected
     pic.clear_irq(4);
     assert_eq!(pic.chips[0].isr, 0x10);
 
@@ -609,7 +609,7 @@ fn mask_irq_while_in_service() {
     pic.acknowledge();
     assert_eq!(pic.chips[0].isr, 0x02);
 
-    // Mask IRQ 1 — ISR still has it
+    // Mask IRQ 1 - ISR still has it
     pic.write_port2(0, 0x02);
     assert_eq!(pic.chips[0].isr, 0x02);
 
@@ -617,7 +617,7 @@ fn mask_irq_while_in_service() {
     pic.write_port0(0, 0x20);
     assert_eq!(pic.chips[0].isr, 0x00);
 
-    // Re-raise IRQ 1 — blocked by mask
+    // Re-raise IRQ 1 - blocked by mask
     pic.set_irq(1);
     assert!(!pic.has_pending_irq());
 

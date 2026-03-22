@@ -417,7 +417,7 @@ impl Controller {
         command: u8,
         drives: &[Option<HddImage>; 2],
     ) -> IdeAction {
-        // Channel 1 has no HDD drives attached — commands abort until ATAPI
+        // Channel 1 has no HDD drives attached - commands abort until ATAPI
         // support is wired in.
         if self.active_channel == 1 {
             return self.abort_command();

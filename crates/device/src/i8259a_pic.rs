@@ -298,7 +298,7 @@ impl I8259aPic {
     /// and returns the interrupt vector number.
     pub fn acknowledge(&mut self) -> u8 {
         let Some(pending) = self.find_pending_irq() else {
-            // Spurious interrupt — IRQ was deasserted between INTR and INTA.
+            // Spurious interrupt - IRQ was deasserted between INTR and INTA.
             // Real 8259A returns the lowest-priority master vector (base + 7).
             return (self.chips[0].icw[1] & 0xF8) | 7;
         };

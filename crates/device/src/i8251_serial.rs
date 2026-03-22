@@ -38,10 +38,10 @@ const STATUS_ALWAYS_ON: u8 = STATUS_TXRDY | STATUS_TXEMPTY | STATUS_DSR;
 /// Mask for error bits (PE | OE | FE), cleared by the Error Reset command.
 const STATUS_ERROR_MASK: u8 = STATUS_PE | STATUS_OE | STATUS_FE;
 
-/// Command register bit: Error Reset — clears FE, OE, PE in status.
+/// Command register bit: Error Reset - clears FE, OE, PE in status.
 const CMD_ER: u8 = 1 << 4;
 
-/// Command register bit: Internal Reset — next write becomes a mode word.
+/// Command register bit: Internal Reset - next write becomes a mode word.
 const CMD_IR: u8 = 1 << 6;
 
 /// Snapshot of the i8251A serial controller state.
@@ -176,7 +176,7 @@ mod tests {
         // Write 3: also a command word
         serial.write_command(0x00);
 
-        // Internal reset (CMD_IR = 0x40) — makes next write a mode word
+        // Internal reset (CMD_IR = 0x40) - makes next write a mode word
         serial.write_command(0x40);
         assert!(serial.state.expect_mode);
 

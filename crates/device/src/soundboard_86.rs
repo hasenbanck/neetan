@@ -2047,9 +2047,9 @@ mod tests {
         pcm.state.fifo_size = 128;
         pcm.state.step_mask = 3;
         pcm.state.data_write_irq_wait = 0;
-        // vir_buf above threshold — primary condition false.
+        // vir_buf above threshold - primary condition false.
         pcm.state.vir_buf = 200;
-        // real_buf below threshold but above step_mask — secondary condition true.
+        // real_buf below threshold but above step_mask - secondary condition true.
         pcm.state.real_buf = 100;
         pcm.state.irq_flag = false;
 
@@ -2067,7 +2067,7 @@ mod tests {
         pcm.state.step_mask = 3;
         pcm.state.data_write_irq_wait = 0;
         pcm.state.vir_buf = 200;
-        // real_buf <= step_mask — secondary condition should NOT trigger.
+        // real_buf <= step_mask - secondary condition should NOT trigger.
         pcm.state.real_buf = 3;
         pcm.state.irq_flag = false;
 
@@ -2201,7 +2201,7 @@ mod tests {
         pcm.state.fifo = 0x80; // playing
         pcm.state.audio_frame_start_cycle = 0;
 
-        // Set vir_buf above threshold — stale without update.
+        // Set vir_buf above threshold - stale without update.
         pcm.state.vir_buf = 200;
         pcm.state.real_buf = 200;
 

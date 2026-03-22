@@ -1,4 +1,4 @@
-//! Display control registers — system board video configuration.
+//! Display control registers - system board video configuration.
 //!
 //! Manages video mode, GDC clock, VSYNC IRQ enable, border color,
 //! display line count, and display/access page selection.
@@ -58,14 +58,14 @@ const MODE1_DISP_ENABLE: u8 = 0x80;
 pub struct DisplayControlState {
     /// Video mode register (port 0x68 R/W).
     pub video_mode: u8,
-    /// Mode register 2 (port 0x6A W) — flip-flop controlled.
+    /// Mode register 2 (port 0x6A W) - flip-flop controlled.
     ///
-    /// Lower byte (base page — display modes):
+    /// Lower byte (base page - display modes):
     /// - Bit 0: Palette/depth mode (0=8-color digital, 1=16-color analog)
     /// - Bit 2: Graphics accelerator (0=GRCG compatible, 1=EGC extended)
     /// - Bit 3: EGC mode change permission
     ///
-    /// Upper byte (extended page — GDC clocks):
+    /// Upper byte (extended page - GDC clocks):
     /// - Bit 9: GDC CLOCK-1 (0=2.5MHz, 1=5.0MHz)
     /// - Bit 10: GDC CLOCK-2 (0=2.5MHz, 1=5.0MHz)
     pub mode2: u16,
@@ -73,7 +73,7 @@ pub struct DisplayControlState {
     ///
     /// Updated only when mode2 bit 2 is toggled while bit 3 (permission)
     /// is set and EGC hardware is present. Once latched on, clearing bit 3
-    /// does NOT unlatch this — only an explicit bit 2 toggle with bit 3
+    /// does NOT unlatch this - only an explicit bit 2 toggle with bit 3
     /// set will clear it.
     pub egc_latched: bool,
     /// Whether VSYNC IRQ (IRQ 2) is armed for the next vertical retrace.

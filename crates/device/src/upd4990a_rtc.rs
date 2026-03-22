@@ -55,7 +55,7 @@ impl Upd4990aRtc {
         self.state.last = value;
 
         if value & 0x08 != 0 {
-            // STB asserted — execute command on rising edge.
+            // STB asserted - execute command on rising edge.
             if changed & 0x08 != 0 {
                 let cmd = if self.state.parallel == 7 {
                     self.state.serial & 0x0F
@@ -92,7 +92,7 @@ impl Upd4990aRtc {
                 }
             }
         } else if value & 0x10 != 0 {
-            // CLK asserted (STB not set) — shift on rising edge.
+            // CLK asserted (STB not set) - shift on rising edge.
             if changed & 0x10 != 0 {
                 if self.state.parallel == 7 {
                     self.state.serial >>= 1;

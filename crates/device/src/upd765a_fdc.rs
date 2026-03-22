@@ -94,7 +94,7 @@ pub struct Upd765aFdcState {
     pub drive_st0: [u8; 4],
     /// Current cylinder (track) per drive.
     pub drive_cylinder: [u8; 4],
-    /// Interrupt pending — set when a command completes and needs to notify the CPU.
+    /// Interrupt pending - set when a command completes and needs to notify the CPU.
     pub interrupt_pending: bool,
     /// MT (Multi-Track) flag from command byte.
     pub mt: bool,
@@ -128,7 +128,7 @@ pub struct Upd765aFdcState {
     pub hlt: u8,
     /// Specify ND (Non-DMA mode).
     pub nd: bool,
-    /// Terminal count — set by the bus when DMA TC fires during a data transfer.
+    /// Terminal count - set by the bus when DMA TC fires during a data transfer.
     pub tc: bool,
     /// Bitmask of equipped drives (bit per drive 0-3).
     pub drive_equipped: u8,
@@ -163,49 +163,49 @@ impl Default for Upd765aFdc {
     }
 }
 
-/// MSR bit 7: RQM (Request for Master) — host may transfer data.
+/// MSR bit 7: RQM (Request for Master) - host may transfer data.
 const MSR_RQM: u8 = 0x80;
 
-/// MSR bit 6: DIO (Data Input/Output) — 1 = FDC->host (result), 0 = host->FDC (command/params).
+/// MSR bit 6: DIO (Data Input/Output) - 1 = FDC->host (result), 0 = host->FDC (command/params).
 const MSR_DIO: u8 = 0x40;
 
-/// MSR bit 5: NDM (Non-DMA Mode) — FDC is in non-DMA mode data transfer.
+/// MSR bit 5: NDM (Non-DMA Mode) - FDC is in non-DMA mode data transfer.
 const _MSR_NDM: u8 = 0x20;
 
-/// MSR bit 4: CB (Controller Busy) — command in progress.
+/// MSR bit 4: CB (Controller Busy) - command in progress.
 const MSR_CB: u8 = 0x10;
 
-/// MSR bits 3-0: D3B-D0B (Drive Busy) — per-drive seek-in-progress flags.
+/// MSR bits 3-0: D3B-D0B (Drive Busy) - per-drive seek-in-progress flags.
 const _MSR_DB: u8 = 0x0F;
 
-/// ST0 bits 7-6: IC (Interrupt Code) — 01 = abnormal termination.
+/// ST0 bits 7-6: IC (Interrupt Code) - 01 = abnormal termination.
 pub const ST0_ABNORMAL_TERMINATION: u8 = 0x40;
 
-/// ST0 bits 7-6: IC (Interrupt Code) — 10 = invalid command.
+/// ST0 bits 7-6: IC (Interrupt Code) - 10 = invalid command.
 pub const ST0_INVALID_COMMAND: u8 = 0x80;
 
-/// ST0 bit 5: SE (Seek End) — seek or recalibrate completed.
+/// ST0 bit 5: SE (Seek End) - seek or recalibrate completed.
 pub const ST0_SEEK_END: u8 = 0x20;
 
-/// ST0 bit 3: NR (Not Ready) — drive not ready.
+/// ST0 bit 3: NR (Not Ready) - drive not ready.
 pub const ST0_NOT_READY: u8 = 0x08;
 
-/// ST1 bit 0: MA (Missing Address Mark) — address mark not found.
+/// ST1 bit 0: MA (Missing Address Mark) - address mark not found.
 pub const ST1_MISSING_ADDRESS_MARK: u8 = 0x01;
 
-/// ST1 bit 1: NW (Not Writable) — write-protected disk.
+/// ST1 bit 1: NW (Not Writable) - write-protected disk.
 pub const ST1_NOT_WRITABLE: u8 = 0x02;
 
-/// ST3 bit 5: RY (Ready) — drive is ready.
+/// ST3 bit 5: RY (Ready) - drive is ready.
 const ST3_READY: u8 = 0x20;
 
-/// ST3 bit 4: T0 (Track 0) — head is at track 0.
+/// ST3 bit 4: T0 (Track 0) - head is at track 0.
 const ST3_TRACK_0: u8 = 0x10;
 
-/// ST3 bit 6: WP (Write Protected) — disk is write-protected.
+/// ST3 bit 6: WP (Write Protected) - disk is write-protected.
 const ST3_WRITE_PROTECT: u8 = 0x40;
 
-/// ST3 bit 3: TS (Two Side) — drive is double-sided.
+/// ST3 bit 3: TS (Two Side) - drive is double-sided.
 const ST3_TWO_SIDE: u8 = 0x08;
 
 /// Command byte bit 7: MT (Multi-Track) flag.
@@ -271,11 +271,11 @@ const HD_US_DRIVE_MASK: u8 = 0x03;
 /// Mask for head select (HD bit 2) from HD/US parameter byte.
 const HD_US_HEAD_SHIFT: u8 = 2;
 
-/// Control register bit 7: RST (Reset) — triggers FDC reset on rising edge.
+/// Control register bit 7: RST (Reset) - triggers FDC reset on rising edge.
 /// Ref: undoc98 `io_fdd.txt`
 const CTRL_RESET: u8 = 0x80;
 
-/// Control register bit 6: FRY (Forced Ready) — force drive ready signal active.
+/// Control register bit 6: FRY (Forced Ready) - force drive ready signal active.
 /// Ref: undoc98 `io_fdd.txt`
 const CTRL_FORCED_READY: u8 = 0x40;
 
@@ -475,10 +475,10 @@ impl Upd765aFdc {
             if self.state.mt {
                 self.state.h ^= 1;
                 if self.state.h == 1 {
-                    // Flipped to head 1 — continue reading other side.
+                    // Flipped to head 1 - continue reading other side.
                     return false;
                 }
-                // Flipped back to head 0 — both heads done.
+                // Flipped back to head 0 - both heads done.
             }
             self.state.c += 1;
             return true;
@@ -512,7 +512,7 @@ impl Upd765aFdc {
         self.state.result_index = 0;
         self.state.drive_st0 = [0; 4];
         self.state.interrupt_pending = false;
-        // Keep drive_cylinder — track positions survive reset.
+        // Keep drive_cylinder - track positions survive reset.
     }
 
     fn execute_command(&mut self) -> FdcAction {
@@ -594,7 +594,7 @@ impl Upd765aFdc {
                     self.state.drive_st0[drive] = 0;
                     self.enter_result(2);
                 } else {
-                    // No pending interrupt — return invalid command status.
+                    // No pending interrupt - return invalid command status.
                     self.state.result[0] = ST0_INVALID_COMMAND;
                     self.enter_result(1);
                 }
@@ -647,7 +647,7 @@ impl Upd765aFdc {
                 FdcAction::StartFormatTrack
             }
 
-            // Remaining data transfer commands — fail with "not ready".
+            // Remaining data transfer commands - fail with "not ready".
             CMD_READ_DIAGNOSTIC
             | CMD_SCAN_EQUAL
             | CMD_SCAN_LOW_OR_EQUAL
