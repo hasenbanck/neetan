@@ -2,7 +2,10 @@
 
 #![deny(unsafe_code)]
 
-use std::fs::File;
+use std::{
+    fs::File,
+    time::{Duration, Instant},
+};
 
 use audio_engine::AudioEngine;
 use common::{Context, Machine, MachineModel, StringError, ensure, error, info, warn};
@@ -122,7 +125,9 @@ pub fn run(config: EmulatorConfig) -> Result<()> {
             }
         }
 
+        let busy_start = Instant::now();
         application.run_emulation();
+        application.busy_duration += busy_start.elapsed();
 
         let gpu_ready = application
             .graphics_engine
@@ -131,6 +136,17 @@ pub fn run(config: EmulatorConfig) -> Result<()> {
 
         if gpu_ready && let Err(error) = application.render_frame() {
             error!("Failed to render next frame: {error:#}");
+        }
+
+        let elapsed = application.window_title_last_update.elapsed();
+        if elapsed >= Duration::from_secs(5) {
+            let busy_percent = (application.busy_duration.as_secs_f64() / elapsed.as_secs_f64()
+                * 100.0)
+                .round()
+                .min(100.0) as u32;
+            window.set_title(&format!("neetan ({busy_percent}% CPU)"));
+            application.busy_duration = Duration::ZERO;
+            application.window_title_last_update = Instant::now();
         }
 
         if application.should_quit {
@@ -291,6 +307,10 @@ struct Application {
     image_selector: Option<ImageSelector>,
     /// Whether the window is currently in fullscreen mode.
     fullscreen: bool,
+    /// Accumulated emulation busy time in the current measurement window.
+    busy_duration: Duration,
+    /// When the window title was last updated with CPU usage.
+    window_title_last_update: Instant,
 }
 
 impl Drop for Application {
@@ -391,6 +411,8 @@ impl Application {
             cdrom_index,
             image_selector: None,
             fullscreen: config.window_mode == WindowMode::Fullscreen,
+            busy_duration: Duration::ZERO,
+            window_title_last_update: Instant::now(),
         })
     }
 
