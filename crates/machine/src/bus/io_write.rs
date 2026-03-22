@@ -521,7 +521,15 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
 
             // PCM86 DAC ports.
-            0xA460 | 0xA466 | 0xA468 | 0xA46A | 0xA46C | 0xA46E => {
+            0xA460 | 0xA462 | 0xA464 | 0xA466 | 0xA468 | 0xA46A | 0xA46C | 0xA46E => {
+                if let Some(ref mut sb86) = self.soundboard_86 {
+                    sb86.pcm86_write(port, value, self.current_cycle, self.clocks.cpu_clock_hz);
+                }
+                self.process_soundboard_86_actions();
+            }
+
+            // PCM86 mute control port.
+            0xA66E => {
                 if let Some(ref mut sb86) = self.soundboard_86 {
                     sb86.pcm86_write(port, value, self.current_cycle, self.clocks.cpu_clock_hz);
                 }
@@ -1565,5 +1573,176 @@ mod tests {
         assert!(bus.reset_pending);
         assert!(bus.shutdown_requested);
         assert!(bus.warm_reset_context.is_none());
+    }
+
+    #[test]
+    fn pcm86_mute_port_a66e_read_write() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        bus.install_soundboard_86(None, true);
+
+        // Board starts muted.
+        assert_eq!(bus.io_read_byte(0xA66E), 0x01);
+
+        // Unmute.
+        bus.io_write_byte(0xA66E, 0x00);
+        assert_eq!(bus.io_read_byte(0xA66E), 0x00);
+
+        // Mute again.
+        bus.io_write_byte(0xA66E, 0x01);
+        assert_eq!(bus.io_read_byte(0xA66E), 0x01);
+
+        // Full byte is stored; only bit 0 controls mute.
+        bus.io_write_byte(0xA66E, 0xFE);
+        assert_eq!(bus.io_read_byte(0xA66E), 0xFE);
+    }
+
+    #[test]
+    fn pcm86_fifo_status_full_and_empty() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        bus.install_soundboard_86(None, true);
+
+        // Initially FIFO is empty — bit 6 should be set.
+        let status = bus.io_read_byte(0xA466);
+        assert_ne!(status & 0x40, 0, "FIFO empty flag should be set initially");
+        assert_eq!(status & 0x80, 0, "FIFO full flag should be clear initially");
+
+        // Fill FIFO to capacity (32 KB logical max).
+        for _ in 0..0x8000 {
+            bus.io_write_byte(0xA46C, 0x55);
+        }
+        let status = bus.io_read_byte(0xA466);
+        assert_ne!(
+            status & 0x80,
+            0,
+            "FIFO full flag should be set after filling"
+        );
+        assert_eq!(
+            status & 0x40,
+            0,
+            "FIFO empty flag should be clear when full"
+        );
+    }
+
+    #[test]
+    fn pcm86_fifo_reset_clears_buffer() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        bus.install_soundboard_86(None, true);
+
+        // Write some data.
+        for _ in 0..100 {
+            bus.io_write_byte(0xA46C, 0xAA);
+        }
+        // Verify not empty.
+        let status = bus.io_read_byte(0xA466);
+        assert_eq!(status & 0x40, 0, "FIFO should not be empty after writes");
+
+        // Set bit 3 to reset FIFO.
+        bus.io_write_byte(0xA468, 0x08);
+        // Clear bit 3.
+        bus.io_write_byte(0xA468, 0x00);
+
+        // Should be empty again.
+        let status = bus.io_read_byte(0xA466);
+        assert_ne!(status & 0x40, 0, "FIFO should be empty after reset");
+    }
+
+    #[test]
+    fn pcm86_volume_register_stores_all_lines() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        bus.install_soundboard_86(None, true);
+
+        // Write volume to line 5 (PCM direct, bits 7-5 = 101).
+        bus.io_write_byte(0xA466, 0xA5); // 101_00101 → line 5, value 5
+
+        // Write volume to line 0 (FM direct, bits 7-5 = 000).
+        bus.io_write_byte(0xA466, 0x0A); // 000_01010 → line 0, value 10
+
+        // Snapshot the live state and verify both were stored.
+        let state = bus.soundboard_86.as_ref().unwrap().save_state();
+        assert_eq!(state.pcm86.vol[5], 5);
+        assert_eq!(state.pcm86.vol[0], 10);
+    }
+
+    #[test]
+    fn pcm86_irq_flag_set_when_buffer_below_threshold() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        bus.install_soundboard_86(None, true);
+
+        // Advance past data_write_irq_wait so IRQ reporting is not delayed.
+        bus.current_cycle = 200_000;
+
+        // Enable IRQ (bit 5) and FIFO (bit 7), set sample rate.
+        // This also sets last_clock_for_wait = current_cycle (IRQ clear + empty buffer).
+        bus.io_write_byte(0xA468, 0xA0); // bit 7=1 (play), bit 5=1 (IRQ en)
+
+        // Set IRQ threshold to 128 bytes (value 0 → (0+1)*128 = 128).
+        bus.io_write_byte(0xA46A, 0x00);
+
+        // Advance cycle past data_write_irq_wait before reading status.
+        bus.current_cycle = 400_000;
+
+        // FIFO is empty and below threshold → IRQ should be flagged.
+        let ctrl = bus.io_read_byte(0xA468);
+        assert_ne!(
+            ctrl & 0x10,
+            0,
+            "IRQ flag should be set when FIFO below threshold"
+        );
+
+        // Clear IRQ by writing bit 4 = 0 (resets last_clock_for_wait since buffer empty).
+        bus.io_write_byte(0xA468, 0xA0);
+
+        // Advance past the new wait period.
+        bus.current_cycle = 600_000;
+        let ctrl = bus.io_read_byte(0xA468);
+        // IRQ re-asserts because buffer is still below threshold.
+        assert_ne!(
+            ctrl & 0x10,
+            0,
+            "IRQ should re-assert when buffer still below threshold"
+        );
+    }
+
+    #[test]
+    fn pcm86_buffer_overflow_discards_oldest() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        bus.install_soundboard_86(None, true);
+
+        // Write exactly 64 KB (the physical buffer size).
+        for i in 0..65536u32 {
+            bus.io_write_byte(0xA46C, (i & 0xFF) as u8);
+        }
+
+        // Writing one more should not crash (overflow protection kicks in).
+        bus.io_write_byte(0xA46C, 0xFF);
+
+        // The real_buf should be capped below the buffer size.
+        let state = bus.soundboard_86.as_ref().unwrap().save_state();
+        assert!(
+            state.pcm86.real_buf < 65536,
+            "real_buf should be capped after overflow"
+        );
+    }
+
+    #[test]
+    fn pcm86_dactrl_modes_and_fifo_threshold_dual_purpose() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        bus.install_soundboard_86(None, true);
+
+        // Write dactrl when IRQ is disabled (fifo bit 5 = 0).
+        bus.io_write_byte(0xA468, 0x00); // IRQ disabled
+        bus.io_write_byte(0xA46A, 0x70); // 8-bit stereo
+        assert_eq!(bus.io_read_byte(0xA46A), 0x70);
+
+        // Enable IRQ (fifo bit 5 = 1). Writing 0xA46A now sets FIFO threshold.
+        bus.io_write_byte(0xA468, 0x20); // IRQ enabled
+        bus.io_write_byte(0xA46A, 0x03); // threshold = (3+1)*128 = 512
+
+        // dactrl read should still return the previously set value (0x70).
+        assert_eq!(bus.io_read_byte(0xA46A), 0x70);
+
+        // Verify threshold was set correctly.
+        let state = bus.soundboard_86.as_ref().unwrap().save_state();
+        assert_eq!(state.pcm86.fifo_size, 512);
     }
 }

@@ -2,7 +2,7 @@
 
 use std::cell::{Cell, RefCell};
 
-use common::EventKind;
+use common::{EventKind, MachineModel};
 use resampler::{Attenuation, Latency, ResamplerFir};
 use ymfm_oxide::{Ym2608, Ym2608Callbacks, YmfmAccessClass, YmfmOpnFidelity, YmfmOutput3};
 
@@ -33,6 +33,24 @@ const PCM86_BUFMASK: u32 = (PCM86_BUFSIZE as u32) - 1;
 /// PCM86 logical buffer capacity.
 const PCM86_LOGICAL_BUF: i32 = 0x8000;
 
+/// PCM86 rescue buffer base size (samples).
+const PCM86_RESCUE: i32 = 20;
+
+/// Q-Vision WaveStar magic handshake sequence (port 0xA462 write).
+const WAVESTAR_SEQUENCE: [u8; 5] = [0xA6, 0xD3, 0x69, 0xB4, 0x5A];
+
+/// PCM86 rescue table indexed by (fifo & 7): base rescue size per rate.
+const PCM86_RESCUE_TABLE: [i32; 8] = [
+    PCM86_RESCUE * 32,
+    PCM86_RESCUE * 24,
+    PCM86_RESCUE * 16,
+    PCM86_RESCUE * 12,
+    PCM86_RESCUE * 8,
+    PCM86_RESCUE * 6,
+    PCM86_RESCUE * 4,
+    PCM86_RESCUE * 3,
+];
+
 /// Embedded rhythm samples at 48000 Hz, packed as 6×u32 LE header + i16 LE data.
 /// These are not the original ROM files but recordings of the samples.
 /// Used under fair use and de minimis.
@@ -47,8 +65,10 @@ pub struct Soundboard86State {
     pub address_hi: u8,
     /// IRQ line number for the FM chip.
     pub irq_line: u8,
-    /// Whether the IRQ output is currently asserted.
+    /// Whether the OPNA IRQ output is currently asserted.
     pub irq_asserted: bool,
+    /// Whether the PCM86 IRQ output is currently asserted.
+    pub pcm86_irq_asserted: bool,
     /// CPU cycle at which the busy flag clears.
     pub busy_end_cycle: u64,
     /// CPU cycle at which the current audio frame started.
@@ -72,6 +92,7 @@ impl Default for Soundboard86State {
             address_hi: 0,
             irq_line: 12,
             irq_asserted: false,
+            pcm86_irq_asserted: false,
             busy_end_cycle: 0,
             audio_frame_start_cycle: 0,
             sample_remainder: FmSampleRemainder::default(),
@@ -92,8 +113,14 @@ pub struct Pcm86State {
     pub fifo: u8,
     /// DAC control register (port 0xA46A).
     pub dactrl: u8,
-    /// Volume (4-bit, port 0xA466).
-    pub volume: u8,
+    /// Volume registers for all 8 electronic volume lines (port 0xA466).
+    /// Index = bits 7-5 of the written value. Only index 5 (PCM direct) is
+    /// used by the PCM86 DAC; others are stored for register-level accuracy.
+    pub vol: [u8; 8],
+    /// PCM output mute register (port 0xA66E). Bit 0 = mute. Board starts muted.
+    pub pcm_mute: u8,
+    /// PCM86 IRQ flag - set when FIFO drops below threshold.
+    pub irq_flag: bool,
     /// FIFO interrupt threshold.
     pub fifo_size: i32,
     /// Write position in ring buffer.
@@ -108,10 +135,22 @@ pub struct Pcm86State {
     pub step_bit: u8,
     /// Step mask.
     pub step_mask: u32,
+    /// Rescue buffer size (rate-dependent overflow margin).
+    pub rescue: i32,
+    /// IRQ request pending (set on data write, cleared when IRQ fires).
+    pub reqirq: bool,
+    /// Cycle of last data write (for IRQ delay).
+    pub last_clock_for_wait: u64,
+    /// Minimum cycles after data write before IRQ can fire.
+    pub data_write_irq_wait: u64,
     /// Audio frame start cycle.
     pub audio_frame_start_cycle: u64,
     /// Fractional sample remainder.
     pub sample_remainder: FmSampleRemainder,
+    /// WaveStar handshake sequence index (0..=5).
+    pub wavestar_seq_index: u8,
+    /// WaveStar port 0xA464 readback value.
+    pub wavestar_value: u8,
 }
 
 impl Default for Pcm86State {
@@ -120,17 +159,25 @@ impl Default for Pcm86State {
             // PC-9801-86 ID (0x4x) at 0x018x base; mask/extend bits clear at reset.
             sound_flags: 0x40,
             fifo: 0,
-            dactrl: 0,
-            volume: 0,
-            fifo_size: 0,
+            dactrl: 0x32,
+            vol: [0; 8],
+            pcm_mute: 0x01,
+            irq_flag: false,
+            fifo_size: 128,
             write_pos: 0,
             read_pos: 0,
             real_buf: 0,
             vir_buf: 0,
-            step_bit: 1,
-            step_mask: 1,
+            step_bit: 2,
+            step_mask: 3,
+            rescue: PCM86_RESCUE_TABLE[0] << 2,
+            reqirq: false,
+            last_clock_for_wait: 0,
+            data_write_irq_wait: 0,
             audio_frame_start_cycle: 0,
             sample_remainder: FmSampleRemainder::default(),
+            wavestar_seq_index: 0,
+            wavestar_value: 0xFF,
         }
     }
 }
@@ -389,25 +436,40 @@ struct Pcm86 {
     pcm_resampler: ResamplerFir,
     pcm_resample_input: Vec<f32>,
     pcm_resample_output: Vec<f32>,
+    pending_irq_change: Option<bool>,
+    /// Delayed retry for IRQ timer rescheduling.
+    /// Set by pcm86_timer_expired when the adjusted-buffer condition fails,
+    /// consumed by drain_actions to avoid a tight 1-cycle rescheduling loop.
+    retry_delay: Option<u64>,
+    /// CPU clock multiple (cpu_clock_hz / baseclock). Used for IRQ retry delay.
+    clock_multiple: u64,
 }
 
 impl Pcm86 {
-    fn new(sample_rate: u32) -> Self {
+    fn new(sample_rate: u32, cpu_clock_hz: u32, machine_model: MachineModel) -> Self {
         let initial_pcm_rate = PCM86_RATES[0];
         let resampler = ResamplerFir::new(
-            1,
+            2,
             initial_pcm_rate,
             sample_rate,
             Latency::Sample64,
             Attenuation::Db60,
         );
         let output_size = resampler.buffer_size_output();
+        let baseclock = machine_model.pit_clock_hz();
+        let multiple = (cpu_clock_hz / baseclock).max(1) as u64;
         Self {
-            state: Pcm86State::default(),
+            state: Pcm86State {
+                data_write_irq_wait: 20000 * multiple,
+                ..Pcm86State::default()
+            },
             buffer: Box::new([0u8; PCM86_BUFSIZE]),
             pcm_resampler: resampler,
-            pcm_resample_input: vec![0.0; 4096],
+            pcm_resample_input: vec![0.0; 4096 * 2],
             pcm_resample_output: vec![0.0; output_size],
+            pending_irq_change: None,
+            retry_delay: None,
+            clock_multiple: multiple,
         }
     }
 
@@ -434,18 +496,63 @@ impl Pcm86 {
                 } else if self.state.vir_buf <= self.state.step_mask as i32 {
                     ret |= 0x40;
                 }
+                // L/R clock: toggles at sampling rate, reflects position within sample period.
+                let rate = self.pcm_rate() as f64;
+                let elapsed = current_cycle.saturating_sub(self.state.audio_frame_start_cycle);
+                let fractional = elapsed as f64 * rate / f64::from(cpu_clock_hz);
+                let within_period = fractional - (fractional as u64 as f64);
+                if within_period >= 0.5 {
+                    ret |= 0x01;
+                }
                 ret
             }
             0xA468 => {
+                self.update_buffer_state(current_cycle, cpu_clock_hz);
                 let mut ret = self.state.fifo & !0x10;
-                if self.check_irq(current_cycle, cpu_clock_hz) {
+                if self.irq_condition_met(current_cycle) {
                     ret |= 0x10;
                 }
                 ret
             }
             0xA46A => self.state.dactrl,
+            0xA462 => 0xFF,
+            0xA464 => {
+                if self.state.wavestar_seq_index != WAVESTAR_SEQUENCE.len() as u8 {
+                    self.state.wavestar_value = 0xFF;
+                }
+                let ret = self.state.wavestar_value;
+                if self.state.wavestar_value == 0x00 {
+                    self.state.wavestar_value = 0xFF;
+                } else {
+                    self.state.wavestar_value = 0x00;
+                }
+                ret
+            }
+            0xA66E => self.state.pcm_mute,
             _ => 0x00,
         }
+    }
+
+    fn irq_condition_met(&mut self, current_cycle: u64) -> bool {
+        if !self.irq_enabled() {
+            return false;
+        }
+        if current_cycle.wrapping_sub(self.state.last_clock_for_wait)
+            < self.state.data_write_irq_wait
+        {
+            return false;
+        }
+        if self.state.irq_flag {
+            return true;
+        }
+        if self.state.vir_buf <= self.state.fifo_size
+            || (self.state.real_buf > self.state.step_mask as i32
+                && self.state.real_buf <= self.state.fifo_size)
+        {
+            self.state.irq_flag = true;
+            return true;
+        }
+        false
     }
 
     fn write_port(
@@ -462,32 +569,62 @@ impl Pcm86 {
                 self.state.sound_flags = (self.state.sound_flags & 0xFC) | (value & 0x03);
             }
             0xA466 => {
-                if (value >> 5) & 7 == 0b101 {
-                    self.state.volume = value & 0x0F;
+                let line = ((value >> 5) & 0x07) as usize;
+                if line == 5 {
+                    self.update_buffer_state(current_cycle, cpu_clock_hz);
                 }
+                self.state.vol[line] = value & 0x0F;
             }
             0xA468 => {
-                if (value & 0x08) != 0 && (self.state.fifo & 0x08) == 0 {
+                self.update_buffer_state(current_cycle, cpu_clock_hz);
+                let old_fifo = self.state.fifo;
+                // FIFO reset when bit 3 transitions 0→1.
+                if (value & 0x08) != 0 && (old_fifo & 0x08) == 0 {
                     self.state.write_pos = 0;
                     self.state.read_pos = 0;
                     self.state.real_buf = 0;
                     self.state.vir_buf = 0;
                     self.state.audio_frame_start_cycle = current_cycle;
                     self.state.sample_remainder = FmSampleRemainder::default();
+                    self.state.last_clock_for_wait = current_cycle;
+                }
+                // IRQ clear when bit 4 is written as 0.
+                if value & 0x10 == 0 {
+                    self.state.irq_flag = false;
+                    self.pending_irq_change = Some(false);
+                    // If buffer is empty at IRQ clear, add long wait.
+                    if self.state.vir_buf == 0 {
+                        self.state.last_clock_for_wait = current_cycle;
+                    }
+                }
+                // Force IRQ if buffer already below threshold (Police Nauts workaround).
+                // Checked BEFORE storing fifo, unconditionally.
+                if self.state.vir_buf <= self.state.fifo_size {
+                    self.state.irq_flag = true;
                 }
                 self.state.fifo = value;
-                self.update_step_clock(cpu_clock_hz);
-                self.pcm_resampler = ResamplerFir::new(
-                    1,
-                    self.pcm_rate(),
-                    sample_rate,
-                    Latency::Sample64,
-                    Attenuation::Db60,
-                );
-                self.pcm_resample_output
-                    .resize(self.pcm_resampler.buffer_size_output(), 0.0);
+                // Reset audio clock when playback transitions off→on.
+                if (old_fifo ^ value) & 0x80 != 0 && value & 0x80 != 0 {
+                    self.state.audio_frame_start_cycle = current_cycle;
+                    self.state.sample_remainder = FmSampleRemainder::default();
+                }
+                // Update rescue and resampler if rate changed.
+                if (old_fifo ^ value) & 7 != 0 {
+                    self.state.rescue =
+                        PCM86_RESCUE_TABLE[(value & 7) as usize] << self.state.step_bit;
+                    self.pcm_resampler = ResamplerFir::new(
+                        2,
+                        self.pcm_rate(),
+                        sample_rate,
+                        Latency::Sample64,
+                        Attenuation::Db60,
+                    );
+                    self.pcm_resample_output
+                        .resize(self.pcm_resampler.buffer_size_output(), 0.0);
+                }
             }
             0xA46A => {
+                self.update_buffer_state(current_cycle, cpu_clock_hz);
                 if self.state.fifo & 0x20 != 0 {
                     if value != 0xFF {
                         self.state.fifo_size = (i32::from(value) + 1) << 7;
@@ -495,9 +632,15 @@ impl Pcm86 {
                         self.state.fifo_size = 0x7FFC;
                     }
                 } else {
+                    // WinNT 3.5 workaround: reject abnormal settings.
+                    if value & 0x0F == 0x0F {
+                        return;
+                    }
                     self.state.dactrl = value;
                     self.state.step_bit = PCM86_BITS[((value >> 4) & 7) as usize];
                     self.state.step_mask = (1u32 << self.state.step_bit) - 1;
+                    self.state.rescue =
+                        PCM86_RESCUE_TABLE[(self.state.fifo & 7) as usize] << self.state.step_bit;
                 }
             }
             0xA46C => {
@@ -507,13 +650,60 @@ impl Pcm86 {
                 self.buffer[self.state.write_pos as usize] = value;
                 self.state.write_pos = (self.state.write_pos + 1) & PCM86_BUFMASK;
                 self.state.real_buf += 1;
+
+                // Overflow protection: discard oldest data.
+                if self.state.real_buf >= PCM86_LOGICAL_BUF + self.state.rescue {
+                    self.state.real_buf -= 4;
+                    self.state.read_pos = (self.state.read_pos + 4) & PCM86_BUFMASK;
+                }
+
+                self.state.reqirq = true;
+
+                let mut add_clock: u64 = 0;
+                if self.state.fifo_size < 8192 {
+                    add_clock = self.state.data_write_irq_wait
+                        - self.state.data_write_irq_wait * self.state.fifo_size as u64 / 8192;
+                }
+                if self.state.vir_buf > self.state.fifo_size * 2
+                    || self.state.vir_buf >= PCM86_LOGICAL_BUF
+                {
+                    add_clock = self.state.data_write_irq_wait;
+                }
+                self.state.last_clock_for_wait = current_cycle + add_clock;
+            }
+            0xA462 => {
+                let seq_len = WAVESTAR_SEQUENCE.len() as u8;
+                let idx = self.state.wavestar_seq_index;
+                if idx < seq_len && value == WAVESTAR_SEQUENCE[idx as usize] {
+                    self.state.wavestar_seq_index = idx + 1;
+                    if self.state.wavestar_seq_index == seq_len {
+                        self.state.wavestar_value = 0x0B;
+                    }
+                } else if value == WAVESTAR_SEQUENCE[0] {
+                    self.state.wavestar_seq_index = 1;
+                } else {
+                    self.state.wavestar_seq_index = 0;
+                }
+            }
+            0xA464 => {
+                let seq_len = WAVESTAR_SEQUENCE.len() as u8;
+                if self.state.wavestar_seq_index == seq_len {
+                    if value == 0x04 {
+                        self.state.wavestar_value = 0x0C;
+                        // TODO: implement CS4231 WSS codec and remapping for full Q-Vision WaveStar support.
+                    } else {
+                        self.state.wavestar_value = 0x08;
+                    }
+                }
+                if value == 0x09 {
+                    self.state.wavestar_value = 0xFF;
+                }
+            }
+            0xA66E => {
+                self.state.pcm_mute = value;
             }
             _ => {}
         }
-    }
-
-    fn update_step_clock(&mut self, _cpu_clock_hz: u32) {
-        // Step clock is recomputed from the rate each time fifo changes.
     }
 
     fn update_buffer_state(&mut self, current_cycle: u64, cpu_clock_hz: u32) {
@@ -525,69 +715,145 @@ impl Pcm86 {
             return;
         }
         let rate = self.pcm_rate() as u64;
-        let bytes_per_sample = 1u64 << self.state.step_bit;
-        let samples_elapsed = (elapsed as f64 * rate as f64 / f64::from(cpu_clock_hz)) as i32;
-        let bytes_consumed = samples_elapsed as i64 * bytes_per_sample as i64;
-        let consumed = bytes_consumed.min(self.state.vir_buf as i64) as i32;
-        self.state.vir_buf -= consumed;
-        self.state.real_buf -= consumed;
-        if self.state.real_buf < 0 {
-            self.state.real_buf = 0;
+        let samples_elapsed = (elapsed as f64 * rate as f64 / f64::from(cpu_clock_hz)) as i64;
+        let dec_value = samples_elapsed << self.state.step_bit;
+        if self.state.vir_buf as i64 - dec_value < self.state.vir_buf as i64 {
+            self.state.vir_buf -= dec_value as i32;
         }
         if self.state.vir_buf < 0 {
-            self.state.vir_buf = 0;
+            self.state.vir_buf &= self.state.step_mask as i32;
         }
-        self.state.read_pos = (self.state.read_pos + consumed as u32) & PCM86_BUFMASK;
         self.state.audio_frame_start_cycle = current_cycle;
     }
 
-    fn check_irq(&mut self, current_cycle: u64, cpu_clock_hz: u32) -> bool {
-        if !self.irq_enabled() || !self.is_playing() {
-            return false;
+    /// Reconcile vir_buf with real_buf after audio generation.
+    fn reconcile_buffers(&mut self) {
+        let deficit = self.state.real_buf - self.state.vir_buf;
+        if deficit < 0
+            && deficit <= -self.state.fifo_size
+            && self.state.vir_buf < self.state.fifo_size
+        {
+            // real_buf fell significantly below vir_buf - adjust vir_buf downward.
+            let adjustment = deficit & !3;
+            self.state.vir_buf += adjustment;
+        } else if self.state.vir_buf > self.state.fifo_size
+            && self.state.real_buf > self.state.step_mask as i32
+            && self.state.real_buf > self.state.vir_buf + self.state.fifo_size * 3
+        {
+            // real_buf significantly exceeds vir_buf - nudge vir_buf upward.
+            let adjustment =
+                (self.state.real_buf - (self.state.vir_buf - self.state.fifo_size * 3)) / 8;
+            self.state.vir_buf += adjustment;
         }
-        self.update_buffer_state(current_cycle, cpu_clock_hz);
-        self.state.vir_buf <= self.state.fifo_size
     }
 
+    /// Calculate when vir_buf will drop to fifo_size.
+    /// Returns Some(fire_cycle) if buffer is above threshold, None if IRQ should fire now.
+    fn calculate_next_irq_cycle(&self, current_cycle: u64, cpu_clock_hz: u32) -> Option<u64> {
+        if self.state.fifo & 0x80 == 0 {
+            return None;
+        }
+        let samples_above = self.state.vir_buf - self.state.fifo_size;
+        if samples_above <= 0 {
+            return None;
+        }
+        let byte_count = (samples_above + self.state.step_mask as i32) >> self.state.step_bit;
+        if byte_count <= 0 {
+            return None;
+        }
+        let rate = self.pcm_rate() as u64;
+        let cycles = byte_count as u64 * cpu_clock_hz as u64 / rate;
+        Some(current_cycle + cycles.max(1))
+    }
+
+    fn read_sample_8bit(&self) -> f32 {
+        let raw = self.buffer[self.state.read_pos as usize] as i8;
+        raw as f32 / 128.0
+    }
+
+    fn read_sample_16bit(&self) -> f32 {
+        let msb = self.buffer[self.state.read_pos as usize];
+        let lsb = self.buffer[((self.state.read_pos + 1) & PCM86_BUFMASK) as usize];
+        let raw = (msb as i8 as i16) << 8 | lsb as i16;
+        raw as f32 / 32768.0
+    }
+
+    /// Produces interleaved stereo output `[L, R, L, R, ...]` with `count * 2` floats.
     fn drain_samples(&mut self, count: usize) -> Vec<f32> {
-        if !self.is_playing() || self.state.real_buf <= 0 {
-            return vec![0.0; count];
+        if !self.is_playing() || self.state.fifo & 0x40 != 0 || self.state.real_buf <= 0 {
+            return vec![0.0; count * 2];
         }
 
-        let is_16bit = self.state.dactrl & 0x40 == 0;
-        let bytes_per_sample = 1usize << self.state.step_bit;
-        let vol = pcm86_volume(self.state.volume);
+        let vol = if self.state.pcm_mute & 0x01 != 0 {
+            0.0
+        } else {
+            pcm86_volume(self.state.vol[5])
+        };
+        let mode = self.state.dactrl & 0x70;
+        let bytes_per_frame = bytes_per_frame(mode);
 
-        let mut output = Vec::with_capacity(count);
+        let mut output = Vec::with_capacity(count * 2);
         for _ in 0..count {
-            if self.state.real_buf < bytes_per_sample as i32 {
+            if bytes_per_frame == 0 || self.state.real_buf < bytes_per_frame as i32 {
+                output.push(0.0);
                 output.push(0.0);
                 continue;
             }
 
-            let sample = if is_16bit {
-                let lo = self.buffer[self.state.read_pos as usize];
-                let hi = self.buffer[((self.state.read_pos + 1) & PCM86_BUFMASK) as usize];
-                let raw = i16::from_le_bytes([lo, hi]);
-                raw as f32 / 32768.0
-            } else {
-                let raw = self.buffer[self.state.read_pos as usize] as i8;
-                raw as f32 / 128.0
+            let (left, right) = match mode {
+                0x10 => {
+                    let s = self.read_sample_16bit();
+                    (0.0, s)
+                }
+                0x20 => {
+                    let s = self.read_sample_16bit();
+                    (s, 0.0)
+                }
+                0x30 => {
+                    let l = self.read_sample_16bit();
+                    let r_msb = self.buffer[((self.state.read_pos + 2) & PCM86_BUFMASK) as usize];
+                    let r_lsb = self.buffer[((self.state.read_pos + 3) & PCM86_BUFMASK) as usize];
+                    let r_raw = (r_msb as i8 as i16) << 8 | r_lsb as i16;
+                    (l, r_raw as f32 / 32768.0)
+                }
+                0x50 => {
+                    let s = self.read_sample_8bit();
+                    (0.0, s)
+                }
+                0x60 => {
+                    let s = self.read_sample_8bit();
+                    (s, 0.0)
+                }
+                0x70 => {
+                    let l = self.read_sample_8bit();
+                    let r_raw =
+                        self.buffer[((self.state.read_pos + 1) & PCM86_BUFMASK) as usize] as i8;
+                    (l, r_raw as f32 / 128.0)
+                }
+                _ => (0.0, 0.0),
             };
 
-            self.state.read_pos = (self.state.read_pos + bytes_per_sample as u32) & PCM86_BUFMASK;
-            self.state.real_buf -= bytes_per_sample as i32;
-            self.state.vir_buf -= bytes_per_sample as i32;
+            self.state.read_pos = (self.state.read_pos + bytes_per_frame as u32) & PCM86_BUFMASK;
+            self.state.real_buf -= bytes_per_frame as i32;
             if self.state.real_buf < 0 {
                 self.state.real_buf = 0;
             }
-            if self.state.vir_buf < 0 {
-                self.state.vir_buf = 0;
-            }
 
-            output.push(sample * vol);
+            output.push(left * vol);
+            output.push(right * vol);
         }
+
         output
+    }
+}
+
+fn bytes_per_frame(mode: u8) -> usize {
+    match mode {
+        0x10 | 0x20 => 2,
+        0x30 => 4,
+        0x50 | 0x60 => 1,
+        0x70 => 2,
+        _ => 0,
     }
 }
 
@@ -655,6 +921,7 @@ impl Soundboard86 {
         sample_rate: u32,
         rhythm_rom: Option<&[u8]>,
         adpcm_ram: bool,
+        machine_model: MachineModel,
     ) -> Self {
         let has_rom = rhythm_rom.is_some();
         let bridge = ChipBridge::new(cpu_clock_hz, rhythm_rom, adpcm_ram);
@@ -686,7 +953,7 @@ impl Soundboard86 {
             resample_input: vec![0.0; 4096 * 2],
             resample_output: vec![0.0; resample_output_size],
             rhythm: RhythmSection::new(!has_rom),
-            pcm86: Pcm86::new(sample_rate),
+            pcm86: Pcm86::new(sample_rate, cpu_clock_hz, machine_model),
             sample_rate,
         }
     }
@@ -883,13 +1150,43 @@ impl Soundboard86 {
             .write_port(port, value, current_cycle, cpu_clock_hz, self.sample_rate);
     }
 
-    /// Drains pending actions from the chip bridge.
+    /// Called when the Pcm86Irq scheduler event fires.
+    pub fn pcm86_timer_expired(&mut self, current_cycle: u64, cpu_clock_hz: u32) {
+        if self.pcm86.state.reqirq {
+            self.pcm86.update_buffer_state(current_cycle, cpu_clock_hz);
+            self.pcm86.reconcile_buffers();
+
+            let adjusted_buf = ((self.pcm86.state.vir_buf as i64 * 4
+                + self.pcm86.state.real_buf as i64)
+                / 5) as i32;
+            if self.pcm86.state.vir_buf <= self.pcm86.state.fifo_size
+                || (self.pcm86.state.real_buf > self.pcm86.state.step_mask as i32
+                    && adjusted_buf <= self.pcm86.state.fifo_size)
+            {
+                self.pcm86.state.reqirq = false;
+                self.pcm86.state.irq_flag = true;
+                self.pcm86.pending_irq_change = Some(true);
+            } else {
+                // Condition not met yet. Use a delayed retry to avoid a tight
+                // 1-cycle rescheduling loop.
+                self.pcm86.retry_delay = Some(100 * self.pcm86.clock_multiple);
+            }
+        } else if self.pcm86.state.fifo & 0x80 != 0 {
+            self.pcm86.state.reqirq = true;
+            self.pcm86.retry_delay = Some(100 * self.pcm86.clock_multiple);
+        }
+    }
+
+    /// Drains pending actions from the chip bridge and PCM86, merging IRQ sources.
     pub fn drain_actions(&mut self) -> Vec<Soundboard86Action> {
         let opna_masked = self.opna_masked();
         let bridge = self.chip.callbacks_mut();
         self.state.busy_end_cycle = bridge.busy_end_cycle.get();
         let current_cycle = bridge.current_cycle.get();
         let cpu_clock_hz = bridge.cpu_clock_hz;
+
+        // Snapshot previous merged IRQ state before processing updates.
+        let was_merged = (self.state.irq_asserted && !opna_masked) || self.state.pcm86_irq_asserted;
 
         let mut actions = Vec::new();
         for pending in bridge.pending.borrow_mut().drain(..) {
@@ -917,21 +1214,54 @@ impl Soundboard86 {
                 }
                 PendingChipAction::UpdateIrq { asserted } => {
                     self.state.irq_asserted = asserted;
-                    if opna_masked {
-                        continue;
-                    }
-                    if asserted {
-                        actions.push(Soundboard86Action::AssertIrq {
-                            irq: self.state.irq_line,
-                        });
-                    } else {
-                        actions.push(Soundboard86Action::DeassertIrq {
-                            irq: self.state.irq_line,
-                        });
-                    }
                 }
             }
         }
+
+        // Process PCM86 IRQ changes.
+        if let Some(asserted) = self.pcm86.pending_irq_change.take() {
+            self.state.pcm86_irq_asserted = asserted;
+        }
+
+        // Schedule PCM86 IRQ event if reqirq is pending.
+        if self.pcm86.state.reqirq {
+            if let Some(delay) = self.pcm86.retry_delay.take() {
+                // Delayed retry after pcm86_timer_expired missed the condition.
+                actions.push(Soundboard86Action::ScheduleTimer {
+                    kind: EventKind::Pcm86Irq,
+                    fire_cycle: current_cycle + delay,
+                });
+            } else if let Some(fire_cycle) = self
+                .pcm86
+                .calculate_next_irq_cycle(current_cycle, cpu_clock_hz)
+            {
+                actions.push(Soundboard86Action::ScheduleTimer {
+                    kind: EventKind::Pcm86Irq,
+                    fire_cycle,
+                });
+            } else {
+                // Buffer already below threshold - fire immediately.
+                actions.push(Soundboard86Action::ScheduleTimer {
+                    kind: EventKind::Pcm86Irq,
+                    fire_cycle: current_cycle + 1,
+                });
+            }
+        }
+
+        // Compute merged IRQ (OR of both sources, respecting OPNA mask).
+        let merged = (self.state.irq_asserted && !opna_masked) || self.state.pcm86_irq_asserted;
+        if merged != was_merged {
+            if merged {
+                actions.push(Soundboard86Action::AssertIrq {
+                    irq: self.state.irq_line,
+                });
+            } else {
+                actions.push(Soundboard86Action::DeassertIrq {
+                    irq: self.state.irq_line,
+                });
+            }
+        }
+
         actions
     }
 
@@ -1038,8 +1368,10 @@ impl Soundboard86 {
             }
         }
 
-        // Mix in PCM86 output using the full elapsed time since last generate call.
-        // PCM86 is mono; duplicate to both channels.
+        // Mix in PCM86 stereo output using the full elapsed time since last generate call.
+        // Advance vir_buf to current time before draining.
+        self.pcm86.update_buffer_state(current_cycle, cpu_clock_hz);
+        self.pcm86.reconcile_buffers();
         let pcm_frame_cycles = current_cycle.saturating_sub(pcm_frame_start);
         if self.pcm86.is_playing() && self.pcm86.state.real_buf > 0 && pcm_frame_cycles > 0 {
             let pcm_rate = self.pcm86.pcm_rate();
@@ -1050,36 +1382,36 @@ impl Soundboard86 {
 
             if pcm_count > 0 {
                 let pcm_samples = self.pcm86.drain_samples(pcm_count);
-                if self.pcm86.pcm_resample_input.len() < pcm_count {
-                    self.pcm86.pcm_resample_input.resize(pcm_count, 0.0);
+                let total_interleaved = pcm_count * 2;
+                if self.pcm86.pcm_resample_input.len() < total_interleaved {
+                    self.pcm86.pcm_resample_input.resize(total_interleaved, 0.0);
                 }
-                self.pcm86.pcm_resample_input[..pcm_count]
-                    .copy_from_slice(&pcm_samples[..pcm_count]);
+                self.pcm86.pcm_resample_input[..total_interleaved]
+                    .copy_from_slice(&pcm_samples[..total_interleaved]);
 
                 let mut input_offset = 0;
-                let mut output_frame_offset = 0;
-                let frame_count = output.len() / 2;
-                while input_offset < pcm_count && output_frame_offset < frame_count {
+                let mut output_offset = 0;
+                let sample_count = output.len();
+                while input_offset < total_interleaved && output_offset < sample_count {
                     let Ok((consumed, produced)) = self.pcm86.pcm_resampler.resample(
-                        &self.pcm86.pcm_resample_input[input_offset..pcm_count],
+                        &self.pcm86.pcm_resample_input[input_offset..total_interleaved],
                         &mut self.pcm86.pcm_resample_output,
                     ) else {
                         break;
                     };
-                    let usable = produced.min(frame_count - output_frame_offset);
+                    let usable = produced.min(sample_count - output_offset);
                     for i in 0..usable {
-                        let sample = self.pcm86.pcm_resample_output[i] * volume;
-                        output[(output_frame_offset + i) * 2] += sample;
-                        output[(output_frame_offset + i) * 2 + 1] += sample;
+                        output[output_offset + i] += self.pcm86.pcm_resample_output[i] * volume;
                     }
                     input_offset += consumed;
-                    output_frame_offset += usable;
+                    output_offset += usable;
                     if consumed == 0 {
                         break;
                     }
                 }
             }
         }
+        self.pcm86.state.audio_frame_start_cycle = current_cycle;
 
         self.pending_native.clear();
         self.state.audio_frame_start_cycle = current_cycle;
@@ -1103,6 +1435,17 @@ impl Soundboard86 {
     ) {
         self.state = saved.clone();
         self.pcm86.state = saved.pcm86.clone();
+        self.pcm86.pending_irq_change = None;
+        self.pcm86.pcm_resampler = ResamplerFir::new(
+            2,
+            self.pcm86.pcm_rate(),
+            sample_rate,
+            Latency::Sample64,
+            Attenuation::Db60,
+        );
+        self.pcm86
+            .pcm_resample_output
+            .resize(self.pcm86.pcm_resampler.buffer_size_output(), 0.0);
         let has_rom = rhythm_rom.is_some();
         // TODO: Save/restore ymfm internal state
         let bridge = ChipBridge::new(cpu_clock_hz, rhythm_rom, saved.adpcm_ram);
@@ -1123,5 +1466,873 @@ impl Soundboard86 {
             .resize(self.resampler.buffer_size_output(), 0.0);
         self.rhythm = RhythmSection::new(!has_rom);
         self.sample_rate = sample_rate;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_pcm86() -> Pcm86 {
+        let mut pcm = Pcm86::new(48000, 8_000_000, MachineModel::PC9801RA);
+        pcm.state.pcm_mute = 0x00;
+        pcm
+    }
+
+    fn write_bytes(pcm: &mut Pcm86, data: &[u8]) {
+        for &b in data {
+            if pcm.state.vir_buf < PCM86_LOGICAL_BUF {
+                pcm.state.vir_buf += 1;
+            }
+            pcm.buffer[pcm.state.write_pos as usize] = b;
+            pcm.state.write_pos = (pcm.state.write_pos + 1) & PCM86_BUFMASK;
+            pcm.state.real_buf += 1;
+        }
+    }
+
+    fn enable_playback(pcm: &mut Pcm86) {
+        pcm.state.fifo = 0x80;
+    }
+
+    #[test]
+    fn drain_16bit_big_endian_left_only() {
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x20; // 16-bit, L only
+        pcm.state.step_bit = PCM86_BITS[(0x20 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+        pcm.state.vol[5] = 0; // max volume
+        enable_playback(&mut pcm);
+
+        // Write 0x7F00 big-endian → +32512 → ~0.9922
+        write_bytes(&mut pcm, &[0x7F, 0x00]);
+        let out = pcm.drain_samples(1);
+        assert_eq!(out.len(), 2);
+        assert!((out[0] - 0.9921875).abs() < 0.001, "L = {}", out[0]);
+        assert_eq!(out[1], 0.0, "R should be 0.0 for L-only mode");
+    }
+
+    #[test]
+    fn drain_16bit_big_endian_right_only() {
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x10; // 16-bit, R only
+        pcm.state.step_bit = PCM86_BITS[(0x10 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+        pcm.state.vol[5] = 0;
+        enable_playback(&mut pcm);
+
+        // Write 0x8000 big-endian → -32768 → -1.0
+        write_bytes(&mut pcm, &[0x80, 0x00]);
+        let out = pcm.drain_samples(1);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], 0.0, "L should be 0.0 for R-only mode");
+        assert!((out[1] - (-1.0)).abs() < 0.001, "R = {}", out[1]);
+    }
+
+    #[test]
+    fn drain_16bit_stereo() {
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x30; // 16-bit stereo
+        pcm.state.step_bit = PCM86_BITS[(0x30 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+        pcm.state.vol[5] = 0;
+        enable_playback(&mut pcm);
+
+        // L = 0x4000 (+16384 → 0.5), R = 0xC000 (-16384 → -0.5)
+        write_bytes(&mut pcm, &[0x40, 0x00, 0xC0, 0x00]);
+        let out = pcm.drain_samples(1);
+        assert_eq!(out.len(), 2);
+        assert!((out[0] - 0.5).abs() < 0.001, "L = {}", out[0]);
+        assert!((out[1] - (-0.5)).abs() < 0.001, "R = {}", out[1]);
+    }
+
+    #[test]
+    fn drain_16bit_stereo_multiple_frames() {
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x30; // 16-bit stereo
+        pcm.state.step_bit = PCM86_BITS[(0x30 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+        pcm.state.vol[5] = 0;
+        enable_playback(&mut pcm);
+
+        // Frame 0: L=+16384, R=-16384
+        // Frame 1: L=0, R=+32512
+        write_bytes(&mut pcm, &[0x40, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x7F, 0x00]);
+        let out = pcm.drain_samples(2);
+        assert_eq!(out.len(), 4);
+        assert!((out[0] - 0.5).abs() < 0.001, "F0 L = {}", out[0]);
+        assert!((out[1] - (-0.5)).abs() < 0.001, "F0 R = {}", out[1]);
+        assert!(out[2].abs() < 0.001, "F1 L = {}", out[2]);
+        assert!((out[3] - 0.9921875).abs() < 0.001, "F1 R = {}", out[3]);
+    }
+
+    #[test]
+    fn drain_8bit_left_only() {
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x60; // 8-bit, L only
+        pcm.state.step_bit = PCM86_BITS[(0x60 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+        pcm.state.vol[5] = 0;
+        enable_playback(&mut pcm);
+
+        // 0x40 as signed = +64 → 64/128 = 0.5
+        write_bytes(&mut pcm, &[0x40]);
+        let out = pcm.drain_samples(1);
+        assert_eq!(out.len(), 2);
+        assert!((out[0] - 0.5).abs() < 0.01, "L = {}", out[0]);
+        assert_eq!(out[1], 0.0, "R should be 0.0 for L-only mode");
+    }
+
+    #[test]
+    fn drain_8bit_right_only() {
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x50; // 8-bit, R only
+        pcm.state.step_bit = PCM86_BITS[(0x50 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+        pcm.state.vol[5] = 0;
+        enable_playback(&mut pcm);
+
+        // 0x80 as signed = -128 → -128/128 = -1.0
+        write_bytes(&mut pcm, &[0x80]);
+        let out = pcm.drain_samples(1);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], 0.0, "L should be 0.0 for R-only mode");
+        assert!((out[1] - (-1.0)).abs() < 0.01, "R = {}", out[1]);
+    }
+
+    #[test]
+    fn drain_8bit_stereo() {
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x70; // 8-bit stereo
+        pcm.state.step_bit = PCM86_BITS[(0x70 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+        pcm.state.vol[5] = 0;
+        enable_playback(&mut pcm);
+
+        // L = 0x40 (+64 → 0.5), R = 0xC0 (-64 → -0.5)
+        write_bytes(&mut pcm, &[0x40, 0xC0]);
+        let out = pcm.drain_samples(1);
+        assert_eq!(out.len(), 2);
+        assert!((out[0] - 0.5).abs() < 0.01, "L = {}", out[0]);
+        assert!((out[1] - (-0.5)).abs() < 0.01, "R = {}", out[1]);
+    }
+
+    #[test]
+    fn drain_disabled_modes_produce_silence() {
+        for mode in [0x00u8, 0x40] {
+            let mut pcm = make_pcm86();
+            pcm.state.dactrl = mode;
+            pcm.state.step_bit = PCM86_BITS[((mode >> 4) & 7) as usize];
+            pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+            pcm.state.vol[5] = 0;
+            enable_playback(&mut pcm);
+
+            write_bytes(&mut pcm, &[0xFF; 16]);
+            let out = pcm.drain_samples(4);
+            assert_eq!(out.len(), 8);
+            for (i, &s) in out.iter().enumerate() {
+                assert_eq!(s, 0.0, "mode 0x{mode:02X} sample {i} should be silent");
+            }
+        }
+    }
+
+    #[test]
+    fn drain_muted_produces_silence_but_consumes_fifo() {
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x20; // 16-bit L only
+        pcm.state.step_bit = PCM86_BITS[(0x20 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+        pcm.state.vol[5] = 0;
+        pcm.state.pcm_mute = 0x01;
+        enable_playback(&mut pcm);
+
+        write_bytes(&mut pcm, &[0x7F, 0x00, 0x7F, 0x00]);
+        assert_eq!(pcm.state.real_buf, 4);
+
+        let out = pcm.drain_samples(2);
+        assert_eq!(out.len(), 4);
+        for &s in &out {
+            assert_eq!(s, 0.0, "muted output should be silent");
+        }
+        // FIFO should have been consumed even though muted.
+        assert_eq!(pcm.state.real_buf, 0);
+    }
+
+    #[test]
+    fn drain_with_volume_attenuation() {
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x20; // 16-bit L only
+        pcm.state.step_bit = PCM86_BITS[(0x20 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+        // Volume 15 = minimum (inverted: 15 - 15 = 0 → 0.0)
+        pcm.state.vol[5] = 15;
+        enable_playback(&mut pcm);
+
+        write_bytes(&mut pcm, &[0x7F, 0x00]);
+        let out = pcm.drain_samples(1);
+        assert_eq!(out[0], 0.0, "volume 15 should silence output");
+
+        // Volume 0 = maximum (inverted: 15 - 0 = 15 → 1.0)
+        pcm.state.vol[5] = 0;
+        write_bytes(&mut pcm, &[0x7F, 0x00]);
+        let out = pcm.drain_samples(1);
+        assert!(
+            (out[0] - 0.9921875).abs() < 0.001,
+            "volume 0 = max: {}",
+            out[0]
+        );
+    }
+
+    #[test]
+    fn drain_underflow_produces_silence() {
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x30; // 16-bit stereo (4 bytes per frame)
+        pcm.state.step_bit = PCM86_BITS[(0x30 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+        pcm.state.vol[5] = 0;
+        enable_playback(&mut pcm);
+
+        // Write only 2 bytes - not enough for a 4-byte stereo frame.
+        write_bytes(&mut pcm, &[0x40, 0x00]);
+        let out = pcm.drain_samples(1);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], 0.0, "underflow L should be silent");
+        assert_eq!(out[1], 0.0, "underflow R should be silent");
+    }
+
+    #[test]
+    fn drain_not_playing_produces_silence() {
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x20;
+        pcm.state.step_bit = PCM86_BITS[(0x20 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+        pcm.state.vol[5] = 0;
+        // Do NOT enable playback (fifo bit 7 = 0).
+
+        write_bytes(&mut pcm, &[0x7F, 0x00]);
+        let out = pcm.drain_samples(1);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], 0.0);
+        assert_eq!(out[1], 0.0);
+    }
+
+    #[test]
+    fn irq_condition_met_when_vir_buf_below_threshold() {
+        let mut pcm = make_pcm86();
+        pcm.state.fifo = 0xA0; // play + IRQ enable
+        pcm.state.fifo_size = 3;
+        pcm.state.data_write_irq_wait = 0; // disable wait for test
+
+        // vir_buf = 5, above threshold.
+        pcm.state.vir_buf = 5;
+        assert!(!pcm.irq_condition_met(100));
+
+        // vir_buf = 3, at threshold.
+        pcm.state.vir_buf = 3;
+        assert!(pcm.irq_condition_met(100));
+
+        // vir_buf = 0, below threshold.
+        pcm.state.vir_buf = 0;
+        assert!(pcm.irq_condition_met(100));
+    }
+
+    #[test]
+    fn irq_condition_not_met_when_irq_disabled() {
+        let mut pcm = make_pcm86();
+        pcm.state.fifo = 0x80; // play, but IRQ NOT enabled (bit 5 = 0)
+        pcm.state.fifo_size = 3;
+        pcm.state.vir_buf = 0;
+        pcm.state.data_write_irq_wait = 0;
+        assert!(!pcm.irq_condition_met(100));
+    }
+
+    #[test]
+    fn irq_condition_delayed_by_data_write_wait() {
+        let mut pcm = make_pcm86();
+        pcm.state.fifo = 0xA0;
+        pcm.state.fifo_size = 3;
+        pcm.state.vir_buf = 0;
+        pcm.state.data_write_irq_wait = 1000;
+        pcm.state.last_clock_for_wait = 50;
+
+        // Only 50 cycles elapsed, need 1000 → not met.
+        assert!(!pcm.irq_condition_met(100));
+
+        // 1050 cycles elapsed → met.
+        assert!(pcm.irq_condition_met(1050));
+    }
+
+    #[test]
+    fn buffer_overflow_protection() {
+        let mut pcm = make_pcm86();
+
+        // Fill past physical buffer size.
+        for i in 0..PCM86_BUFSIZE + 100 {
+            if pcm.state.vir_buf < PCM86_LOGICAL_BUF {
+                pcm.state.vir_buf += 1;
+            }
+            pcm.buffer[pcm.state.write_pos as usize] = (i & 0xFF) as u8;
+            pcm.state.write_pos = (pcm.state.write_pos + 1) & PCM86_BUFMASK;
+            pcm.state.real_buf += 1;
+            if pcm.state.real_buf >= PCM86_BUFSIZE as i32 {
+                pcm.state.real_buf -= 4;
+                pcm.state.read_pos = (pcm.state.read_pos + 4) & PCM86_BUFMASK;
+            }
+        }
+        assert!(
+            pcm.state.real_buf < PCM86_BUFSIZE as i32,
+            "real_buf should be bounded: {}",
+            pcm.state.real_buf
+        );
+    }
+
+    #[test]
+    fn bytes_per_frame_table() {
+        assert_eq!(bytes_per_frame(0x00), 0); // 16-bit disabled
+        assert_eq!(bytes_per_frame(0x10), 2); // 16-bit R
+        assert_eq!(bytes_per_frame(0x20), 2); // 16-bit L
+        assert_eq!(bytes_per_frame(0x30), 4); // 16-bit stereo
+        assert_eq!(bytes_per_frame(0x40), 0); // 8-bit disabled
+        assert_eq!(bytes_per_frame(0x50), 1); // 8-bit R
+        assert_eq!(bytes_per_frame(0x60), 1); // 8-bit L
+        assert_eq!(bytes_per_frame(0x70), 2); // 8-bit stereo
+    }
+
+    #[test]
+    fn pcm86_volume_function() {
+        assert!((pcm86_volume(0) - 1.0).abs() < 0.001); // 0 = max
+        assert!((pcm86_volume(15) - 0.0).abs() < 0.001); // 15 = min
+        assert!((pcm86_volume(7) - (8.0 / 15.0)).abs() < 0.001); // mid
+    }
+
+    #[test]
+    fn drain_16bit_sign_extension() {
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x20; // 16-bit L only
+        pcm.state.step_bit = PCM86_BITS[(0x20 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+        pcm.state.vol[5] = 0;
+        enable_playback(&mut pcm);
+
+        // MSB 0xFF (as i8 = -1), LSB 0xFE → ((-1) << 8) | 0xFE = -2
+        write_bytes(&mut pcm, &[0xFF, 0xFE]);
+        let out = pcm.drain_samples(1);
+        let expected = -2.0f32 / 32768.0;
+        assert!(
+            (out[0] - expected).abs() < 0.0001,
+            "sign extension: expected {expected}, got {}",
+            out[0]
+        );
+    }
+
+    #[test]
+    fn drain_ring_buffer_wraps() {
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x60; // 8-bit L only
+        pcm.state.step_bit = PCM86_BITS[(0x60 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+        pcm.state.vol[5] = 0;
+        enable_playback(&mut pcm);
+
+        // Position write and read near the end of the buffer.
+        pcm.state.write_pos = PCM86_BUFMASK;
+        pcm.state.read_pos = PCM86_BUFMASK;
+
+        // Write 3 bytes across the wrap boundary.
+        let data = [0x20u8, 0x40, 0x60]; // +32, +64, +96 as i8
+        for &b in &data {
+            pcm.buffer[pcm.state.write_pos as usize] = b;
+            pcm.state.write_pos = (pcm.state.write_pos + 1) & PCM86_BUFMASK;
+            pcm.state.real_buf += 1;
+            pcm.state.vir_buf += 1;
+        }
+
+        let out = pcm.drain_samples(3);
+        assert_eq!(out.len(), 6);
+        assert!((out[0] - 0x20 as f32 / 128.0).abs() < 0.01);
+        assert!((out[2] - 0x40 as f32 / 128.0).abs() < 0.01);
+        assert!((out[4] - 0x60 as f32 / 128.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn update_buffer_state_does_not_modify_read_pos_or_real_buf() {
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x60; // 8-bit L only
+        pcm.state.step_bit = PCM86_BITS[(0x60 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+        enable_playback(&mut pcm);
+        pcm.state.audio_frame_start_cycle = 0;
+
+        write_bytes(&mut pcm, &[0x10, 0x20, 0x30, 0x40, 0x50]);
+        let read_pos_before = pcm.state.read_pos;
+        let real_buf_before = pcm.state.real_buf;
+        let vir_buf_before = pcm.state.vir_buf;
+
+        // Simulate enough time for ~2 samples at 44100 Hz with 8 MHz CPU.
+        pcm.update_buffer_state(200, 8_000_000);
+
+        assert_eq!(
+            pcm.state.read_pos, read_pos_before,
+            "read_pos must not change"
+        );
+        assert_eq!(
+            pcm.state.real_buf, real_buf_before,
+            "real_buf must not change"
+        );
+        assert!(
+            pcm.state.vir_buf < vir_buf_before,
+            "vir_buf should have decreased"
+        );
+    }
+
+    #[test]
+    fn update_buffer_state_clamps_vir_buf_with_stepmask() {
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x30; // 16-bit stereo, step_bit=2
+        pcm.state.step_bit = PCM86_BITS[(0x30 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1; // 3
+        enable_playback(&mut pcm);
+        pcm.state.audio_frame_start_cycle = 0;
+
+        // Set vir_buf to a small value that will underflow.
+        pcm.state.vir_buf = 2;
+
+        // Simulate enough time to consume more than 2 bytes.
+        pcm.update_buffer_state(10_000_000, 8_000_000);
+
+        // After underflow, vir_buf should be masked with step_mask (3), not clamped to 0.
+        assert_eq!(
+            pcm.state.vir_buf,
+            pcm.state.vir_buf & pcm.state.step_mask as i32,
+            "vir_buf should be masked with step_mask on underflow"
+        );
+    }
+
+    #[test]
+    fn update_buffer_state_no_change_when_not_playing() {
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x60;
+        pcm.state.step_bit = PCM86_BITS[(0x60 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+        // Do NOT enable playback.
+        pcm.state.audio_frame_start_cycle = 0;
+
+        write_bytes(&mut pcm, &[0x10, 0x20, 0x30]);
+        let vir_buf_before = pcm.state.vir_buf;
+
+        pcm.update_buffer_state(10_000_000, 8_000_000);
+
+        assert_eq!(
+            pcm.state.vir_buf, vir_buf_before,
+            "vir_buf should not change when not playing"
+        );
+    }
+
+    #[test]
+    fn default_reset_values_match_np21w() {
+        let state = Pcm86State::default();
+        assert_eq!(state.fifo_size, 128, "fifo_size should default to 0x80");
+        assert_eq!(state.dactrl, 0x32, "dactrl should default to 0x32");
+        assert_eq!(state.step_bit, 2, "step_bit should default to 2");
+        assert_eq!(state.step_mask, 3, "step_mask should default to 3");
+        assert_eq!(
+            state.pcm_mute, 0x01,
+            "pcm_mute should default to 0x01 (muted)"
+        );
+    }
+
+    #[test]
+    fn port_a66e_readback_preserves_full_byte() {
+        let mut pcm = make_pcm86();
+        pcm.state.pcm_mute = 0xFE;
+
+        let readback = pcm.read_port(0xA66E, 0, 8_000_000);
+        assert_eq!(readback, 0xFE, "full byte should be returned on read");
+
+        // Bit 0 is 0, so mute should be inactive.
+        let vol = if pcm.state.pcm_mute & 0x01 != 0 {
+            0.0
+        } else {
+            1.0
+        };
+        assert_eq!(vol, 1.0, "mute should be inactive when bit 0 is 0");
+    }
+
+    #[test]
+    fn reconcile_buffers_adjusts_virbuf_upward_when_realbuf_leads() {
+        let mut pcm = make_pcm86();
+        pcm.state.fifo_size = 128;
+        pcm.state.step_mask = 1;
+        pcm.state.vir_buf = 500;
+        // realbuf must exceed virbuf + fifosize*3 = 500 + 384 = 884
+        pcm.state.real_buf = 1000;
+        let old_virbuf = pcm.state.vir_buf;
+        pcm.reconcile_buffers();
+        assert!(
+            pcm.state.vir_buf > old_virbuf,
+            "virbuf should increase: was {old_virbuf}, now {}",
+            pcm.state.vir_buf
+        );
+        // Expected: adjustment = (1000 - (500 - 384)) / 8 = (1000 - 116) / 8 = 110
+        assert_eq!(pcm.state.vir_buf, 610);
+    }
+
+    #[test]
+    fn reconcile_buffers_no_upward_adjustment_when_realbuf_close() {
+        let mut pcm = make_pcm86();
+        pcm.state.fifo_size = 128;
+        pcm.state.step_mask = 1;
+        pcm.state.vir_buf = 500;
+        // realbuf NOT exceeding virbuf + fifosize*3 = 884
+        pcm.state.real_buf = 800;
+        pcm.reconcile_buffers();
+        assert_eq!(pcm.state.vir_buf, 500, "virbuf should not change");
+    }
+
+    #[test]
+    fn pcm86_timer_expired_uses_delayed_retry_when_condition_not_met() {
+        let mut sb = Soundboard86::new(8_000_000, 48000, None, false, MachineModel::PC9801RA);
+        sb.pcm86.state.reqirq = true;
+        sb.pcm86.state.fifo_size = 128;
+        sb.pcm86.state.step_mask = 3;
+        sb.pcm86.state.step_bit = 2;
+        // vir_buf > fifo_size so first branch of condition fails.
+        sb.pcm86.state.vir_buf = 200;
+        // adjusted = (200*4 + 800)/5 = 320 > 128, so second branch also fails.
+        sb.pcm86.state.real_buf = 800;
+        sb.pcm86.state.fifo = 0x80; // playing
+        sb.pcm86.state.audio_frame_start_cycle = 1000;
+
+        sb.pcm86_timer_expired(1000, 8_000_000);
+
+        // The condition was not met, so retry_delay should be set.
+        assert!(
+            sb.pcm86.retry_delay.is_some(),
+            "retry_delay should be set when condition fails"
+        );
+        // reqirq should still be true (not cleared).
+        assert!(sb.pcm86.state.reqirq);
+        // IRQ should NOT have been asserted.
+        assert!(!sb.pcm86.state.irq_flag);
+    }
+
+    #[test]
+    fn drain_actions_uses_retry_delay_over_immediate_fire() {
+        let mut sb = Soundboard86::new(8_000_000, 48000, None, false, MachineModel::PC9801RA);
+        sb.pcm86.state.reqirq = true;
+        sb.pcm86.retry_delay = Some(400);
+
+        let actions = sb.drain_actions();
+        let timer_action = actions.iter().find(|a| {
+            matches!(
+                a,
+                Soundboard86Action::ScheduleTimer {
+                    kind: EventKind::Pcm86Irq,
+                    ..
+                }
+            )
+        });
+        assert!(timer_action.is_some(), "should schedule a PCM86 timer");
+        if let Some(Soundboard86Action::ScheduleTimer { fire_cycle, .. }) = timer_action {
+            assert!(
+                *fire_cycle >= 400,
+                "fire_cycle should use retry delay, got {fire_cycle}"
+            );
+        }
+    }
+
+    #[test]
+    fn irq_condition_met_with_realbuf_below_threshold() {
+        let mut pcm = make_pcm86();
+        pcm.state.fifo = 0xA0; // IRQ enabled (bit 5) + playing (bit 7)
+        pcm.state.fifo_size = 128;
+        pcm.state.step_mask = 3;
+        pcm.state.data_write_irq_wait = 0;
+        // vir_buf above threshold — primary condition false.
+        pcm.state.vir_buf = 200;
+        // real_buf below threshold but above step_mask — secondary condition true.
+        pcm.state.real_buf = 100;
+        pcm.state.irq_flag = false;
+
+        assert!(
+            pcm.irq_condition_met(1000),
+            "should trigger via secondary realbuf condition"
+        );
+    }
+
+    #[test]
+    fn irq_condition_met_realbuf_at_stepmask_does_not_trigger() {
+        let mut pcm = make_pcm86();
+        pcm.state.fifo = 0xA0;
+        pcm.state.fifo_size = 128;
+        pcm.state.step_mask = 3;
+        pcm.state.data_write_irq_wait = 0;
+        pcm.state.vir_buf = 200;
+        // real_buf <= step_mask — secondary condition should NOT trigger.
+        pcm.state.real_buf = 3;
+        pcm.state.irq_flag = false;
+
+        assert!(
+            !pcm.irq_condition_met(1000),
+            "should not trigger when real_buf <= step_mask"
+        );
+    }
+
+    #[test]
+    fn wavestar_sequence_detection_sets_value() {
+        let mut pcm = make_pcm86();
+        assert_eq!(pcm.state.wavestar_seq_index, 0);
+        assert_eq!(pcm.state.wavestar_value, 0xFF);
+
+        // Feed the full magic sequence via port 0xA462.
+        for &byte in &WAVESTAR_SEQUENCE {
+            pcm.write_port(0xA462, byte, 0, 8_000_000, 48000);
+        }
+        assert_eq!(pcm.state.wavestar_seq_index, 5);
+        assert_eq!(pcm.state.wavestar_value, 0x0B);
+    }
+
+    #[test]
+    fn wavestar_partial_sequence_resets() {
+        let mut pcm = make_pcm86();
+        // Start the sequence.
+        pcm.write_port(0xA462, 0xA6, 0, 8_000_000, 48000);
+        pcm.write_port(0xA462, 0xD3, 0, 8_000_000, 48000);
+        assert_eq!(pcm.state.wavestar_seq_index, 2);
+
+        // Wrong byte resets.
+        pcm.write_port(0xA462, 0x00, 0, 8_000_000, 48000);
+        assert_eq!(pcm.state.wavestar_seq_index, 0);
+    }
+
+    #[test]
+    fn wavestar_partial_sequence_restarts_on_first_byte() {
+        let mut pcm = make_pcm86();
+        pcm.write_port(0xA462, 0xA6, 0, 8_000_000, 48000);
+        pcm.write_port(0xA462, 0xD3, 0, 8_000_000, 48000);
+        // Writing the first byte again restarts from index 1.
+        pcm.write_port(0xA462, 0xA6, 0, 8_000_000, 48000);
+        assert_eq!(pcm.state.wavestar_seq_index, 1);
+    }
+
+    #[test]
+    fn wavestar_port_a464_read_toggles() {
+        let mut pcm = make_pcm86();
+        // Complete the sequence.
+        for &byte in &WAVESTAR_SEQUENCE {
+            pcm.write_port(0xA462, byte, 0, 8_000_000, 48000);
+        }
+        assert_eq!(pcm.state.wavestar_value, 0x0B);
+
+        let first = pcm.read_port(0xA464, 0, 8_000_000);
+        assert_eq!(first, 0x0B);
+        // After read, value toggles to 0x00.
+        let second = pcm.read_port(0xA464, 0, 8_000_000);
+        assert_eq!(second, 0x00);
+        // After 0x00, toggles back to 0xFF.
+        let third = pcm.read_port(0xA464, 0, 8_000_000);
+        assert_eq!(third, 0xFF);
+    }
+
+    #[test]
+    fn wavestar_port_a464_write_mode_switch() {
+        let mut pcm = make_pcm86();
+        // Complete the sequence.
+        for &byte in &WAVESTAR_SEQUENCE {
+            pcm.write_port(0xA462, byte, 0, 8_000_000, 48000);
+        }
+        // Switch to WSS mode.
+        pcm.write_port(0xA464, 0x04, 0, 8_000_000, 48000);
+        assert_eq!(pcm.state.wavestar_value, 0x0C);
+
+        // Switch back to PCM86 mode.
+        pcm.write_port(0xA464, 0x00, 0, 8_000_000, 48000);
+        assert_eq!(pcm.state.wavestar_value, 0x08);
+
+        // Reset value with 0x09.
+        pcm.write_port(0xA464, 0x09, 0, 8_000_000, 48000);
+        assert_eq!(pcm.state.wavestar_value, 0xFF);
+    }
+
+    #[test]
+    fn wavestar_port_a462_read_returns_ff() {
+        let mut pcm = make_pcm86();
+        assert_eq!(pcm.read_port(0xA462, 0, 8_000_000), 0xFF);
+    }
+
+    #[test]
+    fn pcm86_timer_expired_reschedules_when_reqirq_false() {
+        let mut sb = Soundboard86::new(8_000_000, 48000, None, false, MachineModel::PC9801RA);
+        sb.pcm86.state.reqirq = false;
+        sb.pcm86.state.fifo = 0x80; // playing
+        sb.pcm86.retry_delay = None;
+
+        sb.pcm86_timer_expired(1000, 8_000_000);
+
+        assert!(
+            sb.pcm86.state.reqirq,
+            "reqirq should be set as keep-alive recovery"
+        );
+        assert!(
+            sb.pcm86.retry_delay.is_some(),
+            "retry_delay should be set for rescheduling"
+        );
+    }
+
+    #[test]
+    fn pcm86_timer_expired_does_not_reschedule_when_not_playing() {
+        let mut sb = Soundboard86::new(8_000_000, 48000, None, false, MachineModel::PC9801RA);
+        sb.pcm86.state.reqirq = false;
+        sb.pcm86.state.fifo = 0x00; // NOT playing
+        sb.pcm86.retry_delay = None;
+
+        sb.pcm86_timer_expired(1000, 8_000_000);
+
+        assert!(!sb.pcm86.state.reqirq, "reqirq should remain false");
+        assert!(sb.pcm86.retry_delay.is_none(), "no retry when not playing");
+    }
+
+    #[test]
+    fn port_a468_write_updates_buffer_before_force_irq() {
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x60; // 8-bit L only, step_bit=0
+        pcm.state.step_bit = PCM86_BITS[(0x60 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+        pcm.state.fifo_size = 128;
+        pcm.state.fifo = 0x80; // playing
+        pcm.state.audio_frame_start_cycle = 0;
+
+        // Set vir_buf above threshold — stale without update.
+        pcm.state.vir_buf = 200;
+        pcm.state.real_buf = 200;
+
+        // Advance enough time at 44100 Hz with 8 MHz clock for >72 samples consumed.
+        // 200 - 72 = 128, which is <= fifo_size. Force-IRQ should trigger.
+        let cycles_for_73_samples = (73u64 * 8_000_000) / 44100 + 1;
+
+        // Write 0xA468 with bit 4=0 to clear IRQ, triggering the force-IRQ check.
+        pcm.write_port(0xA468, 0x80, cycles_for_73_samples, 8_000_000, 48000);
+
+        assert!(
+            pcm.state.irq_flag,
+            "force-IRQ should trigger after buffer state update reduces vir_buf"
+        );
+    }
+
+    #[test]
+    fn irq_condition_met_latches_irq_flag() {
+        let mut pcm = make_pcm86();
+        pcm.state.fifo = 0xA0; // play + IRQ enable
+        pcm.state.fifo_size = 128;
+        pcm.state.data_write_irq_wait = 0;
+        pcm.state.vir_buf = 0;
+        pcm.state.irq_flag = false;
+
+        let result = pcm.irq_condition_met(100);
+        assert!(result, "condition should be met");
+        assert!(
+            pcm.state.irq_flag,
+            "irq_flag should be latched after condition met"
+        );
+    }
+
+    #[test]
+    fn irq_condition_met_does_not_relatch_when_already_set() {
+        let mut pcm = make_pcm86();
+        pcm.state.fifo = 0xA0;
+        pcm.state.fifo_size = 128;
+        pcm.state.data_write_irq_wait = 0;
+        pcm.state.vir_buf = 500; // above threshold
+        pcm.state.real_buf = 500;
+        pcm.state.irq_flag = true; // already latched
+
+        let result = pcm.irq_condition_met(100);
+        assert!(result, "should return true via irq_flag path");
+    }
+
+    #[test]
+    fn port_a46a_write_updates_buffer_before_dactrl_change() {
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x60; // 8-bit L only
+        pcm.state.step_bit = PCM86_BITS[(0x60 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+        pcm.state.fifo = 0x80; // playing
+        pcm.state.audio_frame_start_cycle = 0;
+
+        write_bytes(&mut pcm, &[0x10; 100]);
+        let vir_buf_before = pcm.state.vir_buf;
+
+        // Advance time so update_buffer_state would decrement vir_buf.
+        let cycles = (10u64 * 8_000_000) / 44100 + 1;
+        pcm.write_port(0xA46A, 0x30, cycles, 8_000_000, 48000); // change to 16-bit stereo
+
+        assert!(
+            pcm.state.vir_buf < vir_buf_before,
+            "vir_buf should have been decremented before dactrl change: was {vir_buf_before}, now {}",
+            pcm.state.vir_buf
+        );
+        assert_eq!(pcm.state.dactrl, 0x30, "dactrl should be updated");
+    }
+
+    #[test]
+    fn port_a466_write_updates_buffer_for_line5() {
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x60; // 8-bit L only
+        pcm.state.step_bit = PCM86_BITS[(0x60 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+        pcm.state.fifo = 0x80; // playing
+        pcm.state.audio_frame_start_cycle = 0;
+
+        write_bytes(&mut pcm, &[0x10; 100]);
+        let vir_buf_before = pcm.state.vir_buf;
+
+        let cycles = (10u64 * 8_000_000) / 44100 + 1;
+        // Write line 5 volume (bits 7:5 = 0b101 = 5, value 0xA5 → line 5, vol 5).
+        pcm.write_port(0xA466, 0xA5, cycles, 8_000_000, 48000);
+
+        assert!(
+            pcm.state.vir_buf < vir_buf_before,
+            "vir_buf should have been decremented for line 5 write: was {vir_buf_before}, now {}",
+            pcm.state.vir_buf
+        );
+        assert_eq!(pcm.state.vol[5], 5, "volume should be stored");
+    }
+
+    #[test]
+    fn port_a466_write_does_not_update_buffer_for_other_lines() {
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x60;
+        pcm.state.step_bit = PCM86_BITS[(0x60 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+        pcm.state.fifo = 0x80;
+        pcm.state.audio_frame_start_cycle = 0;
+
+        write_bytes(&mut pcm, &[0x10; 100]);
+        let vir_buf_before = pcm.state.vir_buf;
+
+        let cycles = (10u64 * 8_000_000) / 44100 + 1;
+        // Write line 0 volume (bits 7:5 = 0b000 = 0).
+        pcm.write_port(0xA466, 0x03, cycles, 8_000_000, 48000);
+
+        assert_eq!(
+            pcm.state.vir_buf, vir_buf_before,
+            "vir_buf should NOT change for non-line-5 writes"
+        );
+    }
+
+    #[test]
+    fn drain_suppresses_output_in_recording_mode() {
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x60; // 8-bit L only
+        pcm.state.step_bit = PCM86_BITS[(0x60 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+        pcm.state.vol[5] = 0; // max volume
+        pcm.state.fifo = 0xC0; // bit 7 (play) + bit 6 (recording direction)
+        write_bytes(&mut pcm, &[0x7F; 16]);
+
+        let out = pcm.drain_samples(4);
+        assert!(
+            out.iter().all(|&s| s == 0.0),
+            "recording mode should suppress DAC output"
+        );
     }
 }
