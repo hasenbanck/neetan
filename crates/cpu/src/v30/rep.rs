@@ -20,38 +20,38 @@ impl V30 {
                 self.seg_prefix = true;
                 self.prefix_seg = SegReg16::ES;
                 next = self.fetch(bus);
-                self.clk(2);
+                self.clk(0);
             }
             0x2E => {
                 self.seg_prefix = true;
                 self.prefix_seg = SegReg16::CS;
                 next = self.fetch(bus);
-                self.clk(2);
+                self.clk(0);
             }
             0x36 => {
                 self.seg_prefix = true;
                 self.prefix_seg = SegReg16::SS;
                 next = self.fetch(bus);
-                self.clk(2);
+                self.clk(0);
             }
             0x3E => {
                 self.seg_prefix = true;
                 self.prefix_seg = SegReg16::DS;
                 next = self.fetch(bus);
-                self.clk(2);
+                self.clk(0);
             }
             _ => {}
         }
 
         let startup = match next {
-            0xA4 | 0xA5 => 11, // REP MOVSB/W
-            0xA6 | 0xA7 => 7,  // REP CMPSB/W
-            0xAA | 0xAB => 7,  // REP STOSB/W
-            0xAC | 0xAD => 7,  // REP LODSB/W
-            0xAE | 0xAF => 7,  // REP SCASB/W
-            0x6C | 0x6D => 9,  // REP INSB/W
-            0x6E | 0x6F => 9,  // REP OUTSB/W
-            _ => 2,
+            0xA4 | 0xA5 => 5, // REP MOVSB/W
+            0xA6 | 0xA7 => 5, // REP CMPSB/W
+            0xAA | 0xAB => 4, // REP STOSB/W
+            0xAC | 0xAD => 5, // REP LODSB/W
+            0xAE | 0xAF => 5, // REP SCASB/W
+            0x6C | 0x6D => 5, // REP INSB/W
+            0x6E | 0x6F => 5, // REP OUTSB/W
+            _ => 0,
         };
         self.clk(startup);
         self.do_rep(rep_type, next, bus);

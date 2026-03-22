@@ -146,10 +146,22 @@ impl V30 {
             0x69 => self.imul_r16w_imm16(bus),
             0x6A => self.push_imm8(bus),
             0x6B => self.imul_r16w_imm8(bus),
-            0x6C => self.insb(bus),
-            0x6D => self.insw(bus),
-            0x6E => self.outsb(bus),
-            0x6F => self.outsw(bus),
+            0x6C => {
+                self.insb(bus);
+                self.clk(1);
+            }
+            0x6D => {
+                self.insw(bus);
+                self.clk(1);
+            }
+            0x6E => {
+                self.outsb(bus);
+                self.clk(-1);
+            }
+            0x6F => {
+                self.outsw(bus);
+                self.clk(-1);
+            }
 
             // Jcc (short jumps)
             0x70 => self.jcc(bus, self.flags.of()),
@@ -226,17 +238,23 @@ impl V30 {
             0xA2 => self.mov_moffs_al(bus),
             0xA3 => self.mov_moffs_aw(bus),
 
-            // String ops (single execution adds MOVS overhead of 3)
+            // String ops
             0xA4 => {
                 self.movsb(bus);
-                self.clk(3);
+                self.clk(1);
             }
             0xA5 => {
                 self.movsw(bus);
-                self.clk(3);
+                self.clk(1);
             }
-            0xA6 => self.cmpsb(bus),
-            0xA7 => self.cmpsw(bus),
+            0xA6 => {
+                self.cmpsb(bus);
+                self.clk(-1);
+            }
+            0xA7 => {
+                self.cmpsw(bus);
+                self.clk(-1);
+            }
 
             // TEST AL/AX, imm
             0xA8 => self.test_al_imm8(bus),
@@ -245,10 +263,22 @@ impl V30 {
             // STOS, LODS, SCAS
             0xAA => self.stosb(bus),
             0xAB => self.stosw(bus),
-            0xAC => self.lodsb(bus),
-            0xAD => self.lodsw(bus),
-            0xAE => self.scasb(bus),
-            0xAF => self.scasw(bus),
+            0xAC => {
+                self.lodsb(bus);
+                self.clk(1);
+            }
+            0xAD => {
+                self.lodsw(bus);
+                self.clk(1);
+            }
+            0xAE => {
+                self.scasb(bus);
+                self.clk(-1);
+            }
+            0xAF => {
+                self.scasw(bus);
+                self.clk(-1);
+            }
 
             // MOV byte reg, imm8
             0xB0 => self.mov_byte_reg_imm(ByteReg::AL, bus),
@@ -380,7 +410,7 @@ impl V30 {
         let dst = self.get_rm_byte(modrm, bus);
         let result = self.alu_add_byte(dst, src);
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_modrm(modrm, 2, 16);
+        self.clk_modrm(modrm, 2, 7);
     }
 
     fn add_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -389,7 +419,7 @@ impl V30 {
         let dst = self.get_rm_word(modrm, bus);
         let result = self.alu_add_word(dst, src);
         self.putback_rm_word(modrm, result, bus);
-        self.clk_modrm_word(modrm, 2, 16, 2);
+        self.clk_modrm_word(modrm, 2, 7, 2);
     }
 
     fn add_r8b(&mut self, bus: &mut impl common::Bus) {
@@ -399,7 +429,7 @@ impl V30 {
         let result = self.alu_add_byte(dst, src);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, result);
-        self.clk_modrm(modrm, 2, 11);
+        self.clk_modrm(modrm, 2, 7);
     }
 
     fn add_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -409,7 +439,7 @@ impl V30 {
         let result = self.alu_add_word(dst, src);
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, result);
-        self.clk_modrm_word(modrm, 2, 11, 1);
+        self.clk_modrm_word(modrm, 2, 7, 1);
     }
 
     fn add_ald8(&mut self, bus: &mut impl common::Bus) {
@@ -417,7 +447,7 @@ impl V30 {
         let dst = self.regs.byte(ByteReg::AL);
         let result = self.alu_add_byte(dst, src);
         self.regs.set_byte(ByteReg::AL, result);
-        self.clk(4);
+        self.clk(3);
     }
 
     fn add_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -425,7 +455,7 @@ impl V30 {
         let dst = self.regs.word(WordReg::AX);
         let result = self.alu_add_word(dst, src);
         self.regs.set_word(WordReg::AX, result);
-        self.clk(4);
+        self.clk(3);
     }
 
     fn or_br8(&mut self, bus: &mut impl common::Bus) {
@@ -434,7 +464,7 @@ impl V30 {
         let dst = self.get_rm_byte(modrm, bus);
         let result = self.alu_or_byte(dst, src);
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_modrm(modrm, 2, 16);
+        self.clk_modrm(modrm, 2, 7);
     }
 
     fn or_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -443,7 +473,7 @@ impl V30 {
         let dst = self.get_rm_word(modrm, bus);
         let result = self.alu_or_word(dst, src);
         self.putback_rm_word(modrm, result, bus);
-        self.clk_modrm_word(modrm, 2, 16, 2);
+        self.clk_modrm_word(modrm, 2, 7, 2);
     }
 
     fn or_r8b(&mut self, bus: &mut impl common::Bus) {
@@ -453,7 +483,7 @@ impl V30 {
         let result = self.alu_or_byte(dst, src);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, result);
-        self.clk_modrm(modrm, 2, 11);
+        self.clk_modrm(modrm, 2, 7);
     }
 
     fn or_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -463,7 +493,7 @@ impl V30 {
         let result = self.alu_or_word(dst, src);
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, result);
-        self.clk_modrm_word(modrm, 2, 11, 1);
+        self.clk_modrm_word(modrm, 2, 7, 1);
     }
 
     fn or_ald8(&mut self, bus: &mut impl common::Bus) {
@@ -471,7 +501,7 @@ impl V30 {
         let dst = self.regs.byte(ByteReg::AL);
         let result = self.alu_or_byte(dst, src);
         self.regs.set_byte(ByteReg::AL, result);
-        self.clk(4);
+        self.clk(3);
     }
 
     fn or_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -479,7 +509,7 @@ impl V30 {
         let dst = self.regs.word(WordReg::AX);
         let result = self.alu_or_word(dst, src);
         self.regs.set_word(WordReg::AX, result);
-        self.clk(4);
+        self.clk(3);
     }
 
     fn adc_br8(&mut self, bus: &mut impl common::Bus) {
@@ -489,7 +519,7 @@ impl V30 {
         let cf = self.flags.cf_val();
         let result = self.alu_adc_byte(dst, src, cf);
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_modrm(modrm, 2, 16);
+        self.clk_modrm(modrm, 2, 7);
     }
 
     fn adc_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -499,7 +529,7 @@ impl V30 {
         let cf = self.flags.cf_val();
         let result = self.alu_adc_word(dst, src, cf);
         self.putback_rm_word(modrm, result, bus);
-        self.clk_modrm_word(modrm, 2, 16, 2);
+        self.clk_modrm_word(modrm, 2, 7, 2);
     }
 
     fn adc_r8b(&mut self, bus: &mut impl common::Bus) {
@@ -510,7 +540,7 @@ impl V30 {
         let result = self.alu_adc_byte(dst, src, cf);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, result);
-        self.clk_modrm(modrm, 2, 11);
+        self.clk_modrm(modrm, 2, 7);
     }
 
     fn adc_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -521,7 +551,7 @@ impl V30 {
         let result = self.alu_adc_word(dst, src, cf);
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, result);
-        self.clk_modrm_word(modrm, 2, 11, 1);
+        self.clk_modrm_word(modrm, 2, 7, 1);
     }
 
     fn adc_ald8(&mut self, bus: &mut impl common::Bus) {
@@ -530,7 +560,7 @@ impl V30 {
         let cf = self.flags.cf_val();
         let result = self.alu_adc_byte(dst, src, cf);
         self.regs.set_byte(ByteReg::AL, result);
-        self.clk(4);
+        self.clk(3);
     }
 
     fn adc_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -539,7 +569,7 @@ impl V30 {
         let cf = self.flags.cf_val();
         let result = self.alu_adc_word(dst, src, cf);
         self.regs.set_word(WordReg::AX, result);
-        self.clk(4);
+        self.clk(3);
     }
 
     fn sbb_br8(&mut self, bus: &mut impl common::Bus) {
@@ -549,7 +579,7 @@ impl V30 {
         let cf = self.flags.cf_val();
         let result = self.alu_sbb_byte(dst, src, cf);
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_modrm(modrm, 2, 16);
+        self.clk_modrm(modrm, 2, 7);
     }
 
     fn sbb_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -559,7 +589,7 @@ impl V30 {
         let cf = self.flags.cf_val();
         let result = self.alu_sbb_word(dst, src, cf);
         self.putback_rm_word(modrm, result, bus);
-        self.clk_modrm_word(modrm, 2, 16, 2);
+        self.clk_modrm_word(modrm, 2, 7, 2);
     }
 
     fn sbb_r8b(&mut self, bus: &mut impl common::Bus) {
@@ -570,7 +600,7 @@ impl V30 {
         let result = self.alu_sbb_byte(dst, src, cf);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, result);
-        self.clk_modrm(modrm, 2, 11);
+        self.clk_modrm(modrm, 2, 7);
     }
 
     fn sbb_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -581,7 +611,7 @@ impl V30 {
         let result = self.alu_sbb_word(dst, src, cf);
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, result);
-        self.clk_modrm_word(modrm, 2, 11, 1);
+        self.clk_modrm_word(modrm, 2, 7, 1);
     }
 
     fn sbb_ald8(&mut self, bus: &mut impl common::Bus) {
@@ -590,7 +620,7 @@ impl V30 {
         let cf = self.flags.cf_val();
         let result = self.alu_sbb_byte(dst, src, cf);
         self.regs.set_byte(ByteReg::AL, result);
-        self.clk(4);
+        self.clk(3);
     }
 
     fn sbb_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -599,7 +629,7 @@ impl V30 {
         let cf = self.flags.cf_val();
         let result = self.alu_sbb_word(dst, src, cf);
         self.regs.set_word(WordReg::AX, result);
-        self.clk(4);
+        self.clk(3);
     }
 
     fn and_br8(&mut self, bus: &mut impl common::Bus) {
@@ -608,7 +638,7 @@ impl V30 {
         let dst = self.get_rm_byte(modrm, bus);
         let result = self.alu_and_byte(dst, src);
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_modrm(modrm, 2, 16);
+        self.clk_modrm(modrm, 2, 7);
     }
 
     fn and_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -617,7 +647,7 @@ impl V30 {
         let dst = self.get_rm_word(modrm, bus);
         let result = self.alu_and_word(dst, src);
         self.putback_rm_word(modrm, result, bus);
-        self.clk_modrm_word(modrm, 2, 16, 2);
+        self.clk_modrm_word(modrm, 2, 7, 2);
     }
 
     fn and_r8b(&mut self, bus: &mut impl common::Bus) {
@@ -627,7 +657,7 @@ impl V30 {
         let result = self.alu_and_byte(dst, src);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, result);
-        self.clk_modrm(modrm, 2, 11);
+        self.clk_modrm(modrm, 2, 7);
     }
 
     fn and_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -637,7 +667,7 @@ impl V30 {
         let result = self.alu_and_word(dst, src);
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, result);
-        self.clk_modrm_word(modrm, 2, 11, 1);
+        self.clk_modrm_word(modrm, 2, 7, 1);
     }
 
     fn and_ald8(&mut self, bus: &mut impl common::Bus) {
@@ -645,7 +675,7 @@ impl V30 {
         let dst = self.regs.byte(ByteReg::AL);
         let result = self.alu_and_byte(dst, src);
         self.regs.set_byte(ByteReg::AL, result);
-        self.clk(4);
+        self.clk(3);
     }
 
     fn and_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -653,7 +683,7 @@ impl V30 {
         let dst = self.regs.word(WordReg::AX);
         let result = self.alu_and_word(dst, src);
         self.regs.set_word(WordReg::AX, result);
-        self.clk(4);
+        self.clk(3);
     }
 
     fn sub_br8(&mut self, bus: &mut impl common::Bus) {
@@ -662,7 +692,7 @@ impl V30 {
         let dst = self.get_rm_byte(modrm, bus);
         let result = self.alu_sub_byte(dst, src);
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_modrm(modrm, 2, 16);
+        self.clk_modrm(modrm, 2, 7);
     }
 
     fn sub_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -671,7 +701,7 @@ impl V30 {
         let dst = self.get_rm_word(modrm, bus);
         let result = self.alu_sub_word(dst, src);
         self.putback_rm_word(modrm, result, bus);
-        self.clk_modrm_word(modrm, 2, 16, 2);
+        self.clk_modrm_word(modrm, 2, 7, 2);
     }
 
     fn sub_r8b(&mut self, bus: &mut impl common::Bus) {
@@ -681,7 +711,7 @@ impl V30 {
         let result = self.alu_sub_byte(dst, src);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, result);
-        self.clk_modrm(modrm, 2, 11);
+        self.clk_modrm(modrm, 2, 7);
     }
 
     fn sub_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -691,7 +721,7 @@ impl V30 {
         let result = self.alu_sub_word(dst, src);
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, result);
-        self.clk_modrm_word(modrm, 2, 11, 1);
+        self.clk_modrm_word(modrm, 2, 7, 1);
     }
 
     fn sub_ald8(&mut self, bus: &mut impl common::Bus) {
@@ -699,7 +729,7 @@ impl V30 {
         let dst = self.regs.byte(ByteReg::AL);
         let result = self.alu_sub_byte(dst, src);
         self.regs.set_byte(ByteReg::AL, result);
-        self.clk(4);
+        self.clk(3);
     }
 
     fn sub_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -707,7 +737,7 @@ impl V30 {
         let dst = self.regs.word(WordReg::AX);
         let result = self.alu_sub_word(dst, src);
         self.regs.set_word(WordReg::AX, result);
-        self.clk(4);
+        self.clk(3);
     }
 
     fn xor_br8(&mut self, bus: &mut impl common::Bus) {
@@ -716,7 +746,7 @@ impl V30 {
         let dst = self.get_rm_byte(modrm, bus);
         let result = self.alu_xor_byte(dst, src);
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_modrm(modrm, 2, 16);
+        self.clk_modrm(modrm, 2, 7);
     }
 
     fn xor_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -725,7 +755,7 @@ impl V30 {
         let dst = self.get_rm_word(modrm, bus);
         let result = self.alu_xor_word(dst, src);
         self.putback_rm_word(modrm, result, bus);
-        self.clk_modrm_word(modrm, 2, 16, 2);
+        self.clk_modrm_word(modrm, 2, 7, 2);
     }
 
     fn xor_r8b(&mut self, bus: &mut impl common::Bus) {
@@ -735,7 +765,7 @@ impl V30 {
         let result = self.alu_xor_byte(dst, src);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, result);
-        self.clk_modrm(modrm, 2, 11);
+        self.clk_modrm(modrm, 2, 7);
     }
 
     fn xor_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -745,7 +775,7 @@ impl V30 {
         let result = self.alu_xor_word(dst, src);
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, result);
-        self.clk_modrm_word(modrm, 2, 11, 1);
+        self.clk_modrm_word(modrm, 2, 7, 1);
     }
 
     fn xor_ald8(&mut self, bus: &mut impl common::Bus) {
@@ -753,7 +783,7 @@ impl V30 {
         let dst = self.regs.byte(ByteReg::AL);
         let result = self.alu_xor_byte(dst, src);
         self.regs.set_byte(ByteReg::AL, result);
-        self.clk(4);
+        self.clk(3);
     }
 
     fn xor_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -761,7 +791,7 @@ impl V30 {
         let dst = self.regs.word(WordReg::AX);
         let result = self.alu_xor_word(dst, src);
         self.regs.set_word(WordReg::AX, result);
-        self.clk(4);
+        self.clk(3);
     }
 
     fn cmp_br8(&mut self, bus: &mut impl common::Bus) {
@@ -769,7 +799,7 @@ impl V30 {
         let src = self.regs.byte(self.reg_byte(modrm));
         let dst = self.get_rm_byte(modrm, bus);
         self.alu_sub_byte(dst, src);
-        self.clk_modrm(modrm, 2, 11);
+        self.clk_modrm(modrm, 2, 6);
     }
 
     fn cmp_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -777,7 +807,7 @@ impl V30 {
         let src = self.regs.word(self.reg_word(modrm));
         let dst = self.get_rm_word(modrm, bus);
         self.alu_sub_word(dst, src);
-        self.clk_modrm_word(modrm, 2, 11, 1);
+        self.clk_modrm_word(modrm, 2, 6, 1);
     }
 
     fn cmp_r8b(&mut self, bus: &mut impl common::Bus) {
@@ -785,7 +815,7 @@ impl V30 {
         let dst = self.regs.byte(self.reg_byte(modrm));
         let src = self.get_rm_byte(modrm, bus);
         self.alu_sub_byte(dst, src);
-        self.clk_modrm(modrm, 2, 11);
+        self.clk_modrm(modrm, 2, 6);
     }
 
     fn cmp_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -793,21 +823,21 @@ impl V30 {
         let dst = self.regs.word(self.reg_word(modrm));
         let src = self.get_rm_word(modrm, bus);
         self.alu_sub_word(dst, src);
-        self.clk_modrm_word(modrm, 2, 11, 1);
+        self.clk_modrm_word(modrm, 2, 6, 1);
     }
 
     fn cmp_ald8(&mut self, bus: &mut impl common::Bus) {
         let src = self.fetch(bus);
         let dst = self.regs.byte(ByteReg::AL);
         self.alu_sub_byte(dst, src);
-        self.clk(4);
+        self.clk(3);
     }
 
     fn cmp_axd16(&mut self, bus: &mut impl common::Bus) {
         let src = self.fetchword(bus);
         let dst = self.regs.word(WordReg::AX);
         self.alu_sub_word(dst, src);
-        self.clk(4);
+        self.clk(3);
     }
 
     fn inc_word_reg(&mut self, reg: WordReg) {
@@ -828,7 +858,7 @@ impl V30 {
         let penalty = self.sp_penalty(1);
         let val = self.regs.word(reg);
         self.push(bus, val);
-        self.clk(8 + penalty);
+        self.clk(3 + penalty);
     }
 
     pub(super) fn push_sp(&mut self, bus: &mut impl common::Bus) {
@@ -841,28 +871,28 @@ impl V30 {
             base.wrapping_add(sp.wrapping_add(1) as u32) & 0xFFFFF,
             (sp >> 8) as u8,
         );
-        self.clk(8 + penalty);
+        self.clk(3 + penalty);
     }
 
     fn pop_word_reg(&mut self, reg: WordReg, bus: &mut impl common::Bus) {
         let penalty = self.sp_penalty(1);
         let val = self.pop(bus);
         self.regs.set_word(reg, val);
-        self.clk(8 + penalty);
+        self.clk(5 + penalty);
     }
 
     fn push_seg(&mut self, seg: SegReg16, bus: &mut impl common::Bus) {
         let penalty = self.sp_penalty(1);
         let val = self.sregs[seg as usize];
         self.push(bus, val);
-        self.clk(8 + penalty);
+        self.clk(3 + penalty);
     }
 
     fn pop_seg(&mut self, seg: SegReg16, bus: &mut impl common::Bus) {
         let penalty = self.sp_penalty(1);
         let val = self.pop(bus);
         self.sregs[seg as usize] = val;
-        self.clk(8 + penalty);
+        self.clk(5 + penalty);
     }
 
     fn pusha(&mut self, bus: &mut impl common::Bus) {
@@ -883,7 +913,7 @@ impl V30 {
         self.push(bus, ix);
         let iy = self.regs.word(WordReg::DI);
         self.push(bus, iy);
-        self.clk(35 + penalty);
+        self.clk(17 + penalty);
     }
 
     fn popa(&mut self, bus: &mut impl common::Bus) {
@@ -903,7 +933,7 @@ impl V30 {
         self.regs.set_word(WordReg::CX, cw);
         let aw = self.pop(bus);
         self.regs.set_word(WordReg::AX, aw);
-        self.clk(43 + penalty);
+        self.clk(19 + penalty);
     }
 
     fn bound(&mut self, bus: &mut impl common::Bus) {
@@ -919,9 +949,9 @@ impl V30 {
         if val < low || val > high {
             let sp_pen = self.sp_penalty(3);
             self.raise_interrupt(5, bus);
-            self.clk(56 + ea_pen + sp_pen);
+            self.clk(33 + ea_pen + sp_pen);
         } else {
-            self.clk(18 + ea_pen);
+            self.clk(13 + ea_pen);
         }
     }
 
@@ -929,14 +959,14 @@ impl V30 {
         let penalty = self.sp_penalty(1);
         let val = self.fetchword(bus);
         self.push(bus, val);
-        self.clk(8 + penalty);
+        self.clk(3 + penalty);
     }
 
     fn push_imm8(&mut self, bus: &mut impl common::Bus) {
         let penalty = self.sp_penalty(1);
         let val = self.fetch(bus) as i8 as u16;
         self.push(bus, val);
-        self.clk(7 + penalty);
+        self.clk(3 + penalty);
     }
 
     fn imul_r16w_imm16(&mut self, bus: &mut impl common::Bus) {
@@ -952,7 +982,7 @@ impl V30 {
             0
         };
         self.flags.overflow_val = self.flags.carry_val;
-        self.clk_modrm_word(modrm, 42, 48, 1);
+        self.clk_modrm_word(modrm, 21, 24, 1);
     }
 
     fn imul_r16w_imm8(&mut self, bus: &mut impl common::Bus) {
@@ -968,16 +998,16 @@ impl V30 {
             0
         };
         self.flags.overflow_val = self.flags.carry_val;
-        self.clk_modrm_word(modrm, 34, 40, 1);
+        self.clk_modrm_word(modrm, 21, 24, 1);
     }
 
     fn jcc(&mut self, bus: &mut impl common::Bus, condition: bool) {
         let disp = self.fetch(bus) as i8;
         if condition {
             self.ip = self.ip.wrapping_add(disp as u16);
-            self.clk(14);
+            self.clk(7);
         } else {
-            self.clk(4);
+            self.clk(3);
         }
     }
 
@@ -985,9 +1015,9 @@ impl V30 {
         let disp = self.fetch(bus) as i8;
         if condition {
             self.ip = self.ip.wrapping_add(disp as u16);
-            self.clk(4);
+            self.clk(7);
         } else {
-            self.clk(14);
+            self.clk(3);
         }
     }
 
@@ -996,7 +1026,7 @@ impl V30 {
         let src = self.regs.byte(self.reg_byte(modrm));
         let dst = self.get_rm_byte(modrm, bus);
         self.alu_and_byte(dst, src);
-        self.clk_modrm(modrm, 2, 10);
+        self.clk_modrm(modrm, 2, 6);
     }
 
     fn test_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -1004,21 +1034,21 @@ impl V30 {
         let src = self.regs.word(self.reg_word(modrm));
         let dst = self.get_rm_word(modrm, bus);
         self.alu_and_word(dst, src);
-        self.clk_modrm_word(modrm, 2, 10, 1);
+        self.clk_modrm_word(modrm, 2, 6, 1);
     }
 
     fn test_al_imm8(&mut self, bus: &mut impl common::Bus) {
         let src = self.fetch(bus);
         let dst = self.regs.byte(ByteReg::AL);
         self.alu_and_byte(dst, src);
-        self.clk(4);
+        self.clk(3);
     }
 
     fn test_aw_imm16(&mut self, bus: &mut impl common::Bus) {
         let src = self.fetchword(bus);
         let dst = self.regs.word(WordReg::AX);
         self.alu_and_word(dst, src);
-        self.clk(4);
+        self.clk(3);
     }
 
     fn xchg_br8(&mut self, bus: &mut impl common::Bus) {
@@ -1028,7 +1058,7 @@ impl V30 {
         let rm_val = self.get_rm_byte(modrm, bus);
         self.regs.set_byte(reg, rm_val);
         self.putback_rm_byte(modrm, reg_val, bus);
-        self.clk_modrm(modrm, 3, 16);
+        self.clk_modrm(modrm, 3, 5);
     }
 
     fn xchg_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -1038,7 +1068,7 @@ impl V30 {
         let rm_val = self.get_rm_word(modrm, bus);
         self.regs.set_word(reg, rm_val);
         self.putback_rm_word(modrm, reg_val, bus);
-        self.clk_modrm_word(modrm, 3, 16, 2);
+        self.clk_modrm_word(modrm, 3, 5, 2);
     }
 
     fn xchg_aw(&mut self, reg: WordReg) {
@@ -1053,14 +1083,14 @@ impl V30 {
         let modrm = self.fetch(bus);
         let val = self.regs.byte(self.reg_byte(modrm));
         self.put_rm_byte(modrm, val, bus);
-        self.clk_modrm(modrm, 2, 9);
+        self.clk_modrm(modrm, 2, 3);
     }
 
     fn mov_wr16(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
         let val = self.regs.word(self.reg_word(modrm));
         self.put_rm_word(modrm, val, bus);
-        self.clk_modrm_word(modrm, 2, 9, 1);
+        self.clk_modrm_word(modrm, 2, 3, 1);
     }
 
     fn mov_r8b(&mut self, bus: &mut impl common::Bus) {
@@ -1068,7 +1098,7 @@ impl V30 {
         let val = self.get_rm_byte(modrm, bus);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, val);
-        self.clk_modrm(modrm, 2, 11);
+        self.clk_modrm(modrm, 2, 5);
     }
 
     fn mov_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -1076,7 +1106,7 @@ impl V30 {
         let val = self.get_rm_word(modrm, bus);
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, val);
-        self.clk_modrm_word(modrm, 2, 11, 1);
+        self.clk_modrm_word(modrm, 2, 5, 1);
     }
 
     fn mov_rm_sreg(&mut self, bus: &mut impl common::Bus) {
@@ -1084,7 +1114,7 @@ impl V30 {
         let seg = SegReg16::from_index((modrm >> 3) & 3);
         let val = self.sregs[seg as usize];
         self.put_rm_word(modrm, val, bus);
-        self.clk_modrm_word(modrm, 2, 10, 1);
+        self.clk_modrm_word(modrm, 2, 3, 1);
     }
 
     fn mov_sreg_rm(&mut self, bus: &mut impl common::Bus) {
@@ -1093,7 +1123,7 @@ impl V30 {
         let seg = SegReg16::from_index((modrm >> 3) & 3);
         self.sregs[seg as usize] = val;
         self.inhibit_all = 1;
-        self.clk_modrm_word(modrm, 2, 11, 1);
+        self.clk_modrm_word(modrm, 2, 5, 1);
     }
 
     fn lea(&mut self, bus: &mut impl common::Bus) {
@@ -1102,7 +1132,7 @@ impl V30 {
         let reg = self.reg_word(modrm);
         let val = self.eo;
         self.regs.set_word(reg, val);
-        self.clk(4);
+        self.clk(3);
     }
 
     fn pop_rm(&mut self, bus: &mut impl common::Bus) {
@@ -1111,10 +1141,10 @@ impl V30 {
         let val = self.pop(bus);
         self.put_rm_word(modrm, val, bus);
         if modrm >= 0xC0 {
-            self.clk(8 + sp_pen);
+            self.clk(5 + sp_pen);
         } else {
             let ea_pen = if self.ea & 1 == 1 { 4 } else { 0 };
-            self.clk(17 + sp_pen + ea_pen);
+            self.clk(5 + sp_pen + ea_pen);
         }
     }
 
@@ -1128,7 +1158,7 @@ impl V30 {
         let aw = self.regs.word(WordReg::AX) as i16;
         self.regs
             .set_word(WordReg::DX, if aw < 0 { 0xFFFF } else { 0 });
-        self.clk(5);
+        self.clk(2);
     }
 
     fn call_far(&mut self, bus: &mut impl common::Bus) {
@@ -1140,7 +1170,7 @@ impl V30 {
         self.push(bus, self.ip);
         self.ip = offset;
         self.sregs[SegReg16::CS as usize] = segment;
-        self.clk(21 + penalty);
+        self.clk(13 + penalty);
     }
 
     fn call_near(&mut self, bus: &mut impl common::Bus) {
@@ -1148,13 +1178,13 @@ impl V30 {
         let disp = self.fetchword(bus);
         self.push(bus, self.ip);
         self.ip = self.ip.wrapping_add(disp);
-        self.clk(16 + penalty);
+        self.clk(7 + penalty);
     }
 
     fn jmp_near(&mut self, bus: &mut impl common::Bus) {
         let disp = self.fetchword(bus);
         self.ip = self.ip.wrapping_add(disp);
-        self.clk(12);
+        self.clk(7);
     }
 
     fn jmp_far(&mut self, bus: &mut impl common::Bus) {
@@ -1162,19 +1192,19 @@ impl V30 {
         let segment = self.fetchword(bus);
         self.ip = offset;
         self.sregs[SegReg16::CS as usize] = segment;
-        self.clk(15);
+        self.clk(11);
     }
 
     fn jmp_short(&mut self, bus: &mut impl common::Bus) {
         let disp = self.fetch(bus) as i8 as u16;
         self.ip = self.ip.wrapping_add(disp);
-        self.clk(12);
+        self.clk(7);
     }
 
     fn ret_near(&mut self, bus: &mut impl common::Bus) {
         let penalty = self.sp_penalty(1);
         self.ip = self.pop(bus);
-        self.clk(15 + penalty);
+        self.clk(11 + penalty);
     }
 
     fn ret_near_imm(&mut self, bus: &mut impl common::Bus) {
@@ -1183,14 +1213,14 @@ impl V30 {
         self.ip = self.pop(bus);
         let sp = self.regs.word(WordReg::SP).wrapping_add(imm);
         self.regs.set_word(WordReg::SP, sp);
-        self.clk(20 + penalty);
+        self.clk(11 + penalty);
     }
 
     fn ret_far(&mut self, bus: &mut impl common::Bus) {
         let penalty = self.sp_penalty(2);
         self.ip = self.pop(bus);
         self.sregs[SegReg16::CS as usize] = self.pop(bus);
-        self.clk(21 + penalty);
+        self.clk(15 + penalty);
     }
 
     fn ret_far_imm(&mut self, bus: &mut impl common::Bus) {
@@ -1200,14 +1230,14 @@ impl V30 {
         self.sregs[SegReg16::CS as usize] = self.pop(bus);
         let sp = self.regs.word(WordReg::SP).wrapping_add(imm);
         self.regs.set_word(WordReg::SP, sp);
-        self.clk(24 + penalty);
+        self.clk(15 + penalty);
     }
 
     fn pushf(&mut self, bus: &mut impl common::Bus) {
         let penalty = self.sp_penalty(1);
         let flags_val = self.flags.compress();
         self.push(bus, flags_val);
-        self.clk(8 + penalty);
+        self.clk(3 + penalty);
     }
 
     fn popf(&mut self, bus: &mut impl common::Bus) {
@@ -1216,7 +1246,7 @@ impl V30 {
         let mf = self.flags.mf;
         self.flags.expand(val);
         self.flags.mf = mf;
-        self.clk(8 + penalty);
+        self.clk(5 + penalty);
     }
 
     fn sahf(&mut self) {
@@ -1226,7 +1256,7 @@ impl V30 {
         self.flags.aux_val = (ah & 0x10) as u32;
         self.flags.zero_val = if ah & 0x40 != 0 { 0 } else { 1 };
         self.flags.sign_val = if ah & 0x80 != 0 { -1 } else { 0 };
-        self.clk(3);
+        self.clk(2);
     }
 
     fn lahf(&mut self) {
@@ -1240,7 +1270,7 @@ impl V30 {
         let addr = self.default_base(SegReg16::DS).wrapping_add(offset as u32) & 0xFFFFF;
         let val = bus.read_byte(addr);
         self.regs.set_byte(ByteReg::AL, val);
-        self.clk(10);
+        self.clk(5);
     }
 
     fn mov_aw_moffs(&mut self, bus: &mut impl common::Bus) {
@@ -1251,14 +1281,14 @@ impl V30 {
         let val = self.seg_read_word(bus);
         self.regs.set_word(WordReg::AX, val);
         let penalty = if self.ea & 1 == 1 { 4 } else { 0 };
-        self.clk(10 + penalty);
+        self.clk(5 + penalty);
     }
 
     fn mov_moffs_al(&mut self, bus: &mut impl common::Bus) {
         let offset = self.fetchword(bus);
         let addr = self.default_base(SegReg16::DS).wrapping_add(offset as u32) & 0xFFFFF;
         bus.write_byte(addr, self.regs.byte(ByteReg::AL));
-        self.clk(9);
+        self.clk(3);
     }
 
     fn mov_moffs_aw(&mut self, bus: &mut impl common::Bus) {
@@ -1268,19 +1298,19 @@ impl V30 {
         self.ea = base.wrapping_add(offset as u32) & 0xFFFFF;
         self.seg_write_word(bus, self.regs.word(WordReg::AX));
         let penalty = if self.ea & 1 == 1 { 4 } else { 0 };
-        self.clk(9 + penalty);
+        self.clk(3 + penalty);
     }
 
     fn mov_byte_reg_imm(&mut self, reg: ByteReg, bus: &mut impl common::Bus) {
         let val = self.fetch(bus);
         self.regs.set_byte(reg, val);
-        self.clk(4);
+        self.clk(2);
     }
 
     fn mov_word_reg_imm(&mut self, reg: WordReg, bus: &mut impl common::Bus) {
         let val = self.fetchword(bus);
         self.regs.set_word(reg, val);
-        self.clk(4);
+        self.clk(2);
     }
 
     fn mov_rm_imm8(&mut self, bus: &mut impl common::Bus) {
@@ -1294,7 +1324,7 @@ impl V30 {
             let val = self.fetch(bus);
             bus.write_byte(self.ea, val);
         }
-        self.clk_modrm(modrm, 4, 11);
+        self.clk_modrm(modrm, 2, 3);
     }
 
     fn mov_rm_imm16(&mut self, bus: &mut impl common::Bus) {
@@ -1308,7 +1338,7 @@ impl V30 {
             let val = self.fetchword(bus);
             self.seg_write_word(bus, val);
         }
-        self.clk_modrm_word(modrm, 4, 11, 1);
+        self.clk_modrm_word(modrm, 2, 3, 1);
     }
 
     fn les(&mut self, bus: &mut impl common::Bus) {
@@ -1320,7 +1350,7 @@ impl V30 {
         self.regs.set_word(reg, offset);
         self.sregs[SegReg16::ES as usize] = segment;
         let penalty = if self.ea & 1 == 1 { 8 } else { 0 };
-        self.clk(18 + penalty);
+        self.clk(3 + penalty);
     }
 
     fn lds(&mut self, bus: &mut impl common::Bus) {
@@ -1332,7 +1362,7 @@ impl V30 {
         self.regs.set_word(reg, offset);
         self.sregs[SegReg16::DS as usize] = segment;
         let penalty = if self.ea & 1 == 1 { 8 } else { 0 };
-        self.clk(18 + penalty);
+        self.clk(3 + penalty);
     }
 
     fn enter(&mut self, bus: &mut impl common::Bus) {
@@ -1356,10 +1386,11 @@ impl V30 {
         let sp = self.regs.word(WordReg::SP).wrapping_sub(alloc);
         self.regs.set_word(WordReg::SP, sp);
         if level == 0 {
-            self.clk(12 + sp_pen);
+            self.clk(11 + sp_pen);
+        } else if level == 1 {
+            self.clk(15 + sp_pen);
         } else {
-            let l = level as i32;
-            self.clk(19 + 8 * (l - 1) + sp_pen);
+            self.clk(12 + 4 * level as i32 + sp_pen);
         }
     }
 
@@ -1369,29 +1400,29 @@ impl V30 {
         let penalty = self.sp_penalty(1);
         let val = self.pop(bus);
         self.regs.set_word(WordReg::BP, val);
-        self.clk(6 + penalty);
+        self.clk(5 + penalty);
     }
 
     fn int3(&mut self, bus: &mut impl common::Bus) {
         let penalty = self.sp_penalty(3);
         self.raise_interrupt(3, bus);
-        self.clk(38 + penalty);
+        self.clk(23 + penalty);
     }
 
     fn int_imm(&mut self, bus: &mut impl common::Bus) {
         let penalty = self.sp_penalty(3);
         let vector = self.fetch(bus);
         self.raise_interrupt(vector, bus);
-        self.clk(38 + penalty);
+        self.clk(23 + penalty);
     }
 
     fn into(&mut self, bus: &mut impl common::Bus) {
         if self.flags.of() {
             let penalty = self.sp_penalty(3);
             self.raise_interrupt(4, bus);
-            self.clk(40 + penalty);
+            self.clk(24 + penalty);
         } else {
-            self.clk(3);
+            self.clk(4);
         }
     }
 
@@ -1403,7 +1434,7 @@ impl V30 {
         let mf = self.flags.mf;
         self.flags.expand(flags_val);
         self.flags.mf = mf;
-        self.clk(27 + penalty);
+        self.clk(31 + penalty);
     }
 
     fn loopne(&mut self, bus: &mut impl common::Bus) {
@@ -1412,9 +1443,9 @@ impl V30 {
         self.regs.set_word(WordReg::CX, cw);
         if cw != 0 && !self.flags.zf() {
             self.ip = self.ip.wrapping_add(disp);
-            self.clk(14);
+            self.clk(8);
         } else {
-            self.clk(5);
+            self.clk(4);
         }
     }
 
@@ -1424,9 +1455,9 @@ impl V30 {
         self.regs.set_word(WordReg::CX, cw);
         if cw != 0 && self.flags.zf() {
             self.ip = self.ip.wrapping_add(disp);
-            self.clk(14);
+            self.clk(8);
         } else {
-            self.clk(5);
+            self.clk(4);
         }
     }
 
@@ -1436,9 +1467,9 @@ impl V30 {
         self.regs.set_word(WordReg::CX, cw);
         if cw != 0 {
             self.ip = self.ip.wrapping_add(disp);
-            self.clk(13);
+            self.clk(8);
         } else {
-            self.clk(5);
+            self.clk(4);
         }
     }
 
@@ -1446,9 +1477,9 @@ impl V30 {
         let disp = self.fetch(bus) as i8 as u16;
         if self.regs.word(WordReg::CX) == 0 {
             self.ip = self.ip.wrapping_add(disp);
-            self.clk(13);
+            self.clk(8);
         } else {
-            self.clk(5);
+            self.clk(4);
         }
     }
 
@@ -1456,7 +1487,7 @@ impl V30 {
         let port = self.fetch(bus) as u16;
         let val = bus.io_read_byte(port);
         self.regs.set_byte(ByteReg::AL, val);
-        self.clk(9);
+        self.clk(5);
     }
 
     fn in_aw_imm(&mut self, bus: &mut impl common::Bus) {
@@ -1464,14 +1495,14 @@ impl V30 {
         let val = bus.io_read_word(port);
         self.regs.set_word(WordReg::AX, val);
         let port_penalty = if port & 1 == 1 { 4 } else { 0 };
-        self.clk(9 + port_penalty);
+        self.clk(5 + port_penalty);
     }
 
     fn out_imm_al(&mut self, bus: &mut impl common::Bus) {
         let port = self.fetch(bus) as u16;
         let val = self.regs.byte(ByteReg::AL);
         bus.io_write_byte(port, val);
-        self.clk(8);
+        self.clk(3);
     }
 
     fn out_imm_aw(&mut self, bus: &mut impl common::Bus) {
@@ -1479,14 +1510,14 @@ impl V30 {
         let val = self.regs.word(WordReg::AX);
         bus.io_write_word(port, val);
         let port_penalty = if port & 1 == 1 { 4 } else { 0 };
-        self.clk(8 + port_penalty);
+        self.clk(3 + port_penalty);
     }
 
     fn in_al_dw(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
         let val = bus.io_read_byte(port);
         self.regs.set_byte(ByteReg::AL, val);
-        self.clk(8);
+        self.clk(5);
     }
 
     fn in_aw_dw(&mut self, bus: &mut impl common::Bus) {
@@ -1494,14 +1525,14 @@ impl V30 {
         let val = bus.io_read_word(port);
         self.regs.set_word(WordReg::AX, val);
         let port_penalty = if port & 1 == 1 { 4 } else { 0 };
-        self.clk(8 + port_penalty);
+        self.clk(5 + port_penalty);
     }
 
     fn out_dw_al(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
         let val = self.regs.byte(ByteReg::AL);
         bus.io_write_byte(port, val);
-        self.clk(8);
+        self.clk(3);
     }
 
     fn out_dw_aw(&mut self, bus: &mut impl common::Bus) {
@@ -1509,7 +1540,7 @@ impl V30 {
         let val = self.regs.word(WordReg::AX);
         bus.io_write_word(port, val);
         let port_penalty = if port & 1 == 1 { 4 } else { 0 };
-        self.clk(8 + port_penalty);
+        self.clk(3 + port_penalty);
     }
 
     fn xlat(&mut self, bus: &mut impl common::Bus) {
@@ -1521,7 +1552,7 @@ impl V30 {
             & 0xFFFFF;
         let val = bus.read_byte(addr);
         self.regs.set_byte(ByteReg::AL, val);
-        self.clk(9);
+        self.clk(5);
     }
 
     fn daa(&mut self, _bus: &mut impl common::Bus) {
@@ -1563,7 +1594,7 @@ impl V30 {
         }
         self.regs.set_byte(ByteReg::AL, al);
         self.flags.set_szpf_byte(al as u32);
-        self.clk(7);
+        self.clk(3);
     }
 
     fn aaa(&mut self, _bus: &mut impl common::Bus) {
@@ -1597,7 +1628,7 @@ impl V30 {
             self.flags.aux_val = 0;
             self.flags.carry_val = 0;
         }
-        self.clk(7);
+        self.clk(3);
     }
 
     fn aam(&mut self, bus: &mut impl common::Bus) {
@@ -1606,7 +1637,7 @@ impl V30 {
             self.regs.set_byte(ByteReg::AH, 0xFF);
             let val = self.regs.byte(ByteReg::AL) as u32;
             self.flags.set_szpf_byte(val);
-            self.clk(15);
+            self.clk(16);
             return;
         }
         let al = self.regs.byte(ByteReg::AL);
@@ -1614,7 +1645,7 @@ impl V30 {
         self.regs.set_byte(ByteReg::AL, al % base);
         let val = self.regs.byte(ByteReg::AL) as u32;
         self.flags.set_szpf_byte(val);
-        self.clk(15);
+        self.clk(16);
     }
 
     fn aad(&mut self, bus: &mut impl common::Bus) {
@@ -1625,18 +1656,15 @@ impl V30 {
         self.regs.set_byte(ByteReg::AL, result);
         self.regs.set_byte(ByteReg::AH, 0);
         self.flags.set_szpf_byte(result as u32);
-        self.clk(7);
+        self.clk(14);
     }
 
     fn fpu_escape(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
         if modrm < 0xC0 {
             self.calc_ea(modrm, bus);
-            let penalty = if self.ea & 1 == 1 { 4 } else { 0 };
-            self.clk(11 + penalty);
-        } else {
-            self.clk(2);
         }
+        self.clk(2);
     }
 
     fn clc(&mut self) {

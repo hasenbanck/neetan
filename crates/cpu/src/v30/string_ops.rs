@@ -21,7 +21,7 @@ impl V30 {
         self.regs.set_word(WordReg::SI, si.wrapping_add(delta));
         let delta = self.direction_delta();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        self.clk(8);
+        self.clk(4);
     }
 
     pub(super) fn movsw(&mut self, bus: &mut impl common::Bus) {
@@ -35,8 +35,7 @@ impl V30 {
         self.regs.set_word(WordReg::SI, si.wrapping_add(delta));
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        let penalty = if si & 1 == 1 || di & 1 == 1 { 8 } else { 0 };
-        self.clk(8 + penalty);
+        self.clk(4);
     }
 
     pub(super) fn cmpsb(&mut self, bus: &mut impl common::Bus) {
@@ -51,7 +50,7 @@ impl V30 {
         self.regs.set_word(WordReg::SI, si.wrapping_add(delta));
         let delta = self.direction_delta();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        self.clk(14);
+        self.clk(9);
     }
 
     pub(super) fn cmpsw(&mut self, bus: &mut impl common::Bus) {
@@ -66,8 +65,7 @@ impl V30 {
         self.regs.set_word(WordReg::SI, si.wrapping_add(delta));
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        let penalty = if si & 1 == 1 || di & 1 == 1 { 8 } else { 0 };
-        self.clk(14 + penalty);
+        self.clk(9);
     }
 
     pub(super) fn stosb(&mut self, bus: &mut impl common::Bus) {
@@ -76,7 +74,7 @@ impl V30 {
         bus.write_byte(addr, self.regs.byte(ByteReg::AL));
         let delta = self.direction_delta();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        self.clk(4);
+        self.clk(3);
     }
 
     pub(super) fn stosw(&mut self, bus: &mut impl common::Bus) {
@@ -85,8 +83,7 @@ impl V30 {
         self.write_word_seg(bus, base, di, self.regs.word(WordReg::AX));
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        let penalty = if di & 1 == 1 { 4 } else { 0 };
-        self.clk(4 + penalty);
+        self.clk(3);
     }
 
     pub(super) fn lodsb(&mut self, bus: &mut impl common::Bus) {
@@ -96,7 +93,7 @@ impl V30 {
         self.regs.set_byte(ByteReg::AL, val);
         let delta = self.direction_delta();
         self.regs.set_word(WordReg::SI, si.wrapping_add(delta));
-        self.clk(9);
+        self.clk(4);
     }
 
     pub(super) fn lodsw(&mut self, bus: &mut impl common::Bus) {
@@ -106,8 +103,7 @@ impl V30 {
         self.regs.set_word(WordReg::AX, val);
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::SI, si.wrapping_add(delta));
-        let penalty = if si & 1 == 1 { 4 } else { 0 };
-        self.clk(9 + penalty);
+        self.clk(4);
     }
 
     pub(super) fn scasb(&mut self, bus: &mut impl common::Bus) {
@@ -118,7 +114,7 @@ impl V30 {
         self.alu_sub_byte(al, dst);
         let delta = self.direction_delta();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        self.clk(10);
+        self.clk(8);
     }
 
     pub(super) fn scasw(&mut self, bus: &mut impl common::Bus) {
@@ -129,8 +125,7 @@ impl V30 {
         self.alu_sub_word(aw, dst);
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        let penalty = if di & 1 == 1 { 4 } else { 0 };
-        self.clk(10 + penalty);
+        self.clk(8);
     }
 
     pub(super) fn insb(&mut self, bus: &mut impl common::Bus) {
@@ -141,7 +136,7 @@ impl V30 {
         bus.write_byte(addr, val);
         let delta = self.direction_delta();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        self.clk(8);
+        self.clk(4);
     }
 
     pub(super) fn insw(&mut self, bus: &mut impl common::Bus) {
@@ -152,8 +147,7 @@ impl V30 {
         self.write_word_seg(bus, base, di, val);
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        let penalty = if di & 1 == 1 { 8 } else { 0 };
-        self.clk(8 + penalty);
+        self.clk(4);
     }
 
     pub(super) fn outsb(&mut self, bus: &mut impl common::Bus) {
@@ -164,7 +158,7 @@ impl V30 {
         bus.io_write_byte(port, val);
         let delta = self.direction_delta();
         self.regs.set_word(WordReg::SI, si.wrapping_add(delta));
-        self.clk(8);
+        self.clk(4);
     }
 
     pub(super) fn outsw(&mut self, bus: &mut impl common::Bus) {
@@ -175,7 +169,6 @@ impl V30 {
         bus.io_write_word(port, val);
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::SI, si.wrapping_add(delta));
-        let penalty = if si & 1 == 1 { 8 } else { 0 };
-        self.clk(8 + penalty);
+        self.clk(4);
     }
 }
