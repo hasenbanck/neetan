@@ -263,7 +263,7 @@ impl Controller {
         }
         let byte = self.read_data_byte(drives);
         let action = if self.phase != SasiPhase::Read {
-            // Phase changed — either completed or errored, schedule completion.
+            // Phase changed - either completed or errored, schedule completion.
             SasiAction::ScheduleCompletion
         } else {
             SasiAction::None
@@ -629,12 +629,12 @@ mod tests {
         controller.complete_operation();
         assert_eq!(controller.phase(), SasiPhase::Status);
 
-        // Read status — should be 0x00 (success).
+        // Read status - should be 0x00 (success).
         let status = controller.read_data(&drives);
         assert_eq!(status, 0x00);
         assert_eq!(controller.phase(), SasiPhase::Message);
 
-        // Read message — returns to Free.
+        // Read message - returns to Free.
         controller.read_data(&drives);
         assert_eq!(controller.phase(), SasiPhase::Free);
     }
@@ -814,7 +814,7 @@ mod tests {
         let controller = Controller::new();
         let drives = make_drives(Some(make_test_drive()));
 
-        // Read without NRDSW — should return capacity indicators.
+        // Read without NRDSW - should return capacity indicators.
         let mut ctrl = controller;
         ctrl.output_control = 0; // NRDSW = 0
         let status = ctrl.read_status(&drives);
@@ -913,7 +913,7 @@ mod tests {
         let should_irq = controller.complete_operation();
         assert!(should_irq);
 
-        // Read status register — interrupt pending should be set.
+        // Read status register - interrupt pending should be set.
         let status = controller.read_status(&drives);
         assert_ne!(status & ISR_INT, 0);
 

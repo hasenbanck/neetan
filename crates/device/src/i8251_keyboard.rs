@@ -51,20 +51,20 @@ const STATUS_ALWAYS_ON: u8 = STATUS_TXRDY | STATUS_TXEMPTY | STATUS_DSR;
 /// Ref: undoc98 `io_kb.txt` port 0x43 command bit 4
 const STATUS_ERROR_MASK: u8 = STATUS_PE | STATUS_OE | STATUS_FE;
 
-/// Command register bit: Transmit Enable — enables sending commands to the keyboard.
+/// Command register bit: Transmit Enable - enables sending commands to the keyboard.
 /// Ref: undoc98 `io_kb.txt` port 0x43 command bit 0
 const CMD_TXEN: u8 = 1 << 0;
 
-/// Command register bit: Send Break — controls RST# signal to keyboard.
+/// Command register bit: Send Break - controls RST# signal to keyboard.
 /// Falling edge (1->0) triggers keyboard reset.
 /// Ref: undoc98 `io_kb.txt` port 0x43 command bit 3
 const CMD_SBRK: u8 = 1 << 3;
 
-/// Command register bit: Error Reset — clears FE, OE, PE in status.
+/// Command register bit: Error Reset - clears FE, OE, PE in status.
 /// Ref: undoc98 `io_kb.txt` port 0x43 command bit 4
 const CMD_ER: u8 = 1 << 4;
 
-/// Command register bit: Internal Reset — next write becomes a mode word.
+/// Command register bit: Internal Reset - next write becomes a mode word.
 /// Ref: undoc98 `io_kb.txt` port 0x43 command bit 6
 const CMD_IR: u8 = 1 << 6;
 

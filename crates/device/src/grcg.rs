@@ -1,4 +1,4 @@
-//! GRCG (Graphic Charger) — hardware tile/ROP engine for VRAM.
+//! GRCG (Graphic Charger) - hardware tile/ROP engine for VRAM.
 //!
 //! Port 0x7C W: mode register (resets tile index).
 //! Port 0x7E W: tile data (cycles through 4 planes).

@@ -39,9 +39,9 @@ pub const PIT_FLAG_I: u8 = 0x20;
 pub enum WriteResult {
     /// Caller should skip event scheduling (incomplete word write or mode 1 inhibit).
     Skip,
-    /// First load after a control word — always takes effect immediately.
+    /// First load after a control word - always takes effect immediately.
     InitialLoad,
-    /// Reload while already counting — in modes 2/3, should be deferred.
+    /// Reload while already counting - in modes 2/3, should be deferred.
     SubsequentLoad,
 }
 
@@ -490,8 +490,8 @@ fn get_count(
         3 => {
             // Square wave: counting element decrements by 2 per PIT tick.
             // For odd reload values, the 8253 uses asymmetric half-periods:
-            //   HIGH half: (N+1)/2 ticks — first tick decrements by 1, then by 2
-            //   LOW  half: (N-1)/2 ticks — first tick decrements by 3, then by 2
+            //   HIGH half: (N+1)/2 ticks - first tick decrements by 1, then by 2
+            //   LOW  half: (N-1)/2 ticks - first tick decrements by 3, then by 2
             // For even values both halves are N/2 ticks, decrement by 2 throughout.
             let is_odd = period & 1 != 0;
             let high_half = period.div_ceil(2);

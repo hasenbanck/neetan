@@ -212,15 +212,34 @@ impl AtapiState {
         self.data_position >= self.data_size
     }
 
-    /// Returns the current transfer size (clamped to byte_count_limit).
+    /// Returns the current transfer size per DRQ assertion.
+    ///
+    /// For multi-sector reads (data aligned to CD sector boundaries), real
+    /// ATAPI CD-ROM drives deliver one sector (2048 bytes) per DRQ assertion.
+    /// For other responses the full data is delivered up to byte_count_limit.
     pub(super) fn current_transfer_size(&self) -> u16 {
         let remaining = (self.data_size - self.data_position) as u16;
-        remaining.min(self.byte_count_limit)
+        remaining.min(self.effective_chunk_size())
     }
 
-    /// Returns true if the current chunk (byte_count_limit bytes) has been fully read.
+    /// Returns true if the current DRQ chunk has been fully read by the host.
     pub(super) fn chunk_complete(&self) -> bool {
-        self.chunk_position >= self.byte_count_limit as usize
+        self.chunk_position >= self.effective_chunk_size() as usize
+    }
+
+    /// Computes the effective chunk size for the current transfer.
+    ///
+    /// Multi-sector CD reads (data_size is a multiple of 2048 and spans more
+    /// than one sector) use per-sector DRQ delivery. All other transfers use
+    /// the host's byte_count_limit.
+    fn effective_chunk_size(&self) -> u16 {
+        let is_multi_sector_read =
+            self.data_size > CDROM_SECTOR_SIZE && self.data_size.is_multiple_of(CDROM_SECTOR_SIZE);
+        if is_multi_sector_read {
+            (CDROM_SECTOR_SIZE as u16).min(self.byte_count_limit)
+        } else {
+            self.byte_count_limit
+        }
     }
 
     /// Resets the chunk position for the next chunk transfer.
@@ -488,7 +507,7 @@ impl AtapiState {
         let allocation_length = u16::from(self.packet[7]) << 8 | u16::from(self.packet[8]);
 
         if sub_q && format == 0x01 {
-            // Format 0x01: Current Position — return 16-byte response.
+            // Format 0x01: Current Position - return 16-byte response.
             self.data_buffer.clear();
             self.data_buffer.resize(16, 0);
             self.data_buffer[0] = 0x00; // Reserved.

@@ -38,7 +38,7 @@ const USER_CHAR_VALUE: u16 = 0x0056;
 /// KAC code-access bank offset used for the CG window path.
 const KAC_CODE_ACCESS_OFFSET: usize = 0x1000;
 
-/// Default "low" address for the CG window — points to an inert region
+/// Default "low" address for the CG window - points to an inert region
 /// near the end of font ROM (reads return whatever is there, effectively 0).
 const CG_WINDOW_DEFAULT_LOW: usize = 0x7FFF0;
 
@@ -179,7 +179,7 @@ impl Cgrom {
             let mut writable = false;
 
             if (0x56..0x58).contains(&low_byte) {
-                // User-definable characters — writable.
+                // User-definable characters - writable.
                 writable = true;
                 high += self.state.lr as usize;
             } else if (0x09..0x0C).contains(&low_byte) {

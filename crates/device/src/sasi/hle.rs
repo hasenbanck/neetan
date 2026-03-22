@@ -1,4 +1,4 @@
-//! SASI High-Level Emulation (HLE) — controller-specific functions.
+//! SASI High-Level Emulation (HLE) - controller-specific functions.
 //!
 //! Shared HLE functions (read, write, init, format, etc.) live in
 //! `crate::disk_hle`. This module contains only the SASI-specific

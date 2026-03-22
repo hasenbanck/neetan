@@ -1,28 +1,28 @@
-//! i8255 System PPI — system configuration and control ports.
+//! i8255 System PPI - system configuration and control ports.
 //!
 //! Port B (0x42, read): system configuration status.
 //! Port C (0x35 R/W, 0x37 W BSR): system control bits.
 //! DIP switch 2 (0x31, read): boot/memory configuration.
 
-/// Port B bit 7: SELECT# — printer select signal, active low.
+/// Port B bit 7: SELECT# - printer select signal, active low.
 /// 1 = no printer selected (active low).
 const PORT_B_SELECT: u8 = 0x80;
 
-/// Port B bit 5: MOD — system clock lineage.
+/// Port B bit 5: MOD - system clock lineage.
 /// 1 = 8 MHz series (timer 2.0 MHz), 0 = 5/10 MHz series (timer 2.5 MHz).
 /// Ref: undoc98 `io_prn.txt` (I/O 0042h bit 5)
 const PORT_B_CLOCK_8MHZ: u8 = 0x20;
 
-/// Port B bit 4: LCD — mirrors DIP SW 1-3 (plasma display).
+/// Port B bit 4: LCD - mirrors DIP SW 1-3 (plasma display).
 /// Ref: undoc98 `io_prn.txt` (I/O 0042h bit 4)
 const _PORT_B_LCD: u8 = 0x10;
 
-/// Port B bit 3: HGC — mirrors DIP SW 1-8 (graphics extension).
+/// Port B bit 3: HGC - mirrors DIP SW 1-8 (graphics extension).
 /// 1 = basic mode (OFF), 0 = expanded mode (ON).
 /// Ref: undoc98 `io_prn.txt` (I/O 0042h bit 3)
 const PORT_B_GRAPHICS_EXT: u8 = 0x08;
 
-/// Port B bit 1: CPUT — CPU type.
+/// Port B bit 1: CPUT - CPU type.
 /// 1 = V30/V33, 0 = 8086/80286/80386 or later.
 /// Ref: undoc98 `io_prn.txt` (I/O 0042h bit 1)
 const PORT_B_CPU_V30: u8 = 0x02;
@@ -38,35 +38,35 @@ const PORT_B_BASE_10MHZ: u8 = PORT_B_SELECT;
 /// Ref: undoc98 `io_prn.txt` (I/O 0042h)
 const PORT_B_BASE_8MHZ: u8 = PORT_B_SELECT | PORT_B_CLOCK_8MHZ;
 
-/// Port C bit 7: SHUT0 — shutdown flag 0 (286+ machines).
+/// Port C bit 7: SHUT0 - shutdown flag 0 (286+ machines).
 /// Ref: undoc98 `io_syste.txt` (I/O 0035h bit 7)
 const PORT_C_SHUT0: u8 = 0x80;
 
-/// Port C bit 6: PSTBM — printer PSTB# signal mask.
+/// Port C bit 6: PSTBM - printer PSTB# signal mask.
 /// Ref: undoc98 `io_syste.txt` (I/O 0035h bit 6)
 const PORT_C_PSTBM: u8 = 0x40;
 
-/// Port C bit 5: SHUT1 — shutdown flag 1 (286+ machines).
+/// Port C bit 5: SHUT1 - shutdown flag 1 (286+ machines).
 /// Ref: undoc98 `io_syste.txt` (I/O 0035h bit 5)
 const PORT_C_SHUT1: u8 = 0x20;
 
-/// Port C bit 4: MCHKEN — RAM parity check enable.
+/// Port C bit 4: MCHKEN - RAM parity check enable.
 /// Ref: undoc98 `io_syste.txt` (I/O 0035h bit 4)
 const PORT_C_MCHKEN: u8 = 0x10;
 
-/// Port C bit 3: BUZ — internal beeper (1 = stop, 0 = sound).
+/// Port C bit 3: BUZ - internal beeper (1 = stop, 0 = sound).
 /// Ref: undoc98 `io_syste.txt` (I/O 0035h bit 3)
 const PORT_C_BUZ_STOP: u8 = 0x08;
 
-/// Port C bit 2: TXRE — RS-232C TXRDY interrupt enable.
+/// Port C bit 2: TXRE - RS-232C TXRDY interrupt enable.
 /// Ref: undoc98 `io_syste.txt` (I/O 0035h bit 2)
 const _PORT_C_TXRE: u8 = 0x04;
 
-/// Port C bit 1: TXEE — RS-232C TXEMPTY interrupt enable.
+/// Port C bit 1: TXEE - RS-232C TXEMPTY interrupt enable.
 /// Ref: undoc98 `io_syste.txt` (I/O 0035h bit 1)
 const _PORT_C_TXEE: u8 = 0x02;
 
-/// Port C bit 0: RXRE — RS-232C RXRDY interrupt enable.
+/// Port C bit 0: RXRE - RS-232C RXRDY interrupt enable.
 /// Ref: undoc98 `io_syste.txt` (I/O 0035h bit 0)
 const PORT_C_RXRE: u8 = 0x01;
 
@@ -138,29 +138,29 @@ const DIPSW2_DEFAULT: u8 = DIPSW2_SYSTEM_SPEC
 /// Snapshot of the system PPI state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct I8255SystemPpiState {
-    /// Port B — system configuration status (read-only via port 0x42).
+    /// Port B - system configuration status (read-only via port 0x42).
     ///
     /// Bit layout (reference: `undoc98/io_prn.txt`):
-    ///   bit 7: SELECT# — printer select signal, active low (1 = no printer selected)
+    ///   bit 7: SELECT# - printer select signal, active low (1 = no printer selected)
     ///   bit 6: unused (0)
-    ///   bit 5: CPU clock lineage — 1 = 8MHz series, 0 = 5/10MHz series
-    ///   bit 4: LCD mode — mirrors DIP SW 1-3
-    ///   bit 3: GFX extension — mirrors DIP SW 1-8
-    ///   bit 2: BUSY# — printer busy signal, active low (1 = printer not busy)
-    ///   bit 1: CPU type — 1 = V30/V33, 0 = 8086/80286/80386 or later
-    ///   bit 0: VF flag — 1 = PC-9801VF/U variant
+    ///   bit 5: CPU clock lineage - 1 = 8MHz series, 0 = 5/10MHz series
+    ///   bit 4: LCD mode - mirrors DIP SW 1-3
+    ///   bit 3: GFX extension - mirrors DIP SW 1-8
+    ///   bit 2: BUSY# - printer busy signal, active low (1 = printer not busy)
+    ///   bit 1: CPU type - 1 = V30/V33, 0 = 8086/80286/80386 or later
+    ///   bit 0: VF flag - 1 = PC-9801VF/U variant
     pub port_b: u8,
-    /// Port C — system control (read/write via port 0x35, BSR via port 0x37).
+    /// Port C - system control (read/write via port 0x35, BSR via port 0x37).
     ///
     /// Bit layout (reference: `undoc98/io_syste.txt`):
-    ///   bit 7: SHUT0 — shutdown flag 0
-    ///   bit 6: PSTBM — printer PSTB# signal mask
-    ///   bit 5: SHUT1 — shutdown flag 1
-    ///   bit 4: MCHKEN — RAM parity check enable
-    ///   bit 3: BUZ — internal beeper (1 = stop, 0 = sound)
-    ///   bit 2: TXRE — RS-232C TXRDY interrupt enable
-    ///   bit 1: TXEE — RS-232C TXEMPTY interrupt enable
-    ///   bit 0: RXRE — RS-232C RXRDY interrupt enable
+    ///   bit 7: SHUT0 - shutdown flag 0
+    ///   bit 6: PSTBM - printer PSTB# signal mask
+    ///   bit 5: SHUT1 - shutdown flag 1
+    ///   bit 4: MCHKEN - RAM parity check enable
+    ///   bit 3: BUZ - internal beeper (1 = stop, 0 = sound)
+    ///   bit 2: TXRE - RS-232C TXRDY interrupt enable
+    ///   bit 1: TXEE - RS-232C TXEMPTY interrupt enable
+    ///   bit 0: RXRE - RS-232C RXRDY interrupt enable
     pub port_c: u8,
     /// DIP switch 2 register (read-only via port 0x31).
     ///
@@ -180,9 +180,9 @@ pub struct I8255SystemPpiState {
     /// RS-232C modem signals (bits 7-5 of port 0x33).
     ///
     /// Bit layout:
-    ///   bit 7: CI#  — Carrier In (1=inactive/no modem)
-    ///   bit 6: CS#  — Clear to Send (1=inactive/no modem)
-    ///   bit 5: CD#  — Carrier Detect (1=inactive/no modem)
+    ///   bit 7: CI#  - Carrier In (1=inactive/no modem)
+    ///   bit 6: CS#  - Clear to Send (1=inactive/no modem)
+    ///   bit 5: CD#  - Carrier Detect (1=inactive/no modem)
     ///
     /// Default `0xE0`: all lines inactive (no modem attached).
     /// Ref: undoc98 `io_syste.txt`
@@ -246,7 +246,7 @@ impl I8255SystemPpi {
 
     /// Writes the control register (port 0x37).
     ///
-    /// Bit 7 = 1: mode set command — resets all port C output bits to 0.
+    /// Bit 7 = 1: mode set command - resets all port C output bits to 0.
     /// Bit 7 = 0: BSR (bit set/reset) on port C.
     /// Ref: undoc98 `io_syste.txt` (I/O 0037h)
     pub fn write_control(&mut self, value: u8) {
@@ -272,21 +272,21 @@ impl I8255SystemPpi {
     /// Composite register combining RS-232C modem signals, CRT type, and other system bits.
     ///
     /// Bit layout (reference: undoc98 `io_syste.txt`):
-    ///   bit 7: CI#   — RS-232C Carrier In (1=inactive/no modem)
-    ///   bit 6: CS#   — RS-232C Clear to Send (1=inactive/no modem)
-    ///   bit 5: CD#   — RS-232C Carrier Detect (1=inactive/no modem)
-    ///   bit 4: INT3  — Expansion bus INT3 signal (0=inactive)
-    ///   bit 3: CRTT  — CRT type from DIP SW 1-1 (1=standard-res)
-    ///   bit 2: IMCK  — Built-in RAM parity error (0=none)
-    ///   bit 1: EMCK  — Extended slot parity error (0=none)
-    ///   bit 0: CDAT  — µPD4990A RTC calendar clock serial data out
+    ///   bit 7: CI#   - RS-232C Carrier In (1=inactive/no modem)
+    ///   bit 6: CS#   - RS-232C Clear to Send (1=inactive/no modem)
+    ///   bit 5: CD#   - RS-232C Carrier Detect (1=inactive/no modem)
+    ///   bit 4: INT3  - Expansion bus INT3 signal (0=inactive)
+    ///   bit 3: CRTT  - CRT type from DIP SW 1-1 (1=standard-res)
+    ///   bit 2: IMCK  - Built-in RAM parity error (0=none)
+    ///   bit 1: EMCK  - Extended slot parity error (0=none)
+    ///   bit 0: CDAT  - µPD4990A RTC calendar clock serial data out
     pub fn read_rs232c_status(&self) -> u8 {
         let mut value = self.state.rs232c_modem_signals & 0xE0;
         if self.state.crtt {
             value |= 0x08;
         }
         // Bit 0 (CDAT): composed by the bus from the µPD4990A RTC.
-        // Bits 4, 2, 1: INT3/IMCK/EMCK — always 0 (no expansion bus interrupt, no parity errors).
+        // Bits 4, 2, 1: INT3/IMCK/EMCK - always 0 (no expansion bus interrupt, no parity errors).
         value
     }
 

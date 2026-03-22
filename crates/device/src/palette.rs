@@ -1,4 +1,4 @@
-//! Palette registers — digital (8-color) and analog (16-color) modes.
+//! Palette registers - digital (8-color) and analog (16-color) modes.
 //!
 //! In digital mode (mode2 bit 0 = 0), ports 0xA8/AA/AC/AE store
 //! packed nibble pairs directly.

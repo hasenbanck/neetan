@@ -1,4 +1,4 @@
-//! NEC uPD52611 CRTC — CRT text line/scroll controller.
+//! NEC uPD52611 CRTC - CRT text line/scroll controller.
 //!
 //! Write-only registers at ports 0x70/0x72/0x74/0x76/0x78/0x7A.
 //! Index 0=PL (lines per character row), 1=BL (body face line count),

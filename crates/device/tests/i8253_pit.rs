@@ -296,11 +296,11 @@ fn write_counter_clears_stat_cmd() {
     pit.write_control(0, 0x34, 0, CPU_HZ, PIT_HZ);
     assert_ne!(pit.channels[0].ctrl & 0x40, 0);
 
-    // Write LSB — PIT_STAT_CMD still set (incomplete word write).
+    // Write LSB - PIT_STAT_CMD still set (incomplete word write).
     pit.write_counter(0, 0x64);
     assert_ne!(pit.channels[0].ctrl & 0x40, 0);
 
-    // Write MSB — PIT_STAT_CMD cleared.
+    // Write MSB - PIT_STAT_CMD cleared.
     pit.write_counter(0, 0x00);
     assert_eq!(pit.channels[0].ctrl & 0x40, 0);
 
@@ -609,7 +609,7 @@ fn live_count_toggle_alternation() {
     pit.write_counter(0, 0x12);
     pit.channels[0].last_load_cycle = 0;
 
-    // No latch — reads toggle between low and high bytes.
+    // No latch - reads toggle between low and high bytes.
     assert_eq!(pit.channels[0].flag & 0x10, 0); // PIT_FLAG_C clear
 
     let low1 = pit.read_counter(0, 0, CPU_HZ, PIT_HZ);
@@ -1070,7 +1070,7 @@ fn bcd_schedule_timer0() {
 fn write_result_initial_vs_subsequent() {
     let mut pit = I8253Pit::new_zeroed();
 
-    // Mode 2, word access — first load
+    // Mode 2, word access - first load
     pit.write_control(0, 0x34, 0, CPU_HZ, PIT_HZ);
     pit.write_counter(0, 0xE8); // LSB → Skip
     let result = pit.write_counter(0, 0x03); // MSB → InitialLoad

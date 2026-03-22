@@ -538,7 +538,7 @@ impl IdeController {
                 self.lle_controller.atapi_set_ready();
                 IdeAction::ScheduleCompletion
             }
-            // IDENTIFY DEVICE (0xEC) — abort with ATAPI signature
+            // IDENTIFY DEVICE (0xEC) - abort with ATAPI signature
             0xEC => {
                 self.lle_controller.atapi_identify_device_abort();
                 IdeAction::ScheduleCompletion
@@ -1164,7 +1164,7 @@ mod tests {
             }
         }
 
-        // Read sector 2 (last sector — fires completion).
+        // Read sector 2 (last sector - fires completion).
         for i in 0..1024u32 {
             let (_, action) = ide.read_data_word();
             if i < 1023 {
@@ -1197,23 +1197,36 @@ mod tests {
     }
 
     #[test]
-    fn large_byte_count_limit_no_intermediate_chunks() {
+    fn large_byte_count_limit_delivers_per_sector_chunks() {
         let mut ide = IdeController::new();
         ide.insert_cdrom(make_test_cdimage());
         ide.atapi_state.media_loaded = true;
         ide.atapi_state.media_changed = false;
 
-        // byte_count_limit=0xFFFE (65534) > 3*2048=6144, so no intermediate chunks.
+        // Even with byte_count_limit=0xFFFE, multi-sector reads deliver one
+        // CD sector (2048 bytes = 1024 words) per DRQ assertion - matching
+        // real ATAPI CD-ROM drive behavior.
         setup_atapi_for_packet(&mut ide, 0xFFFE);
         send_read10_cdb(&mut ide, 0, 3);
 
-        let total_words = 3 * 1024;
-        for i in 0..total_words {
-            let (_, action) = ide.read_data_word();
-            if i < total_words - 1 {
-                assert_eq!(action, IdeAction::None);
-            } else {
-                assert_eq!(action, IdeAction::ScheduleCompletion);
+        let words_per_sector = 1024;
+        for sector in 0..3u32 {
+            for word in 0..words_per_sector {
+                let (_, action) = ide.read_data_word();
+                let is_last_word = word == words_per_sector - 1;
+                if is_last_word {
+                    assert_eq!(
+                        action,
+                        IdeAction::ScheduleCompletion,
+                        "sector {sector} last word should trigger completion"
+                    );
+                } else {
+                    assert_eq!(
+                        action,
+                        IdeAction::None,
+                        "sector {sector} word {word} should be None"
+                    );
+                }
             }
         }
     }

@@ -1,4 +1,4 @@
-//! Software DIP Switch (SDIP) — battery-backed configuration storage.
+//! Software DIP Switch (SDIP) - battery-backed configuration storage.
 //!
 //! PC-9821 and late PC-9801 machines replace physical DIP switches with
 //! software-configurable switches stored in NVRAM. The SDIP has two banks
@@ -27,40 +27,40 @@ const TOTAL_SIZE: usize = BANK_SIZE * 2;
 ///
 /// Ref: undoc98 `io_sdip.txt` (ports 0x841E–0x8F1E front bank)
 const FRONT_BANK_DEFAULTS: [u8; BANK_SIZE] = [
-    // 0x841E — DSW1: GRPH ext, 512 B HDD, RS-232C async, FDD 1/2, CRT
+    // 0x841E - DSW1: GRPH ext, 512 B HDD, RS-232C async, FDD 1/2, CRT
     //   bits 7-1 = 1111_100 → 5 ones (odd) → parity bit 0 = 0
     0xF8,
-    // 0x851E — DSW2: GDC 2.5 MHz, HDD connected, 25 lines, 80 cols, no terminal
+    // 0x851E - DSW2: GDC 2.5 MHz, HDD connected, 25 lines, 80 cols, no terminal
     //   bits {7,6,5,3,2,1,0} = 1,1,1,0,0,1,1 → 5 ones (odd) → parity bit 4 = 0
     0xE3,
-    // 0x861E — DSW3: 640 KB, DMA compat, FDD motor ctrl, auto-switch FDD
+    // 0x861E - DSW3: 640 KB, DMA compat, FDD motor ctrl, auto-switch FDD
     //   bits 6-0 = 011_1001 → 4 ones (even) → parity bit 7 = 1
     0xB9,
-    // 0x871E — MEMSW init yes, BEEP loud
+    // 0x871E - MEMSW init yes, BEEP loud
     //   bits 6-0 = 010_1100 → 3 ones (odd) → parity bit 7 = 0
     0x2C,
-    // 0x881E — sound enabled
+    // 0x881E - sound enabled
     //   bits 6-0 = 010_0000 → 1 one (odd) → parity bit 7 = 0
-    0x20, // 0x891E — modem defaults (no modem); parity shared with 0x8A1E
+    0x20, // 0x891E - modem defaults (no modem); parity shared with 0x8A1E
     0xFC,
-    // 0x8A1E — modem defaults (no modem); bit 7 = combined parity with 0x891E
+    // 0x8A1E - modem defaults (no modem); bit 7 = combined parity with 0x891E
     //   0xFC (6 ones) + 0xBF (7 ones) = 13 total → odd ✓
     0xBF,
-    // 0x8B1E — unused on desktop
+    // 0x8B1E - unused on desktop
     //   bits 6-0 = 000_0000 → 0 ones (even) → parity bit 7 = 1
     0x80,
-    // 0x8C1E — no auto power-off
+    // 0x8C1E - no auto power-off
     //   bits 6-0 = 000_1111 → 4 ones (even) → parity bit 7 = 1
     0x8F,
-    // 0x8D1E — no RAM drive, FDD boot, FDD first drive
+    // 0x8D1E - no RAM drive, FDD boot, FDD first drive
     //   bits 6-0 = 101_1111 → 6 ones (even) → parity bit 7 = 1
     0xDF,
-    // 0x8E1E — High CPU mode, SDIP active (bit 2 = 1)
+    // 0x8E1E - High CPU mode, SDIP active (bit 2 = 1)
     //   On PC-9821 (no hardware DIP switches), bit 2 must be 1 to indicate
     //   software DIP switches are in use. If 0, the BIOS enters setup mode.
     //   bits 6-0 = 000_0100 → 1 one (odd) → parity bit 7 = 0
     0x04,
-    // 0x8F1E — FDD drives 1/2, High CPU mode
+    // 0x8F1E - FDD drives 1/2, High CPU mode
     //   bits 6-0 = 000_1000 → 1 one (odd) → parity bit 7 = 0
     0x08,
 ];
@@ -69,12 +69,12 @@ const FRONT_BANK_DEFAULTS: [u8; BANK_SIZE] = [
 ///
 /// Ref: undoc98 `io_sdip.txt` (ports 0x841E–0x8F1E back bank)
 const BACK_BANK_DEFAULTS: [u8; BANK_SIZE] = [
-    // 0x841E back — HDD motor never stops (bits 3-0 = 1111)
+    // 0x841E back - HDD motor never stops (bits 3-0 = 1111)
     //   bits 6-0 = 000_1111 → 4 ones (even) → parity bit 7 = 1
     0x8F,
-    // 0x851E back — unused on desktop
+    // 0x851E back - unused on desktop
     //   bits 6-0 = 000_0000 → 0 ones (even) → parity bit 7 = 1
-    0x80, // 0x861E–0x8F1E back — unused, parity-only
+    0x80, // 0x861E–0x8F1E back - unused, parity-only
     0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
 ];
 

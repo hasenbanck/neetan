@@ -1,4 +1,4 @@
-//! i8255 Mouse PPI — mouse interface controller.
+//! i8255 Mouse PPI - mouse interface controller.
 //!
 //! The mouse PPI uses an 8255A-compatible chip at ports 0x7FD9-0x7FDF.
 //! Port 0x7FD9 R/W: Port A (mouse buttons and counter data).

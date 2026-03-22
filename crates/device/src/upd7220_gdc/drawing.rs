@@ -19,7 +19,7 @@ fn sign_extend_14(val: u16) -> i16 {
 }
 
 /// Advances EAD by one whole word address in the given direction (for DMA transfers).
-/// Unlike `advance_ead()`, this does not rotate the mask — DMA operates on whole words.
+/// Unlike `advance_ead()`, this does not rotate the mask - DMA operates on whole words.
 pub(crate) fn advance_ead_dma(ead: &mut u32, direction: u8, pitch: u16) {
     const X_DIR: [i32; 8] = [0, 1, 1, 1, 0, -1, -1, -1];
     const Y_DIR: [i32; 8] = [1, 1, 0, -1, -1, -1, 0, 1];
@@ -189,7 +189,7 @@ impl Gdc {
     fn draw_arc(&mut self) -> DrawResult {
         let dc = self.drawing_dc;
         let octant = self.drawing_dir;
-        // The real µPD7220 treats DM > DC as "draw all" — some BIOS ROMs
+        // The real µPD7220 treats DM > DC as "draw all" - some BIOS ROMs
         // (notably the PC-9801RA) send DM=0x3FFF without clearing it for
         // full-circle outlines, relying on this hardware clamping behavior.
         let dm = if self.drawing_dm > dc {

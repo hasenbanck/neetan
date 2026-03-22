@@ -5,7 +5,7 @@
 //! bit-level shifting with 6 modes, pattern registers, and compare-read.
 
 /// Lookup table: expands a 4-bit color index to per-plane u16 masks.
-/// maskword[color][plane] — if bit `plane` of `color` is set, the mask is 0xFFFF, else 0x0000.
+/// maskword[color][plane] - if bit `plane` of `color` is set, the mask is 0xFFFF, else 0x0000.
 const MASKWORD: [[u16; 4]; 16] = [
     [0x0000, 0x0000, 0x0000, 0x0000],
     [0xFFFF, 0x0000, 0x0000, 0x0000],

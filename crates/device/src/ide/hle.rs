@@ -1,4 +1,4 @@
-//! IDE High-Level Emulation (HLE) — controller-specific functions.
+//! IDE High-Level Emulation (HLE) - controller-specific functions.
 //!
 //! Shared HLE functions (read, write, init, format, etc.) live in
 //! `crate::disk_hle`. This module contains IDE-specific functions:
