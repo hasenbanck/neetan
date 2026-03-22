@@ -563,14 +563,16 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// Installs the PC-9801-86 sound board (YM2608 OPNA + PCM86).
     ///
     /// `rhythm_rom` is the optional 8 KB `ym2608.rom` ADPCM-A rhythm ROM.
+    /// `adpcm_ram` enables the 256 KiB ADPCM-B sample RAM upgrade.
     /// When installed, the 86 board replaces the 26K for FM/SSG ports
     /// and adds extended register and PCM86 ports.
-    pub fn install_soundboard_86(&mut self, rhythm_rom: Option<&[u8]>) {
+    pub fn install_soundboard_86(&mut self, rhythm_rom: Option<&[u8]>, adpcm_ram: bool) {
         let sample_rate = self.beeper.state.sample_rate;
         self.soundboard_86 = Some(Soundboard86::new(
             self.clocks.cpu_clock_hz,
             sample_rate,
             rhythm_rom,
+            adpcm_ram,
         ));
         self.resolve_dual_soundboard_irq_conflict();
     }

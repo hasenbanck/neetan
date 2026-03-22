@@ -1393,7 +1393,7 @@ mod tests {
     #[test]
     fn port_a460_reports_86_id_and_mask_controls_opna() {
         let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
-        bus.install_soundboard_86(None);
+        bus.install_soundboard_86(None, true);
 
         assert_eq!(bus.io_read_byte(0xA460), 0x40);
 
@@ -1407,6 +1407,82 @@ mod tests {
         bus.io_write_byte(0xA460, 0x00);
         bus.io_write_byte(0x0188, 0xFF);
         assert_eq!(bus.io_read_byte(0x018A), 0x01);
+    }
+
+    #[test]
+    fn soundboard_86_adpcm_ram_disabled() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        bus.install_soundboard_86(None, false);
+
+        // Enable extended mode.
+        bus.io_write_byte(0xA460, 0x01);
+
+        // Set up external + record mode for ADPCM-B to write data.
+        bus.io_write_byte(0x018C, 0x00);
+        bus.io_write_byte(0x018E, 0x01); // Reset
+        bus.io_write_byte(0x018C, 0x00);
+        bus.io_write_byte(0x018E, 0x00); // Clear reset
+        bus.io_write_byte(0x018C, 0x01);
+        bus.io_write_byte(0x018E, 0x02); // dram_8bit=1
+        bus.io_write_byte(0x018C, 0x02);
+        bus.io_write_byte(0x018E, 0x00); // Start=0
+        bus.io_write_byte(0x018C, 0x03);
+        bus.io_write_byte(0x018E, 0x00);
+        bus.io_write_byte(0x018C, 0x04);
+        bus.io_write_byte(0x018E, 0xFF); // End=wide
+        bus.io_write_byte(0x018C, 0x05);
+        bus.io_write_byte(0x018E, 0xFF);
+        bus.io_write_byte(0x018C, 0x0C);
+        bus.io_write_byte(0x018E, 0xFF); // Limit=max
+        bus.io_write_byte(0x018C, 0x0D);
+        bus.io_write_byte(0x018E, 0xFF);
+        bus.io_write_byte(0x018C, 0x00);
+        bus.io_write_byte(0x018E, 0x60); // External + record
+
+        // Write several bytes — these go nowhere since no RAM.
+        for byte in [0xAB, 0xCD, 0xEF] {
+            bus.io_write_byte(0x018C, 0x08);
+            bus.io_write_byte(0x018E, byte);
+            bus.io_write_byte(0x018C, 0x10);
+            bus.io_write_byte(0x018E, 0x80);
+        }
+
+        // Switch to external read mode.
+        bus.io_write_byte(0x018C, 0x00);
+        bus.io_write_byte(0x018E, 0x01); // Reset
+        bus.io_write_byte(0x018C, 0x00);
+        bus.io_write_byte(0x018E, 0x00); // Clear reset
+        bus.io_write_byte(0x018C, 0x10);
+        bus.io_write_byte(0x018E, 0x80);
+        bus.io_write_byte(0x018C, 0x00);
+        bus.io_write_byte(0x018E, 0x20); // External read
+        bus.io_write_byte(0x018C, 0x01);
+        bus.io_write_byte(0x018E, 0x02); // dram_8bit=1
+        bus.io_write_byte(0x018C, 0x02);
+        bus.io_write_byte(0x018E, 0x00);
+        bus.io_write_byte(0x018C, 0x03);
+        bus.io_write_byte(0x018E, 0x00);
+        bus.io_write_byte(0x018C, 0x04);
+        bus.io_write_byte(0x018E, 0xFF);
+        bus.io_write_byte(0x018C, 0x05);
+        bus.io_write_byte(0x018E, 0xFF);
+
+        // The first two reads return stale data from the CPU data register
+        // (chip-internal buffer pre-fill behavior). Discard them.
+        for _ in 0..2 {
+            bus.io_write_byte(0x018C, 0x08);
+            let _ = bus.io_read_byte(0x018E);
+            bus.io_write_byte(0x018C, 0x10);
+            bus.io_write_byte(0x018E, 0x80);
+        }
+
+        // Third read fetches from external memory — should be 0x00 with no RAM.
+        bus.io_write_byte(0x018C, 0x08);
+        let data = bus.io_read_byte(0x018E);
+        assert_eq!(
+            data, 0x00,
+            "ADPCM-B read with no RAM should return 0x00, got 0x{data:02X}"
+        );
     }
 
     #[test]

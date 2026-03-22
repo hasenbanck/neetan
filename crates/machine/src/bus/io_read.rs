@@ -686,7 +686,7 @@ mod tests {
     #[test]
     fn sound_ports_0288_and_0388_do_not_alias_low_bank() {
         let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
-        bus.install_soundboard_86(None);
+        bus.install_soundboard_86(None, true);
 
         // Primary base 0x0188 works: reg 0xFF returns chip ID 0x01.
         bus.io_write_byte(0x0188, 0xFF);

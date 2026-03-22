@@ -11,6 +11,14 @@ fn next_value(flag: &str, args: &mut impl Iterator<Item = String>) -> crate::Res
     }
 }
 
+fn parse_on_off(val: &str, flag: &str) -> crate::Result<bool> {
+    match val {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        _ => bail!("invalid value '{val}' for {flag}, expected on or off"),
+    }
+}
+
 fn print_help() {
     println!(
         "\
@@ -37,6 +45,7 @@ Options:
       --bios-rom <PATH>       Path to BIOS ROM file
       --font-rom <PATH>       Path to font ROM file
       --soundboard <TYPE>     Sound board type: none, 26k, 86, 86+26k
+      --adpcm-ram <on|off>    ADPCM RAM option for PC-9801-86 (default: on)
       --printer <PATH>        Output file for printer (must exist)
   -h, --help                  Print help
   -V, --version               Print version
@@ -305,6 +314,10 @@ pub fn parse_args() -> crate::Result<Action> {
                 let val = value(&flag)?;
                 config.soundboard = val.parse::<SoundboardType>().map_err(StringError)?;
             }
+            "--adpcm-ram" => {
+                let val = value(&flag)?;
+                config.adpcm_ram = parse_on_off(&val, &flag)?;
+            }
             "--printer" => config.printer = Some(PathBuf::from(value(&flag)?)),
             other => bail!("unknown argument: {other}"),
         }
@@ -357,6 +370,7 @@ pub struct EmulatorConfig {
     pub bios_rom: Option<PathBuf>,
     pub font_rom: Option<PathBuf>,
     pub soundboard: SoundboardType,
+    pub adpcm_ram: bool,
     pub printer: Option<PathBuf>,
     pub key_map: KeyMap,
 }
@@ -376,6 +390,7 @@ impl Default for EmulatorConfig {
             bios_rom: None,
             font_rom: None,
             soundboard: SoundboardType::Sb86And26k,
+            adpcm_ram: true,
             printer: None,
             key_map: KeyMap::new(),
         }
@@ -425,6 +440,11 @@ pub fn parse_config_file(path: &Path) -> crate::Result<EmulatorConfig> {
             "soundboard" => match val.parse::<SoundboardType>() {
                 Ok(sb) => config.soundboard = sb,
                 Err(_) => warn!("Unknown soundboard type in config: {val}"),
+            },
+            "adpcm-ram" => match val {
+                "on" => config.adpcm_ram = true,
+                "off" => config.adpcm_ram = false,
+                _ => warn!("Invalid adpcm-ram in config: {val}, expected on or off"),
             },
             "printer" => config.printer = Some(PathBuf::from(val)),
             key if key.starts_with("key.") => {

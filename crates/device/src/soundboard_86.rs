@@ -57,6 +57,8 @@ pub struct Soundboard86State {
     pub sample_remainder: FmSampleRemainder,
     /// Whether extended mode (6-ch FM + ADPCM) is enabled.
     pub extend_enabled: bool,
+    /// Whether the 256 KiB ADPCM-B sample RAM upgrade is installed.
+    pub adpcm_ram: bool,
     /// Last data written to a register (returned for reads of addr >= 0x10).
     pub last_written_data: u8,
     /// PCM86 state.
@@ -74,6 +76,7 @@ impl Default for Soundboard86State {
             audio_frame_start_cycle: 0,
             sample_remainder: FmSampleRemainder::default(),
             extend_enabled: false,
+            adpcm_ram: true,
             last_written_data: 0,
             pcm86: Pcm86State::default(),
         }
@@ -148,11 +151,11 @@ struct ChipBridge {
     cpu_clock_hz: u32,
     pending: RefCell<Vec<PendingChipAction>>,
     rhythm_rom: Box<[u8; RHYTHM_ROM_SIZE]>,
-    adpcm_b_ram: RefCell<Box<[u8; ADPCM_B_RAM_SIZE]>>,
+    adpcm_b_ram: Option<RefCell<Box<[u8; ADPCM_B_RAM_SIZE]>>>,
 }
 
 impl ChipBridge {
-    fn new(cpu_clock_hz: u32, rhythm_rom: Option<&[u8]>) -> Self {
+    fn new(cpu_clock_hz: u32, rhythm_rom: Option<&[u8]>, adpcm_ram: bool) -> Self {
         let mut rom = Box::new([0u8; RHYTHM_ROM_SIZE]);
         if let Some(data) = rhythm_rom {
             let len = data.len().min(RHYTHM_ROM_SIZE);
@@ -164,7 +167,11 @@ impl ChipBridge {
             cpu_clock_hz,
             pending: RefCell::new(Vec::new()),
             rhythm_rom: rom,
-            adpcm_b_ram: RefCell::new(Box::new([0u8; ADPCM_B_RAM_SIZE])),
+            adpcm_b_ram: if adpcm_ram {
+                Some(RefCell::new(Box::new([0u8; ADPCM_B_RAM_SIZE])))
+            } else {
+                None
+            },
         }
     }
 }
@@ -203,18 +210,23 @@ impl Ym2608Callbacks for ChipBridge {
                     0
                 }
             }
-            YmfmAccessClass::AdpcmB => {
-                let addr = (address as usize) & (ADPCM_B_RAM_SIZE - 1);
-                self.adpcm_b_ram.borrow()[addr]
-            }
+            YmfmAccessClass::AdpcmB => match self.adpcm_b_ram {
+                Some(ref ram) => {
+                    let addr = (address as usize) & (ADPCM_B_RAM_SIZE - 1);
+                    ram.borrow()[addr]
+                }
+                None => 0,
+            },
             _ => 0,
         }
     }
 
     fn external_write(&self, access_class: YmfmAccessClass, address: u32, data: u8) {
-        if access_class == YmfmAccessClass::AdpcmB {
+        if access_class == YmfmAccessClass::AdpcmB
+            && let Some(ref ram) = self.adpcm_b_ram
+        {
             let addr = (address as usize) & (ADPCM_B_RAM_SIZE - 1);
-            self.adpcm_b_ram.borrow_mut()[addr] = data;
+            ram.borrow_mut()[addr] = data;
         }
     }
 }
@@ -637,9 +649,15 @@ impl Soundboard86 {
     ///
     /// `rhythm_rom` is the optional 8 KB `ym2608.rom` ADPCM-A rhythm data.
     /// When `None`, procedural rhythm fallback is enabled.
-    pub fn new(cpu_clock_hz: u32, sample_rate: u32, rhythm_rom: Option<&[u8]>) -> Self {
+    /// `adpcm_ram` enables the 256 KiB ADPCM-B sample RAM upgrade.
+    pub fn new(
+        cpu_clock_hz: u32,
+        sample_rate: u32,
+        rhythm_rom: Option<&[u8]>,
+        adpcm_ram: bool,
+    ) -> Self {
         let has_rom = rhythm_rom.is_some();
-        let bridge = ChipBridge::new(cpu_clock_hz, rhythm_rom);
+        let bridge = ChipBridge::new(cpu_clock_hz, rhythm_rom, adpcm_ram);
         let mut chip = Ym2608::new(bridge);
         chip.reset();
         chip.set_fidelity(FIDELITY);
@@ -655,7 +673,10 @@ impl Soundboard86 {
         let resample_output_size = resampler.buffer_size_output();
 
         Self {
-            state: Soundboard86State::default(),
+            state: Soundboard86State {
+                adpcm_ram,
+                ..Soundboard86State::default()
+            },
             chip,
             cpu_clock_hz,
             native_rate,
@@ -1084,7 +1105,7 @@ impl Soundboard86 {
         self.pcm86.state = saved.pcm86.clone();
         let has_rom = rhythm_rom.is_some();
         // TODO: Save/restore ymfm internal state
-        let bridge = ChipBridge::new(cpu_clock_hz, rhythm_rom);
+        let bridge = ChipBridge::new(cpu_clock_hz, rhythm_rom, saved.adpcm_ram);
         bridge.busy_end_cycle.set(self.state.busy_end_cycle);
         bridge.current_cycle.set(current_cycle);
         self.chip = Ym2608::new(bridge);
