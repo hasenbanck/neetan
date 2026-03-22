@@ -196,6 +196,15 @@ impl Window {
         Ok(())
     }
 
+    /// Sets the window title.
+    pub fn set_title(&self, title: &str) {
+        let c_title = CString::new(title).unwrap_or_default();
+        // Safety: Window pointer is valid; c_title is a valid C string.
+        unsafe {
+            ffi::SDL_SetWindowTitle(self.ptr, c_title.as_ptr());
+        }
+    }
+
     /// Enables or disables relative mouse mode on this window.
     pub fn set_relative_mouse_mode(&self, enabled: bool) -> Result<(), Error> {
         // Safety: Window pointer is valid.
