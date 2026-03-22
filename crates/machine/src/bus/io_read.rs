@@ -435,7 +435,16 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
 
             // PCM86 DAC ports.
-            0xA460 | 0xA466 | 0xA468 | 0xA46A | 0xA46C | 0xA46E => {
+            0xA460 | 0xA462 | 0xA464 | 0xA466 | 0xA468 | 0xA46A | 0xA46C | 0xA46E => {
+                if let Some(ref mut sb86) = self.soundboard_86 {
+                    sb86.pcm86_read(port, self.current_cycle, self.clocks.cpu_clock_hz)
+                } else {
+                    0xFF
+                }
+            }
+
+            // PCM86 mute control port.
+            0xA66E => {
                 if let Some(ref mut sb86) = self.soundboard_86 {
                     sb86.pcm86_read(port, self.current_cycle, self.clocks.cpu_clock_hz)
                 } else {

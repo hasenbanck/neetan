@@ -573,6 +573,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             sample_rate,
             rhythm_rom,
             adpcm_ram,
+            self.machine_model,
         ));
         self.resolve_dual_soundboard_irq_conflict();
     }
@@ -1074,6 +1075,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         if let Some(ref mut sb86) = self.soundboard_86 {
             sb86.generate_samples(self.current_cycle, self.clocks.cpu_clock_hz, volume, output);
         }
+        self.process_soundboard_86_actions();
         if let Some(ref mut sb26k) = self.soundboard_26k {
             sb26k.generate_samples(self.current_cycle, self.clocks.cpu_clock_hz, volume, output);
         }
@@ -1377,6 +1379,12 @@ impl<T: Tracing> Pc9801Bus<T> {
                 }
                 EventKind::IdeInterrupt => {
                     self.handle_ide_interrupt();
+                }
+                EventKind::Pcm86Irq => {
+                    if let Some(ref mut sb86) = self.soundboard_86 {
+                        sb86.pcm86_timer_expired(self.current_cycle, self.clocks.cpu_clock_hz);
+                        self.process_soundboard_86_actions();
+                    }
                 }
             }
         }

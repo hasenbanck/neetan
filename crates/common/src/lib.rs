@@ -39,7 +39,7 @@ pub enum CpuType {
 ///
 /// Encodes the full hardware profile of a specific PC-98 variant:
 /// CPU, clock rates, address space, graphics capabilities, and peripheral set.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MachineModel {
     /// PC-9801VM (V30, 10 MHz, GRCG v1, 20-bit address space, SASI built-in).
     PC9801VM,
@@ -283,7 +283,7 @@ impl std::str::FromStr for MachineModel {
 }
 
 /// Number of [`EventKind`] variants.
-const EVENT_KIND_COUNT: usize = 15;
+const EVENT_KIND_COUNT: usize = 16;
 
 /// Trait representing the system bus of an emulated machine.
 ///
@@ -845,6 +845,8 @@ pub enum EventKind {
     IdeExecution,
     /// IDE controller interrupt (raise IRQ 9 after operation).
     IdeInterrupt,
+    /// PCM86 DAC IRQ check (buffer below FIFO threshold).
+    Pcm86Irq,
 }
 
 impl EventKind {
@@ -864,6 +866,7 @@ impl EventKind {
         EventKind::SasiInterrupt,
         EventKind::IdeExecution,
         EventKind::IdeInterrupt,
+        EventKind::Pcm86Irq,
     ];
 
     const fn from_index(index: usize) -> Self {
