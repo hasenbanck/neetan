@@ -1402,6 +1402,11 @@ impl<T: Tracing> Pc9801Bus<T> {
 
 impl<T: Tracing> common::Bus for Pc9801Bus<T> {
     fn read_byte(&mut self, address: u32) -> u8 {
+        if address < 0x80000 {
+            let value = self.memory.state.ram[address as usize];
+            self.tracer.trace_mem_read(address, value);
+            return value;
+        }
         let address = self.a20_mask(address);
         let pegc_active = self.pegc.is_256_color_active();
         let ems_b_bank = self.b_bank_ems
@@ -1433,6 +1438,11 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
     }
 
     fn write_byte(&mut self, address: u32, value: u8) {
+        if address < 0x80000 {
+            self.memory.state.ram[address as usize] = value;
+            self.tracer.trace_mem_write(address, value);
+            return;
+        }
         let address = self.a20_mask(address);
         let pegc_active = self.pegc.is_256_color_active();
         let ems_b_bank = self.b_bank_ems
@@ -1463,6 +1473,13 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
     }
 
     fn read_word(&mut self, address: u32) -> u16 {
+        if address.wrapping_add(1) < 0x80000 {
+            let a = address as usize;
+            let value =
+                self.memory.state.ram[a] as u16 | ((self.memory.state.ram[a + 1] as u16) << 8);
+            self.tracer.trace_mem_read_word(address, value);
+            return value;
+        }
         let address = self.a20_mask(address);
         let pegc_active = self.pegc.is_256_color_active();
         if pegc_active && (0xA8000..=0xB7FFF).contains(&address) {
@@ -1530,6 +1547,13 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
     }
 
     fn write_word(&mut self, address: u32, value: u16) {
+        if address.wrapping_add(1) < 0x80000 {
+            let a = address as usize;
+            self.memory.state.ram[a] = value as u8;
+            self.memory.state.ram[a + 1] = (value >> 8) as u8;
+            self.tracer.trace_mem_write_word(address, value);
+            return;
+        }
         let address = self.a20_mask(address);
         let pegc_active = self.pegc.is_256_color_active();
         if pegc_active && (0xA8000..=0xB7FFF).contains(&address) {
@@ -1592,6 +1616,33 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
         self.write_byte_with_access_page(address, value as u8);
         self.write_byte_with_access_page(address.wrapping_add(1), (value >> 8) as u8);
         self.tracer.trace_mem_write_word(address, value);
+    }
+
+    fn read_dword(&mut self, address: u32) -> u32 {
+        if address.wrapping_add(3) < 0x80000 {
+            let a = address as usize;
+            let value = self.memory.state.ram[a] as u32
+                | ((self.memory.state.ram[a + 1] as u32) << 8)
+                | ((self.memory.state.ram[a + 2] as u32) << 16)
+                | ((self.memory.state.ram[a + 3] as u32) << 24);
+            return value;
+        }
+        let low = self.read_word(address) as u32;
+        let high = self.read_word(address.wrapping_add(2)) as u32;
+        low | (high << 16)
+    }
+
+    fn write_dword(&mut self, address: u32, value: u32) {
+        if address.wrapping_add(3) < 0x80000 {
+            let a = address as usize;
+            self.memory.state.ram[a] = value as u8;
+            self.memory.state.ram[a + 1] = (value >> 8) as u8;
+            self.memory.state.ram[a + 2] = (value >> 16) as u8;
+            self.memory.state.ram[a + 3] = (value >> 24) as u8;
+            return;
+        }
+        self.write_word(address, value as u16);
+        self.write_word(address.wrapping_add(2), (value >> 16) as u16);
     }
 
     fn io_read_byte(&mut self, port: u16) -> u8 {
