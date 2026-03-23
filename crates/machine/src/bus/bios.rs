@@ -147,6 +147,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             // interrupts. The game's callback (or subsequent code) will
             // call INT 1CH AH=02H to restart the interval timer.
             self.pic.state.chips[0].imr |= 0x01;
+            self.pic.invalidate_irq_cache();
 
             // Send EOI before the callback (matching real BIOS order).
             self.pic.write_port0(0, 0x20);
@@ -1579,6 +1580,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 // RXE set: enable RxRDY interrupt via sysport and unmask IRQ 4.
                 self.system_ppi.state.port_c |= 0x01;
                 self.pic.state.chips[0].imr &= !0x10;
+                self.pic.invalidate_irq_cache();
             }
         }
         self.memory.write_byte(buf_base + 0x02, flag);
@@ -1721,6 +1723,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             self.system_ppi.state.port_c |= 0x01;
             self.pic.state.chips[0].imr &= !0x10;
         }
+        self.pic.invalidate_irq_cache();
 
         self.memory.write_byte(buf_base + 0x03, cmd);
         cpu.set_ah(0x00);
@@ -2227,6 +2230,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 self.memory.write_byte(0x055C, disk_equip as u8);
                 self.memory.write_byte(0x055D, (disk_equip >> 8) as u8);
                 self.pic.state.chips[0].imr &= !0x01;
+                self.pic.invalidate_irq_cache();
                 0x00
             }
             0x04 => match function_code {
@@ -2332,6 +2336,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                     self.memory.write_byte(0x055C, disk_equip as u8);
                     self.memory.write_byte(0x055D, (disk_equip >> 8) as u8);
                     self.pic.state.chips[0].imr &= !0x01;
+                    self.pic.invalidate_irq_cache();
                     0x00
                 }
                 0x04 => match function_code {
@@ -2492,6 +2497,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         // Unmask IRQ 0 (system timer) in master PIC.
         self.pic.state.chips[0].imr &= !0x01;
+        self.pic.invalidate_irq_cache();
     }
 
     fn int1ch_continue_interval_timer(&mut self) {
@@ -2515,6 +2521,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         );
         self.update_next_event_cycle();
         self.pic.state.chips[0].imr &= !0x01;
+        self.pic.invalidate_irq_cache();
     }
 
     fn hle_int1fh(&mut self, cpu: &mut impl Cpu) {
@@ -2677,6 +2684,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             self.memory.state.ram[0x04B8] = 0xD8;
             // Unmask IRQ 9 (slave PIC IR1) so IDE/ATAPI interrupts can fire.
             self.pic.state.chips[1].imr &= !0x02;
+            self.pic.invalidate_irq_cache();
         }
 
         // Boot order: FDD -> CD-ROM (IDE only) -> SASI HDD -> IDE HDD.

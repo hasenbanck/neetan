@@ -4,7 +4,10 @@
 //! See `undoc98/io_pic.txt` for IRQ assignments, ICW defaults,
 //! and the canonical slave EOI pattern.
 
-use std::ops::{Deref, DerefMut};
+use std::{
+    cell::Cell,
+    ops::{Deref, DerefMut},
+};
 
 /// Master ICW1: edge-triggered, cascaded, ICW4 needed (0x11 = 0001_0001b).
 /// Bits: D4=1 (ICW1 flag), D0=1 (IC4: ICW4 will follow).
@@ -103,6 +106,7 @@ enum PendingIrq {
 pub struct I8259aPic {
     /// Embedded state for save/restore.
     pub state: I8259aPicState,
+    irq_cache: Cell<Option<bool>>,
 }
 
 impl Deref for I8259aPic {
@@ -150,6 +154,7 @@ impl I8259aPic {
                     },
                 ],
             },
+            irq_cache: Cell::new(None),
         }
     }
 
@@ -178,7 +183,14 @@ impl I8259aPic {
                     },
                 ],
             },
+            irq_cache: Cell::new(None),
         }
+    }
+
+    /// Invalidates the cached IRQ pending result.
+    /// Must be called after any direct mutation of PIC chip state.
+    pub fn invalidate_irq_cache(&self) {
+        self.irq_cache.set(None);
     }
 
     /// Writes to port 0 (master: 0x00, slave: 0x08).
@@ -234,6 +246,7 @@ impl I8259aPic {
                 chip.write_icw = 1;
             }
         }
+        self.invalidate_irq_cache();
     }
 
     /// Writes to port 2 (master: 0x02, slave: 0x0A).
@@ -249,6 +262,7 @@ impl I8259aPic {
                 chip.write_icw = 0;
             }
         }
+        self.invalidate_irq_cache();
     }
 
     /// Reads port 0 (master: 0x00, slave: 0x08).
@@ -276,6 +290,7 @@ impl I8259aPic {
         } else {
             self.chips[1].irr |= bit;
         }
+        self.invalidate_irq_cache();
     }
 
     /// Clears an IRQ line.
@@ -286,17 +301,24 @@ impl I8259aPic {
         } else {
             self.chips[1].irr &= !bit;
         }
+        self.invalidate_irq_cache();
     }
 
     /// Returns true if a pending unmasked IRQ exists that is not blocked
     /// by a higher-priority in-service interrupt.
     pub fn has_pending_irq(&self) -> bool {
-        self.find_pending_irq().is_some()
+        if let Some(cached) = self.irq_cache.get() {
+            return cached;
+        }
+        let result = self.find_pending_irq().is_some();
+        self.irq_cache.set(Some(result));
+        result
     }
 
     /// Acknowledges the highest-priority pending IRQ: sets ISR, clears IRR,
     /// and returns the interrupt vector number.
     pub fn acknowledge(&mut self) -> u8 {
+        self.invalidate_irq_cache();
         let Some(pending) = self.find_pending_irq() else {
             // Spurious interrupt - IRQ was deasserted between INTR and INTA.
             // Real 8259A returns the lowest-priority master vector (base + 7).
