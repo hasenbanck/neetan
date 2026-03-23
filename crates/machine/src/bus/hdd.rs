@@ -106,6 +106,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 // INT 1Ch AH=02 during init which unmasks the timer via
                 // `pic.imr &= ~PIC_SYSTEMTIMER`.
                 self.pic.state.chips[0].imr &= !0x01;
+                self.pic.invalidate_irq_cache();
 
                 0x00
             }
@@ -273,6 +274,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 self.write_byte_with_access_page(0x055C, disk_equip as u8);
                 self.write_byte_with_access_page(0x055D, (disk_equip >> 8) as u8);
                 self.pic.state.chips[0].imr &= !0x01;
+                self.pic.invalidate_irq_cache();
                 0x00
             }
             0x04 | 0x84 => {

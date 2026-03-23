@@ -465,6 +465,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
             MachineModel::PC9801VX => {}
         }
+        self.pic.invalidate_irq_cache();
 
         // PIT: ch0 mode 0 (interrupt on terminal count), ch1 mode 3 (beep),
         // ch2 mode 3 (baud rate). ch1 value is already set correctly by I8253Pit::new().

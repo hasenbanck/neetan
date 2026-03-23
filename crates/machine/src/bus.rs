@@ -1169,6 +1169,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.machine_model = state.machine_model;
         self.memory.state = state.memory.clone();
         self.pic.state = state.pic.clone();
+        self.pic.invalidate_irq_cache();
         self.scheduler.state = state.scheduler.clone();
         self.current_cycle = state.current_cycle;
         self.next_event_cycle = state.next_event_cycle;
