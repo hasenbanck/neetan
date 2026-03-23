@@ -167,6 +167,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     #[inline(always)]
     pub(super) fn read_dword_phys_raw(&self, bus: &mut impl common::Bus, addr: u32) -> u32 {
         let a = addr & 0x00FF_FFFF;
+        if a & 0xFFF <= 0xFFC {
+            return bus.read_dword(a);
+        }
         bus.read_byte(a) as u32
             | ((bus.read_byte(a.wrapping_add(1) & 0x00FF_FFFF) as u32) << 8)
             | ((bus.read_byte(a.wrapping_add(2) & 0x00FF_FFFF) as u32) << 16)
@@ -176,6 +179,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     #[inline(always)]
     pub(super) fn write_dword_phys_raw(&self, bus: &mut impl common::Bus, addr: u32, value: u32) {
         let a = addr & 0x00FF_FFFF;
+        if a & 0xFFF <= 0xFFC {
+            bus.write_dword(a, value);
+            return;
+        }
         bus.write_byte(a, value as u8);
         bus.write_byte(a.wrapping_add(1) & 0x00FF_FFFF, (value >> 8) as u8);
         bus.write_byte(a.wrapping_add(2) & 0x00FF_FFFF, (value >> 16) as u8);

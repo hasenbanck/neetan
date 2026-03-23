@@ -1059,48 +1059,63 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let val = self.sregs[seg as usize];
         let penalty = self.sp_penalty();
         if self.operand_size_override {
+            let dword_val = val as u32;
             if self.use_esp() {
                 let esp = self.regs.dword(DwordReg::ESP).wrapping_sub(4);
                 self.regs.set_dword(DwordReg::ESP, esp);
                 let base = self.seg_base(SegReg32::SS);
                 let l0 = base.wrapping_add(esp);
-                let Some(a0) = self.translate_linear(l0, true, bus) else {
-                    return;
-                };
-                let Some(a1) = self.translate_linear(l0.wrapping_add(1), true, bus) else {
-                    return;
-                };
-                let Some(a2) = self.translate_linear(l0.wrapping_add(2), true, bus) else {
-                    return;
-                };
-                let Some(a3) = self.translate_linear(l0.wrapping_add(3), true, bus) else {
-                    return;
-                };
-                bus.write_byte(a0, val as u8);
-                bus.write_byte(a1, (val >> 8) as u8);
-                bus.write_byte(a2, 0);
-                bus.write_byte(a3, 0);
+                if l0 & 0xFFF <= 0xFFC {
+                    let Some(a0) = self.translate_linear(l0, true, bus) else {
+                        return;
+                    };
+                    bus.write_dword(a0, dword_val);
+                } else {
+                    let Some(a0) = self.translate_linear(l0, true, bus) else {
+                        return;
+                    };
+                    let Some(a1) = self.translate_linear(l0.wrapping_add(1), true, bus) else {
+                        return;
+                    };
+                    let Some(a2) = self.translate_linear(l0.wrapping_add(2), true, bus) else {
+                        return;
+                    };
+                    let Some(a3) = self.translate_linear(l0.wrapping_add(3), true, bus) else {
+                        return;
+                    };
+                    bus.write_byte(a0, val as u8);
+                    bus.write_byte(a1, (val >> 8) as u8);
+                    bus.write_byte(a2, 0);
+                    bus.write_byte(a3, 0);
+                }
             } else {
                 let sp = self.regs.word(WordReg::SP).wrapping_sub(4);
                 self.regs.set_word(WordReg::SP, sp);
                 let base = self.seg_base(SegReg32::SS);
                 let l0 = base.wrapping_add(sp as u32);
-                let Some(a0) = self.translate_linear(l0, true, bus) else {
-                    return;
-                };
-                let Some(a1) = self.translate_linear(l0.wrapping_add(1), true, bus) else {
-                    return;
-                };
-                let Some(a2) = self.translate_linear(l0.wrapping_add(2), true, bus) else {
-                    return;
-                };
-                let Some(a3) = self.translate_linear(l0.wrapping_add(3), true, bus) else {
-                    return;
-                };
-                bus.write_byte(a0, val as u8);
-                bus.write_byte(a1, (val >> 8) as u8);
-                bus.write_byte(a2, 0);
-                bus.write_byte(a3, 0);
+                if l0 & 0xFFF <= 0xFFC {
+                    let Some(a0) = self.translate_linear(l0, true, bus) else {
+                        return;
+                    };
+                    bus.write_dword(a0, dword_val);
+                } else {
+                    let Some(a0) = self.translate_linear(l0, true, bus) else {
+                        return;
+                    };
+                    let Some(a1) = self.translate_linear(l0.wrapping_add(1), true, bus) else {
+                        return;
+                    };
+                    let Some(a2) = self.translate_linear(l0.wrapping_add(2), true, bus) else {
+                        return;
+                    };
+                    let Some(a3) = self.translate_linear(l0.wrapping_add(3), true, bus) else {
+                        return;
+                    };
+                    bus.write_byte(a0, val as u8);
+                    bus.write_byte(a1, (val >> 8) as u8);
+                    bus.write_byte(a2, 0);
+                    bus.write_byte(a3, 0);
+                }
             }
         } else {
             self.push(bus, val);
@@ -1115,26 +1130,34 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 let esp = self.regs.dword(DwordReg::ESP);
                 let base = self.seg_base(SegReg32::SS);
                 let l0 = base.wrapping_add(esp);
-                let a0 = self.translate_linear(l0, false, bus).unwrap_or(0);
-                let a1 = self
-                    .translate_linear(l0.wrapping_add(1), false, bus)
-                    .unwrap_or(0);
-                let low = bus.read_byte(a0) as u16;
-                let high = bus.read_byte(a1) as u16;
+                let word_val = if l0 & 0xFFF <= 0xFFE {
+                    let a0 = self.translate_linear(l0, false, bus).unwrap_or(0);
+                    bus.read_word(a0)
+                } else {
+                    let a0 = self.translate_linear(l0, false, bus).unwrap_or(0);
+                    let a1 = self
+                        .translate_linear(l0.wrapping_add(1), false, bus)
+                        .unwrap_or(0);
+                    bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8)
+                };
                 self.regs.set_dword(DwordReg::ESP, esp.wrapping_add(4));
-                low | (high << 8)
+                word_val
             } else {
                 let sp = self.regs.word(WordReg::SP);
                 let base = self.seg_base(SegReg32::SS);
                 let l0 = base.wrapping_add(sp as u32);
-                let a0 = self.translate_linear(l0, false, bus).unwrap_or(0);
-                let a1 = self
-                    .translate_linear(l0.wrapping_add(1), false, bus)
-                    .unwrap_or(0);
-                let low = bus.read_byte(a0) as u16;
-                let high = bus.read_byte(a1) as u16;
+                let word_val = if l0 & 0xFFF <= 0xFFE {
+                    let a0 = self.translate_linear(l0, false, bus).unwrap_or(0);
+                    bus.read_word(a0)
+                } else {
+                    let a0 = self.translate_linear(l0, false, bus).unwrap_or(0);
+                    let a1 = self
+                        .translate_linear(l0.wrapping_add(1), false, bus)
+                        .unwrap_or(0);
+                    bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8)
+                };
                 self.regs.set_word(WordReg::SP, sp.wrapping_add(4));
-                low | (high << 8)
+                word_val
             }
         } else {
             self.pop(bus)
