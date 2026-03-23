@@ -1340,7 +1340,6 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 // Flush TLB when PG, PE, or WP changes (WP affects cached writable flags).
                 if (old_cr0 ^ self.cr0) & (0x8001_0001) != 0 {
                     self.flush_tlb();
-                    self.prefetch_valid = false;
                 }
                 self.clk(Self::timing(10, 17));
             }
@@ -1351,7 +1350,6 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             3 => {
                 self.cr3 = value;
                 self.flush_tlb();
-                self.prefetch_valid = false;
                 self.clk(Self::timing(5, 4));
             }
             _ => {

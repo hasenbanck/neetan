@@ -94,6 +94,10 @@ pub struct I386<const CPU_MODEL: u8 = { CPU_MODEL_386 }> {
     eo32: u32,
     ea_seg: SegReg32,
 
+    fetch_page_valid: bool,
+    fetch_page_tag: u32,
+    fetch_page_phys: u32,
+
     prefetch_valid: bool,
     prefetch_addr: u32,
     prefetch_byte: u8,
@@ -102,6 +106,7 @@ pub struct I386<const CPU_MODEL: u8 = { CPU_MODEL_386 }> {
     tlb_tag: [u32; 64],
     tlb_phys: [u32; 64],
     tlb_writable: [bool; 64],
+    tlb_dirty: [bool; 64],
 
     debug_trap_pending: bool,
     trap_level: u8,
@@ -161,6 +166,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             eo: 0,
             eo32: 0,
             ea_seg: SegReg32::DS,
+            fetch_page_valid: false,
+            fetch_page_tag: 0,
+            fetch_page_phys: 0,
             prefetch_valid: false,
             prefetch_addr: 0,
             prefetch_byte: 0,
@@ -168,6 +176,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             tlb_tag: [0; 64],
             tlb_phys: [0; 64],
             tlb_writable: [false; 64],
+            tlb_dirty: [false; 64],
             debug_trap_pending: false,
             trap_level: 0,
             prev_exception_class: 0,
@@ -384,9 +393,18 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
         let eip = self.effective_eip();
         let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
-        let Some(addr) = self.translate_linear(linear, false, bus) else {
-            self.prefetch_valid = false;
-            return 0;
+        let page = linear >> 12;
+        let addr = if self.fetch_page_valid && self.fetch_page_tag == page {
+            self.fetch_page_phys | (linear & 0xFFF)
+        } else {
+            let Some(addr) = self.translate_linear(linear, false, bus) else {
+                self.prefetch_valid = false;
+                return 0;
+            };
+            self.fetch_page_valid = true;
+            self.fetch_page_tag = page;
+            self.fetch_page_phys = addr & !0xFFF;
+            addr
         };
         let value = if self.prefetch_valid && self.prefetch_addr == addr {
             self.prefetch_valid = false;
@@ -395,10 +413,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             bus.read_byte(addr)
         };
         self.advance_ip_byte();
-        // Prefetch next byte using TLB-only probe to avoid spurious page faults.
-        let next_eip = self.effective_eip();
-        let next_linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(next_eip);
-        if let Some(next_addr) = self.translate_linear_probe(next_linear) {
+        // Prefetch next byte to model the 386 prefetch queue.
+        // This ensures bytes already fetched before a REP string op
+        // overwrites them are still seen correctly.
+        let next_addr = addr.wrapping_add(1);
+        if next_addr & 0xFFF != 0 {
             self.prefetch_addr = next_addr;
             self.prefetch_byte = bus.read_byte(next_addr);
             self.prefetch_valid = true;
@@ -414,8 +433,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             let eip = self.effective_eip();
             let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
             if (linear & 0xFFF) <= 0xFFE {
-                let Some(addr) = self.translate_linear(linear, false, bus) else {
-                    return 0;
+                let page = linear >> 12;
+                let addr = if self.fetch_page_valid && self.fetch_page_tag == page {
+                    self.fetch_page_phys | (linear & 0xFFF)
+                } else {
+                    let Some(addr) = self.translate_linear(linear, false, bus) else {
+                        return 0;
+                    };
+                    self.fetch_page_valid = true;
+                    self.fetch_page_tag = page;
+                    self.fetch_page_phys = addr & !0xFFF;
+                    addr
                 };
                 let value = bus.read_word(addr);
                 self.advance_ip_by(2);
@@ -433,8 +461,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             let eip = self.effective_eip();
             let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
             if (linear & 0xFFF) <= 0xFFC {
-                let Some(addr) = self.translate_linear(linear, false, bus) else {
-                    return 0;
+                let page = linear >> 12;
+                let addr = if self.fetch_page_valid && self.fetch_page_tag == page {
+                    self.fetch_page_phys | (linear & 0xFFF)
+                } else {
+                    let Some(addr) = self.translate_linear(linear, false, bus) else {
+                        return 0;
+                    };
+                    self.fetch_page_valid = true;
+                    self.fetch_page_tag = page;
+                    self.fetch_page_phys = addr & !0xFFF;
+                    addr
                 };
                 let value = bus.read_dword(addr);
                 self.advance_ip_by(4);
@@ -2339,6 +2376,9 @@ impl<const CPU_MODEL: u8> common::Cpu for I386<CPU_MODEL> {
         self.eo = 0;
         self.eo32 = 0;
         self.ea_seg = SegReg32::DS;
+        self.fetch_page_valid = false;
+        self.fetch_page_tag = 0;
+        self.fetch_page_phys = 0;
         self.prefetch_valid = false;
         self.prefetch_addr = 0;
         self.prefetch_byte = 0;
