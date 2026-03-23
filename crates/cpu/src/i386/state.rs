@@ -270,9 +270,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.seg_prefix = false;
         self.operand_size_override = false;
         self.address_size_override = false;
+        self.fetch_page_valid = false;
         self.prefetch_valid = false;
-        self.prefetch_addr = 0;
-        self.prefetch_byte = 0;
         self.flush_tlb();
     }
 

@@ -17,20 +17,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     pub(super) fn flush_tlb(&mut self) {
         self.tlb_valid = [false; TLB_SIZE];
-    }
-
-    #[inline(always)]
-    pub(super) fn translate_linear_probe(&self, linear: u32) -> Option<u32> {
-        if !self.is_paging_enabled() {
-            return Some(linear & 0x00FF_FFFF);
-        }
-        let page = linear >> 12;
-        let slot = (page & TLB_MASK) as usize;
-        if self.tlb_valid[slot] && self.tlb_tag[slot] == page {
-            Some(self.tlb_phys[slot] | (linear & 0xFFF))
-        } else {
-            None
-        }
+        self.tlb_dirty = [false; TLB_SIZE];
+        self.fetch_page_valid = false;
     }
 
     #[inline(always)]
@@ -48,7 +36,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let slot = (page & TLB_MASK) as usize;
 
         if self.tlb_valid[slot] && self.tlb_tag[slot] == page {
-            if write && !self.tlb_writable[slot] {
+            if write && (!self.tlb_writable[slot] || !self.tlb_dirty[slot]) {
                 return self.page_table_walk(linear, write, bus);
             }
             return Some(self.tlb_phys[slot] | (linear & 0xFFF));
@@ -131,6 +119,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.tlb_valid[slot] = true;
         self.tlb_tag[slot] = page;
         self.tlb_phys[slot] = physical_page;
+        self.tlb_dirty[slot] = write;
         // Writable in TLB if both PDE and PTE allow writes (or supervisor without WP).
         let wp_enforced = CPU_MODEL == CPU_MODEL_486 && self.cr0 & 0x0001_0000 != 0;
         self.tlb_writable[slot] = if is_user || wp_enforced {
