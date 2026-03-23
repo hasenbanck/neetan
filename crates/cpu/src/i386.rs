@@ -290,6 +290,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.ip_upper = next & 0xFFFF_0000;
     }
 
+    #[inline(always)]
+    fn advance_ip_by(&mut self, n: u32) {
+        let next = self.effective_eip().wrapping_add(n);
+        self.ip = next as u16;
+        self.ip_upper = next & 0xFFFF_0000;
+    }
+
     /// Applies a signed 8-bit branch displacement to EIP, respecting the
     /// current operand size: 32-bit mode preserves the full EIP, while
     /// 16-bit mode truncates to 16 bits.
@@ -403,35 +410,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     #[inline(always)]
     fn fetchword(&mut self, bus: &mut impl common::Bus) -> u16 {
-        if self.fault_pending {
-            return 0;
-        }
-        let eip = self.effective_eip();
-        let cs_base = self.seg_bases[SegReg32::CS as usize];
-        let linear = cs_base.wrapping_add(eip);
-        if linear & 0xFFF <= 0xFFE {
-            let Some(a0) = self.translate_linear(linear, false, bus) else {
-                self.prefetch_valid = false;
-                return 0;
-            };
-            let b0 = if self.prefetch_valid && self.prefetch_addr == a0 {
-                self.prefetch_byte
-            } else {
-                bus.read_byte(a0)
-            };
-            let b1 = bus.read_byte(a0.wrapping_add(1));
-            let new_eip = eip.wrapping_add(2);
-            self.ip = new_eip as u16;
-            self.ip_upper = new_eip & 0xFFFF_0000;
-            let next_linear = cs_base.wrapping_add(new_eip);
-            if let Some(next_addr) = self.translate_linear_probe(next_linear) {
-                self.prefetch_addr = next_addr;
-                self.prefetch_byte = bus.read_byte(next_addr);
-                self.prefetch_valid = true;
-            } else {
-                self.prefetch_valid = false;
+        if !self.fault_pending {
+            let eip = self.effective_eip();
+            let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
+            if (linear & 0xFFF) <= 0xFFE {
+                let Some(addr) = self.translate_linear(linear, false, bus) else {
+                    return 0;
+                };
+                let value = bus.read_word(addr);
+                self.advance_ip_by(2);
+                return value;
             }
-            return b0 as u16 | ((b1 as u16) << 8);
         }
         let low = self.fetch(bus) as u16;
         let high = self.fetch(bus) as u16;
@@ -440,37 +429,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     #[inline(always)]
     fn fetchdword(&mut self, bus: &mut impl common::Bus) -> u32 {
-        if self.fault_pending {
-            return 0;
-        }
-        let eip = self.effective_eip();
-        let cs_base = self.seg_bases[SegReg32::CS as usize];
-        let linear = cs_base.wrapping_add(eip);
-        if linear & 0xFFF <= 0xFFC {
-            let Some(a0) = self.translate_linear(linear, false, bus) else {
-                self.prefetch_valid = false;
-                return 0;
-            };
-            let b0 = if self.prefetch_valid && self.prefetch_addr == a0 {
-                self.prefetch_byte
-            } else {
-                bus.read_byte(a0)
-            };
-            let b1 = bus.read_byte(a0.wrapping_add(1));
-            let b2 = bus.read_byte(a0.wrapping_add(2));
-            let b3 = bus.read_byte(a0.wrapping_add(3));
-            let new_eip = eip.wrapping_add(4);
-            self.ip = new_eip as u16;
-            self.ip_upper = new_eip & 0xFFFF_0000;
-            let next_linear = cs_base.wrapping_add(new_eip);
-            if let Some(next_addr) = self.translate_linear_probe(next_linear) {
-                self.prefetch_addr = next_addr;
-                self.prefetch_byte = bus.read_byte(next_addr);
-                self.prefetch_valid = true;
-            } else {
-                self.prefetch_valid = false;
+        if !self.fault_pending {
+            let eip = self.effective_eip();
+            let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
+            if (linear & 0xFFF) <= 0xFFC {
+                let Some(addr) = self.translate_linear(linear, false, bus) else {
+                    return 0;
+                };
+                let value = bus.read_dword(addr);
+                self.advance_ip_by(4);
+                return value;
             }
-            return b0 as u32 | ((b1 as u32) << 8) | ((b2 as u32) << 16) | ((b3 as u32) << 24);
         }
         let b0 = self.fetch(bus) as u32;
         let b1 = self.fetch(bus) as u32;
