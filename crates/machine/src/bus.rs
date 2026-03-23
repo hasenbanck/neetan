@@ -1409,6 +1409,14 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             return value;
         }
         let address = self.a20_mask(address);
+        if address >= 0x100000 {
+            let offset = (address - 0x100000) as usize;
+            if offset < self.memory.extended_ram.len() {
+                let value = self.memory.extended_ram[offset];
+                self.tracer.trace_mem_read(address, value);
+                return value;
+            }
+        }
         let pegc_active = self.pegc.is_256_color_active();
         let ems_b_bank = self.b_bank_ems
             && self.vram_ems_bank & 0x02 != 0
@@ -1445,6 +1453,14 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             return;
         }
         let address = self.a20_mask(address);
+        if address >= 0x100000 {
+            let offset = (address - 0x100000) as usize;
+            if offset < self.memory.extended_ram.len() {
+                self.memory.extended_ram[offset] = value;
+                self.tracer.trace_mem_write(address, value);
+                return;
+            }
+        }
         let pegc_active = self.pegc.is_256_color_active();
         let ems_b_bank = self.b_bank_ems
             && self.vram_ems_bank & 0x02 != 0
@@ -1482,6 +1498,15 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             return value;
         }
         let address = self.a20_mask(address);
+        if address >= 0x100000 {
+            let base = (address - 0x100000) as usize;
+            if base + 1 < self.memory.extended_ram.len() {
+                let value = self.memory.extended_ram[base] as u16
+                    | ((self.memory.extended_ram[base + 1] as u16) << 8);
+                self.tracer.trace_mem_read_word(address, value);
+                return value;
+            }
+        }
         let pegc_active = self.pegc.is_256_color_active();
         if pegc_active && (0xA8000..=0xB7FFF).contains(&address) {
             self.pending_wait_cycles += self.vram_wait;
@@ -1556,6 +1581,15 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             return;
         }
         let address = self.a20_mask(address);
+        if address >= 0x100000 {
+            let base = (address - 0x100000) as usize;
+            if base + 1 < self.memory.extended_ram.len() {
+                self.memory.extended_ram[base] = value as u8;
+                self.memory.extended_ram[base + 1] = (value >> 8) as u8;
+                self.tracer.trace_mem_write_word(address, value);
+                return;
+            }
+        }
         let pegc_active = self.pegc.is_256_color_active();
         if pegc_active && (0xA8000..=0xB7FFF).contains(&address) {
             self.pending_wait_cycles += self.vram_wait;
@@ -1628,6 +1662,16 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                 | ((self.memory.state.ram[a + 3] as u32) << 24);
             return value;
         }
+        let address_masked = self.a20_mask(address);
+        if address_masked >= 0x100000 {
+            let base = (address_masked - 0x100000) as usize;
+            if base + 3 < self.memory.extended_ram.len() {
+                return self.memory.extended_ram[base] as u32
+                    | ((self.memory.extended_ram[base + 1] as u32) << 8)
+                    | ((self.memory.extended_ram[base + 2] as u32) << 16)
+                    | ((self.memory.extended_ram[base + 3] as u32) << 24);
+            }
+        }
         let low = self.read_word(address) as u32;
         let high = self.read_word(address.wrapping_add(2)) as u32;
         low | (high << 16)
@@ -1641,6 +1685,17 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             self.memory.state.ram[a + 2] = (value >> 16) as u8;
             self.memory.state.ram[a + 3] = (value >> 24) as u8;
             return;
+        }
+        let address_masked = self.a20_mask(address);
+        if address_masked >= 0x100000 {
+            let base = (address_masked - 0x100000) as usize;
+            if base + 3 < self.memory.extended_ram.len() {
+                self.memory.extended_ram[base] = value as u8;
+                self.memory.extended_ram[base + 1] = (value >> 8) as u8;
+                self.memory.extended_ram[base + 2] = (value >> 16) as u8;
+                self.memory.extended_ram[base + 3] = (value >> 24) as u8;
+                return;
+            }
         }
         self.write_word(address, value as u16);
         self.write_word(address.wrapping_add(2), (value >> 16) as u16);
