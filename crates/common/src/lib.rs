@@ -355,6 +355,27 @@ pub trait Bus {
         self.write_byte(address.wrapping_add(1), (value >> 8) as u8);
     }
 
+    /// Reads a 32-bit little-endian dword from the given memory address.
+    ///
+    /// The default implementation composes two word reads. Override this for
+    /// fast-path RAM access where the address is known to fall within a
+    /// contiguous region.
+    fn read_dword(&mut self, address: u32) -> u32 {
+        let low = self.read_word(address) as u32;
+        let high = self.read_word(address.wrapping_add(2)) as u32;
+        low | (high << 16)
+    }
+
+    /// Writes a 32-bit little-endian dword to the given memory address.
+    ///
+    /// The default implementation composes two word writes. Override this for
+    /// fast-path RAM access where the address is known to fall within a
+    /// contiguous region.
+    fn write_dword(&mut self, address: u32, value: u32) {
+        self.write_word(address, value as u16);
+        self.write_word(address.wrapping_add(2), (value >> 16) as u16);
+    }
+
     /// Reads a single byte from the given I/O port.
     fn io_read_byte(&mut self, port: u16) -> u8;
 
