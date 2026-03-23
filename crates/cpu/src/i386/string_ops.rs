@@ -78,6 +78,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     #[inline(always)]
     fn string_read_word(&mut self, bus: &mut impl common::Bus, base: u32, offset: u32) -> u16 {
         let l0 = self.string_addr_delta(base, offset, 0);
+        let same_page = if self.address_size_override {
+            l0 & 0xFFF <= 0xFFE
+        } else {
+            l0 & 0xFFF <= 0xFFE && (offset as u16) <= 0xFFFE
+        };
+        if same_page {
+            let a0 = self.translate_linear(l0, false, bus).unwrap_or(0);
+            return bus.read_word(a0);
+        }
         let l1 = self.string_addr_delta(base, offset, 1);
         let a0 = self.translate_linear(l0, false, bus).unwrap_or(0);
         let a1 = self.translate_linear(l1, false, bus).unwrap_or(0);
@@ -93,6 +102,18 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         value: u16,
     ) {
         let l0 = self.string_addr_delta(base, offset, 0);
+        let same_page = if self.address_size_override {
+            l0 & 0xFFF <= 0xFFE
+        } else {
+            l0 & 0xFFF <= 0xFFE && (offset as u16) <= 0xFFFE
+        };
+        if same_page {
+            let Some(a0) = self.translate_linear(l0, true, bus) else {
+                return;
+            };
+            bus.write_word(a0, value);
+            return;
+        }
         let l1 = self.string_addr_delta(base, offset, 1);
         let Some(a0) = self.translate_linear(l0, true, bus) else {
             return;
@@ -107,6 +128,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     #[inline(always)]
     fn string_read_dword(&mut self, bus: &mut impl common::Bus, base: u32, offset: u32) -> u32 {
         let l0 = self.string_addr_delta(base, offset, 0);
+        let same_page = if self.address_size_override {
+            l0 & 0xFFF <= 0xFFC
+        } else {
+            l0 & 0xFFF <= 0xFFC && (offset as u16) <= 0xFFFC
+        };
+        if same_page {
+            let a0 = self.translate_linear(l0, false, bus).unwrap_or(0);
+            return bus.read_dword(a0);
+        }
         let l1 = self.string_addr_delta(base, offset, 1);
         let l2 = self.string_addr_delta(base, offset, 2);
         let l3 = self.string_addr_delta(base, offset, 3);
@@ -129,6 +159,18 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         value: u32,
     ) {
         let l0 = self.string_addr_delta(base, offset, 0);
+        let same_page = if self.address_size_override {
+            l0 & 0xFFF <= 0xFFC
+        } else {
+            l0 & 0xFFF <= 0xFFC && (offset as u16) <= 0xFFFC
+        };
+        if same_page {
+            let Some(a0) = self.translate_linear(l0, true, bus) else {
+                return;
+            };
+            bus.write_dword(a0, value);
+            return;
+        }
         let l1 = self.string_addr_delta(base, offset, 1);
         let l2 = self.string_addr_delta(base, offset, 2);
         let l3 = self.string_addr_delta(base, offset, 3);
