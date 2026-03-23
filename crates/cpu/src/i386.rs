@@ -525,8 +525,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             | 0x28 | 0x29
             // XOR r/m, r
             | 0x30 | 0x31
-            // ADD/OR/ADC/SBB/AND/SUB/XOR/CMP r/m, imm
-            | 0x80 | 0x81 | 0x83
+            // ADD/OR/ADC/SBB/AND/SUB/XOR/CMP r/m, imm (0x82 is alias for 0x80)
+            | 0x80 | 0x81 | 0x82 | 0x83
             // XCHG r/m, r
             | 0x86 | 0x87
             // NOT/NEG r/m (F6 /2, /3 and F7 /2, /3)
