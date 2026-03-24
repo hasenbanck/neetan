@@ -1126,6 +1126,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 if self.tlb_valid[slot] && self.tlb_tag[slot] == page {
                     self.tlb_valid[slot] = false;
                 }
+                self.fetch_page_valid = false;
                 self.clk(Self::timing(0, 12));
             }
             _ => self.raise_fault(6, bus),

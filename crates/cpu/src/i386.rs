@@ -84,6 +84,7 @@ pub struct I386<const CPU_MODEL: u8 = { CPU_MODEL_386 }> {
     rep_operand_size_override: bool,
     rep_address_size_override: bool,
     rep_active: bool,
+    rep_completed: bool,
 
     cycles_remaining: i64,
     run_start_cycle: u64,
@@ -159,6 +160,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             rep_operand_size_override: false,
             rep_address_size_override: false,
             rep_active: false,
+            rep_completed: false,
             cycles_remaining: 0,
             run_start_cycle: 0,
             run_budget: 0,
@@ -2199,6 +2201,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     fn execute_one(&mut self, bus: &mut impl common::Bus) {
+        self.prefetch_valid &= self.rep_active | self.rep_completed;
+        self.rep_completed = false;
         self.prev_ip = self.ip;
         self.prev_ip_upper = self.ip_upper;
         self.fault_pending = false;
@@ -2365,6 +2369,7 @@ impl<const CPU_MODEL: u8> common::Cpu for I386<CPU_MODEL> {
         self.no_interrupt = 0;
         self.inhibit_all = 0;
         self.rep_active = false;
+        self.rep_completed = false;
         self.rep_restart_ip = 0;
         self.rep_type = 0;
         self.rep_operand_size_override = false;
