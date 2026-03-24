@@ -1230,7 +1230,9 @@ impl<T: Tracing> Pc9801Bus<T> {
 
     fn process_soundboard_86_actions(&mut self) {
         if let Some(ref mut sb86) = self.soundboard_86 {
-            for action in sb86.drain_actions() {
+            let pcm86_pending =
+                self.scheduler.state.fire_cycles[EventKind::Pcm86Irq as usize].is_some();
+            for action in sb86.drain_actions(pcm86_pending) {
                 match action {
                     Soundboard86Action::ScheduleTimer { kind, fire_cycle } => {
                         self.scheduler.schedule(kind, fire_cycle);
