@@ -171,7 +171,7 @@ impl Soundboard26k {
         chip.set_fidelity(FIDELITY);
 
         let native_rate = chip.sample_rate(YM2203_CLOCK);
-        let resampler = ResamplerFir::new(
+        let resampler = ResamplerFir::new_from_hz(
             1,
             native_rate,
             sample_rate,
@@ -465,7 +465,7 @@ impl Soundboard26k {
         self.chip.reset();
         self.chip.set_fidelity(FIDELITY);
         self.native_rate = self.chip.sample_rate(YM2203_CLOCK);
-        self.resampler = ResamplerFir::new(
+        self.resampler = ResamplerFir::new_from_hz(
             1,
             self.native_rate,
             sample_rate,

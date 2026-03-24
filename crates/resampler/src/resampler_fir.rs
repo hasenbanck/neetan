@@ -7,8 +7,8 @@ use std::{
 };
 
 use crate::{
-    ResampleError,
-    window::{calculate_cutoff_kaiser, make_sincs_for_kaiser},
+    ResampleError, SampleRate,
+    window::{WindowType, calculate_cutoff_kaiser, make_sincs_for_kaiser},
 };
 
 const PHASES: usize = 1024;
@@ -224,24 +224,87 @@ impl ResamplerFir {
     /// # Example
     ///
     /// ```rust
-    /// use resampler::{Attenuation, Latency, ResamplerFir};
+    /// use resampler::{Attenuation, Latency, ResamplerFir, SampleRate};
     ///
     /// // Create with default latency (128 taps, 64 samples delay) and 90 dB attenuation
-    /// let resampler = ResamplerFir::new(2, 48000, 44100, Latency::default(), Attenuation::default());
+    /// let resampler = ResamplerFir::new(
+    ///     2,
+    ///     SampleRate::Hz48000,
+    ///     SampleRate::Hz44100,
+    ///     Latency::default(),
+    ///     Attenuation::default(),
+    /// );
     ///
     /// // Create with low latency (32 taps, 16 samples delay) and 60 dB attenuation
-    /// let resampler_low_latency =
-    ///     ResamplerFir::new(2, 48000, 44100, Latency::Sample16, Attenuation::Db60);
+    /// let resampler_low_latency = ResamplerFir::new(
+    ///     2,
+    ///     SampleRate::Hz48000,
+    ///     SampleRate::Hz44100,
+    ///     Latency::Sample16,
+    ///     Attenuation::Db60,
+    /// );
     /// ```
     pub fn new(
         channels: usize,
-        input_rate: u32,
-        output_rate: u32,
+        input_rate: SampleRate,
+        output_rate: SampleRate,
         latency: Latency,
         attenuation: Attenuation,
     ) -> Self {
-        let input_rate_hz = f64::from(input_rate);
-        let output_rate_hz = f64::from(output_rate);
+        Self::new_from_hz(
+            channels,
+            u32::from(input_rate),
+            u32::from(output_rate),
+            latency,
+            attenuation,
+        )
+    }
+
+    /// Create a new [`ResamplerFir`] from arbitrary integer sample rates.
+    ///
+    /// This is equivalent to [`ResamplerFir::new`] but accepts raw `u32` sample rates
+    /// instead of the [`SampleRate`] enum, allowing resampling between any pair of
+    /// sample rates.
+    ///
+    /// # Parameters
+    ///
+    /// - `channels`: The channel count.
+    /// - `input_rate_hz`: Input sample rate in Hz.
+    /// - `output_rate_hz`: Output sample rate in Hz.
+    /// - `latency`: Latency configuration determining filter length.
+    /// - `attenuation`: Desired stopband attenuation controlling filter quality.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `input_rate_hz` or `output_rate_hz` is zero.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use resampler::{Attenuation, Latency, ResamplerFir};
+    ///
+    /// // Resample from 24 kHz to 16 kHz (rates not available in SampleRate enum)
+    /// let resampler =
+    ///     ResamplerFir::new_from_hz(2, 24000, 16000, Latency::default(), Attenuation::default());
+    /// ```
+    pub fn new_from_hz(
+        channels: usize,
+        input_rate_hz: u32,
+        output_rate_hz: u32,
+        latency: Latency,
+        attenuation: Attenuation,
+    ) -> Self {
+        assert!(
+            input_rate_hz > 0,
+            "input sample rate must be greater than zero"
+        );
+        assert!(
+            output_rate_hz > 0,
+            "output sample rate must be greater than zero"
+        );
+
+        let input_rate_hz = input_rate_hz as f64;
+        let output_rate_hz = output_rate_hz as f64;
         let ratio = input_rate_hz / output_rate_hz;
 
         let taps = latency.taps();
@@ -261,7 +324,7 @@ impl ResamplerFir {
         let input_buffers = vec![0.0; BUFFER_SIZE * channels].into_boxed_slice();
 
         #[cfg(target_arch = "x86_64")]
-        let convolve_function = if std::arch::is_x86_feature_detected!("avx512f") && taps >= 16 {
+        let convolve_function = if is_x86_feature_detected!("avx512f") && taps >= 16 {
             fn wrapper(
                 input: &[f32],
                 coeffs1: &[f32],
@@ -274,9 +337,7 @@ impl ResamplerFir {
                 }
             }
             wrapper
-        } else if std::arch::is_x86_feature_detected!("avx")
-            && std::arch::is_x86_feature_detected!("fma")
-        {
+        } else if is_x86_feature_detected!("avx") && is_x86_feature_detected!("fma") {
             fn wrapper(
                 input: &[f32],
                 coeffs1: &[f32],
@@ -289,7 +350,7 @@ impl ResamplerFir {
                 }
             }
             wrapper
-        } else if std::arch::is_x86_feature_detected!("sse4.2") {
+        } else if is_x86_feature_detected!("sse4.2") {
             fn wrapper(
                 input: &[f32],
                 coeffs1: &[f32],
@@ -336,7 +397,8 @@ impl ResamplerFir {
     }
 
     fn create_fir_coeffs(cutoff: f32, taps: usize, beta: f64) -> FirCacheData {
-        let polyphase_coeffs = make_sincs_for_kaiser(taps, PHASES, cutoff, beta);
+        let polyphase_coeffs =
+            make_sincs_for_kaiser(taps, PHASES, cutoff, beta, WindowType::Symmetric);
 
         // Flatten the polyphase coefficients into a single contiguous allocation.
         // Layout: [phase0_tap0..N, phase1_tap0..N, ..., phase1023_tap0..N]
@@ -377,7 +439,9 @@ impl ResamplerFir {
         // Conservative upper bound: assume buffer could be maximally filled.
         let max_total_frames = INPUT_CAPACITY;
         let max_usable_frames = (max_total_frames - self.taps) as f64;
+
         let max_output_frames = (max_usable_frames / self.ratio).ceil() as usize + 2;
+
         max_output_frames * self.channels
     }
 
@@ -403,10 +467,15 @@ impl ResamplerFir {
     /// ## Example
     ///
     /// ```rust
-    /// use resampler::{Attenuation, Latency, ResamplerFir};
+    /// use resampler::{Attenuation, Latency, ResamplerFir, SampleRate};
     ///
-    /// let mut resampler =
-    ///     ResamplerFir::new(1, 48000, 44100, Latency::default(), Attenuation::default());
+    /// let mut resampler = ResamplerFir::new(
+    ///     1,
+    ///     SampleRate::Hz48000,
+    ///     SampleRate::Hz44100,
+    ///     Latency::default(),
+    ///     Attenuation::default(),
+    /// );
     /// let buffer_size_output = resampler.buffer_size_output();
     /// let input = vec![0.0f32; 256];
     /// let mut output = vec![0.0f32; buffer_size_output];
@@ -464,6 +533,7 @@ impl ResamplerFir {
             }
 
             let position_fract = self.position.fract();
+
             let phase_f = (position_fract * self.phases as f64).min((self.phases - 1) as f64);
             let phase1 = phase_f as usize;
             let phase2 = (phase1 + 1).min(self.phases - 1);
@@ -495,8 +565,10 @@ impl ResamplerFir {
         }
 
         // Update buffer state: consume processed frames.
+        // Cap to available_frames: when ratio > taps, position can advance past the buffer end
+        // after the last valid output iteration. The excess is preserved as a lookahead offset.
 
-        let consumed_frames = self.position.floor() as usize;
+        let consumed_frames = (self.position.floor() as usize).min(self.available_frames);
 
         self.read_position += consumed_frames;
         self.available_frames -= consumed_frames;
@@ -540,5 +612,222 @@ impl ResamplerFir {
         self.read_position = 0;
         self.available_frames = 0;
         self.position = 0.0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use super::*;
+    use crate::fft::{Forward, Radix, RadixFFT};
+
+    /// Helper function to compute frequency response magnitude in dB from impulse response.
+    fn compute_frequency_response_db(impulse_response: &[f32], fft_size: usize) -> Vec<f32> {
+        assert!(fft_size.is_power_of_two(), "FFT size must be power of two");
+
+        // Create FFT object.
+        let num_factors = fft_size.trailing_zeros() as usize;
+        let factors = vec![Radix::Factor2; num_factors];
+        let fft = RadixFFT::<Forward>::new(factors);
+
+        // Prepare input buffer (zero-padded or truncated to fft_size).
+        let mut input_buffer = vec![0.0f32; fft_size];
+        let copy_len = impulse_response.len().min(fft_size);
+        input_buffer[..copy_len].copy_from_slice(&impulse_response[..copy_len]);
+
+        // Prepare output and scratchpad buffers.
+        let mut output_buffer = vec![crate::fft::Complex32::zero(); fft_size / 2 + 1];
+        let mut scratchpad = vec![crate::fft::Complex32::zero(); fft.scratchpad_size()];
+
+        // Compute FFT.
+        fft.process(&input_buffer, &mut output_buffer, &mut scratchpad);
+
+        // Compute magnitudes in dB.
+        output_buffer
+            .iter()
+            .map(|c| {
+                let magnitude = (c.re * c.re + c.im * c.im).sqrt();
+                if magnitude > 1e-10 {
+                    20.0 * magnitude.log10()
+                } else {
+                    -200.0
+                }
+            })
+            .collect()
+    }
+
+    /// Helper to get frequency bin index from frequency in Hz.
+    fn freq_to_bin(freq_hz: f32, sample_rate_hz: f32, fft_size: usize) -> usize {
+        ((freq_hz / sample_rate_hz) * fft_size as f32).round() as usize
+    }
+
+    /// Resample an impulse signal and extract the impulse response from output.
+    fn get_resampled_impulse_response(
+        input_rate: SampleRate,
+        output_rate: SampleRate,
+        duration_sec: f32,
+    ) -> Vec<f32> {
+        let input_rate_hz = u32::from(input_rate);
+
+        let input_samples = (input_rate_hz as f32 * duration_sec) as usize;
+
+        let impulse_pos = (input_samples as f32 * 0.5).min(input_samples as f32 - 1.0) as usize;
+        let mut input = vec![0.0f32; input_samples];
+        input[impulse_pos] = 1.0;
+
+        let mut resampler = ResamplerFir::new(
+            1,
+            input_rate,
+            output_rate,
+            Latency::Sample64,
+            Attenuation::Db90,
+        );
+
+        let buffer_size_output = resampler.buffer_size_output();
+        let mut output_buffer = vec![0.0f32; buffer_size_output];
+        let mut output = Vec::new();
+        let mut input_offset = 0;
+
+        while input_offset < input_samples {
+            let remaining = input_samples - input_offset;
+            let chunk_size = remaining.min(256);
+            let input_chunk = &input[input_offset..input_offset + chunk_size];
+
+            let (consumed, produced) = resampler
+                .resample(input_chunk, &mut output_buffer)
+                .expect("FIR resampling failed");
+
+            output.extend_from_slice(&output_buffer[..produced]);
+
+            input_offset += consumed;
+
+            if consumed == 0 {
+                break;
+            }
+        }
+
+        output
+    }
+
+    /// Measure stopband attenuation for a given sample rate conversion.
+    fn measure_stopband_attenuation(input_rate: SampleRate, output_rate: SampleRate) {
+        let resampled_output = get_resampled_impulse_response(input_rate, output_rate, 5.0);
+
+        let peak_idx = resampled_output
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.abs().partial_cmp(&b.abs()).unwrap())
+            .map(|(idx, _)| idx)
+            .unwrap();
+
+        let output_rate_hz = u32::from(output_rate);
+        let window_size = (output_rate_hz as f32 * 0.1) as usize;
+        let start = peak_idx.saturating_sub(window_size / 2);
+        let end = (start + window_size).min(resampled_output.len());
+        let impulse_response = &resampled_output[start..end];
+
+        let fft_size = 8192;
+        let magnitude_db = compute_frequency_response_db(impulse_response, fft_size);
+
+        let input_nyquist_hz = u32::from(input_rate) as f32 / 2.0;
+        let passband_end_hz = input_nyquist_hz * 0.9; // 90% of input Nyquist
+        let stopband_start_hz = input_nyquist_hz * 1.1; // 110% of input Nyquist
+
+        let passband_start_bin = freq_to_bin(20.0, output_rate_hz as f32, fft_size);
+        let passband_end_bin = freq_to_bin(passband_end_hz, output_rate_hz as f32, fft_size);
+        let stopband_start_bin = freq_to_bin(stopband_start_hz, output_rate_hz as f32, fft_size);
+        let stopband_end_bin = (magnitude_db.len() - 10).min(freq_to_bin(
+            output_rate_hz as f32 / 2.0 * 0.95,
+            output_rate_hz as f32,
+            fft_size,
+        ));
+
+        let passband_values = &magnitude_db[passband_start_bin..=passband_end_bin];
+        let passband_max = passband_values
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max);
+
+        let stopband_values = &magnitude_db[stopband_start_bin..=stopband_end_bin];
+        let stopband_max = stopband_values
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max);
+        let _stopband_min = stopband_values
+            .iter()
+            .copied()
+            .fold(f32::INFINITY, f32::min);
+
+        let attenuation = passband_max - stopband_max;
+
+        {
+            println!("Passband peak: {passband_max:.2} dB");
+            println!("Stopband: min = {_stopband_min:.2} dB, max = {stopband_max:.2} dB");
+            println!("Stopband attenuation: {attenuation:.2} dB");
+        }
+        assert!(
+            attenuation >= 90.0,
+            "FAIL: Stopband attenuation too low: {attenuation:.2} dB (required: >= 90 dB)",
+        );
+    }
+
+    #[test]
+    fn test_stopband_attenuation_22050_to_44100() {
+        println!("=== 22050 Hz -> 44100 Hz ===");
+        measure_stopband_attenuation(SampleRate::Hz22050, SampleRate::Hz44100);
+    }
+
+    #[test]
+    fn test_stopband_attenuation_22050_to_48000() {
+        println!("=== 22050 Hz -> 48000 Hz ===");
+        measure_stopband_attenuation(SampleRate::Hz22050, SampleRate::Hz48000);
+    }
+
+    #[test]
+    fn test_new_from_hz_matches_new() {
+        let mut resampler_enum = ResamplerFir::new(
+            1,
+            SampleRate::Hz48000,
+            SampleRate::Hz44100,
+            Latency::Sample64,
+            Attenuation::Db90,
+        );
+        let mut resampler_hz =
+            ResamplerFir::new_from_hz(1, 48000, 44100, Latency::Sample64, Attenuation::Db90);
+
+        let input = vec![0.5f32; 512];
+        let mut output_enum = vec![0.0f32; resampler_enum.buffer_size_output()];
+        let mut output_hz = vec![0.0f32; resampler_hz.buffer_size_output()];
+
+        let (c1, p1) = resampler_enum.resample(&input, &mut output_enum).unwrap();
+        let (c2, p2) = resampler_hz.resample(&input, &mut output_hz).unwrap();
+
+        assert_eq!(c1, c2);
+        assert_eq!(p1, p2);
+        assert_eq!(&output_enum[..p1], &output_hz[..p2]);
+    }
+
+    #[test]
+    fn test_new_from_hz_arbitrary_rates() {
+        let mut resampler =
+            ResamplerFir::new_from_hz(1, 24000, 16000, Latency::Sample32, Attenuation::Db60);
+
+        let input = vec![0.0f32; 256];
+        let mut output = vec![0.0f32; resampler.buffer_size_output()];
+        let result = resampler.resample(&input, &mut output);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[should_panic(expected = "input sample rate must be greater than zero")]
+    fn test_new_from_hz_zero_input_rate() {
+        ResamplerFir::new_from_hz(1, 0, 44100, Latency::default(), Attenuation::default());
+    }
+
+    #[test]
+    #[should_panic(expected = "output sample rate must be greater than zero")]
+    fn test_new_from_hz_zero_output_rate() {
+        ResamplerFir::new_from_hz(1, 44100, 0, Latency::default(), Attenuation::default());
     }
 }

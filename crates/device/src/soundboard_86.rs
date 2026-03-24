@@ -457,7 +457,7 @@ struct Pcm86 {
 impl Pcm86 {
     fn new(sample_rate: u32, cpu_clock_hz: u32, machine_model: MachineModel) -> Self {
         let initial_pcm_rate = PCM86_RATES[0];
-        let resampler = ResamplerFir::new(
+        let resampler = ResamplerFir::new_from_hz(
             2,
             initial_pcm_rate,
             sample_rate,
@@ -632,7 +632,7 @@ impl Pcm86 {
                 if (old_fifo ^ value) & 7 != 0 {
                     self.state.rescue =
                         PCM86_RESCUE_TABLE[(value & 7) as usize] << self.state.step_bit;
-                    self.pcm_resampler = ResamplerFir::new(
+                    self.pcm_resampler = ResamplerFir::new_from_hz(
                         2,
                         self.pcm_rate(),
                         sample_rate,
@@ -1004,7 +1004,7 @@ impl Soundboard86 {
         chip.set_fidelity(FIDELITY);
 
         let native_rate = chip.sample_rate(YM2608_CLOCK);
-        let resampler = ResamplerFir::new(
+        let resampler = ResamplerFir::new_from_hz(
             2,
             native_rate,
             sample_rate,
@@ -1556,7 +1556,7 @@ impl Soundboard86 {
         self.state = saved.clone();
         self.pcm86.state = saved.pcm86.clone();
         self.pcm86.pending_irq_change = None;
-        self.pcm86.pcm_resampler = ResamplerFir::new(
+        self.pcm86.pcm_resampler = ResamplerFir::new_from_hz(
             2,
             self.pcm86.pcm_rate(),
             sample_rate,
@@ -1575,7 +1575,7 @@ impl Soundboard86 {
         self.chip.reset();
         self.chip.set_fidelity(FIDELITY);
         self.native_rate = self.chip.sample_rate(YM2608_CLOCK);
-        self.resampler = ResamplerFir::new(
+        self.resampler = ResamplerFir::new_from_hz(
             2,
             self.native_rate,
             sample_rate,
