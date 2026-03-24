@@ -20,7 +20,8 @@ struct DisplaySnapshotUpload {
     uint crtc_cl_ssl;
     uint crtc_sur_sdr;
     uint text_cursor;
-    uint reserved_header_words[27];
+    uint gdc_graphics_al;
+    uint reserved_header_words[26];
     uint text_vram_words[4096];
     uint graphics_b_plane[8192];
     uint graphics_r_plane[8192];
@@ -57,7 +58,8 @@ func fs_main(FullscreenVertex input) -> float4 {
     let y = uint(pixel.y);
 
     let is_pegc_256_color = (upload_buffer[0].display_flags & 0x80) != 0;
-    let max_y = is_pegc_256_color && ((pegc_buffer[0].pegc_flags & 0x02) != 0) ? 480u : 400u;
+    let gdc_al = upload_buffer[0].gdc_graphics_al;
+    let max_y = (is_pegc_256_color && gdc_al > 400) ? min(gdc_al, 480u) : 400u;
 
     if (x >= 640 || y >= max_y) {
         return float4(0.0, 0.0, 0.0, 1.0);

@@ -530,13 +530,16 @@ impl GraphicsEngine {
                     {
                         encoder.begin_debug_label(c"Scale Pass", [0.0, 1.0, 0.0, 1.0]);
 
-                        let is_pegc_480 = (render_instructions.display_snapshot.display_flags
+                        let gdc_al = render_instructions.display_snapshot.gdc_graphics_al;
+                        let native_height = if (render_instructions.display_snapshot.display_flags
                             & DISPLAY_FLAG_PEGC_256_COLOR)
                             != 0
-                            && render_instructions
-                                .pegc_snapshot
-                                .is_some_and(|p| (p.pegc_flags & 0x02) != 0);
-                        let native_height = if is_pegc_480 { 480 } else { 400 };
+                            && gdc_al > 400
+                        {
+                            gdc_al.min(480)
+                        } else {
+                            400
+                        };
 
                         render_scale_pass(
                             &mut encoder,

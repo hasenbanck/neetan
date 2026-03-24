@@ -41,8 +41,10 @@ pub struct DisplaySnapshotUpload {
     pub crtc_sur_sdr: u32,
     /// Text cursor: bit 31 = visible, bits 0-17 = EAD address from master GDC.
     pub text_cursor: u32,
+    /// Graphics GDC active display lines (AL from SYNC command, 0-1023).
+    pub gdc_graphics_al: u32,
     /// Reserved header words so text VRAM starts at byte offset 0x100.
-    pub reserved_header_words: [u32; 27],
+    pub reserved_header_words: [u32; 26],
     /// Text VRAM bytes as 32-bit little-endian words.
     pub text_vram_words: [u32; 0x4000 / 4],
     /// Graphics VRAM B-plane (32 KB) as 32-bit little-endian words.
@@ -206,9 +208,10 @@ mod tests {
         assert_eq!(offset_of!(DisplaySnapshotUpload, crtc_cl_ssl), 0x088);
         assert_eq!(offset_of!(DisplaySnapshotUpload, crtc_sur_sdr), 0x08C);
         assert_eq!(offset_of!(DisplaySnapshotUpload, text_cursor), 0x090);
+        assert_eq!(offset_of!(DisplaySnapshotUpload, gdc_graphics_al), 0x094);
         assert_eq!(
             offset_of!(DisplaySnapshotUpload, reserved_header_words),
-            0x094
+            0x098
         );
         assert_eq!(offset_of!(DisplaySnapshotUpload, text_vram_words), 0x100);
         assert_eq!(offset_of!(DisplaySnapshotUpload, graphics_b_plane), 0x4100);
