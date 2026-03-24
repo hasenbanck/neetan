@@ -44,53 +44,13 @@ pub(crate) fn convolve_interp(
     frac: f32,
     taps: usize,
 ) -> f32 {
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-    {
-        // Safety: We've checked that avx512f feature is enabled at compile time.
-        unsafe { avx512::convolve_interp_avx512(input, coeffs1, coeffs2, frac, taps) }
-    }
-
-    #[cfg(all(
-        target_arch = "x86_64",
-        target_feature = "avx",
-        target_feature = "fma",
-        not(target_feature = "avx512f")
-    ))]
-    {
-        // Safety: We've checked that avx and fma features are enabled at compile time.
-        unsafe { avx::convolve_interp_avx_fma(input, coeffs1, coeffs2, frac, taps) }
-    }
-
-    #[cfg(all(
-        target_arch = "x86_64",
-        target_feature = "sse4.2",
-        not(target_feature = "avx"),
-    ))]
-    {
-        // Safety: We've checked that sse4.2 feature is enabled at compile time.
-        unsafe { sse4_2::convolve_interp_sse4_2(input, coeffs1, coeffs2, frac, taps) }
-    }
-
-    #[cfg(all(
-        target_arch = "x86_64",
-        target_feature = "sse2",
-        not(target_feature = "sse4.2"),
-    ))]
-    {
-        // Safety: We've checked that sse2 feature is enabled at compile time.
-        unsafe { sse2::convolve_interp_sse2(input, coeffs1, coeffs2, frac, taps) }
-    }
-
     #[cfg(target_arch = "aarch64")]
     {
         // Safety: NEON is mandatory on aarch64, so it's always available.
         unsafe { neon::convolve_interp_neon(input, coeffs1, coeffs2, frac, taps) }
     }
 
-    #[cfg(not(any(
-        all(target_arch = "x86_64", target_feature = "sse2"),
-        target_arch = "aarch64"
-    )))]
+    #[cfg(not(target_arch = "aarch64"))]
     convolve_interp_scalar(input, coeffs1, coeffs2, frac, taps)
 }
 
