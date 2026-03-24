@@ -5,19 +5,23 @@ mod radix_fft;
 mod real_complex;
 pub(crate) mod stockham_autosort;
 
-pub(crate) use radix_fft::{Forward, Inverse, Radix, RadixFFT};
+pub(crate) use radix_fft::Inverse;
+pub use radix_fft::{Forward, Radix, RadixFFT};
 
 /// Simple complex number struct
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
-pub(crate) struct Complex32 {
-    pub(crate) re: f32,
-    pub(crate) im: f32,
+pub struct Complex32 {
+    /// Real component.
+    pub re: f32,
+    /// Imaginary component.
+    pub im: f32,
 }
 
 impl Complex32 {
     #[inline(always)]
-    pub(crate) const fn new(re: f32, im: f32) -> Self {
+    /// Creates a new complex number.
+    pub const fn new(re: f32, im: f32) -> Self {
         Self { re, im }
     }
 

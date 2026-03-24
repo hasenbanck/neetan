@@ -121,6 +121,7 @@ dependencies = [
  "common",
  "cpu",
  "device",
+ "resampler",
 ]
 
 [[package]]

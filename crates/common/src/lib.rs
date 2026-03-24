@@ -325,7 +325,7 @@ const EVENT_KIND_COUNT: usize = 16;
 /// The bus maintains a CPU cycle counter, updated by the CPU after each
 /// instruction via [`set_current_cycle`](Bus::set_current_cycle). Peripheral
 /// handlers use [`current_cycle`](Bus::current_cycle) for lazy state
-/// evaluation — computing elapsed time on access rather than updating on
+/// evaluation - computing elapsed time on access rather than updating on
 /// every cycle.
 pub trait Bus {
     /// Reads a single byte from the given memory address.
@@ -833,7 +833,7 @@ pub enum EventKind {
     ///
     /// During VSYNC, VRAM/GRCG access wait-state penalties are reduced
     /// because the display controller is not actively scanning the frame
-    /// buffer — there is no bus contention between CPU and GDC.
+    /// buffer - there is no bus contention between CPU and GDC.
     GdcVsync,
     /// GDC active display period begins (VSYNC blanking interval ends).
     ///

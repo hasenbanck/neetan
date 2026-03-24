@@ -460,7 +460,7 @@ fn i486dx_invlpg_no_fault_real_mode() {
 
     let cs: u16 = 0x1000;
     let ip: u16 = 0x0000;
-    // INVLPG [BX] — modrm 0x3F: mod=00, reg=/7, rm=111 ([BX])
+    // INVLPG [BX] - modrm 0x3F: mod=00, reg=/7, rm=111 ([BX])
     place_code(
         &mut bus,
         cs,

@@ -72,9 +72,9 @@ pub struct MachineState {
     pub serial: I8251SerialState,
     /// A20 gate state.
     pub a20_enabled: bool,
-    /// FDC µPD765A — 1MB floppy interface.
+    /// FDC µPD765A - 1MB floppy interface.
     pub fdc_1mb: Upd765aFdcState,
-    /// FDC µPD765A — 640KB floppy interface.
+    /// FDC µPD765A - 640KB floppy interface.
     pub fdc_640k: Upd765aFdcState,
     /// Dual-mode FDC interface control.
     pub fdc_media: u8,

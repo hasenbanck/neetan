@@ -79,7 +79,7 @@ fn make_setup_counter_code(count: u8) -> Vec<u8> {
 }
 
 // ============================================================================
-// §13 INT 1Ch — Vector Setup
+// §13 INT 1Ch - Vector Setup
 // ============================================================================
 
 #[test]
@@ -122,7 +122,7 @@ fn int1ch_vector_ra() {
 }
 
 // ============================================================================
-// §13 AH=00h — Get Date/Time
+// §13 AH=00h - Get Date/Time
 // ============================================================================
 
 // The VM uses a µPD1990A calendar LSI which has no year register. The VM BIOS
@@ -185,7 +185,7 @@ fn get_datetime_reads_calendar_ra() {
 }
 
 // ============================================================================
-// §13 AH=01h — Set Date/Time
+// §13 AH=01h - Set Date/Time
 // ============================================================================
 
 #[test]
@@ -258,7 +258,7 @@ fn set_datetime_completes_ra() {
 }
 
 // ============================================================================
-// §13 AH=02h — Set Interval Timer: IVT Callback
+// §13 AH=02h - Set Interval Timer: IVT Callback
 // ============================================================================
 
 #[test]
@@ -301,7 +301,7 @@ fn setup_timer_stores_ivt_callback_ra() {
 }
 
 // ============================================================================
-// §13 AH=02h — Set Interval Timer: Counter
+// §13 AH=02h - Set Interval Timer: Counter
 // ============================================================================
 
 #[test]
@@ -332,7 +332,7 @@ fn setup_timer_stores_counter_ra() {
 }
 
 // ============================================================================
-// §13 AH=02h — Set Interval Timer: PIT Configuration
+// §13 AH=02h - Set Interval Timer: PIT Configuration
 // ============================================================================
 
 #[test]
@@ -381,7 +381,7 @@ fn setup_timer_programs_pit_ra() {
 }
 
 // ============================================================================
-// §13 AH=01h — Set Date/Time: MSW8 Year Byte
+// §13 AH=01h - Set Date/Time: MSW8 Year Byte
 // ============================================================================
 
 #[test]
@@ -457,7 +457,7 @@ fn set_datetime_stores_year_in_msw8_ra() {
 }
 
 // ============================================================================
-// §13 AH=01h — Set Date/Time: All 6 Bytes Written
+// §13 AH=01h - Set Date/Time: All 6 Bytes Written
 // ============================================================================
 
 // Set date with distinct bytes, then verify completion.
@@ -536,7 +536,7 @@ fn set_datetime_distinct_bytes_completes_ra() {
 }
 
 // ============================================================================
-// §13 AH=02h — Set Interval Timer: PIT FLAG_I
+// §13 AH=02h - Set Interval Timer: PIT FLAG_I
 // ============================================================================
 
 // After INT 1Ch AH=02h programs the PIT, FLAG_I (0x20) must be set so that
@@ -581,7 +581,7 @@ fn setup_timer_sets_pit_flag_i_ra() {
 }
 
 // ============================================================================
-// §13 AH=02h — Set Interval Timer: IRQ 0 Unmasked
+// §13 AH=02h - Set Interval Timer: IRQ 0 Unmasked
 // ============================================================================
 
 // After INT 1Ch AH=02h, IRQ 0 must be unmasked in the master PIC IMR.

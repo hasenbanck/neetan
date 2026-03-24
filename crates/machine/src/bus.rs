@@ -226,7 +226,7 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     sasi: SasiController,
     /// PC-98 IDE (ATA) hard disk controller.
     ide: device::ide::IdeController,
-    /// Software DIP Switch (SDIP) — NVRAM configuration on PC-9821.
+    /// Software DIP Switch (SDIP) - NVRAM configuration on PC-9821.
     sdip: Sdip,
     /// BIOS HLE trap controller.
     bios: device::bios::BiosController,
@@ -964,7 +964,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         // Interlace mode.
         snapshot.gdc_interlace_mode = u32::from(self.gdc_slave.state.interlace_mode);
 
-        // GDC graphics scroll areas — double partition line counts for interlace ON mode.
+        // GDC graphics scroll areas - double partition line counts for interlace ON mode.
         for i in 0..4 {
             let area = &self.gdc_slave.state.scroll[i];
             let line_count = if interlace_on {

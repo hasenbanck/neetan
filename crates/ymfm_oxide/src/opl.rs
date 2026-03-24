@@ -301,7 +301,7 @@ fn opl_write<const REVISION: u32>(
     false
 }
 
-///  OPL Registers (Revision 1 — YM3526)
+///  OPL Registers (Revision 1 - YM3526)
 pub(crate) struct OplRegisters {
     lfo_am_counter: u16,
     lfo_pm_counter: u16,
@@ -528,7 +528,7 @@ impl FmRegisters for OplRegisters {
     }
 }
 
-///  OPL2 Registers (Revision 2 — YM3812)
+///  OPL2 Registers (Revision 2 - YM3812)
 pub(crate) struct Opl2Registers {
     lfo_am_counter: u16,
     lfo_pm_counter: u16,
@@ -774,7 +774,7 @@ impl FmRegisters for Opl2Registers {
     }
 }
 
-///  OPL3 Registers (Revision 3 — YMF262)
+///  OPL3 Registers (Revision 3 - YMF262)
 pub(crate) struct Opl3Registers {
     lfo_am_counter: u16,
     lfo_pm_counter: u16,

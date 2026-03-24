@@ -97,7 +97,7 @@ pub trait Tracing: Default {
     }
 }
 
-/// No-op tracer — all calls compile away.
+/// No-op tracer - all calls compile away.
 #[derive(Default)]
 pub struct NoTracing;
 

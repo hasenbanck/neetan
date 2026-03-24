@@ -571,10 +571,10 @@ fn paging_fault_pde_not_present_read() {
     let pt1_base = 0xA2000u32;
     write_dword_at(&mut bus, PG_PAGE_DIR + 4, pt1_base | PTE_P | PTE_RW);
     write_dword_at(&mut bus, pt1_base, PG_DATA_BASE | PTE_P | PTE_RW);
-    // Now clear PDE 1 — code/stack remain under PDE 0.
+    // Now clear PDE 1 - code/stack remain under PDE 0.
     write_dword_at(&mut bus, PG_PAGE_DIR + 4, 0);
 
-    // MOV AL, [0x0000] — DS:0 = linear 0x400000, PDE 1 not present → #PF.
+    // MOV AL, [0x0000] - DS:0 = linear 0x400000, PDE 1 not present → #PF.
     place_at(&mut bus, PG_CODE_BASE, &[0xA0, 0x00, 0x00]);
     cpu.step(&mut bus); // faults
     cpu.step(&mut bus); // executes HLT in #PF handler
@@ -826,7 +826,7 @@ fn paging_cr3_write_flushes_tlb() {
 
     cpu.step(&mut bus); // MOV EAX, CR3
     cpu.step(&mut bus); // MOV CR3, EAX (flushes TLB)
-    cpu.step(&mut bus); // MOV AL, [0x10] — should use new mapping
+    cpu.step(&mut bus); // MOV AL, [0x10] - should use new mapping
 
     assert_eq!(
         cpu.al(),
@@ -857,7 +857,7 @@ fn paging_code_fetch_through_page_tables() {
     bus.ram[(PG_REMAP_PAGE + 1) as usize] = 0xEE;
     bus.ram[(PG_REMAP_PAGE + 2) as usize] = 0xF4; // HLT
 
-    cpu.step(&mut bus); // MOV AL, 0xEE — fetched from remapped page
+    cpu.step(&mut bus); // MOV AL, 0xEE - fetched from remapped page
     assert_eq!(cpu.al(), 0xEE, "code fetch must go through paging");
 
     cpu.step(&mut bus); // HLT
@@ -987,7 +987,7 @@ fn paging_fault_on_code_fetch() {
     // CS:PG_PF_HANDLER_IP uses linear address PG_CODE_BASE + PG_PF_HANDLER_IP.
     // PG_CODE_BASE = 0x50000, PG_PF_HANDLER_IP = 0x9000.
     // Linear = 0x59000, page = 0x59. This is a different page from 0x50 (code IP=0).
-    // So unmapping page 0x50 is fine — the handler at page 0x59 stays mapped.
+    // So unmapping page 0x50 is fine - the handler at page 0x59 stays mapped.
 
     cpu.step(&mut bus); // fetch faults
     cpu.step(&mut bus); // HLT in #PF handler
@@ -1902,7 +1902,7 @@ fn paging_supervisor_override_ring3_interrupt() {
     cpu.signal_irq();
 
     cpu.step(&mut bus); // STI (inhibits IRQ for one instruction)
-    cpu.step(&mut bus); // JMP $-2 — IRQ fires after this instruction
+    cpu.step(&mut bus); // JMP $-2 - IRQ fires after this instruction
     cpu.step(&mut bus); // HLT in IRQ handler
 
     assert!(
@@ -1995,7 +1995,7 @@ fn paging_rep_movsb_fault_mid_operation() {
         ],
     );
     cpu.step(&mut bus); // CLD
-    cpu.step(&mut bus); // REP MOVSB — faults mid-operation at destination 0x31000
+    cpu.step(&mut bus); // REP MOVSB - faults mid-operation at destination 0x31000
     cpu.step(&mut bus); // HLT in #PF handler
 
     assert!(cpu.halted());

@@ -286,7 +286,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             }
         } else {
             match modrm {
-                // Control instructions — no pointer update
+                // Control instructions - no pointer update
                 0xE0 => self.fpu_fnop_legacy(), // FENI (8087 compat)
                 0xE1 => self.fpu_fnop_legacy(), // FDISI (8087 compat)
                 0xE2 => self.fpu_fnclex(),
@@ -353,7 +353,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             let i = modrm & 7;
             match (modrm >> 3) & 7 {
                 0 => {
-                    // FFREE — control, no pointer update
+                    // FFREE - control, no pointer update
                     self.fpu_ffree(i);
                 }
                 1 => {
@@ -438,7 +438,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             }
         } else {
             match modrm {
-                // FSTSW AX — control instruction, no pointer update
+                // FSTSW AX - control instruction, no pointer update
                 0xE0 => self.fpu_fnstsw_ax(),
                 _ => self.clk(Self::timing(2, 2)), // reserved
             }

@@ -1463,7 +1463,7 @@ fn gen_ym3812_fm(dir: &str) {
     // waveform gate disabled vs enabled
     {
         let mut chip = setup_ym3812();
-        // waveform select NOT enabled — should use sine
+        // waveform select NOT enabled - should use sine
         setup_opl2_simple_tone(&mut chip, 0, 1, 0);
         for op in 0..2u8 {
             let off = opl_op_offset(0, op);
@@ -1726,7 +1726,7 @@ fn gen_ymf262_fm(dir: &str) {
 fn gen_ymf262_stereo(dir: &str) {
     let mut f = header();
 
-    // Output routing tests — 0xC0 bits 4-7 control output channels A-D
+    // Output routing tests - 0xC0 bits 4-7 control output channels A-D
     // bit 4 = output A (left), bit 5 = output B (right)
     // bit 6 = output C, bit 7 = output D
 

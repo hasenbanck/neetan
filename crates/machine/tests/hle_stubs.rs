@@ -139,7 +139,7 @@ fn make_printer_status_test() -> Vec<u8> {
 }
 
 // ============================================================================
-// INT 1Ah +25 Chaining Contract — Structural
+// INT 1Ah +25 Chaining Contract - Structural
 // ============================================================================
 //
 // Verify that the HLE BIOS ROM has valid code at INT 1Ah handler + 25,
@@ -213,7 +213,7 @@ fn hle_int1ah_chain_entry_valid_ra() {
 }
 
 // ============================================================================
-// INT 1Ah +25 Chaining Contract — Functional (MS-DOS Hook Simulation)
+// INT 1Ah +25 Chaining Contract - Functional (MS-DOS Hook Simulation)
 // ============================================================================
 //
 // Simulate the MS-DOS INT 1Ah hooking pattern: install a hook that saves DS/DX

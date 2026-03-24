@@ -51,7 +51,7 @@ fn nec_copyright_string() {
 }
 
 // ============================================================================
-// §4.1 Cold Reset Entry — Reset Vector
+// §4.1 Cold Reset Entry - Reset Vector
 // ============================================================================
 
 /// At cold reset the CPU reads FFFF:0000 (physical 0xFFFF0). It must be a FAR JMP.
@@ -118,7 +118,7 @@ fn bios_reset_vector_targets_bios_segment() {
 }
 
 // ============================================================================
-// §4.5 BDA Setup — System configuration
+// §4.5 BDA Setup - System configuration
 // ============================================================================
 
 /// PC-9801VM (V30 @ 10 MHz, single-bank BIOS ROM).

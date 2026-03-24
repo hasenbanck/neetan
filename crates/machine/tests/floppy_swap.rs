@@ -276,7 +276,7 @@ fn independent_drives_do_not_interfere() {
     machine.insert_floppy(0, &path_1).expect("insert drive 0");
     machine.insert_floppy(1, &path_2).expect("insert drive 1");
 
-    // Eject drive 0 — drive 1 should be unaffected.
+    // Eject drive 0 - drive 1 should be unaffected.
     machine.eject_floppy(0);
     assert!(machine.bus.floppy_disk(0).is_none());
     assert_eq!(
@@ -284,7 +284,7 @@ fn independent_drives_do_not_interfere() {
         "DRIVE1"
     );
 
-    // Re-insert drive 0 — drive 1 still unaffected.
+    // Re-insert drive 0 - drive 1 still unaffected.
     machine
         .insert_floppy(0, &path_1)
         .expect("re-insert drive 0");

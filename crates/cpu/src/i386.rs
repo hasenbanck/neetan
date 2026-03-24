@@ -1,8 +1,8 @@
 //! Implements the Intel 80386+ family emulation.
 //!
 //! The CPU model is selected via the const generic parameter `CPU_MODEL`:
-//! - [`CPU_MODEL_386`] — Intel 80386DX cycle timings.
-//! - [`CPU_MODEL_486`] — Intel 80486DX cycle timings.
+//! - [`CPU_MODEL_386`] - Intel 80386DX cycle timings.
+//! - [`CPU_MODEL_486`] - Intel 80486DX cycle timings.
 //!
 //! Following references were used to write the emulator:
 //!
@@ -541,7 +541,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     /// Returns `true` if the current privilege level and IOPL allow I/O access to `port`.
     /// When access is denied and the IOPB does not grant it, raises #GP(0) and returns `false`.
-    /// CLI/STI/HLT use separate IOPL/CPL checks — this function is only for I/O port instructions.
+    /// CLI/STI/HLT use separate IOPL/CPL checks - this function is only for I/O port instructions.
     fn check_io_privilege(&mut self, port: u16, size: u8, bus: &mut impl common::Bus) -> bool {
         if !self.is_protected_mode() {
             return true;
@@ -2301,7 +2301,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
         if self.debug_trap_pending && !self.fault_pending {
             self.debug_trap_pending = false;
-            self.dr6 |= 0x8000; // BT (bit 15) — task switch debug trap
+            self.dr6 |= 0x8000; // BT (bit 15) - task switch debug trap
             self.raise_trap(1, bus);
         }
     }

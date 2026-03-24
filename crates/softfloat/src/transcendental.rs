@@ -16,7 +16,7 @@
 //! ```
 //!
 //! The relative error `e = π/p − 1 ≅ 1.5 · 2⁻⁷⁰` causes results to diverge from true
-//! sin/cos as |x| grows — most notably near multiples of π where the error in ulps grows
+//! sin/cos as |x| grows - most notably near multiples of π where the error in ulps grows
 //! sharply. For |x| < 2⁶³ the error is less than 1 ulp in round-to-nearest-even mode.
 //!
 //! Each trigonometric evaluation follows a three-step process:

@@ -127,7 +127,7 @@ fn pit_timer_multiple_interrupts() {
         s
     });
 
-    // Run for many cycles — should get multiple timer interrupts.
+    // Run for many cycles - should get multiple timer interrupts.
     machine.run_for(10000);
 
     let counter = machine.bus.read_byte(0x00500);

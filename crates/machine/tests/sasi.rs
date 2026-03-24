@@ -570,7 +570,7 @@ fn sasi_recalibrate() {
 #[test]
 fn sasi_request_sense_after_error() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
-    // No drive — commands will fail.
+    // No drive - commands will fail.
 
     // Test Unit Ready on nonexistent drive.
     send_sasi_command(&mut bus, [0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
@@ -578,7 +578,7 @@ fn sasi_request_sense_after_error() {
     let (status, _) = read_sasi_result(&mut bus);
     assert_eq!(status, 0x02, "should report check condition");
 
-    // Request Sense (cmd 0x03) — returns 4 bytes of sense data.
+    // Request Sense (cmd 0x03) - returns 4 bytes of sense data.
     send_sasi_command(&mut bus, [0x03, 0x00, 0x00, 0x00, 0x00, 0x00]);
 
     // Sense data is returned directly from the data register (no DMA needed).

@@ -556,7 +556,7 @@ impl<C: Ym2608Callbacks> Ym2608<C> {
         }
     }
 
-    /// Reads the chip status register (high — ADPCM flags).
+    /// Reads the chip status register (high - ADPCM flags).
     pub fn read_status_hi(&mut self) -> u8 {
         // Fetch regular status, masking out the ADPCM-B bits we'll re-derive.
         let mut status =

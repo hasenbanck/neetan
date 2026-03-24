@@ -257,7 +257,7 @@ fn int19h_vector_ra() {
 }
 
 // ============================================================================
-// AH=00h Initialize — Return Value
+// AH=00h Initialize - Return Value
 // ============================================================================
 
 #[test]
@@ -303,7 +303,7 @@ fn int19h_init_returns_ok_ra() {
 }
 
 // ============================================================================
-// AH=00h Initialize — Buffer Control Block Fields
+// AH=00h Initialize - Buffer Control Block Fields
 // ============================================================================
 
 fn assert_init_buffer_fields(ram: &[u8; 0xA0000]) {
@@ -396,7 +396,7 @@ fn int19h_init_buffer_fields_ra() {
 }
 
 // ============================================================================
-// AH=00h Initialize — R_INT and R_BFLG Cleared
+// AH=00h Initialize - R_INT and R_BFLG Cleared
 // ============================================================================
 
 fn assert_init_clears_header(ram: &[u8; 0xA0000]) {
@@ -437,7 +437,7 @@ fn int19h_init_clears_header_ra() {
 }
 
 // ============================================================================
-// AH=00h Initialize — BDA Pointer
+// AH=00h Initialize - BDA Pointer
 // ============================================================================
 
 fn assert_bda_pointer(ram: &[u8; 0xA0000]) {
@@ -518,7 +518,7 @@ fn int19h_init_flow_flag_ra() {
 }
 
 // ============================================================================
-// AH=02h RX Char Count — Not Initialized
+// AH=02h RX Char Count - Not Initialized
 // ============================================================================
 
 #[test]
@@ -564,7 +564,7 @@ fn int19h_rx_count_not_init_ra() {
 }
 
 // ============================================================================
-// AH=02h RX Char Count — Empty Buffer
+// AH=02h RX Char Count - Empty Buffer
 // ============================================================================
 
 #[test]
@@ -601,7 +601,7 @@ fn int19h_rx_count_zero_ra() {
 }
 
 // ============================================================================
-// AH=02h RX Char Count — After Receiving Data
+// AH=02h RX Char Count - After Receiving Data
 // ============================================================================
 
 #[test]
@@ -638,7 +638,7 @@ fn int19h_rx_count_after_receive_ra() {
 }
 
 // ============================================================================
-// AH=03h Send Char — Not Initialized
+// AH=03h Send Char - Not Initialized
 // ============================================================================
 
 #[test]
@@ -684,7 +684,7 @@ fn int19h_send_not_init_ra() {
 }
 
 // ============================================================================
-// AH=03h Send Char — Success
+// AH=03h Send Char - Success
 // ============================================================================
 
 #[test]
@@ -730,7 +730,7 @@ fn int19h_send_char_ra() {
 }
 
 // ============================================================================
-// AH=04h Receive Char — Not Initialized
+// AH=04h Receive Char - Not Initialized
 // ============================================================================
 
 #[test]
@@ -776,7 +776,7 @@ fn int19h_recv_not_init_ra() {
 }
 
 // ============================================================================
-// AH=04h Receive Char — Success (read back received byte)
+// AH=04h Receive Char - Success (read back received byte)
 // ============================================================================
 
 #[test]
@@ -873,7 +873,7 @@ fn int19h_recv_char_ra() {
 }
 
 // ============================================================================
-// AH=04h Receive Char — Timeout (empty buffer)
+// AH=04h Receive Char - Timeout (empty buffer)
 // ============================================================================
 
 #[test]
@@ -919,7 +919,7 @@ fn int19h_recv_timeout_ra() {
 }
 
 // ============================================================================
-// AH=05h Command Output — Not Initialized
+// AH=05h Command Output - Not Initialized
 // ============================================================================
 
 #[test]
@@ -965,7 +965,7 @@ fn int19h_cmd_not_init_ra() {
 }
 
 // ============================================================================
-// AH=05h Command Output — Success
+// AH=05h Command Output - Success
 // ============================================================================
 
 #[test]
@@ -1026,7 +1026,7 @@ fn int19h_cmd_output_ra() {
 }
 
 // ============================================================================
-// AH=06h Status Read — Not Initialized
+// AH=06h Status Read - Not Initialized
 // ============================================================================
 
 #[test]
@@ -1072,7 +1072,7 @@ fn int19h_status_not_init_ra() {
 }
 
 // ============================================================================
-// AH=06h Status Read — Success
+// AH=06h Status Read - Success
 // ============================================================================
 
 #[test]
@@ -1157,7 +1157,7 @@ fn int19h_status_read_ra() {
 }
 
 // ============================================================================
-// AH=00h Init with IR bit set — should NOT set RFLAG_INIT
+// AH=00h Init with IR bit set - should NOT set RFLAG_INIT
 // ============================================================================
 
 /// Init preamble with custom CL value.
@@ -1192,7 +1192,7 @@ fn int19h_init_with_ir_clears_init_flag_vm() {
 
 #[test]
 fn int19h_init_without_rxe_does_not_unmask_irq4_vm() {
-    // CL=0x23: no IR, no RXE — IRQ4 should remain masked.
+    // CL=0x23: no IR, no RXE - IRQ4 should remain masked.
     let mut code = serial_init_preamble_cl(0x00, 0x23);
     code.extend_from_slice(&[0xF4]); // HLT
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
@@ -1206,7 +1206,7 @@ fn int19h_init_without_rxe_does_not_unmask_irq4_vm() {
 
 #[test]
 fn int19h_init_with_rxe_unmasks_irq4_vm() {
-    // CL=0x27: no IR, RXE set — IRQ4 should be unmasked.
+    // CL=0x27: no IR, RXE set - IRQ4 should be unmasked.
     let mut code = serial_init_preamble_cl(0x00, 0x27);
     code.extend_from_slice(&[0xF4]); // HLT
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);

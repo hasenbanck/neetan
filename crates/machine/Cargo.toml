@@ -11,3 +11,6 @@ rust-version.workspace = true
 common = { workspace = true }
 cpu = { workspace = true }
 device = { workspace = true }
+
+[dev-dependencies]
+resampler = { workspace = true }

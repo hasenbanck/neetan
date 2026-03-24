@@ -89,7 +89,7 @@ fn grcg_firmware_all_patterns() {
 
     let mut machine = Pc9801Vm::new(cpu::V30::new(), bus);
 
-    // Pattern 0: Solid White (Direct Write) — all 4 planes = 0xFF
+    // Pattern 0: Solid White (Direct Write) - all 4 planes = 0xFF
     run_steps(&mut machine, STEPS_PER_PATTERN);
 
     check_plane_full(&machine.bus, VRAM_B, 0xFF, "P0 B-plane");
@@ -113,7 +113,7 @@ fn grcg_firmware_all_patterns() {
     check_plane_lines(&machine.bus, VRAM_E, 0, 300, 0x00, "P1 E lines 0-299");
     check_plane_lines(&machine.bus, VRAM_E, 300, 400, 0xFF, "P1 E lines 300-399");
 
-    // Pattern 2: TDW Full Fill — all planes
+    // Pattern 2: TDW Full Fill - all planes
     // Mode 0x80, tiles: B=0xAA, R=0x55, G=0xF0, E=0x0F
     send_enter(&mut machine.bus);
     run_steps(&mut machine, STEPS_PER_PATTERN);
@@ -191,7 +191,7 @@ fn grcg_firmware_all_patterns() {
         "P4 TCR line 350: expected 0xAA (partial match), got 0x{tcr3:02X}"
     );
 
-    // Pattern 5: RMW Mode — all planes
+    // Pattern 5: RMW Mode - all planes
     // Pre-fill=0x55. Mode 0xC0. Tiles: B=0xFF, R=0x00, G=0xAA, E=0x55. CPU=0xF0.
     // new = (0xF0 & tile) | (0x0F & 0x55)
     //   B: 0xF0 | 0x05 = 0xF5
@@ -355,7 +355,7 @@ fn grcg_tdw_byte_write_all_planes() {
     let mut bus = setup_grcg_bus();
     enable_grcg_tdw(&mut bus, [0xAA, 0x55, 0xF0, 0x0F]);
 
-    // Write any byte — CPU data is ignored in TDW, all planes get tile values.
+    // Write any byte - CPU data is ignored in TDW, all planes get tile values.
     bus.write_byte(VRAM_B_BASE, 0xFF);
 
     disable_grcg_mode(&mut bus);
@@ -632,7 +632,7 @@ fn grcg_tcr_selective_plane_compare() {
     // TCR with R-plane disabled (bit 1 set): mode=0x82.
     bus.io_write_byte(0x7C, 0x82);
     bus.io_write_byte(0x7E, 0xAA); // B tile
-    bus.io_write_byte(0x7E, 0xFF); // R tile (disabled — won't be compared)
+    bus.io_write_byte(0x7E, 0xFF); // R tile (disabled - won't be compared)
     bus.io_write_byte(0x7E, 0xF0); // G tile
     bus.io_write_byte(0x7E, 0x0F); // E tile
 
@@ -672,7 +672,7 @@ fn grcg_tdw_via_e_plane_address() {
     let mut bus = setup_grcg_bus();
     enable_grcg_tdw(&mut bus, [0xDE, 0xAD, 0xBE, 0xEF]);
 
-    // Write via E-plane address — GRCG should still write all 4 planes at the offset.
+    // Write via E-plane address - GRCG should still write all 4 planes at the offset.
     bus.write_byte(VRAM_E_BASE, 0xFF);
 
     disable_grcg_mode(&mut bus);
@@ -688,7 +688,7 @@ fn grcg_tcr_via_e_plane_address() {
 
     enable_grcg_tdw(&mut bus, [0xAA, 0x55, 0xF0, 0x0F]);
 
-    // TCR read via E-plane address — should compare all 4 planes at offset 0.
+    // TCR read via E-plane address - should compare all 4 planes at offset 0.
     let result = bus.read_byte(VRAM_E_BASE);
     assert_eq!(result, 0xFF, "TCR via E-plane address, all match");
 }
@@ -809,7 +809,7 @@ fn grcg_tile_cycling_wraps_after_four() {
     let mut bus = setup_grcg_bus();
 
     bus.io_write_byte(0x7C, 0x80);
-    // Write 5 tile values — 5th should wrap and overwrite tile[0].
+    // Write 5 tile values - 5th should wrap and overwrite tile[0].
     bus.io_write_byte(0x7E, 0x11); // tile[0]
     bus.io_write_byte(0x7E, 0x22); // tile[1]
     bus.io_write_byte(0x7E, 0x33); // tile[2]

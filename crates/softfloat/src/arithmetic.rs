@@ -426,7 +426,7 @@ impl Fp80 {
     }
 
     /// Round to integer value, returned as Fp80 (FRNDINT).
-    /// Does not respect precision control — always uses full 64-bit significand.
+    /// Does not respect precision control - always uses full 64-bit significand.
     pub fn round_to_int(self, rc: RoundingMode, ef: &mut ExceptionFlags) -> Fp80 {
         // NaN handling
         if self.is_signaling_nan() {
@@ -457,7 +457,7 @@ impl Fp80 {
             let round_up = match rc {
                 RoundingMode::NearestEven => {
                     if exp == -1 {
-                        // Value is in [0.5, 1.0) — check if exactly 0.5 (round to even → 0)
+                        // Value is in [0.5, 1.0) - check if exactly 0.5 (round to even → 0)
                         // or > 0.5 (round up to 1)
                         // sig with exp=-1 means the value is sig * 2^(-1) / 2^63 = sig / 2^64
                         // Value = sig * 2^(exp-63). For exp=-1, value = sig * 2^(-64).
@@ -504,7 +504,7 @@ impl Fp80 {
                 if fraction > halfway {
                     true
                 } else if fraction == halfway {
-                    // Tie: round to even — check the LSB of the integer part
+                    // Tie: round to even - check the LSB of the integer part
                     (integer_part >> fraction_bits) & 1 != 0
                 } else {
                     false
@@ -519,7 +519,7 @@ impl Fp80 {
             let increment = 1u64 << fraction_bits;
             let new_sig = integer_part.wrapping_add(increment);
             if new_sig < integer_part {
-                // Overflow of the significand — carry into exponent
+                // Overflow of the significand - carry into exponent
                 // This means we go from e.g. 0xFFFF... to 0x10000...
                 // which is 1.0 * 2^(exp+1)
                 let new_exp = (self.exponent() + 1) & 0x7FFF;
