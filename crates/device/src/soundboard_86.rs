@@ -51,6 +51,10 @@ const PCM86_RESCUE_TABLE: [i32; 8] = [
     PCM86_RESCUE * 3,
 ];
 
+const RESAMPLER_ATTENUTATION: Attenuation = Attenuation::Db60;
+
+const REAMPLER_LATENCY: Latency = Latency::Sample64;
+
 /// Embedded rhythm samples at 48000 Hz, packed as 6×u32 LE header + i16 LE data.
 /// These are not the original ROM files but recordings of the samples.
 /// Used under fair use and de minimis.
@@ -457,8 +461,8 @@ impl Pcm86 {
             2,
             initial_pcm_rate,
             sample_rate,
-            Latency::Sample64,
-            Attenuation::Db60,
+            REAMPLER_LATENCY,
+            RESAMPLER_ATTENUTATION,
         );
         let output_size = resampler.buffer_size_output();
         let baseclock = machine_model.pit_clock_hz();
@@ -632,8 +636,8 @@ impl Pcm86 {
                         2,
                         self.pcm_rate(),
                         sample_rate,
-                        Latency::Sample64,
-                        Attenuation::Db60,
+                        REAMPLER_LATENCY,
+                        RESAMPLER_ATTENUTATION,
                     );
                     self.pcm_resample_output
                         .resize(self.pcm_resampler.buffer_size_output(), 0.0);
@@ -843,10 +847,13 @@ impl Pcm86 {
         raw as f32 / 32768.0
     }
 
-    /// Produces interleaved stereo output `[L, R, L, R, ...]` with `count * 2` floats.
-    fn drain_samples(&mut self, count: usize) -> Vec<f32> {
-        if !self.is_playing() || self.state.fifo & 0x40 != 0 || self.state.real_buf <= 0 {
-            return vec![0.0; count * 2];
+    /// Fills `output` with interleaved stereo `[L, R, L, R, ...]` at the PCM
+    /// source rate. Returns the number of floats written (always even).
+    fn drain_samples_into(&mut self, output: &mut [f32]) -> usize {
+        let count = output.len() / 2;
+        if !self.is_playing() || self.state.real_buf <= 0 || count == 0 {
+            output[..count * 2].fill(0.0);
+            return count * 2;
         }
 
         let vol = if self.state.pcm_mute & 0x01 != 0 {
@@ -857,11 +864,10 @@ impl Pcm86 {
         let mode = self.state.dactrl & 0x70;
         let bytes_per_frame = bytes_per_frame(mode);
 
-        let mut output = Vec::with_capacity(count * 2);
-        for _ in 0..count {
+        for i in 0..count {
             if bytes_per_frame == 0 || self.state.real_buf < bytes_per_frame as i32 {
-                output.push(0.0);
-                output.push(0.0);
+                output[i * 2] = 0.0;
+                output[i * 2 + 1] = 0.0;
                 continue;
             }
 
@@ -904,11 +910,11 @@ impl Pcm86 {
                 self.state.real_buf = 0;
             }
 
-            output.push(left * vol);
-            output.push(right * vol);
+            output[i * 2] = left * vol;
+            output[i * 2 + 1] = right * vol;
         }
 
-        output
+        count * 2
     }
 }
 
@@ -1002,8 +1008,8 @@ impl Soundboard86 {
             2,
             native_rate,
             sample_rate,
-            Latency::Sample64,
-            Attenuation::Db60,
+            REAMPLER_LATENCY,
+            RESAMPLER_ATTENUTATION,
         );
         let resample_output_size = resampler.buffer_size_output();
 
@@ -1483,39 +1489,44 @@ impl Soundboard86 {
         self.pcm86.reconcile_buffers(current_cycle, cpu_clock_hz);
         let pcm_frame_cycles = current_cycle.saturating_sub(pcm_frame_start);
         if self.pcm86.is_playing() && self.pcm86.state.real_buf > 0 && pcm_frame_cycles > 0 {
-            let pcm_rate = self.pcm86.pcm_rate();
-            let exact_pcm = (pcm_frame_cycles as f64 * pcm_rate as f64) / f64::from(cpu_clock_hz)
-                + self.pcm86.state.sample_remainder.0;
-            let pcm_count = exact_pcm as usize;
-            self.pcm86.state.sample_remainder = FmSampleRemainder(exact_pcm - pcm_count as f64);
+            {
+                let pcm_rate = self.pcm86.pcm_rate();
+                let exact_pcm = (pcm_frame_cycles as f64 * pcm_rate as f64)
+                    / f64::from(cpu_clock_hz)
+                    + self.pcm86.state.sample_remainder.0;
+                let pcm_count = exact_pcm as usize;
+                self.pcm86.state.sample_remainder = FmSampleRemainder(exact_pcm - pcm_count as f64);
 
-            if pcm_count > 0 {
-                let pcm_samples = self.pcm86.drain_samples(pcm_count);
-                let total_interleaved = pcm_count * 2;
-                if self.pcm86.pcm_resample_input.len() < total_interleaved {
-                    self.pcm86.pcm_resample_input.resize(total_interleaved, 0.0);
-                }
-                self.pcm86.pcm_resample_input[..total_interleaved]
-                    .copy_from_slice(&pcm_samples[..total_interleaved]);
-
-                let mut input_offset = 0;
-                let mut output_offset = 0;
-                let sample_count = output.len();
-                while input_offset < total_interleaved && output_offset < sample_count {
-                    let Ok((consumed, produced)) = self.pcm86.pcm_resampler.resample(
-                        &self.pcm86.pcm_resample_input[input_offset..total_interleaved],
-                        &mut self.pcm86.pcm_resample_output,
-                    ) else {
-                        break;
-                    };
-                    let usable = produced.min(sample_count - output_offset);
-                    for i in 0..usable {
-                        output[output_offset + i] += self.pcm86.pcm_resample_output[i] * volume;
+                if pcm_count > 0 {
+                    let total_interleaved = pcm_count * 2;
+                    if self.pcm86.pcm_resample_input.len() < total_interleaved {
+                        self.pcm86.pcm_resample_input.resize(total_interleaved, 0.0);
                     }
-                    input_offset += consumed;
-                    output_offset += usable;
-                    if consumed == 0 {
-                        break;
+                    // Temporarily take the buffer to avoid double-mutable-borrow
+                    // on Pcm86 (drain_samples_into needs &mut self + &mut slice).
+                    let mut buf = std::mem::take(&mut self.pcm86.pcm_resample_input);
+                    self.pcm86.drain_samples_into(&mut buf[..total_interleaved]);
+                    self.pcm86.pcm_resample_input = buf;
+
+                    let mut input_offset = 0;
+                    let mut output_offset = 0;
+                    let sample_count = output.len();
+                    while input_offset < total_interleaved && output_offset < sample_count {
+                        let Ok((consumed, produced)) = self.pcm86.pcm_resampler.resample(
+                            &self.pcm86.pcm_resample_input[input_offset..total_interleaved],
+                            &mut self.pcm86.pcm_resample_output,
+                        ) else {
+                            break;
+                        };
+                        let usable = produced.min(sample_count - output_offset);
+                        for i in 0..usable {
+                            output[output_offset + i] += self.pcm86.pcm_resample_output[i] * volume;
+                        }
+                        input_offset += consumed;
+                        output_offset += usable;
+                        if consumed == 0 {
+                            break;
+                        }
                     }
                 }
             }
@@ -1549,8 +1560,8 @@ impl Soundboard86 {
             2,
             self.pcm86.pcm_rate(),
             sample_rate,
-            Latency::Sample64,
-            Attenuation::Db60,
+            REAMPLER_LATENCY,
+            RESAMPLER_ATTENUTATION,
         );
         self.pcm86
             .pcm_resample_output
@@ -1568,8 +1579,8 @@ impl Soundboard86 {
             2,
             self.native_rate,
             sample_rate,
-            Latency::Sample64,
-            Attenuation::Db60,
+            REAMPLER_LATENCY,
+            RESAMPLER_ATTENUTATION,
         );
         self.resample_output
             .resize(self.resampler.buffer_size_output(), 0.0);
@@ -1614,7 +1625,8 @@ mod tests {
 
         // Write 0x7F00 big-endian → +32512 → ~0.9922
         write_bytes(&mut pcm, &[0x7F, 0x00]);
-        let out = pcm.drain_samples(1);
+        let mut out = [0.0f32; 2];
+        pcm.drain_samples_into(&mut out);
         assert_eq!(out.len(), 2);
         assert!((out[0] - 0.9921875).abs() < 0.001, "L = {}", out[0]);
         assert_eq!(out[1], 0.0, "R should be 0.0 for L-only mode");
@@ -1631,7 +1643,8 @@ mod tests {
 
         // Write 0x8000 big-endian → -32768 → -1.0
         write_bytes(&mut pcm, &[0x80, 0x00]);
-        let out = pcm.drain_samples(1);
+        let mut out = [0.0f32; 2];
+        pcm.drain_samples_into(&mut out);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0], 0.0, "L should be 0.0 for R-only mode");
         assert!((out[1] - (-1.0)).abs() < 0.001, "R = {}", out[1]);
@@ -1648,7 +1661,8 @@ mod tests {
 
         // L = 0x4000 (+16384 → 0.5), R = 0xC000 (-16384 → -0.5)
         write_bytes(&mut pcm, &[0x40, 0x00, 0xC0, 0x00]);
-        let out = pcm.drain_samples(1);
+        let mut out = [0.0f32; 2];
+        pcm.drain_samples_into(&mut out);
         assert_eq!(out.len(), 2);
         assert!((out[0] - 0.5).abs() < 0.001, "L = {}", out[0]);
         assert!((out[1] - (-0.5)).abs() < 0.001, "R = {}", out[1]);
@@ -1666,7 +1680,8 @@ mod tests {
         // Frame 0: L=+16384, R=-16384
         // Frame 1: L=0, R=+32512
         write_bytes(&mut pcm, &[0x40, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x7F, 0x00]);
-        let out = pcm.drain_samples(2);
+        let mut out = [0.0f32; 4];
+        pcm.drain_samples_into(&mut out);
         assert_eq!(out.len(), 4);
         assert!((out[0] - 0.5).abs() < 0.001, "F0 L = {}", out[0]);
         assert!((out[1] - (-0.5)).abs() < 0.001, "F0 R = {}", out[1]);
@@ -1685,7 +1700,8 @@ mod tests {
 
         // 0x40 as signed = +64 → 64/128 = 0.5
         write_bytes(&mut pcm, &[0x40]);
-        let out = pcm.drain_samples(1);
+        let mut out = [0.0f32; 2];
+        pcm.drain_samples_into(&mut out);
         assert_eq!(out.len(), 2);
         assert!((out[0] - 0.5).abs() < 0.01, "L = {}", out[0]);
         assert_eq!(out[1], 0.0, "R should be 0.0 for L-only mode");
@@ -1702,7 +1718,8 @@ mod tests {
 
         // 0x80 as signed = -128 → -128/128 = -1.0
         write_bytes(&mut pcm, &[0x80]);
-        let out = pcm.drain_samples(1);
+        let mut out = [0.0f32; 2];
+        pcm.drain_samples_into(&mut out);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0], 0.0, "L should be 0.0 for R-only mode");
         assert!((out[1] - (-1.0)).abs() < 0.01, "R = {}", out[1]);
@@ -1719,7 +1736,8 @@ mod tests {
 
         // L = 0x40 (+64 → 0.5), R = 0xC0 (-64 → -0.5)
         write_bytes(&mut pcm, &[0x40, 0xC0]);
-        let out = pcm.drain_samples(1);
+        let mut out = [0.0f32; 2];
+        pcm.drain_samples_into(&mut out);
         assert_eq!(out.len(), 2);
         assert!((out[0] - 0.5).abs() < 0.01, "L = {}", out[0]);
         assert!((out[1] - (-0.5)).abs() < 0.01, "R = {}", out[1]);
@@ -1736,8 +1754,8 @@ mod tests {
             enable_playback(&mut pcm);
 
             write_bytes(&mut pcm, &[0xFF; 16]);
-            let out = pcm.drain_samples(4);
-            assert_eq!(out.len(), 8);
+            let mut out = [0.0f32; 8];
+            pcm.drain_samples_into(&mut out);
             for (i, &s) in out.iter().enumerate() {
                 assert_eq!(s, 0.0, "mode 0x{mode:02X} sample {i} should be silent");
             }
@@ -1757,7 +1775,8 @@ mod tests {
         write_bytes(&mut pcm, &[0x7F, 0x00, 0x7F, 0x00]);
         assert_eq!(pcm.state.real_buf, 4);
 
-        let out = pcm.drain_samples(2);
+        let mut out = [0.0f32; 4];
+        pcm.drain_samples_into(&mut out);
         assert_eq!(out.len(), 4);
         for &s in &out {
             assert_eq!(s, 0.0, "muted output should be silent");
@@ -1777,13 +1796,15 @@ mod tests {
         enable_playback(&mut pcm);
 
         write_bytes(&mut pcm, &[0x7F, 0x00]);
-        let out = pcm.drain_samples(1);
+        let mut out = [0.0f32; 2];
+        pcm.drain_samples_into(&mut out);
         assert_eq!(out[0], 0.0, "volume 15 should silence output");
 
         // Volume 0 = maximum (inverted: 15 - 0 = 15 → 1.0)
         pcm.state.vol[5] = 0;
         write_bytes(&mut pcm, &[0x7F, 0x00]);
-        let out = pcm.drain_samples(1);
+        let mut out = [0.0f32; 2];
+        pcm.drain_samples_into(&mut out);
         assert!(
             (out[0] - 0.9921875).abs() < 0.001,
             "volume 0 = max: {}",
@@ -1802,7 +1823,8 @@ mod tests {
 
         // Write only 2 bytes - not enough for a 4-byte stereo frame.
         write_bytes(&mut pcm, &[0x40, 0x00]);
-        let out = pcm.drain_samples(1);
+        let mut out = [0.0f32; 2];
+        pcm.drain_samples_into(&mut out);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0], 0.0, "underflow L should be silent");
         assert_eq!(out[1], 0.0, "underflow R should be silent");
@@ -1818,7 +1840,8 @@ mod tests {
         // Do NOT enable playback (fifo bit 7 = 0).
 
         write_bytes(&mut pcm, &[0x7F, 0x00]);
-        let out = pcm.drain_samples(1);
+        let mut out = [0.0f32; 2];
+        pcm.drain_samples_into(&mut out);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0], 0.0);
         assert_eq!(out[1], 0.0);
@@ -1924,7 +1947,8 @@ mod tests {
 
         // MSB 0xFF (as i8 = -1), LSB 0xFE → ((-1) << 8) | 0xFE = -2
         write_bytes(&mut pcm, &[0xFF, 0xFE]);
-        let out = pcm.drain_samples(1);
+        let mut out = [0.0f32; 2];
+        pcm.drain_samples_into(&mut out);
         let expected = -2.0f32 / 32768.0;
         assert!(
             (out[0] - expected).abs() < 0.0001,
@@ -1955,8 +1979,8 @@ mod tests {
             pcm.state.vir_buf += 1;
         }
 
-        let out = pcm.drain_samples(3);
-        assert_eq!(out.len(), 6);
+        let mut out = [0.0f32; 6];
+        pcm.drain_samples_into(&mut out);
         assert!((out[0] - 0x20 as f32 / 128.0).abs() < 0.01);
         assert!((out[2] - 0x40 as f32 / 128.0).abs() < 0.01);
         assert!((out[4] - 0x60 as f32 / 128.0).abs() < 0.01);
@@ -2456,10 +2480,13 @@ mod tests {
         pcm.state.fifo = 0xC0; // bit 7 (play) + bit 6 (recording direction)
         write_bytes(&mut pcm, &[0x7F; 16]);
 
-        let out = pcm.drain_samples(4);
+        let mut out = [0.0f32; 8];
+        pcm.drain_samples_into(&mut out);
+        // NP21W does not check bit 6 (recording direction) for audio output.
+        // PCM output plays regardless of the FIFO direction flag.
         assert!(
-            out.iter().all(|&s| s == 0.0),
-            "recording mode should suppress DAC output"
+            out.iter().any(|&s| s != 0.0),
+            "bit 6 should not suppress DAC output (matches NP21W)"
         );
     }
 
