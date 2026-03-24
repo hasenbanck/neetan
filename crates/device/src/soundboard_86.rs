@@ -437,12 +437,17 @@ struct Pcm86 {
     pcm_resample_input: Vec<f32>,
     pcm_resample_output: Vec<f32>,
     pending_irq_change: Option<bool>,
-    /// Delayed retry for IRQ timer rescheduling.
-    /// Set by pcm86_timer_expired when the adjusted-buffer condition fails,
-    /// consumed by drain_actions to avoid a tight 1-cycle rescheduling loop.
-    retry_delay: Option<u64>,
     /// CPU clock multiple (cpu_clock_hz / baseclock). Used for IRQ retry delay.
     clock_multiple: u64,
+    /// Set by pcm86_timer_expired or control register writes to request
+    /// rescheduling of the PCM86 IRQ timer in drain_actions.
+    needs_reschedule: bool,
+    /// Underrun drift accumulator (milliseconds of persistent `real_buf < vir_buf`).
+    /// Used by `calculate_next_irq_cycle` to weight the timer towards real_buf
+    /// when drift persists.
+    buf_under_flag: i32,
+    /// CPU cycle of last `reconcile_buffers` call, for computing drift time steps.
+    last_checkbuf_cycle: u64,
 }
 
 impl Pcm86 {
@@ -468,8 +473,10 @@ impl Pcm86 {
             pcm_resample_input: vec![0.0; 4096 * 2],
             pcm_resample_output: vec![0.0; output_size],
             pending_irq_change: None,
-            retry_delay: None,
             clock_multiple: multiple,
+            needs_reschedule: false,
+            buf_under_flag: 0,
+            last_checkbuf_cycle: 0,
         }
     }
 
@@ -485,7 +492,13 @@ impl Pcm86 {
         self.state.fifo & 0x20 != 0
     }
 
-    fn read_port(&mut self, port: u16, current_cycle: u64, cpu_clock_hz: u32) -> u8 {
+    fn read_port(
+        &mut self,
+        port: u16,
+        current_cycle: u64,
+        cpu_clock_hz: u32,
+        pcm86_irq_pending: bool,
+    ) -> u8 {
         match port {
             0xA460 => self.state.sound_flags,
             0xA466 => {
@@ -509,7 +522,7 @@ impl Pcm86 {
             0xA468 => {
                 self.update_buffer_state(current_cycle, cpu_clock_hz);
                 let mut ret = self.state.fifo & !0x10;
-                if self.irq_condition_met(current_cycle) {
+                if self.irq_condition_met(current_cycle, pcm86_irq_pending) {
                     ret |= 0x10;
                 }
                 ret
@@ -533,7 +546,7 @@ impl Pcm86 {
         }
     }
 
-    fn irq_condition_met(&mut self, current_cycle: u64) -> bool {
+    fn irq_condition_met(&mut self, current_cycle: u64, pcm86_irq_pending: bool) -> bool {
         if !self.irq_enabled() {
             return false;
         }
@@ -545,9 +558,12 @@ impl Pcm86 {
         if self.state.irq_flag {
             return true;
         }
-        if self.state.vir_buf <= self.state.fifo_size
-            || (self.state.real_buf > self.state.step_mask as i32
-                && self.state.real_buf <= self.state.fifo_size)
+        // Only set irq_flag from the buffer condition if no PCM86 timer event
+        // is pending.
+        if !pcm86_irq_pending
+            && (self.state.vir_buf <= self.state.fifo_size
+                || (self.state.real_buf > self.state.step_mask as i32
+                    && self.state.real_buf <= self.state.fifo_size))
         {
             self.state.irq_flag = true;
             return true;
@@ -622,6 +638,10 @@ impl Pcm86 {
                     self.pcm_resample_output
                         .resize(self.pcm_resampler.buffer_size_output(), 0.0);
                 }
+                // Reschedule the PCM86 timer when an IRQ request is pending.
+                if self.state.reqirq {
+                    self.needs_reschedule = true;
+                }
             }
             0xA46A => {
                 self.update_buffer_state(current_cycle, cpu_clock_hz);
@@ -641,6 +661,10 @@ impl Pcm86 {
                     self.state.step_mask = (1u32 << self.state.step_bit) - 1;
                     self.state.rescue =
                         PCM86_RESCUE_TABLE[(self.state.fifo & 7) as usize] << self.state.step_bit;
+                }
+                // Reschedule the PCM86 timer when an IRQ request is pending.
+                if self.state.reqirq {
+                    self.needs_reschedule = true;
                 }
             }
             0xA46C => {
@@ -726,38 +750,79 @@ impl Pcm86 {
         self.state.audio_frame_start_cycle = current_cycle;
     }
 
-    /// Reconcile vir_buf with real_buf after audio generation.
-    fn reconcile_buffers(&mut self) {
+    /// Reconcile vir_buf with real_buf after audio generation and accumulate
+    /// drift for timer scheduling weighting.
+    fn reconcile_buffers(&mut self, current_cycle: u64, cpu_clock_hz: u32) {
+        // Compute elapsed time in milliseconds for drift accumulation.
+        let flag_step = if self.last_checkbuf_cycle > 0 {
+            let elapsed = current_cycle.saturating_sub(self.last_checkbuf_cycle);
+            (elapsed as i64 * 1000 / cpu_clock_hz as i64) as i32
+        } else {
+            0
+        };
+        self.last_checkbuf_cycle = current_cycle;
+
         let deficit = self.state.real_buf - self.state.vir_buf;
-        if deficit < 0
-            && deficit <= -self.state.fifo_size
-            && self.state.vir_buf < self.state.fifo_size
-        {
-            // real_buf fell significantly below vir_buf - adjust vir_buf downward.
-            let adjustment = deficit & !3;
-            self.state.vir_buf += adjustment;
-        } else if self.state.vir_buf > self.state.fifo_size
-            && self.state.real_buf > self.state.step_mask as i32
-            && self.state.real_buf > self.state.vir_buf + self.state.fifo_size * 3
-        {
-            // real_buf significantly exceeds vir_buf - nudge vir_buf upward.
-            let adjustment =
-                (self.state.real_buf - (self.state.vir_buf - self.state.fifo_size * 3)) / 8;
-            self.state.vir_buf += adjustment;
+        if deficit < 0 {
+            // real_buf < vir_buf: underrun condition — accumulate drift.
+            self.buf_under_flag = self.buf_under_flag.saturating_add(flag_step);
+
+            // Critical underrun: real_buf fell significantly below vir_buf.
+            if deficit <= -self.state.fifo_size && self.state.vir_buf < self.state.fifo_size {
+                let adjustment = deficit & !3;
+                self.state.vir_buf += adjustment;
+            }
+        } else {
+            // Recovery: reset underrun accumulator.
+            self.buf_under_flag = 0;
+
+            // Overrun: real_buf significantly exceeds vir_buf — nudge upward.
+            if self.state.vir_buf > self.state.fifo_size
+                && self.state.real_buf > self.state.step_mask as i32
+                && self.state.real_buf > self.state.vir_buf + self.state.fifo_size * 3
+            {
+                let adjustment =
+                    (self.state.real_buf - (self.state.vir_buf - self.state.fifo_size * 3)) / 8;
+                self.state.vir_buf += adjustment;
+            }
         }
     }
 
-    /// Calculate when vir_buf will drop to fifo_size.
-    /// Returns Some(fire_cycle) if buffer is above threshold, None if IRQ should fire now.
+    /// Calculate when vir_buf will drop to fifo_size, applying drift-weighted
+    /// blending between virtual and real buffer counts.
+    ///
+    /// Returns `Some(fire_cycle)` if buffer is above threshold, `None` if IRQ
+    /// should fire now.
     fn calculate_next_irq_cycle(&self, current_cycle: u64, cpu_clock_hz: u32) -> Option<u64> {
         if self.state.fifo & 0x80 == 0 {
             return None;
         }
-        let samples_above = self.state.vir_buf - self.state.fifo_size;
-        if samples_above <= 0 {
+        let cntv = self.state.vir_buf - self.state.fifo_size;
+        if cntv <= 0 {
             return None;
         }
-        let byte_count = (samples_above + self.state.step_mask as i32) >> self.state.step_bit;
+        let cntr = self.state.real_buf - self.state.fifo_size;
+
+        // Apply drift weighting when real_buf has data and is falling behind
+        // vir_buf. The buf_under_flag accumulator tracks how long the underrun
+        // persists (in ms); higher values pull the timer closer to real_buf.
+        let cnt = if self.state.real_buf > self.state.step_mask as i32 && cntr < cntv {
+            if self.buf_under_flag > 32000 {
+                ((cntv as i64 * 9 + cntr as i64) / 10) as i32
+            } else if self.buf_under_flag > 4000 {
+                ((cntv as i64 * 99 + cntr as i64) / 100) as i32
+            } else {
+                cntv
+            }
+        } else {
+            cntv
+        };
+
+        if cnt <= 0 {
+            return None;
+        }
+
+        let byte_count = (cnt + self.state.step_mask as i32) >> self.state.step_bit;
         if byte_count <= 0 {
             return None;
         }
@@ -903,6 +968,9 @@ pub struct Soundboard86 {
     rhythm: RhythmSection,
     pcm86: Pcm86,
     sample_rate: u32,
+    /// Set by `timer_expired` (FM timer callback), consumed by `drain_actions`
+    /// to trigger a PCM86 IRQ piggyback check.
+    fm_timer_just_fired: bool,
 }
 
 impl Soundboard86 {
@@ -955,6 +1023,7 @@ impl Soundboard86 {
             rhythm: RhythmSection::new(!has_rom),
             pcm86: Pcm86::new(sample_rate, cpu_clock_hz, machine_model),
             sample_rate,
+            fm_timer_just_fired: false,
         }
     }
 
@@ -1134,11 +1203,19 @@ impl Soundboard86 {
         self.sync_to_cycle(current_cycle);
         self.chip.callbacks_mut().current_cycle.set(current_cycle);
         self.chip.timer_expired(timer_id);
+        self.fm_timer_just_fired = true;
     }
 
     /// Reads a PCM86 port.
-    pub fn pcm86_read(&mut self, port: u16, current_cycle: u64, cpu_clock_hz: u32) -> u8 {
-        self.pcm86.read_port(port, current_cycle, cpu_clock_hz)
+    pub fn pcm86_read(
+        &mut self,
+        port: u16,
+        current_cycle: u64,
+        cpu_clock_hz: u32,
+        pcm86_irq_pending: bool,
+    ) -> u8 {
+        self.pcm86
+            .read_port(port, current_cycle, cpu_clock_hz, pcm86_irq_pending)
     }
 
     /// Writes a PCM86 port.
@@ -1146,15 +1223,26 @@ impl Soundboard86 {
         if port == 0xA460 {
             self.state.extend_enabled = value & 1 != 0;
         }
+        // Keep the bridge cycle in sync so drain_actions can schedule PCM86
+        // timers relative to the correct point in time.
+        self.chip.callbacks_mut().current_cycle.set(current_cycle);
         self.pcm86
             .write_port(port, value, current_cycle, cpu_clock_hz, self.sample_rate);
     }
 
     /// Called when the Pcm86Irq scheduler event fires.
+    ///
+    /// This method never sets `reqirq = true` - that is only done by the data
+    /// write handler and (as a workaround) inside `drain_actions` when the
+    /// buffer is already at or below the threshold.
     pub fn pcm86_timer_expired(&mut self, current_cycle: u64, cpu_clock_hz: u32) {
+        // Keep the bridge cycle in sync so drain_actions can schedule PCM86
+        // timers relative to the correct point in time.
+        self.chip.callbacks_mut().current_cycle.set(current_cycle);
+
         if self.pcm86.state.reqirq {
             self.pcm86.update_buffer_state(current_cycle, cpu_clock_hz);
-            self.pcm86.reconcile_buffers();
+            self.pcm86.reconcile_buffers(current_cycle, cpu_clock_hz);
 
             let adjusted_buf = ((self.pcm86.state.vir_buf as i64 * 4
                 + self.pcm86.state.real_buf as i64)
@@ -1167,18 +1255,18 @@ impl Soundboard86 {
                 self.pcm86.state.irq_flag = true;
                 self.pcm86.pending_irq_change = Some(true);
             } else {
-                // Condition not met yet. Use a delayed retry to avoid a tight
-                // 1-cycle rescheduling loop.
-                self.pcm86.retry_delay = Some(100 * self.pcm86.clock_multiple);
+                self.pcm86.needs_reschedule = true;
             }
-        } else if self.pcm86.state.fifo & 0x80 != 0 {
-            self.pcm86.state.reqirq = true;
-            self.pcm86.retry_delay = Some(100 * self.pcm86.clock_multiple);
+        } else {
+            self.pcm86.needs_reschedule = true;
         }
     }
 
     /// Drains pending actions from the chip bridge and PCM86, merging IRQ sources.
-    pub fn drain_actions(&mut self) -> Vec<Soundboard86Action> {
+    ///
+    /// `pcm86_irq_pending` indicates whether a `Pcm86Irq` event is currently
+    /// scheduled in the system scheduler.
+    pub fn drain_actions(&mut self, pcm86_irq_pending: bool) -> Vec<Soundboard86Action> {
         let opna_masked = self.opna_masked();
         let bridge = self.chip.callbacks_mut();
         self.state.busy_end_cycle = bridge.busy_end_cycle.get();
@@ -1223,29 +1311,50 @@ impl Soundboard86 {
             self.state.pcm86_irq_asserted = asserted;
         }
 
-        // Schedule PCM86 IRQ event if reqirq is pending.
-        if self.pcm86.state.reqirq {
-            if let Some(delay) = self.pcm86.retry_delay.take() {
-                // Delayed retry after pcm86_timer_expired missed the condition.
-                actions.push(Soundboard86Action::ScheduleTimer {
-                    kind: EventKind::Pcm86Irq,
-                    fire_cycle: current_cycle + delay,
-                });
-            } else if let Some(fire_cycle) = self
+        // FM timer piggyback: when an FM timer fires, check if PCM86's IRQ
+        // condition is also met and include it in the merged IRQ.
+        let fm_timer_fired = self.fm_timer_just_fired;
+        self.fm_timer_just_fired = false;
+        if fm_timer_fired && !self.state.pcm86_irq_asserted && !pcm86_irq_pending {
+            self.pcm86.update_buffer_state(current_cycle, cpu_clock_hz);
+            if self.pcm86.irq_condition_met(current_cycle, false) {
+                self.state.pcm86_irq_asserted = true;
+            }
+        }
+
+        // Schedule PCM86 IRQ event.
+        // Only triggered by the timer callback and FIFO/DAC control register
+        // writes - data byte writes (0xA46C) set reqirq but do not reschedule.
+        if self.pcm86.needs_reschedule && self.pcm86.state.fifo & 0x80 != 0 {
+            self.pcm86.needs_reschedule = false;
+
+            if let Some(fire_cycle) = self
                 .pcm86
                 .calculate_next_irq_cycle(current_cycle, cpu_clock_hz)
             {
+                // Buffer above threshold - schedule for when it drains.
                 actions.push(Soundboard86Action::ScheduleTimer {
                     kind: EventKind::Pcm86Irq,
                     fire_cycle,
                 });
-            } else {
-                // Buffer already below threshold - fire immediately.
+            } else if self.pcm86.state.reqirq {
+                // Buffer already at/below threshold and reqirq set - fire immediately.
                 actions.push(Soundboard86Action::ScheduleTimer {
                     kind: EventKind::Pcm86Irq,
                     fire_cycle: current_cycle + 1,
                 });
+            } else {
+                // Buffer at/below threshold, reqirq not set, still playing.
+                // Workaround: set reqirq and retry after a delay to avoid
+                // infinite IRQ loops on systems like WinNT4.
+                self.pcm86.state.reqirq = true;
+                actions.push(Soundboard86Action::ScheduleTimer {
+                    kind: EventKind::Pcm86Irq,
+                    fire_cycle: current_cycle + 100 * self.pcm86.clock_multiple,
+                });
             }
+        } else {
+            self.pcm86.needs_reschedule = false;
         }
 
         // Compute merged IRQ (OR of both sources, respecting OPNA mask).
@@ -1371,7 +1480,7 @@ impl Soundboard86 {
         // Mix in PCM86 stereo output using the full elapsed time since last generate call.
         // Advance vir_buf to current time before draining.
         self.pcm86.update_buffer_state(current_cycle, cpu_clock_hz);
-        self.pcm86.reconcile_buffers();
+        self.pcm86.reconcile_buffers(current_cycle, cpu_clock_hz);
         let pcm_frame_cycles = current_cycle.saturating_sub(pcm_frame_start);
         if self.pcm86.is_playing() && self.pcm86.state.real_buf > 0 && pcm_frame_cycles > 0 {
             let pcm_rate = self.pcm86.pcm_rate();
@@ -1724,15 +1833,15 @@ mod tests {
 
         // vir_buf = 5, above threshold.
         pcm.state.vir_buf = 5;
-        assert!(!pcm.irq_condition_met(100));
+        assert!(!pcm.irq_condition_met(100, false));
 
         // vir_buf = 3, at threshold.
         pcm.state.vir_buf = 3;
-        assert!(pcm.irq_condition_met(100));
+        assert!(pcm.irq_condition_met(100, false));
 
         // vir_buf = 0, below threshold.
         pcm.state.vir_buf = 0;
-        assert!(pcm.irq_condition_met(100));
+        assert!(pcm.irq_condition_met(100, false));
     }
 
     #[test]
@@ -1742,7 +1851,7 @@ mod tests {
         pcm.state.fifo_size = 3;
         pcm.state.vir_buf = 0;
         pcm.state.data_write_irq_wait = 0;
-        assert!(!pcm.irq_condition_met(100));
+        assert!(!pcm.irq_condition_met(100, false));
     }
 
     #[test]
@@ -1755,10 +1864,10 @@ mod tests {
         pcm.state.last_clock_for_wait = 50;
 
         // Only 50 cycles elapsed, need 1000 → not met.
-        assert!(!pcm.irq_condition_met(100));
+        assert!(!pcm.irq_condition_met(100, false));
 
         // 1050 cycles elapsed → met.
-        assert!(pcm.irq_condition_met(1050));
+        assert!(pcm.irq_condition_met(1050, false));
     }
 
     #[test]
@@ -1928,7 +2037,7 @@ mod tests {
     }
 
     #[test]
-    fn default_reset_values_match_np21w() {
+    fn default_reset_values() {
         let state = Pcm86State::default();
         assert_eq!(state.fifo_size, 128, "fifo_size should default to 0x80");
         assert_eq!(state.dactrl, 0x32, "dactrl should default to 0x32");
@@ -1945,7 +2054,7 @@ mod tests {
         let mut pcm = make_pcm86();
         pcm.state.pcm_mute = 0xFE;
 
-        let readback = pcm.read_port(0xA66E, 0, 8_000_000);
+        let readback = pcm.read_port(0xA66E, 0, 8_000_000, false);
         assert_eq!(readback, 0xFE, "full byte should be returned on read");
 
         // Bit 0 is 0, so mute should be inactive.
@@ -1966,7 +2075,7 @@ mod tests {
         // realbuf must exceed virbuf + fifosize*3 = 500 + 384 = 884
         pcm.state.real_buf = 1000;
         let old_virbuf = pcm.state.vir_buf;
-        pcm.reconcile_buffers();
+        pcm.reconcile_buffers(1000, 8_000_000);
         assert!(
             pcm.state.vir_buf > old_virbuf,
             "virbuf should increase: was {old_virbuf}, now {}",
@@ -1984,12 +2093,12 @@ mod tests {
         pcm.state.vir_buf = 500;
         // realbuf NOT exceeding virbuf + fifosize*3 = 884
         pcm.state.real_buf = 800;
-        pcm.reconcile_buffers();
+        pcm.reconcile_buffers(1000, 8_000_000);
         assert_eq!(pcm.state.vir_buf, 500, "virbuf should not change");
     }
 
     #[test]
-    fn pcm86_timer_expired_uses_delayed_retry_when_condition_not_met() {
+    fn pcm86_timer_expired_uses_reschedule_when_condition_not_met() {
         let mut sb = Soundboard86::new(8_000_000, 48000, None, false, MachineModel::PC9801RA);
         sb.pcm86.state.reqirq = true;
         sb.pcm86.state.fifo_size = 128;
@@ -2004,10 +2113,11 @@ mod tests {
 
         sb.pcm86_timer_expired(1000, 8_000_000);
 
-        // The condition was not met, so retry_delay should be set.
+        // The condition was not met, so needs_reschedule should be set
+        // (drain_actions will call calculate_next_irq_cycle).
         assert!(
-            sb.pcm86.retry_delay.is_some(),
-            "retry_delay should be set when condition fails"
+            sb.pcm86.needs_reschedule,
+            "needs_reschedule should be set when condition fails"
         );
         // reqirq should still be true (not cleared).
         assert!(sb.pcm86.state.reqirq);
@@ -2016,13 +2126,15 @@ mod tests {
     }
 
     #[test]
-    fn drain_actions_uses_retry_delay_over_immediate_fire() {
+    fn drain_actions_only_schedules_when_needs_reschedule() {
         let mut sb = Soundboard86::new(8_000_000, 48000, None, false, MachineModel::PC9801RA);
         sb.pcm86.state.reqirq = true;
-        sb.pcm86.retry_delay = Some(400);
+        sb.pcm86.state.fifo = 0x80; // playback active
+        sb.pcm86.needs_reschedule = false;
 
-        let actions = sb.drain_actions();
-        let timer_action = actions.iter().find(|a| {
+        // reqirq alone should NOT trigger scheduling.
+        let actions = sb.drain_actions(false);
+        let timer_action = actions.iter().any(|a| {
             matches!(
                 a,
                 Soundboard86Action::ScheduleTimer {
@@ -2031,13 +2143,27 @@ mod tests {
                 }
             )
         });
-        assert!(timer_action.is_some(), "should schedule a PCM86 timer");
-        if let Some(Soundboard86Action::ScheduleTimer { fire_cycle, .. }) = timer_action {
-            assert!(
-                *fire_cycle >= 400,
-                "fire_cycle should use retry delay, got {fire_cycle}"
-            );
-        }
+        assert!(
+            !timer_action,
+            "should not schedule PCM86 timer without needs_reschedule"
+        );
+
+        // With needs_reschedule, scheduling should happen.
+        sb.pcm86.needs_reschedule = true;
+        let actions = sb.drain_actions(false);
+        let timer_action = actions.iter().any(|a| {
+            matches!(
+                a,
+                Soundboard86Action::ScheduleTimer {
+                    kind: EventKind::Pcm86Irq,
+                    ..
+                }
+            )
+        });
+        assert!(
+            timer_action,
+            "should schedule PCM86 timer when needs_reschedule is set"
+        );
     }
 
     #[test]
@@ -2054,7 +2180,7 @@ mod tests {
         pcm.state.irq_flag = false;
 
         assert!(
-            pcm.irq_condition_met(1000),
+            pcm.irq_condition_met(1000, false),
             "should trigger via secondary realbuf condition"
         );
     }
@@ -2072,7 +2198,7 @@ mod tests {
         pcm.state.irq_flag = false;
 
         assert!(
-            !pcm.irq_condition_met(1000),
+            !pcm.irq_condition_met(1000, false),
             "should not trigger when real_buf <= step_mask"
         );
     }
@@ -2123,13 +2249,13 @@ mod tests {
         }
         assert_eq!(pcm.state.wavestar_value, 0x0B);
 
-        let first = pcm.read_port(0xA464, 0, 8_000_000);
+        let first = pcm.read_port(0xA464, 0, 8_000_000, false);
         assert_eq!(first, 0x0B);
         // After read, value toggles to 0x00.
-        let second = pcm.read_port(0xA464, 0, 8_000_000);
+        let second = pcm.read_port(0xA464, 0, 8_000_000, false);
         assert_eq!(second, 0x00);
         // After 0x00, toggles back to 0xFF.
-        let third = pcm.read_port(0xA464, 0, 8_000_000);
+        let third = pcm.read_port(0xA464, 0, 8_000_000, false);
         assert_eq!(third, 0xFF);
     }
 
@@ -2156,7 +2282,7 @@ mod tests {
     #[test]
     fn wavestar_port_a462_read_returns_ff() {
         let mut pcm = make_pcm86();
-        assert_eq!(pcm.read_port(0xA462, 0, 8_000_000), 0xFF);
+        assert_eq!(pcm.read_port(0xA462, 0, 8_000_000, false), 0xFF);
     }
 
     #[test]
@@ -2164,17 +2290,16 @@ mod tests {
         let mut sb = Soundboard86::new(8_000_000, 48000, None, false, MachineModel::PC9801RA);
         sb.pcm86.state.reqirq = false;
         sb.pcm86.state.fifo = 0x80; // playing
-        sb.pcm86.retry_delay = None;
 
         sb.pcm86_timer_expired(1000, 8_000_000);
 
         assert!(
-            sb.pcm86.state.reqirq,
-            "reqirq should be set as keep-alive recovery"
+            !sb.pcm86.state.reqirq,
+            "reqirq must not be set by timer callback"
         );
         assert!(
-            sb.pcm86.retry_delay.is_some(),
-            "retry_delay should be set for rescheduling"
+            sb.pcm86.needs_reschedule,
+            "needs_reschedule should be set for setnextintr"
         );
     }
 
@@ -2183,12 +2308,14 @@ mod tests {
         let mut sb = Soundboard86::new(8_000_000, 48000, None, false, MachineModel::PC9801RA);
         sb.pcm86.state.reqirq = false;
         sb.pcm86.state.fifo = 0x00; // NOT playing
-        sb.pcm86.retry_delay = None;
 
         sb.pcm86_timer_expired(1000, 8_000_000);
 
         assert!(!sb.pcm86.state.reqirq, "reqirq should remain false");
-        assert!(sb.pcm86.retry_delay.is_none(), "no retry when not playing");
+        assert!(
+            sb.pcm86.needs_reschedule,
+            "needs_reschedule set even when not playing - drain_actions gates on playback"
+        );
     }
 
     #[test]
@@ -2227,7 +2354,7 @@ mod tests {
         pcm.state.vir_buf = 0;
         pcm.state.irq_flag = false;
 
-        let result = pcm.irq_condition_met(100);
+        let result = pcm.irq_condition_met(100, false);
         assert!(result, "condition should be met");
         assert!(
             pcm.state.irq_flag,
@@ -2245,7 +2372,7 @@ mod tests {
         pcm.state.real_buf = 500;
         pcm.state.irq_flag = true; // already latched
 
-        let result = pcm.irq_condition_met(100);
+        let result = pcm.irq_condition_met(100, false);
         assert!(result, "should return true via irq_flag path");
     }
 
@@ -2334,5 +2461,162 @@ mod tests {
             out.iter().all(|&s| s == 0.0),
             "recording mode should suppress DAC output"
         );
+    }
+
+    #[test]
+    fn fm_timer_piggyback_asserts_pcm86_irq() {
+        let mut sb = Soundboard86::new(8_000_000, 48000, None, false, MachineModel::PC9801RA);
+        sb.pcm86.state.fifo = 0xA0; // playing + IRQ enabled
+        sb.pcm86.state.fifo_size = 128;
+        sb.pcm86.state.data_write_irq_wait = 0;
+        sb.pcm86.state.vir_buf = 0; // below threshold
+        sb.pcm86.state.irq_flag = false;
+        sb.chip.callbacks_mut().current_cycle.set(1000);
+
+        // Simulate FM timer fire.
+        sb.fm_timer_just_fired = true;
+
+        // No PCM86 timer pending, so piggyback should check condition.
+        let actions = sb.drain_actions(false);
+        let has_irq_assert = actions
+            .iter()
+            .any(|a| matches!(a, Soundboard86Action::AssertIrq { .. }));
+        assert!(
+            has_irq_assert,
+            "FM timer piggyback should assert PCM86 IRQ when condition met"
+        );
+        assert!(sb.pcm86.state.irq_flag, "irq_flag should be set");
+    }
+
+    #[test]
+    fn fm_timer_piggyback_skipped_when_pcm86_timer_pending() {
+        let mut sb = Soundboard86::new(8_000_000, 48000, None, false, MachineModel::PC9801RA);
+        sb.pcm86.state.fifo = 0xA0;
+        sb.pcm86.state.fifo_size = 128;
+        sb.pcm86.state.data_write_irq_wait = 0;
+        sb.pcm86.state.vir_buf = 0;
+        sb.pcm86.state.irq_flag = false;
+        sb.chip.callbacks_mut().current_cycle.set(1000);
+
+        sb.fm_timer_just_fired = true;
+
+        // PCM86 timer IS pending - piggyback should be skipped.
+        let actions = sb.drain_actions(true);
+        let has_irq_assert = actions
+            .iter()
+            .any(|a| matches!(a, Soundboard86Action::AssertIrq { .. }));
+        assert!(
+            !has_irq_assert,
+            "piggyback should be skipped when PCM86 timer is pending"
+        );
+        assert!(
+            !sb.pcm86.state.irq_flag,
+            "irq_flag should not be set when piggyback skipped"
+        );
+    }
+
+    #[test]
+    fn irq_condition_met_guard_skips_buffer_check_when_timer_pending() {
+        let mut pcm = make_pcm86();
+        pcm.state.fifo = 0xA0; // IRQ enabled + playing
+        pcm.state.fifo_size = 128;
+        pcm.state.data_write_irq_wait = 0;
+        pcm.state.vir_buf = 0; // below threshold
+        pcm.state.irq_flag = false;
+
+        // With timer pending, buffer condition should not set irq_flag.
+        let result = pcm.irq_condition_met(100, true);
+        assert!(!result, "should not trigger when timer is pending");
+        assert!(!pcm.state.irq_flag, "irq_flag should not be set");
+
+        // Without timer pending, same condition should trigger.
+        let result = pcm.irq_condition_met(100, false);
+        assert!(result, "should trigger when timer is not pending");
+        assert!(pcm.state.irq_flag, "irq_flag should be set");
+    }
+
+    #[test]
+    fn irq_condition_met_returns_true_via_flag_even_when_timer_pending() {
+        let mut pcm = make_pcm86();
+        pcm.state.fifo = 0xA0;
+        pcm.state.fifo_size = 128;
+        pcm.state.data_write_irq_wait = 0;
+        pcm.state.vir_buf = 500; // above threshold
+        pcm.state.irq_flag = true; // already latched
+
+        // Even with timer pending, the already-set irq_flag is returned.
+        let result = pcm.irq_condition_met(100, true);
+        assert!(
+            result,
+            "should return true via irq_flag path regardless of pending"
+        );
+    }
+
+    #[test]
+    fn drift_weighting_pulls_timer_towards_realbuf() {
+        let mut pcm = make_pcm86();
+        pcm.state.fifo = 0x80; // playing
+        pcm.state.fifo_size = 128;
+        pcm.state.step_bit = 0;
+        pcm.state.step_mask = 0;
+        pcm.state.vir_buf = 1128; // 1000 above threshold
+        pcm.state.real_buf = 628; // 500 above threshold (cntr < cntv)
+
+        // No drift - should use pure vir_buf.
+        pcm.buf_under_flag = 0;
+        let no_drift = pcm.calculate_next_irq_cycle(0, 8_000_000);
+
+        // Moderate drift (>4s) - should blend slightly towards real_buf.
+        pcm.buf_under_flag = 5000;
+        let moderate_drift = pcm.calculate_next_irq_cycle(0, 8_000_000);
+
+        // Severe drift (>32s) - should blend more towards real_buf.
+        pcm.buf_under_flag = 33000;
+        let severe_drift = pcm.calculate_next_irq_cycle(0, 8_000_000);
+
+        // All should return Some since buffer is above threshold.
+        assert!(no_drift.is_some());
+        assert!(moderate_drift.is_some());
+        assert!(severe_drift.is_some());
+
+        // Drift should pull the timer earlier (lower fire_cycle) since
+        // real_buf is closer to threshold than vir_buf.
+        assert!(
+            moderate_drift.unwrap() <= no_drift.unwrap(),
+            "moderate drift should fire no later: moderate={}, none={}",
+            moderate_drift.unwrap(),
+            no_drift.unwrap()
+        );
+        assert!(
+            severe_drift.unwrap() <= moderate_drift.unwrap(),
+            "severe drift should fire no later: severe={}, moderate={}",
+            severe_drift.unwrap(),
+            moderate_drift.unwrap()
+        );
+    }
+
+    #[test]
+    fn reconcile_buffers_accumulates_underrun_drift() {
+        let mut pcm = make_pcm86();
+        pcm.state.fifo_size = 128;
+        pcm.state.vir_buf = 500;
+        pcm.state.real_buf = 400; // deficit < 0 → underrun
+
+        // First call establishes baseline (last_checkbuf_cycle starts at 0).
+        pcm.reconcile_buffers(1000, 8_000_000);
+        assert_eq!(pcm.buf_under_flag, 0, "first call should not accumulate");
+
+        // Second call 1 second later.
+        pcm.reconcile_buffers(8_001_000, 8_000_000);
+        assert!(
+            pcm.buf_under_flag > 0,
+            "should accumulate drift: {}",
+            pcm.buf_under_flag
+        );
+
+        // Recovery: real_buf >= vir_buf resets the flag.
+        pcm.state.real_buf = 600;
+        pcm.reconcile_buffers(16_001_000, 8_000_000);
+        assert_eq!(pcm.buf_under_flag, 0, "recovery should reset drift");
     }
 }

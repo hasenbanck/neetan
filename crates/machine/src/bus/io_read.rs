@@ -1,4 +1,4 @@
-use common::{debug, warn};
+use common::{EventKind, debug, warn};
 
 use crate::{
     Pc9801Bus, Tracing,
@@ -437,7 +437,14 @@ impl<T: Tracing> Pc9801Bus<T> {
             // PCM86 DAC ports.
             0xA460 | 0xA462 | 0xA464 | 0xA466 | 0xA468 | 0xA46A | 0xA46C | 0xA46E => {
                 if let Some(ref mut sb86) = self.soundboard_86 {
-                    sb86.pcm86_read(port, self.current_cycle, self.clocks.cpu_clock_hz)
+                    let pcm86_pending =
+                        self.scheduler.state.fire_cycles[EventKind::Pcm86Irq as usize].is_some();
+                    sb86.pcm86_read(
+                        port,
+                        self.current_cycle,
+                        self.clocks.cpu_clock_hz,
+                        pcm86_pending,
+                    )
                 } else {
                     0xFF
                 }
@@ -446,7 +453,14 @@ impl<T: Tracing> Pc9801Bus<T> {
             // PCM86 mute control port.
             0xA66E => {
                 if let Some(ref mut sb86) = self.soundboard_86 {
-                    sb86.pcm86_read(port, self.current_cycle, self.clocks.cpu_clock_hz)
+                    let pcm86_pending =
+                        self.scheduler.state.fire_cycles[EventKind::Pcm86Irq as usize].is_some();
+                    sb86.pcm86_read(
+                        port,
+                        self.current_cycle,
+                        self.clocks.cpu_clock_hz,
+                        pcm86_pending,
+                    )
                 } else {
                     0xFF
                 }
