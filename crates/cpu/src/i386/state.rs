@@ -263,6 +263,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.no_interrupt = 0;
         self.inhibit_all = 0;
         self.rep_active = false;
+        self.rep_completed = false;
         self.rep_restart_ip = 0;
         self.rep_type = 0;
         self.rep_operand_size_override = false;

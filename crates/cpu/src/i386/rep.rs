@@ -97,6 +97,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let mut count = self.rep_count();
 
         if count == 0 {
+            self.rep_completed = true;
             return;
         }
 
@@ -187,6 +188,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
         self.set_rep_count(count);
         self.seg_prefix = false;
+        self.rep_completed = true;
     }
 
     pub(super) fn continue_rep(&mut self, bus: &mut impl common::Bus) {
