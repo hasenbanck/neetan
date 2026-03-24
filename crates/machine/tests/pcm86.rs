@@ -225,7 +225,8 @@ fn pcm86_muted_produces_silence() {
     bus.io_write_byte(0xA468, 0x08);
     bus.io_write_byte(0xA468, 0x00);
     bus.io_write_byte(0xA46A, 0x30);
-    // Leave muted (default 0xA66E = 0x01).
+    // Explicitly mute via 0xA66E.
+    bus.io_write_byte(0xA66E, 0x01);
 
     let num_frames = 4096;
     let pcm_data = generate_sine_wave_16bit_stereo(num_frames, TONE_FREQ, PCM_RATE as f64);

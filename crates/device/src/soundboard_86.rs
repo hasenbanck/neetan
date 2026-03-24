@@ -121,7 +121,7 @@ pub struct Pcm86State {
     /// Index = bits 7-5 of the written value. Only index 5 (PCM direct) is
     /// used by the PCM86 DAC; others are stored for register-level accuracy.
     pub vol: [u8; 8],
-    /// PCM output mute register (port 0xA66E). Bit 0 = mute. Board starts muted.
+    /// PCM output mute register (port 0xA66E). Bit 0 = mute.
     pub pcm_mute: u8,
     /// PCM86 IRQ flag - set when FIFO drops below threshold.
     pub irq_flag: bool,
@@ -165,7 +165,7 @@ impl Default for Pcm86State {
             fifo: 0,
             dactrl: 0x32,
             vol: [0; 8],
-            pcm_mute: 0x01,
+            pcm_mute: 0x00,
             irq_flag: false,
             fifo_size: 128,
             write_pos: 0,
@@ -2068,8 +2068,8 @@ mod tests {
         assert_eq!(state.step_bit, 2, "step_bit should default to 2");
         assert_eq!(state.step_mask, 3, "step_mask should default to 3");
         assert_eq!(
-            state.pcm_mute, 0x01,
-            "pcm_mute should default to 0x01 (muted)"
+            state.pcm_mute, 0x00,
+            "pcm_mute should default to 0x00 (unmuted)"
         );
     }
 

@@ -1580,16 +1580,16 @@ mod tests {
         let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
         bus.install_soundboard_86(None, true);
 
-        // Board starts muted.
+        // Board starts unmuted.
+        assert_eq!(bus.io_read_byte(0xA66E), 0x00);
+
+        // Mute.
+        bus.io_write_byte(0xA66E, 0x01);
         assert_eq!(bus.io_read_byte(0xA66E), 0x01);
 
         // Unmute.
         bus.io_write_byte(0xA66E, 0x00);
         assert_eq!(bus.io_read_byte(0xA66E), 0x00);
-
-        // Mute again.
-        bus.io_write_byte(0xA66E, 0x01);
-        assert_eq!(bus.io_read_byte(0xA66E), 0x01);
 
         // Full byte is stored; only bit 0 controls mute.
         bus.io_write_byte(0xA66E, 0xFE);
