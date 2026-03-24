@@ -768,7 +768,7 @@ impl Pcm86 {
 
         let deficit = self.state.real_buf - self.state.vir_buf;
         if deficit < 0 {
-            // real_buf < vir_buf: underrun condition — accumulate drift.
+            // real_buf < vir_buf: underrun condition - accumulate drift.
             self.buf_under_flag = self.buf_under_flag.saturating_add(flag_step);
 
             // Critical underrun: real_buf fell significantly below vir_buf.
@@ -780,7 +780,7 @@ impl Pcm86 {
             // Recovery: reset underrun accumulator.
             self.buf_under_flag = 0;
 
-            // Overrun: real_buf significantly exceeds vir_buf — nudge upward.
+            // Overrun: real_buf significantly exceeds vir_buf - nudge upward.
             if self.state.vir_buf > self.state.fifo_size
                 && self.state.real_buf > self.state.step_mask as i32
                 && self.state.real_buf > self.state.vir_buf + self.state.fifo_size * 3

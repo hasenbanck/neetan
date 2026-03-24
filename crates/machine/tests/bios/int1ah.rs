@@ -352,7 +352,7 @@ fn int1ah_printer_status_ra() {
 }
 
 // ============================================================================
-// AH=30h Printer Print Buffer — Non-zero Count
+// AH=30h Printer Print Buffer - Non-zero Count
 // ============================================================================
 // No printer attached: returns AH=0x00 (not ready).
 
@@ -393,7 +393,7 @@ fn int1ah_printer_buffer_ra() {
 }
 
 // ============================================================================
-// AH=30h Printer Print Buffer — Zero Count
+// AH=30h Printer Print Buffer - Zero Count
 // ============================================================================
 // No printer: returns AH=0x00, CX=0.
 
@@ -422,7 +422,7 @@ fn int1ah_printer_buffer_zero_count_ra() {
 }
 
 // ============================================================================
-// Printer with attached output — helpers
+// Printer with attached output - helpers
 // ============================================================================
 
 fn make_temp_printer_file() -> (std::fs::File, std::path::PathBuf) {
@@ -486,7 +486,7 @@ fn boot_and_run_printer_ra(code: &[u8], budget: u64) -> (machine::Pc9801Ra, std:
 }
 
 // ============================================================================
-// AH=10h Printer Initialize — Printer Attached
+// AH=10h Printer Initialize - Printer Attached
 // ============================================================================
 
 fn assert_printer_init_attached(ram: &[u8; 0xA0000]) {
@@ -520,7 +520,7 @@ fn int1ah_printer_init_attached_ra() {
 }
 
 // ============================================================================
-// AH=11h Printer Print Char — Printer Attached
+// AH=11h Printer Print Char - Printer Attached
 // ============================================================================
 
 fn assert_printer_print_char_attached(ram: &[u8; 0xA0000]) {
@@ -554,7 +554,7 @@ fn int1ah_printer_print_char_attached_ra() {
 }
 
 // ============================================================================
-// AH=12h Printer Status — Printer Attached
+// AH=12h Printer Status - Printer Attached
 // ============================================================================
 
 fn assert_printer_status_attached(ram: &[u8; 0xA0000]) {
@@ -588,7 +588,7 @@ fn int1ah_printer_status_attached_ra() {
 }
 
 // ============================================================================
-// AH=30h Printer Print Buffer — Printer Attached
+// AH=30h Printer Print Buffer - Printer Attached
 // ============================================================================
 
 #[test]

@@ -515,7 +515,7 @@ impl GraphicsEngine {
 
                     encoder.begin_debug_label(c"Render Phase", [0.0, 0.5, 1.0, 1.0]);
 
-                    // Stage 1 — Compose: render text VRAM to native_target (640×480).
+                    // Stage 1 - Compose: render text VRAM to native_target (640×480).
                     {
                         encoder.begin_debug_label(c"Compose Pass", [1.0, 0.0, 0.0, 1.0]);
                         render_compose_pass(
@@ -526,7 +526,7 @@ impl GraphicsEngine {
                         encoder.end_debug_label();
                     }
 
-                    // Stage 2 — Scale: read native_target, write to color_target (window res).
+                    // Stage 2 - Scale: read native_target, write to color_target (window res).
                     {
                         encoder.begin_debug_label(c"Scale Pass", [0.0, 1.0, 0.0, 1.0]);
 
@@ -551,7 +551,7 @@ impl GraphicsEngine {
                         encoder.end_debug_label();
                     }
 
-                    // Stage 3 — Blit: read color_target, write to swapchain.
+                    // Stage 3 - Blit: read color_target, write to swapchain.
                     {
                         encoder.begin_debug_label(c"Blitter Pass", [0.5, 0.5, 1.0, 1.0]);
                         let ext = self.resources.color_target().extent();

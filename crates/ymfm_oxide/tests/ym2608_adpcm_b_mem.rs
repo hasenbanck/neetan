@@ -294,7 +294,7 @@ fn adpcm_b_mem_no_ram_reads_zero() {
     write_reg_hi(&mut chip, 0x04, 0x00); // End low
     write_reg_hi(&mut chip, 0x05, 0x00); // End high
 
-    // Read via register 0x08 — should get 0x00 since memory is empty.
+    // Read via register 0x08 - should get 0x00 since memory is empty.
     chip.write_address_hi(0x08);
     let data = chip.read_data_hi();
     assert_eq!(
@@ -404,7 +404,7 @@ fn adpcm_b_mem_start_stop_range() {
     chip.set_fidelity(YmfmOpnFidelity::Max);
 
     // Write a known pattern at two different address ranges using record mode.
-    // Range 1: unit 0x0000 (bytes 0x00..0x1F) — fill with 0xAA
+    // Range 1: unit 0x0000 (bytes 0x00..0x1F) - fill with 0xAA
     write_reg_hi(&mut chip, 0x10, 0x80);
     write_reg_hi(&mut chip, 0x00, 0x01);
     write_reg_hi(&mut chip, 0x00, 0x00);
@@ -421,7 +421,7 @@ fn adpcm_b_mem_start_stop_range() {
         write_reg_hi(&mut chip, 0x10, 0x80);
     }
 
-    // Range 2: unit 0x0001 (bytes 0x20..0x3F) — fill with 0xBB
+    // Range 2: unit 0x0001 (bytes 0x20..0x3F) - fill with 0xBB
     write_reg_hi(&mut chip, 0x00, 0x01);
     write_reg_hi(&mut chip, 0x00, 0x00);
     write_reg_hi(&mut chip, 0x10, 0x80);

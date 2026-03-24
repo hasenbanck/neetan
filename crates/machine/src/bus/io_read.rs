@@ -60,7 +60,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
             // DIP switches and system ports.
             // On PC-9821 (no physical DIP switches), reads SDIP front bank
-            // register 1 — always from the front bank regardless of the
+            // register 1 - always from the front bank regardless of the
             // current bank selection.
             0x31 => {
                 if self.machine_model.has_sdip() {
@@ -78,10 +78,10 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x005D | 0x005E => ((self.artic_counter() >> 8) & 0xFF) as u8,
             0x005F => ((self.artic_counter() >> 16) & 0xFF) as u8,
 
-            // Printer i8255 PPI Port A — data latch (read).
+            // Printer i8255 PPI Port A - data latch (read).
             0x40 => self.printer.read_data(),
 
-            // i8255 PPI Port B — system configuration status (read-only).
+            // i8255 PPI Port B - system configuration status (read-only).
             // BUSY# (bit 2) is composed from the printer device's ready state.
             0x42 => {
                 let mut value = self.system_ppi.read_port_b();
@@ -91,7 +91,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 value
             }
 
-            // Printer i8255 PPI Port C — printer control (read).
+            // Printer i8255 PPI Port C - printer control (read).
             0x44 => self.printer.read_port_c(),
 
             // Keyboard µPD8251A data register (port 0x41 read).
@@ -207,7 +207,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 }
             }
 
-            // FDC uPD765A — 1MB interface (active when PORT EXC = 1).
+            // FDC uPD765A - 1MB interface (active when PORT EXC = 1).
             0x90 => {
                 if self.floppy.port_exc_is_1mb() {
                     self.floppy.fdc_1mb_mut().read_status()
@@ -229,7 +229,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                     0xFF
                 }
             }
-            // FDC uPD765A — 640KB interface (active when PORT EXC = 0).
+            // FDC uPD765A - 640KB interface (active when PORT EXC = 0).
             0xC8 => {
                 if !self.floppy.port_exc_is_1mb() {
                     self.floppy.fdc_640k_mut().read_status()
@@ -389,7 +389,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 value
             }
 
-            // 15M hole control readback (stub — not yet implemented).
+            // 15M hole control readback (stub - not yet implemented).
             0x043B => {
                 warn!(
                     "unhandled read from 15M hole control port 0x043B (returning {:#04X})",
@@ -423,7 +423,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 }
             }
 
-            // SCSI controller (WD33C93) ports — no SCSI present.
+            // SCSI controller (WD33C93) ports - no SCSI present.
             // Ref: undoc98 `io_scsi.txt`
             0x0CC0 | 0x0CC2 | 0x0CC4 => 0xFF,
 
@@ -475,7 +475,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
             // Alternate FM sound board base addresses (0x0288, 0x0388).
             // Games probe these to detect sound hardware at non-primary bases.
-            // No hardware present — return 0xFF silently.
+            // No hardware present - return 0xFF silently.
             0x0288 | 0x028A | 0x028C | 0x028E | 0x0388 | 0x038A | 0x038C | 0x038E => 0xFF,
 
             0x09A0 => {
@@ -563,7 +563,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             // IDE bank select register (port 0x0436).
             0x0436 if self.machine_model.is_pc9821() => 0xFF,
 
-            // Window Accelerator Board (WAB) — built-in graphics accelerator.
+            // Window Accelerator Board (WAB) - built-in graphics accelerator.
             // Ref: undoc98 `io_wab.txt`
             0x0FAA if self.machine_model.is_pc9821() => self.wab_index,
             0x0FAB if self.machine_model.is_pc9821() => {
@@ -607,7 +607,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x18F2 if self.machine_model.is_pc9821() => 0x00,
             0x18F3 if self.machine_model.is_pc9821() => 0x00,
 
-            // Software DIP Switch (SDIP) — ports 0x841E–0x8F1E at 0x100 stride.
+            // Software DIP Switch (SDIP) - ports 0x841E–0x8F1E at 0x100 stride.
             // Ref: undoc98 `io_sdip.txt`
             port if self.machine_model.has_sdip()
                 && (port & 0xFF) == 0x1E
@@ -618,7 +618,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
 
             // Extended RS-232C channel 2/3 status (board detection).
-            // Ref: undoc98 `io_rs.txt` — 0xFF = no extended serial board present.
+            // Ref: undoc98 `io_rs.txt` - 0xFF = no extended serial board present.
             0xB3 | 0xBB => 0xFF,
 
             // NOTE series notebook control register (not present on desktop models).
@@ -639,7 +639,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x8D08 | 0x8D0E => 0xFF,
 
             // Video Board (PC-9801-72 / PC-98GS-02) detection ports.
-            // Ref: undoc98 `io_vbrd.txt` — 0xFF = board not present.
+            // Ref: undoc98 `io_vbrd.txt` - 0xFF = board not present.
             0xAF66 | 0xAF67 | 0xAF6A | 0xAF6B => 0xFF,
 
             _ => {

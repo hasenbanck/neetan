@@ -1110,7 +1110,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.clk_modrm(modrm, Self::timing(10, 13), Self::timing(13, 13));
             }
             7 if CPU_MODEL >= CPU_MODEL_486 => {
-                // INVLPG — invalidate TLB entry for the given memory address.
+                // INVLPG - invalidate TLB entry for the given memory address.
                 if modrm >= 0xC0 {
                     self.raise_fault(6, bus);
                     return;
@@ -1271,7 +1271,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         Self::descriptor_is_readable(rights)
     }
 
-    /// MOV r32, CRn (0F 20) — read from control register.
+    /// MOV r32, CRn (0F 20) - read from control register.
     fn mov_r32_cr(&mut self, bus: &mut impl common::Bus) {
         if self.is_protected_mode() && self.cpl() != 0 {
             self.raise_fault_with_code(13, 0, bus);
@@ -1293,7 +1293,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.clk(Self::timing(6, 4));
     }
 
-    /// MOV r32, DRn (0F 21) — read from debug register.
+    /// MOV r32, DRn (0F 21) - read from debug register.
     fn mov_r32_dr(&mut self, bus: &mut impl common::Bus) {
         if self.is_protected_mode() && self.cpl() != 0 {
             self.raise_fault_with_code(13, 0, bus);
@@ -1317,7 +1317,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.clk(Self::timing(22, 9));
     }
 
-    /// MOV CRn, r32 (0F 22) — write to control register.
+    /// MOV CRn, r32 (0F 22) - write to control register.
     /// On a 386, CR0 writable bits are: PE(0), MP(1), EM(2), TS(3), ET(4), PG(31).
     /// On a 486, WP(16) is also writable.
     /// Other bits are reserved and always read as 0.
@@ -1359,7 +1359,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
     }
 
-    /// MOV DRn, r32 (0F 23) — write to debug register.
+    /// MOV DRn, r32 (0F 23) - write to debug register.
     fn mov_dr_r32(&mut self, bus: &mut impl common::Bus) {
         if self.is_protected_mode() && self.cpl() != 0 {
             self.raise_fault_with_code(13, 0, bus);
@@ -1383,17 +1383,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     fn invd(&mut self) {
-        // INVD — invalidate cache (NOP: no cache simulation).
+        // INVD - invalidate cache (NOP: no cache simulation).
         self.clk(4);
     }
 
     fn wbinvd(&mut self) {
-        // WBINVD — write-back and invalidate cache (NOP: no cache simulation).
+        // WBINVD - write-back and invalidate cache (NOP: no cache simulation).
         self.clk(5);
     }
 
     fn bswap(&mut self, opcode: u8) {
-        // BSWAP r32 — byte-swap a 32-bit register.
+        // BSWAP r32 - byte-swap a 32-bit register.
         let reg = DwordReg::from_index(opcode & 7);
         let value = self.regs.dword(reg);
         self.regs.set_dword(reg, value.swap_bytes());
@@ -1401,7 +1401,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     fn cmpxchg_byte(&mut self, bus: &mut impl common::Bus) {
-        // CMPXCHG r/m8,r8 — compare AL with r/m8; if equal, load r8 into r/m8.
+        // CMPXCHG r/m8,r8 - compare AL with r/m8; if equal, load r8 into r/m8.
         let modrm = self.fetch(bus);
         let src = self.regs.byte(self.reg_byte(modrm));
         let dst = self.get_rm_byte(modrm, bus);
@@ -1443,7 +1443,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     fn xadd_byte(&mut self, bus: &mut impl common::Bus) {
-        // XADD r/m8,r8 — exchange and add.
+        // XADD r/m8,r8 - exchange and add.
         let modrm = self.fetch(bus);
         let src_reg = self.reg_byte(modrm);
         let src = self.regs.byte(src_reg);

@@ -64,7 +64,7 @@ fn make_multi_tick_code(tick_count: u8) -> Vec<u8> {
 }
 
 // ============================================================================
-// §5 INT 08h — Timer Tick Vector Setup
+// §5 INT 08h - Timer Tick Vector Setup
 // ============================================================================
 
 #[test]
@@ -107,7 +107,7 @@ fn int08h_vector_ra() {
 }
 
 // ============================================================================
-// §5 Timer Tick — Single Decrement
+// §5 Timer Tick - Single Decrement
 // ============================================================================
 
 #[test]
@@ -138,7 +138,7 @@ fn timer_tick_decrements_count_ra() {
 }
 
 // ============================================================================
-// §5 Timer Tick — Multiple Decrements to Zero
+// §5 Timer Tick - Multiple Decrements to Zero
 // ============================================================================
 
 #[test]
@@ -169,7 +169,7 @@ fn timer_tick_counts_down_to_zero_ra() {
 }
 
 // ============================================================================
-// §5 Timer Tick — Callback Invocation
+// §5 Timer Tick - Callback Invocation
 // ============================================================================
 
 #[test]
@@ -209,7 +209,7 @@ fn timer_tick_fires_callback_at_zero_ra() {
 }
 
 // ============================================================================
-// §5 Timer Tick — EOI
+// §5 Timer Tick - EOI
 // ============================================================================
 
 #[test]
@@ -252,7 +252,7 @@ fn timer_tick_sends_eoi_ra() {
 }
 
 // ============================================================================
-// §5 Timer Tick — PIT Reload
+// §5 Timer Tick - PIT Reload
 // ============================================================================
 
 #[test]
@@ -432,7 +432,7 @@ fn int08h_masks_irq0_on_expiry_vx() {
 }
 
 // ============================================================================
-// §5 Timer Tick — PIT FLAG_I After Non-Expired Tick
+// §5 Timer Tick - PIT FLAG_I After Non-Expired Tick
 // ============================================================================
 
 // After a non-expired tick (count > 1), the INT 08H handler reloads PIT ch0 and
@@ -480,7 +480,7 @@ fn int08h_pit_flag_i_after_tick_ra() {
 }
 
 // ============================================================================
-// §5 Timer Tick — Callback Preserves Caller Stack
+// §5 Timer Tick - Callback Preserves Caller Stack
 // ============================================================================
 
 // When INT 08H fires the callback (count expires), the caller's stack values

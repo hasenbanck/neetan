@@ -192,7 +192,7 @@ impl DoubleF64 {
                     (abs_high, abs_low)
                 }
             } else {
-                // high and low have different signs — preserve the relative sign
+                // high and low have different signs - preserve the relative sign
                 if sign {
                     (-abs_high, abs_low)
                 } else {
@@ -269,7 +269,7 @@ impl DoubleF64 {
         let frac_h = bits_h & ((1u64 << 52) - 1);
 
         if biased_h == 0 {
-            // Subnormal or zero high — result is too small, just return zero
+            // Subnormal or zero high - result is too small, just return zero
             return if sign { Fp80::NEG_ZERO } else { Fp80::ZERO };
         }
 

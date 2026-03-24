@@ -423,7 +423,7 @@ fn i286_mov_al_moffs_protected_mode_gp_on_limit_violation() {
     let state = setup_protected_mode(&mut bus, 0x000F);
     cpu.load_state(&state);
 
-    // MOV AL, [0x0020] — offset 0x20 exceeds DS limit 0x0F
+    // MOV AL, [0x0020] - offset 0x20 exceeds DS limit 0x0F
     place_at(&mut bus, PM_CODE_BASE, &[0xA0, 0x20, 0x00]);
 
     cpu.step(&mut bus); // MOV faults, dispatch goes to #GP handler
@@ -526,7 +526,7 @@ fn i286_far_jmp_conforming_code_adjusts_cs_rpl_to_cpl() {
     write_gdt_entry(&mut bus, PM_GDT_BASE, 4, PM_CODE_BASE, 0xFFFF, 0x9E);
     cpu.gdt_limit = 5 * 8 - 1;
 
-    // JMP FAR 0x0021:0x2000 — selector 0x0021 has index 4, RPL=1.
+    // JMP FAR 0x0021:0x2000 - selector 0x0021 has index 4, RPL=1.
     // For conforming code, RPL is not checked against CPL, so this should succeed.
     place_at(&mut bus, PM_CODE_BASE, &[0xEA, 0x00, 0x20, 0x21, 0x00]);
 
@@ -754,7 +754,7 @@ fn i286_gp_escalates_to_double_fault() {
     );
 
     cpu.step(&mut bus); // MOV AX
-    cpu.step(&mut bus); // MOV DS — triggers #GP, #GP handler faults too → #DF
+    cpu.step(&mut bus); // MOV DS - triggers #GP, #GP handler faults too → #DF
 
     // The CPU should now be at the #DF handler.
     // It may take one more step to execute the HLT.
@@ -1750,7 +1750,7 @@ fn i286_ss_limit_violation_uses_ss_vector() {
     state.flags.expand(0x0002);
     cpu.load_state(&state);
 
-    // PUSH AX — writes to SS:SP-2, which exceeds limit
+    // PUSH AX - writes to SS:SP-2, which exceeds limit
     place_at(&mut bus, PM_RING3_CODE_BASE, &[0x50]);
 
     cpu.step(&mut bus); // PUSH AX → SS limit fault → #SS
@@ -1782,7 +1782,7 @@ fn i286_ds_limit_violation_uses_gp_vector() {
     // Set DS limit to 0x0010
     cpu.state.seg_limits[cpu::SegReg16::DS as usize] = 0x0010;
 
-    // MOV [0x0020], AX (opcode 0xA3 + imm16) — writes to DS:0x0020 > limit
+    // MOV [0x0020], AX (opcode 0xA3 + imm16) - writes to DS:0x0020 > limit
     place_at(&mut bus, PM_CODE_BASE, &[0xA3, 0x20, 0x00]);
 
     cpu.step(&mut bus); // MOV → DS limit fault → #GP
@@ -1848,7 +1848,7 @@ fn i286_software_interrupt_error_code_no_ext_bit() {
     // Shrink IDT to cover only vectors 0-13
     cpu.state.idt_limit = 14 * 8 - 1;
 
-    // INT 14 (CD 0E) — software interrupt for vector beyond IDT limit
+    // INT 14 (CD 0E) - software interrupt for vector beyond IDT limit
     place_at(&mut bus, PM_CODE_BASE, &[0xCD, 0x0E]);
 
     // Step 1: INT 14 → IDT bounds fault → #GP dispatch
@@ -2026,7 +2026,7 @@ fn i286_ss_type_violation_raises_gp_not_ss() {
     let state = setup_protected_mode_extended(&mut bus);
     cpu.load_state(&state);
 
-    // Put a code segment descriptor at GDT entry 3 (SS slot) — type violation.
+    // Put a code segment descriptor at GDT entry 3 (SS slot) - type violation.
     write_gdt_entry(&mut bus, PM_GDT_BASE, 3, PM_STACK_BASE, 0xFFFF, 0x9B);
 
     // MOV AX, 0x0018; MOV SS, AX
@@ -2151,7 +2151,7 @@ fn i286_call_far_through_call_gate_same_privilege() {
     // HLT at target
     bus.ram[(PM_CODE_BASE + gate_target_ip as u32) as usize] = 0xF4;
 
-    // CALL FAR 0x0040:0x9999 — the offset in the instruction is ignored; gate offset is used.
+    // CALL FAR 0x0040:0x9999 - the offset in the instruction is ignored; gate offset is used.
     place_at(&mut bus, PM_CODE_BASE, &[0x9A, 0x99, 0x99, 0x40, 0x00]);
 
     let old_cs = cpu.cs();
@@ -2330,7 +2330,7 @@ fn i286_jmp_far_call_gate_inner_privilege_faults() {
     // Call gate: target is ring 0 (non-conforming, DPL 0 < CPL 3), gate DPL=3.
     write_gdt_gate(&mut bus, PM_GDT_BASE, 8, 0x0100, PM_CS_SEL, 0, 4, 3);
 
-    // JMP FAR 0x0040:0x0000 — JMP cannot do inter-privilege via call gate.
+    // JMP FAR 0x0040:0x0000 - JMP cannot do inter-privilege via call gate.
     place_at(
         &mut bus,
         PM_RING3_CODE_BASE,

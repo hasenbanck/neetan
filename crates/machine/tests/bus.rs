@@ -419,7 +419,7 @@ fn control_word_write_clears_irq0() {
     bus.set_current_cycle(1001);
     assert!(bus.has_irq());
 
-    // Write new control word for ch0 — clears IRQ 0.
+    // Write new control word for ch0 - clears IRQ 0.
     bus.io_write_byte(0x77, 0x34);
     assert!(!bus.has_irq());
 }
@@ -508,7 +508,7 @@ fn pit_channels_1_and_2_no_irq() {
     bus.io_write_byte(0x75, 0x64);
     bus.io_write_byte(0x75, 0x00);
 
-    // Advance well past any period — no IRQ should fire.
+    // Advance well past any period - no IRQ should fire.
     bus.set_current_cycle(10_000);
     assert!(!bus.has_irq());
     bus.set_current_cycle(100_000);
@@ -613,7 +613,7 @@ fn mouse_timer_ignores_upper_bit_writes_to_bfdb() {
     bus.io_write_byte(0xBFDB, 0x00);
     bus.io_write_byte(0x7FDD, 0xE0);
 
-    // Write with upper bits set (e.g. 0x27 from jastrike) — must be ignored.
+    // Write with upper bits set (e.g. 0x27 from jastrike) - must be ignored.
     // Timer should remain at 120 Hz (20 MHz / 120 = 166,667 cycles).
     bus.io_write_byte(0xBFDB, 0x27);
     bus.set_current_cycle(166_667);
@@ -749,7 +749,7 @@ fn sdip_bank_selection_via_port_f6() {
 
     // Verify that other 0xF6 values still control A20 (not SDIP bank).
     bus.io_write_byte(0xF6, 0xA0); // back to front
-    bus.io_write_byte(0xF6, 0x02); // A20 enable — should NOT switch bank
+    bus.io_write_byte(0xF6, 0x02); // A20 enable - should NOT switch bank
     assert_eq!(
         bus.io_read_byte(0x841E),
         0xAA,

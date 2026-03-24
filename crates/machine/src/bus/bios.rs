@@ -431,7 +431,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         while count < dest.len() {
             let status = fdc.read_status();
             if status & 0xD0 != 0xD0 {
-                // Not (RQM | DIO | CB) — no more result bytes.
+                // Not (RQM | DIO | CB) - no more result bytes.
                 break;
             }
             dest[count] = fdc.read_data();
@@ -1738,7 +1738,7 @@ impl<T: Tracing> Pc9801Bus<T> {
     fn hle_int1ah(&mut self, cpu: &mut impl Cpu) {
         let result_ah = match cpu.ah() {
             // CMT functions (0x00–0x05): stubs.
-            // VM/VX have no CMT hardware — AH=04h returns 0x00, AH=05h returns 0x27.
+            // VM/VX have no CMT hardware - AH=04h returns 0x00, AH=05h returns 0x27.
             // RA returns 0x02 for both (unsupported device).
             0x00 | 0x01 => 0x00,
             0x02 | 0x03 => 0x00,
@@ -1997,7 +1997,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                     current_r += 1;
                 }
                 // If no sector was written at all, the starting sector
-                // didn't exist — return 0xE0. Otherwise the FDC reached
+                // didn't exist - return 0xE0. Otherwise the FDC reached
                 // EOT and reports success for whatever was transferred.
                 let result = if offset == 0 { 0xE0 } else { 0x00 };
                 self.tracer.trace_int1bh_fdd_write(
@@ -2656,12 +2656,12 @@ impl<T: Tracing> Pc9801Bus<T> {
         // Set IDE device connection flags and BIOS work area.
         if self.machine_model.has_ide() {
             let hdd_flags = self.ide.compute_connection_flags();
-            // 0x05BA: HDD-only connection flags (compatibility mode — no CD-ROM bit).
+            // 0x05BA: HDD-only connection flags (compatibility mode - no CD-ROM bit).
             self.memory.state.ram[0x05BA] = hdd_flags;
             // 0x05BB: same HDD-only backup used by the WinNT4.0 workaround.
             self.memory.state.ram[0x05BB] = hdd_flags;
             // ROM 0xF8E80+0x10 (offset 0x10E90): all connected device bits including CD-ROM.
-            // Bit 2 set when CD-ROM present on channel 1 master — read by NECCD.SYS to detect the drive.
+            // Bit 2 set when CD-ROM present on channel 1 master - read by NECCD.SYS to detect the drive.
             let all_device_flags = hdd_flags | if self.ide.has_cdrom() { 0x04 } else { 0x00 };
             self.memory.set_rom_byte(0x10E90, all_device_flags);
             // ROM 0xF8E80+0x11 (offset 0x10E91): clear bit 7 for 17KB NECCDD.SYS compatibility.

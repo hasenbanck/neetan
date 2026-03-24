@@ -72,7 +72,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             // RS-232C i8251 mode/command register.
             0x32 => self.serial.write_command(value),
 
-            // Printer i8255 PPI Port A — data latch (write).
+            // Printer i8255 PPI Port A - data latch (write).
             0x40 => self.printer.write_data(value),
 
             // Keyboard µPD8251A data register (port 0x41 write).
@@ -80,7 +80,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             // Keyboard µPD8251A control register (port 0x43 write).
             0x43 => self.keyboard.write_command(value),
 
-            // Printer i8255 PPI Port C — printer control (write).
+            // Printer i8255 PPI Port C - printer control (write).
             0x44 => self.printer.write_port_c(value),
             // Printer i8255 PPI control register (write-only).
             0x46 => self.printer.write_control(value),
@@ -166,9 +166,9 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x75 | 0x3FDD => self.write_pit_counter(2, value),
             0x77 | 0x3FDF => self.write_pit_control(value),
 
-            // GRCG mode register — resets tile counter.
+            // GRCG mode register - resets tile counter.
             0x7C => self.grcg.write_mode(value),
-            // GRCG tile register — cycles through planes 0-3.
+            // GRCG tile register - cycles through planes 0-3.
             0x7E => self.grcg.write_tile(value),
 
             // SASI hard disk controller
@@ -181,7 +181,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 self.process_sasi_action(action);
             }
 
-            // FDC uPD765A — 1MB interface (active when PORT EXC = 1).
+            // FDC uPD765A - 1MB interface (active when PORT EXC = 1).
             0x92 => {
                 if self.floppy.port_exc_is_1mb() {
                     let action = self.floppy.fdc_1mb_mut().write_data(value);
@@ -193,7 +193,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                     self.floppy.fdc_1mb_mut().write_control(value);
                 }
             }
-            // FDC uPD765A — 640KB interface (active when PORT EXC = 0).
+            // FDC uPD765A - 640KB interface (active when PORT EXC = 0).
             0xCA => {
                 if !self.floppy.port_exc_is_1mb() {
                     let action = self.floppy.fdc_640k_mut().write_data(value);
@@ -405,7 +405,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 debug!("Port 0x043A (expansion socket processing latch) write: {value:#04X}");
                 self.external_interrupt_43a = value;
             }
-            // 15M hole control (port 0x043B, stub — not yet implemented).
+            // 15M hole control (port 0x043B, stub - not yet implemented).
             0x043B => {
                 warn!("unhandled write to 15M hole control port 0x043B: {value:#04X}");
                 self.hole_15m_control = value;
@@ -553,7 +553,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 }
             }
 
-            // Alternate FM sound board base addresses — silently ignore writes.
+            // Alternate FM sound board base addresses - silently ignore writes.
             0x0288 | 0x028A | 0x028C | 0x028E | 0x0388 | 0x038A | 0x038C | 0x038E => {}
 
             0x09A0 => {
@@ -585,7 +585,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
             // IDE CS1 registers
             0x074C if self.machine_model.has_ide() => self.ide.write_device_control(value),
-            0x074E if self.machine_model.has_ide() => {} // Digital input — write is a no-op
+            0x074E if self.machine_model.has_ide() => {} // Digital input - write is a no-op
 
             // IDE BIOS work area mapping (DA000-DBFFF).
             0x1E8E if self.machine_model.has_ide() => self.ide.write_work_area_port(value),
@@ -624,7 +624,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             // IDE bank select register (port 0x0436).
             0x0436 if self.machine_model.is_pc9821() => {}
 
-            // Window Accelerator Board (WAB) — built-in graphics accelerator.
+            // Window Accelerator Board (WAB) - built-in graphics accelerator.
             // Ref: undoc98 `io_wab.txt`
             0x0FAA if self.machine_model.is_pc9821() => {
                 self.wab_index = value;
@@ -661,7 +661,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             // Ref: undoc98 `io_wab.txt` (port 0x0CA0)
             0x0CA0 if self.machine_model.is_pc9821() => {}
 
-            // SCSI controller (WD33C93) — no SCSI present.
+            // SCSI controller (WD33C93) - no SCSI present.
             // Ref: undoc98 `io_scsi.txt`
             0x0CC0 | 0x0CC2 => {}
 
@@ -716,7 +716,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x18F2 if self.machine_model.is_pc9821() => {}
             0x18F3 if self.machine_model.is_pc9821() => {}
 
-            // Software DIP Switch (SDIP) — ports 0x841E–0x8F1E at 0x100 stride.
+            // Software DIP Switch (SDIP) - ports 0x841E–0x8F1E at 0x100 stride.
             // Ref: undoc98 `io_sdip.txt`
             port if self.machine_model.has_sdip()
                 && (port & 0xFF) == 0x1E
@@ -1447,7 +1447,7 @@ mod tests {
         bus.io_write_byte(0x018C, 0x00);
         bus.io_write_byte(0x018E, 0x60); // External + record
 
-        // Write several bytes — these go nowhere since no RAM.
+        // Write several bytes - these go nowhere since no RAM.
         for byte in [0xAB, 0xCD, 0xEF] {
             bus.io_write_byte(0x018C, 0x08);
             bus.io_write_byte(0x018E, byte);
@@ -1484,7 +1484,7 @@ mod tests {
             bus.io_write_byte(0x018E, 0x80);
         }
 
-        // Third read fetches from external memory — should be 0x00 with no RAM.
+        // Third read fetches from external memory - should be 0x00 with no RAM.
         bus.io_write_byte(0x018C, 0x08);
         let data = bus.io_read_byte(0x018E);
         assert_eq!(
@@ -1524,7 +1524,7 @@ mod tests {
     #[test]
     fn port_f0_warm_reset_captures_context() {
         let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
-        // Clear SHUT0 (bit 7) — leaves warm-reset mode.
+        // Clear SHUT0 (bit 7) - leaves warm-reset mode.
         bus.io_write_byte(0x37, 0x0E); // clear SHUT0
         assert_eq!(
             bus.system_ppi.state.port_c & 0x80,
@@ -1601,7 +1601,7 @@ mod tests {
         let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
         bus.install_soundboard_86(None, true);
 
-        // Initially FIFO is empty — bit 6 should be set.
+        // Initially FIFO is empty - bit 6 should be set.
         let status = bus.io_read_byte(0xA466);
         assert_ne!(status & 0x40, 0, "FIFO empty flag should be set initially");
         assert_eq!(status & 0x80, 0, "FIFO full flag should be clear initially");

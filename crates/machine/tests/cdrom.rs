@@ -135,10 +135,10 @@ fn read_atapi_data(bus: &mut Pc9801Bus<NoTracing>, word_count: usize) -> Vec<u16
 /// Clears the UNIT_ATTENTION state after CD-ROM insertion by sending
 /// TEST UNIT READY (to trigger it) then REQUEST SENSE (to clear it).
 fn acknowledge_media_change(bus: &mut Pc9801Bus<NoTracing>) {
-    // TEST UNIT READY — will return CHECK CONDITION (UNIT_ATTENTION).
+    // TEST UNIT READY - will return CHECK CONDITION (UNIT_ATTENTION).
     send_atapi_packet(bus, &[0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
 
-    // REQUEST SENSE — clears the attention.
+    // REQUEST SENSE - clears the attention.
     send_atapi_packet(bus, &[0x03, 0, 0, 0, 18, 0, 0, 0, 0, 0, 0, 0]);
     // Read and discard the 18-byte sense data (9 words).
     read_atapi_data(bus, 9);
@@ -330,7 +330,7 @@ fn atapi_media_change_unit_attention() {
 
     select_ide_channel(&mut bus, 1);
 
-    // TEST UNIT READY — should fail with CHECK CONDITION (UNIT_ATTENTION).
+    // TEST UNIT READY - should fail with CHECK CONDITION (UNIT_ATTENTION).
     send_atapi_packet(&mut bus, &[0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     let status = ide_read_alt_status(&mut bus);
     assert_ne!(
@@ -339,7 +339,7 @@ fn atapi_media_change_unit_attention() {
         "should have CHK bit set after media change"
     );
 
-    // REQUEST SENSE — should return UNIT_ATTENTION (sense key 0x06).
+    // REQUEST SENSE - should return UNIT_ATTENTION (sense key 0x06).
     send_atapi_packet(&mut bus, &[0x03, 0, 0, 0, 18, 0, 0, 0, 0, 0, 0, 0]);
     let sense_data = read_atapi_data(&mut bus, 9);
     let sense_key = (sense_data[1] as u8) & 0x0F; // Byte 2 of sense data.
@@ -348,7 +348,7 @@ fn atapi_media_change_unit_attention() {
     let asc = sense_data[6] as u8; // Byte 12 of sense data.
     assert_eq!(asc, 0x28, "ASC should be NOT_READY_TO_READY_TRANSITION");
 
-    // TEST UNIT READY — should now succeed (attention cleared by REQUEST SENSE).
+    // TEST UNIT READY - should now succeed (attention cleared by REQUEST SENSE).
     send_atapi_packet(&mut bus, &[0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     let status = ide_read_alt_status(&mut bus);
     assert_eq!(status & 0x01, 0, "should succeed after clearing attention");
@@ -361,12 +361,12 @@ fn atapi_media_not_present() {
 
     select_ide_channel(&mut bus, 1);
 
-    // TEST UNIT READY — should fail with NOT_READY.
+    // TEST UNIT READY - should fail with NOT_READY.
     send_atapi_packet(&mut bus, &[0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     let status = ide_read_alt_status(&mut bus);
     assert_ne!(status & 0x01, 0, "should have CHK bit set without media");
 
-    // REQUEST SENSE — should return NOT_READY (sense key 0x02), ASC 0x3A.
+    // REQUEST SENSE - should return NOT_READY (sense key 0x02), ASC 0x3A.
     send_atapi_packet(&mut bus, &[0x03, 0, 0, 0, 18, 0, 0, 0, 0, 0, 0, 0]);
     let sense_data = read_atapi_data(&mut bus, 9);
     let sense_key = (sense_data[1] as u8) & 0x0F;
@@ -394,7 +394,7 @@ fn atapi_eject_makes_not_ready() {
     // Eject via bus.
     bus.eject_cdrom();
 
-    // TEST UNIT READY — should fail with NOT_READY.
+    // TEST UNIT READY - should fail with NOT_READY.
     send_atapi_packet(&mut bus, &[0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     assert_ne!(
         ide_read_alt_status(&mut bus) & 0x01,

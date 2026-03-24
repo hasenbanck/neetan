@@ -126,7 +126,7 @@ mod resampler_fir;
 mod window;
 
 pub use error::ResampleError;
-pub(crate) use fft::*;
+pub use fft::*;
 pub use resampler_fft::*;
 pub use resampler_fir::{Attenuation, Latency, ResamplerFir};
 

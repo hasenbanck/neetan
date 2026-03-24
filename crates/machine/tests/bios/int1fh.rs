@@ -75,7 +75,7 @@ fn write_test_pattern(bus: &mut impl Bus, addr: u32, count: usize) {
     }
 }
 
-/// §14 INT 1Fh — Vector Setup
+/// §14 INT 1Fh - Vector Setup
 ///
 /// The VM BIOS maps INT 1Fh to an expansion ROM (segment 0xD800), not the
 /// main BIOS ROM area. VX and RA map it to the BIOS ROM (>= 0xFD80).
@@ -118,7 +118,7 @@ fn int1fh_vector_ra() {
     );
 }
 
-/// §14 INT 1Fh — Dispatch: AH Below 0x80
+/// §14 INT 1Fh - Dispatch: AH Below 0x80
 ///
 /// The VM BIOS handler (expansion ROM at 0xD800) clears CF even for AH < 0x80.
 /// VX and RA preserve CF (handler returns without modifying flags on stack).
@@ -155,7 +155,7 @@ fn int1fh_ah_below_80h_preserves_cf_ra() {
     );
 }
 
-/// §14 INT 1Fh — Dispatch: AH=0x80 Clears CF
+/// §14 INT 1Fh - Dispatch: AH=0x80 Clears CF
 #[test]
 fn int1fh_ah_80h_clears_cf_vm() {
     let code = make_int1fh_call_with_cf_set(0x80);
@@ -189,7 +189,7 @@ fn int1fh_ah_80h_clears_cf_ra() {
     );
 }
 
-/// §14.1 AH=0x90 — Basic Memory Copy
+/// §14.1 AH=0x90 - Basic Memory Copy
 ///
 /// The VM BIOS does not implement AH=0x90 (the INT 1Fh vector on VM points to
 /// an expansion ROM at 0xD800, not to a memory copy handler). AH=0x90 is a
@@ -262,7 +262,7 @@ fn int1fh_memcpy_basic_ra() {
     }
 }
 
-/// §14.1 AH=0x90 — Copy With Non-Zero Offsets.
+/// §14.1 AH=0x90 - Copy With Non-Zero Offsets.
 #[test]
 fn int1fh_memcpy_with_offsets_vx() {
     let mut machine = create_machine_vx();
@@ -298,7 +298,7 @@ fn int1fh_memcpy_with_offsets_vx() {
     }
 }
 
-/// §14.1 AH=0x90 — Copy With Non-Zero Offsets.
+/// §14.1 AH=0x90 - Copy With Non-Zero Offsets.
 #[test]
 fn int1fh_memcpy_with_offsets_ra() {
     let mut machine = create_machine_ra();
@@ -333,12 +333,12 @@ fn int1fh_memcpy_with_offsets_ra() {
     }
 }
 
-/// §14.1 AH=0x90 — BIOS Ignores Descriptor Limits (VX/RA only)
+/// §14.1 AH=0x90 - BIOS Ignores Descriptor Limits (VX/RA only)
 ///
 /// The real BIOS does NOT validate SI/DI against the descriptor limit fields.
 /// NP21W adds this validation, but the original ROM performs the copy regardless.
 /// The descriptor limit fields are part of the GDT entry format but are not
-/// checked by the BIOS copy routine — only the base address is used.
+/// checked by the BIOS copy routine - only the base address is used.
 #[test]
 fn int1fh_memcpy_ignores_src_limit_vx() {
     let mut machine = create_machine_vx();

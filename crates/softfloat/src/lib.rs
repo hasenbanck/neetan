@@ -1,6 +1,6 @@
 //! Software floating-point library for the 80-bit extended precision format used by the x87 FPU.
 //!
-//! This crate implements the [`Fp80`] type — an IEEE 754 extended double (80-bit) soft-float —
+//! This crate implements the [`Fp80`] type - an IEEE 754 extended double (80-bit) soft-float -
 //! providing all operations required by the 387 and 486DX FPU: basic arithmetic (add, sub, mul,
 //! div, sqrt), integer/float/BCD conversions, ordered and unordered comparisons, and the full set
 //! of x87 transcendentals (F2XM1, FYL2X, FYL2XP1, FSIN, FCOS, FSINCOS, FPTAN, FPATAN).
@@ -10,7 +10,7 @@
 //! through an [`ExceptionFlags`] parameter rather than global state.
 //!
 //! Transcendental functions use double-double (`f64 × 2`) intermediate arithmetic, providing
-//! approximately 106 bits of significand precision — well above the 62-bit relative error
+//! approximately 106 bits of significand precision - well above the 62-bit relative error
 //! guarantee of the real 486DX (Intel i486 Programmer's Reference, §17.5: |relative error| <
 //! 2⁻⁶²). Trigonometric functions intentionally use the same 66-bit π approximation as the
 //! hardware (`p = 4 × 0.C90FDAA2_2168C234_C`) so that results match real silicon rather than
@@ -30,24 +30,24 @@ mod transcendental;
 /// Maps to CW bits 11–10 (RC field).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoundingMode {
-    /// RC=00 — round to nearest, ties to even
+    /// RC=00 - round to nearest, ties to even
     NearestEven,
-    /// RC=01 — round toward −∞
+    /// RC=01 - round toward −∞
     Down,
-    /// RC=10 — round toward +∞
+    /// RC=10 - round toward +∞
     Up,
-    /// RC=11 — round toward zero (truncate)
+    /// RC=11 - round toward zero (truncate)
     Zero,
 }
 
 /// Maps to CW bits 9–8 (PC field).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Precision {
-    /// PC=00 — 24-bit significand
+    /// PC=00 - 24-bit significand
     Single,
-    /// PC=10 — 53-bit significand
+    /// PC=10 - 53-bit significand
     Double,
-    /// PC=11 — 64-bit significand (default)
+    /// PC=11 - 64-bit significand (default)
     Extended,
 }
 
@@ -59,13 +59,13 @@ pub struct ExceptionFlags {
     pub invalid: bool,
     /// DE - denormalized operand
     pub denormal: bool,
-    /// ZE — division by zero
+    /// ZE - division by zero
     pub zero_divide: bool,
-    /// OE — result too large
+    /// OE - result too large
     pub overflow: bool,
-    /// UE — result too small
+    /// UE - result too small
     pub underflow: bool,
-    /// PE — result was rounded
+    /// PE - result was rounded
     pub precision: bool,
 }
 

@@ -67,7 +67,7 @@ const BIOS_ROM_SIZE: usize = 0x18000;
 /// The lower region E8000-F7FFF always shows the BIOS bank in dual-bank
 /// configurations.
 ///
-/// Ref: undoc98 `io_mem.txt` — "F8000h-FFFFFh switches to ITF ROM."
+/// Ref: undoc98 `io_mem.txt` - "F8000h-FFFFFh switches to ITF ROM."
 const ITF_BANK_SWITCH_START: u32 = 0xF8000;
 /// Dual-bank BIOS image size (192 KB total).
 ///
@@ -202,7 +202,7 @@ impl fmt::Debug for Pc9801MemoryState {
 /// |-----------------|-----------------------------------|-----------------------------------|
 /// | 100000+         | Extended RAM (if backed) / 0xFF   | Extended RAM (if backed)          |
 ///
-/// # Shadow RAM / BIOS RAM (I/O 053Dh) — 386+ machines only
+/// # Shadow RAM / BIOS RAM (I/O 053Dh) - 386+ machines only
 ///
 /// On i386+ machines (RA, RA21, etc.), port 053Dh bit 1 selects whether
 /// E8000-FFFFF reads come from ROM or a writable shadow RAM copy. The BIOS
@@ -231,8 +231,8 @@ pub(crate) struct Pc9801Memory {
     ///
     /// Layout:
     /// - `0x00000-0x7FFFF`: Double-byte kanji glyphs (16x16, left/right halves interleaved)
-    /// - `0x80000-0x80FFF`: ANK16 — half-width 8x16 font (256 chars × 16 bytes)
-    /// - `0x81000-0x81FFF`: Chargraph16 — semigraphics 2×4 block patterns (256 × 16 bytes)
+    /// - `0x80000-0x80FFF`: ANK16 - half-width 8x16 font (256 chars × 16 bytes)
+    /// - `0x81000-0x81FFF`: Chargraph16 - semigraphics 2×4 block patterns (256 × 16 bytes)
     /// - `0x82000-0x82FFF`: ANK8 + Chargraph8 interleaved (256 × 16 bytes;
     ///   bytes 0-7 = ANK 6×8 font, bytes 8-15 = chargraph 8×8 pattern)
     font_rom: Box<[u8; FONT_ROM_SIZE]>,
@@ -882,7 +882,7 @@ mod tests {
     fn shadow_ram_write_works_regardless_of_read_select() {
         let mut memory = Pc9801Memory::new(MachineModel::PC9801RA, 0x100000);
         memory.load_rom(&vec![0xFFu8; 0x18000]);
-        // shadow_control=0x00 (bit 1=0, ROM reads) — writes should still go to shadow RAM.
+        // shadow_control=0x00 (bit 1=0, ROM reads) - writes should still go to shadow RAM.
         memory.write_byte(0xE8000, 0x42);
         assert_eq!(memory.state.shadow_ram.as_ref().unwrap()[0], 0x42);
         // Reads still return ROM data (bit 1 not set).
@@ -903,7 +903,7 @@ mod tests {
         assert_eq!(val_start, 0xAA);
         assert_eq!(val_end, 0xBB);
 
-        // Step 2: Write to same address — goes to shadow RAM (bit 1 still 0).
+        // Step 2: Write to same address - goes to shadow RAM (bit 1 still 0).
         memory.write_byte(0xE8000, val_start);
         memory.write_byte(0xFFFFF, val_end);
 

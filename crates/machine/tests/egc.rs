@@ -52,7 +52,7 @@ fn egc_not_active_without_mode_bits() {
 fn egc_register_write_blocked_when_not_effective() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
 
-    // Write EGC registers without enabling EGC — should be ignored.
+    // Write EGC registers without enabling EGC - should be ignored.
     write_egc_register(&mut bus, 0x00, 0x1234);
     write_egc_register(&mut bus, 0x04, 0x5678);
 
@@ -186,7 +186,7 @@ fn egc_plane_write_enable() {
 
     setup_egc(&mut bus);
 
-    // access=0xFFFA: disable planes 1 (R) and 3 (E) — bits 1,3 set.
+    // access=0xFFFA: disable planes 1 (R) and 3 (E) - bits 1,3 set.
     write_egc_register(&mut bus, 0x00, 0xFFFA);
     // ope=0: CPU broadcast.
     bus.write_byte(VRAM_B, 0x55);
@@ -725,7 +725,7 @@ fn egc_mixed_fgc_bgc_pattern() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
-    // Source data (any values — ROP 0xAA ignores source/destination).
+    // Source data (any values - ROP 0xAA ignores source/destination).
     prefill_planes_word(&mut bus, 0, [0xFFFF; 4]);
     // Destination.
     prefill_planes_word(&mut bus, 2, [0; 4]);
@@ -735,7 +735,7 @@ fn egc_mixed_fgc_bgc_pattern() {
     // fg=0xF (all planes), bg=0x0 (no planes).
     write_egc_register_word(&mut bus, 0x06, 0x000F); // fg
     write_egc_register_word(&mut bus, 0x0A, 0x0000); // bg
-    // fgbg=0x6000: mixed mode — planes 0-1 use FGC, planes 2-3 use BGC.
+    // fgbg=0x6000: mixed mode - planes 0-1 use FGC, planes 2-3 use BGC.
     write_egc_register_word(&mut bus, 0x02, 0x6000);
     // ope = 0x08AA: shift+ROP mode (bits 12-11=01), VRAM source (bit10=0),
     // ROP=0xAA (output = pattern). get_pattern() handles 0x6000 mixed mode.
@@ -745,7 +745,7 @@ fn egc_mixed_fgc_bgc_pattern() {
 
     // Read source to feed shift pipeline (data ignored by ROP 0xAA).
     let _ = bus.read_word(VRAM_B);
-    // Write destination — ROP 0xAA outputs get_pattern().
+    // Write destination - ROP 0xAA outputs get_pattern().
     bus.write_word(VRAM_B + 2, 0x0000);
 
     disable_grcg(&mut bus);
@@ -774,7 +774,7 @@ fn egc_mask_write_blocked_when_fgbg_nonzero() {
 
     // Set fgbg to 0x2000 (BGC source) → mask writes should be blocked.
     write_egc_register_word(&mut bus, 0x02, 0x2000);
-    // Attempt to set mask to 0x0000 — should be ignored because fgbg bits 13-12 != 0.
+    // Attempt to set mask to 0x0000 - should be ignored because fgbg bits 13-12 != 0.
     write_egc_register_word(&mut bus, 0x08, 0x0000);
 
     // CPU broadcast write: if mask were 0x0000, VRAM would be unchanged.
@@ -838,7 +838,7 @@ fn egc_srcmask_partial_length() {
     setup_egc(&mut bus);
 
     // ope=0 (CPU broadcast), mask=0xFFFF.
-    // leng=7 (8 bits) — should only write one byte.
+    // leng=7 (8 bits) - should only write one byte.
     write_egc_register_word(&mut bus, 0x0E, 0x0007);
     write_egc_register_word(&mut bus, 0x0C, 0x0000);
 
@@ -1352,7 +1352,7 @@ fn egc_sub_byte_leng() {
 
     // Read source byte.
     let _ = bus.read_byte(VRAM_B);
-    // Write dest byte — srcmask should limit to 4 bits.
+    // Write dest byte - srcmask should limit to 4 bits.
     bus.write_byte(VRAM_B + 2, 0x00);
 
     disable_grcg(&mut bus);

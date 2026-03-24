@@ -2814,7 +2814,7 @@ fn i386_32bit_segment_offset() {
 
     // Place a known value at DS:0x10001 (PM_DATA_BASE + 0x10001)
     // This is within the 1MB address space since PM_DATA_BASE=0x10000
-    // 0x10000 + 0x10001 = 0x20001 — within our 1MB RAM
+    // 0x10000 + 0x10001 = 0x20001 - within our 1MB RAM
     let target_addr = PM_DATA_BASE + 0x10001;
     bus.ram[(target_addr & ADDRESS_MASK) as usize] = 0x42;
 
@@ -5411,7 +5411,7 @@ fn i386_into_without_overflow_is_nop() {
     // F4 = HLT
     place_at(&mut bus, PM_CODE_BASE, &[0xCE, 0xF4]);
 
-    cpu.step(&mut bus); // INTO — OF=0, no trap
+    cpu.step(&mut bus); // INTO - OF=0, no trap
     cpu.step(&mut bus); // HLT
 
     assert!(cpu.halted());
@@ -5429,7 +5429,7 @@ fn i386_bound_in_range_succeeds() {
     let state = setup_protected_mode_with_exception_handlers(&mut bus);
     cpu.load_state(&state);
 
-    // Set up bounds in memory at DS:0x0000 — lower=0x0000, upper=0x00FF
+    // Set up bounds in memory at DS:0x0000 - lower=0x0000, upper=0x00FF
     write_word_at(&mut bus, PM_DATA_BASE, 0x0000);
     write_word_at(&mut bus, PM_DATA_BASE + 2, 0x00FF);
 
@@ -5440,7 +5440,7 @@ fn i386_bound_in_range_succeeds() {
     // F4 = HLT
     place_at(&mut bus, PM_CODE_BASE, &[0x62, 0x06, 0x00, 0x00, 0xF4]);
 
-    cpu.step(&mut bus); // BOUND — in range, no exception
+    cpu.step(&mut bus); // BOUND - in range, no exception
     cpu.step(&mut bus); // HLT
 
     assert!(cpu.halted());
@@ -5512,7 +5512,7 @@ fn i386_tf_single_step_raises_db() {
     // 90 = NOP
     place_at(&mut bus, PM_CODE_BASE, &[0x90]);
 
-    cpu.step(&mut bus); // NOP — after execution, TF fires #DB
+    cpu.step(&mut bus); // NOP - after execution, TF fires #DB
     cpu.step(&mut bus); // HLT in handler
 
     assert!(cpu.halted());
@@ -6058,7 +6058,7 @@ fn i386_lea_reg_indirect() {
 
     cpu.state.set_ebx(0x1234);
 
-    // 8D 03 = LEA AX, [BP+DI] in 16-bit — but we need LEA AX, [BX]
+    // 8D 03 = LEA AX, [BP+DI] in 16-bit - but we need LEA AX, [BX]
     // In 16-bit mode: LEA AX, [BX] = 8D 07
     // F4 = HLT
     place_at(&mut bus, PM_CODE_BASE, &[0x8D, 0x07, 0xF4]);

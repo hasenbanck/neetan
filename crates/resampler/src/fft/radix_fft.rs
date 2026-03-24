@@ -13,7 +13,7 @@ use crate::Complex32;
 
 /// Radix factors supported for mixed-radix FFT decomposition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Radix {
+pub enum Radix {
     /// Radix-2
     Factor2,
     /// Radix-3
@@ -30,7 +30,7 @@ pub(crate) enum Radix {
 
 impl Radix {
     /// Returns the radix size.
-    pub(crate) const fn radix(&self) -> usize {
+    pub const fn radix(&self) -> usize {
         match self {
             Radix::Factor2 => 2,
             Radix::Factor3 => 3,
@@ -43,7 +43,7 @@ impl Radix {
 }
 
 /// Marker type for forward FFT direction.
-pub(crate) struct Forward;
+pub struct Forward;
 
 /// Marker type for inverse FFT direction.
 pub(crate) struct Inverse;
@@ -69,7 +69,7 @@ type StockhamAutosortFn =
 ///
 /// Multiple normalization steps can be merged: when doing forward+inverse FFTs,
 /// normalize once by dividing by `len()` instead of normalizing each transform separately.
-pub(crate) struct RadixFFT<D> {
+pub struct RadixFFT<D> {
     n: usize,
     n2: usize,
     factors: Vec<Radix>,
@@ -102,7 +102,7 @@ impl<D> RadixFFT<D> {
     ///
     /// # Panics
     /// Panics if the total FFT length is not even since we apply an N/2 optimization double the performance of the FFT.
-    pub(crate) fn new(factors: Vec<Radix>) -> Self {
+    pub fn new(factors: Vec<Radix>) -> Self {
         assert!(!factors.is_empty(), "Factors vector must not be empty");
 
         let n = factors.iter().map(|f| f.radix()).product();
@@ -375,7 +375,7 @@ impl<D> RadixFFT<D> {
     }
 
     /// Returns the required scratchpad size for FFT processing.
-    pub(crate) fn scratchpad_size(&self) -> usize {
+    pub fn scratchpad_size(&self) -> usize {
         // The Stockham autosort algorithm requires 3x N buffer space.
         3 * self.n
     }
@@ -652,17 +652,7 @@ impl RadixFFT<Forward> {
     /// Transforms real-valued input into half-complex packed format.
     ///
     /// **Note:** Output is unnormalized. No scaling is applied to the result.
-    ///
-    /// # Arguments
-    /// * `input` - Real-valued input samples
-    /// * `output` - Half-complex output
-    /// * `scratchpad` - Workspace for intermediate calculations
-    pub(crate) fn process(
-        &self,
-        input: &[f32],
-        output: &mut [Complex32],
-        scratchpad: &mut [Complex32],
-    ) {
+    pub fn process(&self, input: &[f32], output: &mut [Complex32], scratchpad: &mut [Complex32]) {
         self.process_forward_internal(input, output, scratchpad);
     }
 }
