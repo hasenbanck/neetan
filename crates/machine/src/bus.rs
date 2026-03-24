@@ -1007,6 +1007,9 @@ impl<T: Tracing> Pc9801Bus<T> {
             0
         };
 
+        // Graphics GDC active display lines.
+        snapshot.gdc_graphics_al = u32::from(self.gdc_slave.state.al);
+
         // Graphics VRAM planes (selected display page).
         let b_plane = cast_u32_slice_as_bytes_mut(&mut snapshot.graphics_b_plane);
         b_plane.copy_from_slice(
