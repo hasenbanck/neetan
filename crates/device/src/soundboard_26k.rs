@@ -152,6 +152,7 @@ pub struct Soundboard26k {
     chip: Ym2203<ChipBridge>,
     cpu_clock_hz: u32,
     native_rate: u32,
+    sample_rate: u32,
     native_buffer: Vec<YmfmOutput4>,
     pending_native: Vec<YmfmOutput4>,
     resampler: ResamplerFir,
@@ -190,6 +191,7 @@ impl Soundboard26k {
             chip,
             cpu_clock_hz,
             native_rate,
+            sample_rate,
             native_buffer: vec![YmfmOutput4 { data: [0; 4] }; 4096],
             pending_native: Vec::new(),
             resampler,
@@ -379,6 +381,17 @@ impl Soundboard26k {
             0
         };
 
+        let pending_count = self.pending_native.len();
+        let total_from_timing = pending_count + remaining_native;
+
+        // Ensure the resampler receives enough input to fill the output.
+        let output_frames = output.len() / 2;
+        let min_native = (output_frames as u64 * u64::from(self.native_rate))
+            .div_ceil(u64::from(self.sample_rate))
+            + 1;
+        let total_native = total_from_timing.max(min_native as usize);
+        let remaining_native = total_native - pending_count;
+
         if remaining_native > 0 {
             if self.native_buffer.len() < remaining_native {
                 self.native_buffer
@@ -387,9 +400,6 @@ impl Soundboard26k {
             self.chip
                 .generate(&mut self.native_buffer[..remaining_native]);
         }
-
-        let pending_count = self.pending_native.len();
-        let total_native = pending_count + remaining_native;
 
         if total_native > 0 {
             if self.resample_input.len() < total_native {

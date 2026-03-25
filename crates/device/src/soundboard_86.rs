@@ -1414,6 +1414,17 @@ impl Soundboard86 {
             0
         };
 
+        let pending_count = self.pending_native.len();
+        let total_from_timing = pending_count + remaining_native;
+
+        // Ensure the resampler receives enough input to fill the output.
+        let output_frames = output.len() / 2;
+        let min_native = (output_frames as u64 * u64::from(self.native_rate))
+            .div_ceil(u64::from(self.sample_rate))
+            + 1;
+        let total_native = total_from_timing.max(min_native as usize);
+        let remaining_native = total_native - pending_count;
+
         if remaining_native > 0 {
             if self.native_buffer.len() < remaining_native {
                 self.native_buffer
@@ -1422,9 +1433,6 @@ impl Soundboard86 {
             self.chip
                 .generate(&mut self.native_buffer[..remaining_native]);
         }
-
-        let pending_count = self.pending_native.len();
-        let total_native = pending_count + remaining_native;
 
         if total_native > 0 {
             let total_interleaved = total_native * 2;

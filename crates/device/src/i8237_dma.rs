@@ -57,13 +57,21 @@ const PAGE_LOW_NIBBLE_MASK: u8 = 0x0F;
 /// Page register high nibble mask, preserved during 1 MB boundary auto-increment.
 const PAGE_HIGH_NIBBLE_MASK: u8 = 0xF0;
 
+/// Mode register: bit 4 (AI) selects auto-init mode.
+/// 0 = single transfer (stops at TC), 1 = auto-init (reloads base on TC).
+const MODE_AUTO_INIT_BIT: u8 = 0x10;
+
 /// State of a single DMA channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct I8237DmaChannelState {
-    /// Base address register.
+    /// Current address register (modified during transfer).
     pub address: u16,
-    /// Base word count register.
+    /// Current word count register (modified during transfer).
     pub count: u16,
+    /// Start address, latched when address is programmed. Reloaded on auto-init TC.
+    pub start_address: u16,
+    /// Start count, latched when count is programmed. Reloaded on auto-init TC.
+    pub start_count: u16,
     /// Page register (A16-A23).
     pub page: u8,
     /// Extended page register (A24-A31, 386+ extended bank).
@@ -110,6 +118,8 @@ impl I8237Dma {
                     I8237DmaChannelState {
                         address: 0,
                         count: 0,
+                        start_address: 0,
+                        start_count: 0,
                         page: 0,
                         extended_page: 0,
                         mode: 0,
@@ -118,6 +128,8 @@ impl I8237Dma {
                     I8237DmaChannelState {
                         address: 0,
                         count: 0,
+                        start_address: 0,
+                        start_count: 0,
                         page: 0,
                         extended_page: 0,
                         mode: 0,
@@ -126,6 +138,8 @@ impl I8237Dma {
                     I8237DmaChannelState {
                         address: 0,
                         count: 0,
+                        start_address: 0,
+                        start_count: 0,
                         page: 0,
                         extended_page: 0,
                         mode: 0,
@@ -134,6 +148,8 @@ impl I8237Dma {
                     I8237DmaChannelState {
                         address: 0,
                         count: 0,
+                        start_address: 0,
+                        start_count: 0,
                         page: 0,
                         extended_page: 0,
                         mode: 0,
@@ -182,6 +198,7 @@ impl I8237Dma {
     }
 
     /// Writes a channel address register (alternates low/high byte).
+    /// Also latches the start address for auto-init reload.
     pub fn write_address(&mut self, channel: usize, value: u8) {
         let ch = &mut self.state.channels[channel];
         if self.state.flip_flop {
@@ -189,10 +206,12 @@ impl I8237Dma {
         } else {
             ch.address = (ch.address & 0xFF00) | value as u16;
         }
+        ch.start_address = ch.address;
         self.state.flip_flop = !self.state.flip_flop;
     }
 
     /// Writes a channel count register (alternates low/high byte).
+    /// Also latches the start count for auto-init reload.
     pub fn write_count(&mut self, channel: usize, value: u8) {
         let ch = &mut self.state.channels[channel];
         if self.state.flip_flop {
@@ -200,6 +219,7 @@ impl I8237Dma {
         } else {
             ch.count = (ch.count & 0xFF00) | value as u16;
         }
+        ch.start_count = ch.count;
         self.state.flip_flop = !self.state.flip_flop;
     }
 
@@ -323,9 +343,13 @@ impl I8237Dma {
             // Decrement count (16-bit wrapping). TC when count wraps from 0 to 0xFFFF.
             if ch.count == 0 {
                 terminal_count = true;
-                ch.count = 0xFFFF;
-                // Set TC status bit for this channel.
                 self.state.status |= 1 << channel;
+                if ch.mode & MODE_AUTO_INIT_BIT != 0 {
+                    ch.address = ch.start_address;
+                    ch.count = ch.start_count;
+                } else {
+                    ch.count = 0xFFFF;
+                }
                 break;
             } else {
                 ch.count -= 1;
@@ -378,8 +402,13 @@ impl I8237Dma {
 
             if ch.count == 0 {
                 terminal_count = true;
-                ch.count = 0xFFFF;
                 self.state.status |= 1 << channel;
+                if ch.mode & MODE_AUTO_INIT_BIT != 0 {
+                    ch.address = ch.start_address;
+                    ch.count = ch.start_count;
+                } else {
+                    ch.count = 0xFFFF;
+                }
                 break;
             } else {
                 ch.count -= 1;
@@ -565,5 +594,168 @@ mod tests {
         assert!(!result.terminal_count);
         assert_eq!(dma.state.channels[1].address, 0x0003);
         assert_eq!(dma.state.channels[1].count, 0x03FC);
+    }
+
+    #[test]
+    fn write_address_latches_start_address() {
+        let mut dma = I8237Dma::new();
+        dma.clear_flip_flop();
+        dma.write_address(0, 0x00); // Low byte
+        dma.write_address(0, 0x80); // High byte
+
+        assert_eq!(dma.state.channels[0].address, 0x8000);
+        assert_eq!(dma.state.channels[0].start_address, 0x8000);
+    }
+
+    #[test]
+    fn write_count_latches_start_count() {
+        let mut dma = I8237Dma::new();
+        dma.clear_flip_flop();
+        dma.write_count(0, 0xFF); // Low byte
+        dma.write_count(0, 0x03); // High byte
+
+        assert_eq!(dma.state.channels[0].count, 0x03FF);
+        assert_eq!(dma.state.channels[0].start_count, 0x03FF);
+    }
+
+    #[test]
+    fn write_transfer_auto_init_reloads_on_tc() {
+        let mut dma = I8237Dma::new();
+        let ch = 2;
+        dma.state.channels[ch].page = 0x01;
+        dma.state.channels[ch].address = 0x1000;
+        dma.state.channels[ch].count = 3;
+        dma.state.channels[ch].start_address = 0x1000;
+        dma.state.channels[ch].start_count = 3;
+        dma.state.channels[ch].mode = 0x54; // Write, increment, auto-init (bit 4 set)
+
+        let data = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE];
+        let result = dma.transfer_write_to_memory(ch, &data);
+
+        assert_eq!(result.writes.len(), 4);
+        assert!(result.terminal_count);
+        // After auto-init TC, address and count are reloaded from start values.
+        assert_eq!(dma.state.channels[ch].address, 0x1000);
+        assert_eq!(dma.state.channels[ch].count, 3);
+    }
+
+    #[test]
+    fn write_transfer_no_auto_init_wraps_count() {
+        let mut dma = I8237Dma::new();
+        let ch = 2;
+        dma.state.channels[ch].address = 0x1000;
+        dma.state.channels[ch].count = 3;
+        dma.state.channels[ch].start_address = 0x1000;
+        dma.state.channels[ch].start_count = 3;
+        dma.state.channels[ch].mode = 0x44; // Write, increment, NO auto-init
+
+        let data = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE];
+        let result = dma.transfer_write_to_memory(ch, &data);
+
+        assert!(result.terminal_count);
+        // Without auto-init, count wraps to 0xFFFF and address stays advanced.
+        assert_eq!(dma.state.channels[ch].count, 0xFFFF);
+        assert_eq!(dma.state.channels[ch].address, 0x1004);
+    }
+
+    #[test]
+    fn read_transfer_auto_init_reloads_on_tc() {
+        let mut dma = I8237Dma::new();
+        let ch = 1;
+        dma.state.channels[ch].page = 0x02;
+        dma.state.channels[ch].address = 0x5000;
+        dma.state.channels[ch].count = 2;
+        dma.state.channels[ch].start_address = 0x5000;
+        dma.state.channels[ch].start_count = 2;
+        dma.state.channels[ch].mode = 0x58; // Read, increment, auto-init (bit 4 set)
+
+        let result = dma.transfer_read_from_memory(ch, 5);
+
+        assert_eq!(result.addresses.len(), 3);
+        assert!(result.terminal_count);
+        assert_eq!(dma.state.channels[ch].address, 0x5000);
+        assert_eq!(dma.state.channels[ch].count, 2);
+    }
+
+    #[test]
+    fn read_transfer_no_auto_init_wraps_count() {
+        let mut dma = I8237Dma::new();
+        let ch = 1;
+        dma.state.channels[ch].address = 0x5000;
+        dma.state.channels[ch].count = 2;
+        dma.state.channels[ch].start_address = 0x5000;
+        dma.state.channels[ch].start_count = 2;
+        dma.state.channels[ch].mode = 0x48; // Read, increment, NO auto-init
+
+        let result = dma.transfer_read_from_memory(ch, 5);
+
+        assert!(result.terminal_count);
+        assert_eq!(dma.state.channels[ch].count, 0xFFFF);
+        assert_eq!(dma.state.channels[ch].address, 0x5003);
+    }
+
+    #[test]
+    fn auto_init_allows_repeated_transfers() {
+        let mut dma = I8237Dma::new();
+        let ch = 0;
+        dma.state.channels[ch].address = 0x2000;
+        dma.state.channels[ch].count = 1; // 2 bytes per cycle
+        dma.state.channels[ch].start_address = 0x2000;
+        dma.state.channels[ch].start_count = 1;
+        dma.state.channels[ch].mode = 0x50; // Increment, auto-init
+
+        // First transfer: 2 bytes then TC.
+        let result1 = dma.transfer_write_to_memory(ch, &[0x11, 0x22, 0x33]);
+        assert_eq!(result1.writes.len(), 2);
+        assert!(result1.terminal_count);
+        assert_eq!(dma.state.channels[ch].address, 0x2000);
+        assert_eq!(dma.state.channels[ch].count, 1);
+
+        // Clear TC status so we can observe it set again.
+        dma.read_status();
+
+        // Second transfer from the same reloaded state.
+        let result2 = dma.transfer_write_to_memory(ch, &[0xAA, 0xBB, 0xCC]);
+        assert_eq!(result2.writes.len(), 2);
+        assert!(result2.terminal_count);
+        assert_eq!(result2.writes[0], (0x002000, 0xAA));
+        assert_eq!(result2.writes[1], (0x002001, 0xBB));
+        assert_eq!(dma.state.channels[ch].address, 0x2000);
+        assert_eq!(dma.state.channels[ch].count, 1);
+        // TC status bit for channel 0 is set again.
+        assert_eq!(dma.state.status & 0x01, 0x01);
+    }
+
+    #[test]
+    fn auto_init_tc_sets_status_bit() {
+        let mut dma = I8237Dma::new();
+        let ch = 3;
+        dma.state.channels[ch].address = 0x0000;
+        dma.state.channels[ch].count = 0;
+        dma.state.channels[ch].start_address = 0x0000;
+        dma.state.channels[ch].start_count = 0;
+        dma.state.channels[ch].mode = 0x57; // Auto-init, increment, channel 3
+
+        let result = dma.transfer_write_to_memory(ch, &[0xFF]);
+        assert!(result.terminal_count);
+        assert_eq!(dma.state.status & 0x08, 0x08);
+    }
+
+    #[test]
+    fn start_values_latch_after_each_write() {
+        let mut dma = I8237Dma::new();
+        // Program address as 0x1234.
+        dma.clear_flip_flop();
+        dma.write_address(0, 0x34); // Low byte → address = 0x0034, start = 0x0034
+        assert_eq!(dma.state.channels[0].start_address, 0x0034);
+        dma.write_address(0, 0x12); // High byte → address = 0x1234, start = 0x1234
+        assert_eq!(dma.state.channels[0].start_address, 0x1234);
+
+        // Program count as 0x00FF.
+        dma.clear_flip_flop();
+        dma.write_count(0, 0xFF); // Low byte → count = 0x00FF, start = 0x00FF
+        assert_eq!(dma.state.channels[0].start_count, 0x00FF);
+        dma.write_count(0, 0x00); // High byte → count = 0x00FF, start = 0x00FF
+        assert_eq!(dma.state.channels[0].start_count, 0x00FF);
     }
 }

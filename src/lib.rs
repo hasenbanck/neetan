@@ -938,6 +938,16 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
             bus.install_soundboard_86(None, config.adpcm_ram);
             info!("Installed PC-9801-86 sound board (YM2608 OPNA + PCM86)");
         }
+        config::SoundboardType::Sb16 => {
+            bus.install_sound_blaster_16();
+            info!("Installed Sound Blaster 16 (CT2720, YMF262 OPL3 + CT1741 DSP)");
+        }
+        config::SoundboardType::Sb16And26k => {
+            bus.install_soundboard_26k(false);
+            info!("Installed PC-9801-26K sound board (YM2203 OPN)");
+            bus.install_sound_blaster_16();
+            info!("Installed Sound Blaster 16 (CT2720, YMF262 OPL3 + CT1741 DSP)");
+        }
     }
 
     if let Some(ref printer_path) = config.printer {

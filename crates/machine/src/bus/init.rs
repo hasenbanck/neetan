@@ -195,6 +195,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             palette: Palette::new(),
             soundboard_26k: None,
             soundboard_86: None,
+            sound_blaster_16: None,
             beeper: Beeper::new(sample_rate),
             rtc: Upd4990aRtc::new(),
             host_local_time_fn: default_local_time,
