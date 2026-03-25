@@ -2749,12 +2749,12 @@ fn user_char_define_rejects_invalid_row_vm() {
     }
     assert!(
         !found_bb,
-        "AH=1Ah should reject row 0x21 — font data should not be modified"
+        "AH=1Ah should reject row 0x21 - font data should not be modified"
     );
 }
 
 // ============================================================================
-// §9.3 AH=1Ah — User Char Define Skips 2-byte Header
+// §9.3 AH=1Ah - User Char Define Skips 2-byte Header
 // ============================================================================
 
 // Fix: AH=1Ah now skips the first 2 bytes (size header) and reads 32 bytes
@@ -2897,7 +2897,7 @@ fn user_char_define_skips_header_ra() {
 }
 
 // ============================================================================
-// §9.2 AH=0Fh — Multi Display Area VRAM Addr >>1 and Raster
+// §9.2 AH=0Fh - Multi Display Area VRAM Addr >>1 and Raster
 // ============================================================================
 
 // Fix: Multi display area now applies >>1 to VRAM addresses and multiplies
@@ -2972,7 +2972,7 @@ fn multi_display_area_line_count_has_raster_ra() {
 }
 
 // ============================================================================
-// §9.3 AH=14h — Kanji Font Read Interleaved Layout
+// §9.3 AH=14h - Kanji Font Read Interleaved Layout
 // ============================================================================
 
 // Fix: Kanji font offset now uses interleaved layout:
@@ -3003,7 +3003,7 @@ fn kanji_font_read_different_codes_vm() {
 }
 
 // ============================================================================
-// §9.5 AH=42h — Display Area Set: 400-line Mode (lines_per_row, video_mode)
+// §9.5 AH=42h - Display Area Set: 400-line Mode (lines_per_row, video_mode)
 // ============================================================================
 
 #[test]
@@ -3042,7 +3042,7 @@ fn display_area_set_400line_lines_per_row_ra() {
 }
 
 // ============================================================================
-// §9.5 AH=42h — Display Area Set: 200-line Mode (lines_per_row, video_mode)
+// §9.5 AH=42h - Display Area Set: 200-line Mode (lines_per_row, video_mode)
 // ============================================================================
 
 #[test]
@@ -3082,7 +3082,7 @@ fn display_area_set_200line_lines_per_row_ra() {
 }
 
 // ============================================================================
-// §9.5 AH=42h — Display Area Set: Scroll Partition Reset
+// §9.5 AH=42h - Display Area Set: Scroll Partition Reset
 // ============================================================================
 
 #[test]
@@ -3114,7 +3114,7 @@ fn display_area_set_resets_scroll_ra() {
 }
 
 // ============================================================================
-// §9.5 AH=42h — Display Area Set: Preserves GDC Slave Sync Params
+// §9.5 AH=42h - Display Area Set: Preserves GDC Slave Sync Params
 // ============================================================================
 
 /// AH=42h must NOT load new GDC slave sync parameters unless PRXDUPD has the
@@ -3196,7 +3196,7 @@ fn display_area_set_400line_preserves_slave_sync_ra() {
 }
 
 // ============================================================================
-// §9.5 AH=4Ah — Draw Mode Set: GDC SYNC Mode Byte
+// §9.5 AH=4Ah - Draw Mode Set: GDC SYNC Mode Byte
 // ============================================================================
 
 #[test]

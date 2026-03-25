@@ -44,7 +44,7 @@ Options:
       --window-mode <MODE>    Window mode: windowed or fullscreen
       --bios-rom <PATH>       Path to BIOS ROM file
       --font-rom <PATH>       Path to font ROM file
-      --soundboard <TYPE>     Sound board type: none, 26k, 86, 86+26k
+      --soundboard <TYPE>     Sound board type: none, 26k, 86, 86+26k, sb16, sb16+26k
       --adpcm-ram <on|off>    ADPCM RAM option for PC-9801-86 (default: on)
       --printer <PATH>        Output file for printer (must exist)
   -h, --help                  Print help
@@ -487,6 +487,10 @@ pub enum SoundboardType {
     Sb86,
     /// PC-9801-86 + PC-9801-26K (both boards).
     Sb86And26k,
+    /// Creative Sound Blaster 16 (CT2720).
+    Sb16,
+    /// Creative Sound Blaster 16 (CT2720) + .
+    Sb16And26k,
 }
 
 impl std::fmt::Display for SoundboardType {
@@ -496,6 +500,8 @@ impl std::fmt::Display for SoundboardType {
             Self::Sb26k => f.write_str("26k"),
             Self::Sb86 => f.write_str("86"),
             Self::Sb86And26k => f.write_str("86+26k"),
+            Self::Sb16 => f.write_str("sb16"),
+            Self::Sb16And26k => f.write_str("sb16+26k"),
         }
     }
 }
@@ -509,8 +515,10 @@ impl std::str::FromStr for SoundboardType {
             "26k" => Ok(Self::Sb26k),
             "86" => Ok(Self::Sb86),
             "86+26k" => Ok(Self::Sb86And26k),
+            "sb16" => Ok(Self::Sb16),
+            "sb16+26k" => Ok(Self::Sb16And26k),
             _ => Err(format!(
-                "unknown soundboard type '{s}', expected none, 26k, 86, or 86+26k"
+                "unknown soundboard type '{s}', expected none, 26k, 86, 86+26k, sb16 or sb16+26k"
             )),
         }
     }

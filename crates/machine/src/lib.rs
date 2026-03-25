@@ -19,7 +19,8 @@ use device::{
     grcg::GrcgState, i8251_keyboard::I8251KeyboardState, i8251_serial::I8251SerialState,
     i8253_pit::I8253PitState, i8255_mouse_ppi::I8255MousePpiState,
     i8255_system_ppi::I8255SystemPpiState, i8259a_pic::I8259aPicState, palette::PaletteState,
-    printer::PrinterState, soundboard_26k::Soundboard26kState, soundboard_86::Soundboard86State,
+    printer::PrinterState, sound_blaster_16::SoundBlaster16State,
+    soundboard_26k::Soundboard26kState, soundboard_86::Soundboard86State,
     upd765a_fdc::Upd765aFdcState, upd7220_gdc::GdcState, upd52611_crtc::Upd52611CrtcState,
 };
 pub use machine::{Machine, Pc9801Ra, Pc9801Vm, Pc9801Vx, Pc9821Ap, Pc9821As};
@@ -102,6 +103,8 @@ pub struct MachineState {
     pub soundboard_26k: Option<Soundboard26kState>,
     /// PC-9801-86 sound board (YM2608 OPNA + PCM86) snapshot, if installed.
     pub soundboard_86: Option<Soundboard86State>,
+    /// Sound Blaster 16 (CT2720) snapshot, if installed.
+    pub sound_blaster_16: Option<SoundBlaster16State>,
     /// Beeper device snapshot.
     pub beeper: BeeperState,
     /// Mouse PPI (i8255) snapshot.

@@ -746,6 +746,74 @@ impl<T: Tracing> Pc9801Bus<T> {
             // Ref: undoc98 `io_vbrd.txt`
             0xAF67 | 0xAF6A | 0xAF6B => {}
 
+            // Sound Blaster 16 OPL3 address lo (base+0x2000, base+0x2800).
+            0x20D2 | 0x28D2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                if let Some(ref mut sb16) = self.sound_blaster_16 {
+                    sb16.write_opl3_address_lo(value, self.current_cycle);
+                    self.process_soundboard_sb16_actions();
+                }
+            }
+            // Sound Blaster 16 OPL3 data lo (base+0x2100, base+0x2900).
+            0x21D2 | 0x29D2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                if let Some(ref mut sb16) = self.sound_blaster_16 {
+                    sb16.write_opl3_data(value, self.current_cycle);
+                    self.process_soundboard_sb16_actions();
+                }
+            }
+            // Sound Blaster 16 OPL3 address hi (base+0x2200).
+            0x22D2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                if let Some(ref mut sb16) = self.sound_blaster_16 {
+                    sb16.write_opl3_address_hi(value, self.current_cycle);
+                    self.process_soundboard_sb16_actions();
+                }
+            }
+            // Sound Blaster 16 OPL3 data hi (base+0x2300).
+            0x23D2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                if let Some(ref mut sb16) = self.sound_blaster_16 {
+                    sb16.write_opl3_data(value, self.current_cycle);
+                    self.process_soundboard_sb16_actions();
+                }
+            }
+            // Sound Blaster 16 mixer address (base+0x2400).
+            0x24D2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                if let Some(ref mut sb16) = self.sound_blaster_16 {
+                    sb16.write_mixer_address(value);
+                }
+            }
+            // Sound Blaster 16 mixer data (base+0x2500).
+            0x25D2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                if let Some(ref mut sb16) = self.sound_blaster_16 {
+                    sb16.write_mixer_data(value);
+                    self.process_soundboard_sb16_actions();
+                }
+            }
+            // Sound Blaster 16 DSP reset (base+0x2600).
+            0x26D2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                if let Some(ref mut sb16) = self.sound_blaster_16 {
+                    sb16.write_dsp_reset(value);
+                    self.process_soundboard_sb16_actions();
+                }
+            }
+            // Sound Blaster 16 DSP read data port (base+0x2A00) - writes ignored.
+            0x2AD2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+            }
+            // Sound Blaster 16 DSP write command/data (base+0x2C00).
+            0x2CD2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                if let Some(ref mut sb16) = self.sound_blaster_16 {
+                    sb16.write_dsp_command(value);
+                    self.process_soundboard_sb16_actions();
+                }
+            }
+
             _ => {
                 self.tracer.trace_io_unhandled_write(port, value);
                 warn!("Unhandled I/O write: port={port:#06X} value={value:#04X}");
@@ -755,6 +823,16 @@ impl<T: Tracing> Pc9801Bus<T> {
 
     /// Returns the hardware wait penalty for `OUT 0x005F,AL` (>= 0.6 us).
     fn artic_wait_cycles(&self) -> i64 {
+        let cycles = (u64::from(self.clocks.cpu_clock_hz) * 6).div_ceil(10_000_000);
+        cycles.max(1) as i64
+    }
+
+    /// Returns the C-bus expansion board I/O wait penalty in CPU cycles.
+    ///
+    /// The PC-98 C-bus runs at a fixed speed independent of the CPU clock.
+    /// Each I/O access to a C-bus device takes at least 0.6 µs (same as the
+    /// ARTIC wait), regardless of CPU frequency.
+    pub(super) fn cbus_wait_cycles(&self) -> i64 {
         let cycles = (u64::from(self.clocks.cpu_clock_hz) * 6).div_ceil(10_000_000);
         cycles.max(1) as i64
     }
@@ -1744,5 +1822,66 @@ mod tests {
         // Verify threshold was set correctly.
         let state = bus.soundboard_86.as_ref().unwrap().save_state();
         assert_eq!(state.pcm86.fifo_size, 512);
+    }
+
+    #[test]
+    fn sb16_dsp_reset_and_version_via_ports() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        bus.install_sound_blaster_16();
+
+        // DSP reset: write 1 then 0 to port base+0x2600
+        bus.io_write_byte(0x26D2, 0x01);
+        bus.io_write_byte(0x26D2, 0x00);
+
+        // Read ready byte from port base+0x2A00
+        assert_eq!(bus.io_read_byte(0x2AD2), 0xAA);
+
+        // Send version command (0xE1) via port base+0x2C00
+        bus.io_write_byte(0x2CD2, 0xE1);
+
+        // Read version: 4, 12
+        assert_eq!(bus.io_read_byte(0x2AD2), 4);
+        assert_eq!(bus.io_read_byte(0x2AD2), 12);
+    }
+
+    #[test]
+    fn sb16_mixer_write_read_via_ports() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        bus.install_sound_blaster_16();
+
+        // Write mixer address (base+0x2400), then data (base+0x2500)
+        bus.io_write_byte(0x24D2, 0x32); // Select voice volume left
+        bus.io_write_byte(0x25D2, 0xA0); // Write value
+
+        // Read it back
+        bus.io_write_byte(0x24D2, 0x32);
+        assert_eq!(bus.io_read_byte(0x25D2), 0xA0);
+    }
+
+    #[test]
+    fn sb16_opl3_status_read() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        bus.install_sound_blaster_16();
+
+        // Read OPL3 status (base+0x2000) - should not panic and return a value
+        let status = bus.io_read_byte(0x20D2);
+        // After reset, timer flags should be clear
+        assert_eq!(status & 0xE0, 0);
+    }
+
+    #[test]
+    fn sb16_ports_do_not_conflict_with_86_board() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        bus.install_soundboard_86(None, true);
+        bus.install_sound_blaster_16();
+
+        // 86 board still responds at 0x0188/0x018A
+        bus.io_write_byte(0x0188, 0xFF);
+        assert_eq!(bus.io_read_byte(0x018A), 0x01); // YM2608 chip ID
+
+        // SB16 responds at its own ports
+        bus.io_write_byte(0x26D2, 0x01);
+        bus.io_write_byte(0x26D2, 0x00);
+        assert_eq!(bus.io_read_byte(0x2AD2), 0xAA);
     }
 }

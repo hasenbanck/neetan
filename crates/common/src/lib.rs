@@ -283,7 +283,7 @@ impl std::str::FromStr for MachineModel {
 }
 
 /// Number of [`EventKind`] variants.
-const EVENT_KIND_COUNT: usize = 16;
+const EVENT_KIND_COUNT: usize = 19;
 
 /// Trait representing the system bus of an emulated machine.
 ///
@@ -868,6 +868,12 @@ pub enum EventKind {
     IdeInterrupt,
     /// PCM86 DAC IRQ check (buffer below FIFO threshold).
     Pcm86Irq,
+    /// SB16 OPL3 (YMF262) Timer A overflow.
+    Sb16OplTimerA,
+    /// SB16 OPL3 (YMF262) Timer B overflow.
+    Sb16OplTimerB,
+    /// SB16 DSP DMA batch transfer (pulls PCM data from system memory).
+    Sb16DspDma,
 }
 
 impl EventKind {
@@ -888,6 +894,9 @@ impl EventKind {
         EventKind::IdeExecution,
         EventKind::IdeInterrupt,
         EventKind::Pcm86Irq,
+        EventKind::Sb16OplTimerA,
+        EventKind::Sb16OplTimerB,
+        EventKind::Sb16DspDma,
     ];
 
     const fn from_index(index: usize) -> Self {

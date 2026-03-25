@@ -642,6 +642,90 @@ impl<T: Tracing> Pc9801Bus<T> {
             // Ref: undoc98 `io_vbrd.txt` - 0xFF = board not present.
             0xAF66 | 0xAF67 | 0xAF6A | 0xAF6B => 0xFF,
 
+            // Sound Blaster 16 OPL3 status (base+0x2000, base+0x2800).
+            0x20D2 | 0x28D2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                if let Some(ref mut sb16) = self.sound_blaster_16 {
+                    let v = sb16.read_opl3_status(self.current_cycle);
+                    self.process_soundboard_sb16_actions();
+                    v
+                } else {
+                    0xFF
+                }
+            }
+            // Sound Blaster 16 OPL3 data ports (base+0x2100, base+0x2900) - write-only.
+            0x21D2 | 0x29D2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                0xFF
+            }
+            // Sound Blaster 16 mixer address (base+0x2400).
+            0x24D2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                if let Some(ref sb16) = self.sound_blaster_16 {
+                    sb16.read_mixer_address()
+                } else {
+                    0xFF
+                }
+            }
+            // Sound Blaster 16 mixer data (base+0x2500).
+            0x25D2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                if let Some(ref sb16) = self.sound_blaster_16 {
+                    sb16.read_mixer_data()
+                } else {
+                    0xFF
+                }
+            }
+            // Sound Blaster 16 DSP reset (base+0x2600).
+            0x26D2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                if let Some(ref sb16) = self.sound_blaster_16 {
+                    sb16.read_dsp_reset()
+                } else {
+                    0xFF
+                }
+            }
+            // Sound Blaster 16 DSP read data (base+0x2A00).
+            0x2AD2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                if let Some(ref mut sb16) = self.sound_blaster_16 {
+                    sb16.read_dsp_data()
+                } else {
+                    0xFF
+                }
+            }
+            // Sound Blaster 16 DSP write status (base+0x2C00).
+            0x2CD2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                if let Some(ref sb16) = self.sound_blaster_16 {
+                    sb16.read_dsp_write_status()
+                } else {
+                    0xFF
+                }
+            }
+            // Sound Blaster 16 DSP read status 8-bit / IRQ ack (base+0x2E00).
+            0x2ED2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                if let Some(ref mut sb16) = self.sound_blaster_16 {
+                    let v = sb16.read_dsp_status_8bit();
+                    self.process_soundboard_sb16_actions();
+                    v
+                } else {
+                    0xFF
+                }
+            }
+            // Sound Blaster 16 DSP read status 16-bit / IRQ ack (base+0x2F00).
+            0x2FD2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                if let Some(ref mut sb16) = self.sound_blaster_16 {
+                    let v = sb16.read_dsp_status_16bit();
+                    self.process_soundboard_sb16_actions();
+                    v
+                } else {
+                    0xFF
+                }
+            }
+
             _ => {
                 self.tracer.trace_io_unhandled_read(port);
                 warn!("Unhandled I/O read: port={port:#06X}");

@@ -38,6 +38,7 @@ use device::{
     printer::Printer,
     sasi::SasiController,
     sdip::Sdip,
+    sound_blaster_16::{SoundBlaster16, SoundboardSb16Action},
     soundboard_26k::{Soundboard26k, Soundboard26kAction},
     soundboard_86::{Soundboard86, Soundboard86Action},
     upd765a_fdc::FloppyController,
@@ -214,6 +215,7 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     palette: Palette,
     soundboard_26k: Option<Soundboard26k>,
     soundboard_86: Option<Soundboard86>,
+    sound_blaster_16: Option<SoundBlaster16>,
     beeper: Beeper,
     rtc: Upd4990aRtc,
     /// Returns the current host local time as 6-byte BCD:
@@ -581,6 +583,15 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// Returns `true` if the PC-9801-86 sound board is installed.
     pub fn has_soundboard_86(&self) -> bool {
         self.soundboard_86.is_some()
+    }
+
+    /// Installs a Creative Sound Blaster 16 (CT2720) sound board.
+    ///
+    /// The SB16 uses completely different I/O ports (base + 0x2000 range)
+    /// and can coexist with the NEC 26K/86 boards.
+    pub fn install_sound_blaster_16(&mut self) {
+        let sample_rate = self.beeper.state.sample_rate;
+        self.sound_blaster_16 = Some(SoundBlaster16::new(self.clocks.cpu_clock_hz, sample_rate));
     }
 
     fn resolve_dual_soundboard_irq_conflict(&mut self) {
@@ -1082,6 +1093,10 @@ impl<T: Tracing> Pc9801Bus<T> {
         if let Some(ref mut sb26k) = self.soundboard_26k {
             sb26k.generate_samples(self.current_cycle, self.clocks.cpu_clock_hz, volume, output);
         }
+        if let Some(ref mut sb16) = self.sound_blaster_16 {
+            sb16.generate_samples(self.current_cycle, self.clocks.cpu_clock_hz, volume, output);
+        }
+        self.process_soundboard_sb16_actions();
 
         beeper_count
     }
@@ -1156,6 +1171,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             palette: self.palette.state.clone(),
             soundboard_26k: self.soundboard_26k.as_ref().map(|sb| sb.save_state()),
             soundboard_86: self.soundboard_86.as_ref().map(|sb| sb.save_state()),
+            sound_blaster_16: self.sound_blaster_16.as_ref().map(|sb| sb.save_state()),
             beeper: self.beeper.state.clone(),
             mouse_ppi: self.mouse_ppi.state.clone(),
             mouse_timer_setting: self.mouse_timer_setting,
@@ -1212,6 +1228,14 @@ impl<T: Tracing> Pc9801Bus<T> {
                 state.beeper.sample_rate,
                 state.current_cycle,
                 None,
+            );
+        }
+        if let (Some(sb16), Some(saved)) = (&mut self.sound_blaster_16, &state.sound_blaster_16) {
+            sb16.load_state(
+                saved,
+                self.clocks.cpu_clock_hz,
+                state.beeper.sample_rate,
+                state.current_cycle,
             );
         }
         self.beeper.state = state.beeper.clone();
@@ -1275,6 +1299,96 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
         }
         self.update_next_event_cycle();
+    }
+
+    fn process_soundboard_sb16_actions(&mut self) {
+        if let Some(ref mut sb16) = self.sound_blaster_16 {
+            for action in sb16.drain_actions() {
+                match action {
+                    SoundboardSb16Action::ScheduleTimer { kind, fire_cycle } => {
+                        self.scheduler.schedule(kind, fire_cycle);
+                    }
+                    SoundboardSb16Action::CancelTimer { kind } => {
+                        self.scheduler.cancel(kind);
+                    }
+                    SoundboardSb16Action::AssertIrq { irq } => {
+                        self.pic.set_irq(irq);
+                        self.tracer.trace_irq_raise(irq);
+                    }
+                    SoundboardSb16Action::DeassertIrq { irq } => {
+                        self.pic.clear_irq(irq);
+                    }
+                    SoundboardSb16Action::StartDma { channel: _ } => {
+                        self.schedule_sb16_dma_transfer_at(self.current_cycle);
+                    }
+                    SoundboardSb16Action::StopDma => {
+                        self.scheduler.cancel(EventKind::Sb16DspDma);
+                    }
+                }
+            }
+        }
+        self.update_next_event_cycle();
+    }
+
+    fn schedule_sb16_dma_transfer_at(&mut self, reference_cycle: u64) {
+        if let Some(ref sb16) = self.sound_blaster_16 {
+            let sample_rate = sb16.state.dsp.sample_rate.max(1) as u64;
+            let bytes_per_sample =
+                device::sound_blaster_16::dma_format_bytes_per_sample(sb16.state.dsp.dma_format)
+                    as u64;
+            let byte_rate = sample_rate * bytes_per_sample.max(1);
+            let interval_cycles = device::sound_blaster_16::DMA_BATCH_SIZE as u64
+                * self.clocks.cpu_clock_hz as u64
+                / byte_rate;
+            // Schedule relative to the reference cycle (typically the previous event's
+            // fire cycle) to prevent timing drift when events are processed late.
+            let fire_cycle = (reference_cycle + interval_cycles.max(1)).max(self.current_cycle + 1);
+            self.scheduler.schedule(EventKind::Sb16DspDma, fire_cycle);
+        }
+    }
+
+    fn handle_sb16_dma_transfer(&mut self, event_fire_cycle: u64) {
+        let (channel, batch_size, dma_active) = {
+            let Some(ref sb16) = self.sound_blaster_16 else {
+                return;
+            };
+            if !sb16.dma_transfer_pending() {
+                return;
+            }
+            (
+                sb16.state.dsp.dma_channel as usize,
+                device::sound_blaster_16::DMA_BATCH_SIZE,
+                sb16.state.dsp.dma_active,
+            )
+        };
+
+        if !dma_active {
+            return;
+        }
+
+        let mask_20bit = self.dma_access_ctrl & 0x04 != 0;
+        let result = self.dma.transfer_read_from_memory(channel, batch_size);
+
+        let mut data = Vec::with_capacity(result.addresses.len());
+        for &addr in &result.addresses {
+            let addr = if mask_20bit { addr & 0xF_FFFF } else { addr };
+            data.push(self.read_byte_with_access_page(addr));
+        }
+
+        if let Some(ref mut sb16) = self.sound_blaster_16 {
+            sb16.accept_dma_data(&data);
+            if result.terminal_count {
+                sb16.dma_terminal_count();
+            }
+        }
+        self.process_soundboard_sb16_actions();
+
+        // Reschedule relative to the original event fire cycle to prevent drift.
+        if let Some(ref sb16) = self.sound_blaster_16
+            && sb16.dma_transfer_pending()
+        {
+            self.schedule_sb16_dma_transfer_at(event_fire_cycle);
+        }
     }
 
     fn update_next_event_cycle(&mut self) {
@@ -1391,6 +1505,21 @@ impl<T: Tracing> Pc9801Bus<T> {
                         sb86.pcm86_timer_expired(self.current_cycle, self.clocks.cpu_clock_hz);
                         self.process_soundboard_86_actions();
                     }
+                }
+                EventKind::Sb16OplTimerA => {
+                    if let Some(ref mut sb16) = self.sound_blaster_16 {
+                        sb16.timer_expired(0, self.current_cycle);
+                        self.process_soundboard_sb16_actions();
+                    }
+                }
+                EventKind::Sb16OplTimerB => {
+                    if let Some(ref mut sb16) = self.sound_blaster_16 {
+                        sb16.timer_expired(1, self.current_cycle);
+                        self.process_soundboard_sb16_actions();
+                    }
+                }
+                EventKind::Sb16DspDma => {
+                    self.handle_sb16_dma_transfer(event.fire_cycle);
                 }
             }
         }
