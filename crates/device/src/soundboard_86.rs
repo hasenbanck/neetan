@@ -934,6 +934,7 @@ fn pcm86_volume(level: u8) -> f32 {
 }
 
 /// Action the bus must process after a sound board operation.
+#[derive(Clone, Copy)]
 pub enum Soundboard86Action {
     /// Schedule a timer to fire at the given cycle.
     ScheduleTimer {
@@ -977,6 +978,7 @@ pub struct Soundboard86 {
     /// Set by `timer_expired` (FM timer callback), consumed by `drain_actions`
     /// to trigger a PCM86 IRQ piggyback check.
     fm_timer_just_fired: bool,
+    action_buffer: Vec<Soundboard86Action>,
 }
 
 impl Soundboard86 {
@@ -1030,6 +1032,7 @@ impl Soundboard86 {
             pcm86: Pcm86::new(sample_rate, cpu_clock_hz, machine_model),
             sample_rate,
             fm_timer_just_fired: false,
+            action_buffer: Vec::new(),
         }
     }
 
@@ -1272,7 +1275,9 @@ impl Soundboard86 {
     ///
     /// `pcm86_irq_pending` indicates whether a `Pcm86Irq` event is currently
     /// scheduled in the system scheduler.
-    pub fn drain_actions(&mut self, pcm86_irq_pending: bool) -> Vec<Soundboard86Action> {
+    pub fn drain_actions(&mut self, pcm86_irq_pending: bool) -> &[Soundboard86Action] {
+        self.action_buffer.clear();
+
         let opna_masked = self.opna_masked();
         let bridge = self.chip.callbacks_mut();
         self.state.busy_end_cycle = bridge.busy_end_cycle.get();
@@ -1282,7 +1287,6 @@ impl Soundboard86 {
         // Snapshot previous merged IRQ state before processing updates.
         let was_merged = (self.state.irq_asserted && !opna_masked) || self.state.pcm86_irq_asserted;
 
-        let mut actions = Vec::new();
         for pending in bridge.pending.borrow_mut().drain(..) {
             match pending {
                 PendingChipAction::SetTimer {
@@ -1295,12 +1299,13 @@ impl Soundboard86 {
                         EventKind::FmTimerB
                     };
                     if duration_in_clocks < 0 {
-                        actions.push(Soundboard86Action::CancelTimer { kind });
+                        self.action_buffer
+                            .push(Soundboard86Action::CancelTimer { kind });
                     } else {
                         let cpu_cycles = u64::from(duration_in_clocks as u32)
                             * u64::from(cpu_clock_hz)
                             / u64::from(YM2608_CLOCK);
-                        actions.push(Soundboard86Action::ScheduleTimer {
+                        self.action_buffer.push(Soundboard86Action::ScheduleTimer {
                             kind,
                             fire_cycle: current_cycle + cpu_cycles,
                         });
@@ -1339,13 +1344,13 @@ impl Soundboard86 {
                 .calculate_next_irq_cycle(current_cycle, cpu_clock_hz)
             {
                 // Buffer above threshold - schedule for when it drains.
-                actions.push(Soundboard86Action::ScheduleTimer {
+                self.action_buffer.push(Soundboard86Action::ScheduleTimer {
                     kind: EventKind::Pcm86Irq,
                     fire_cycle,
                 });
             } else if self.pcm86.state.reqirq {
                 // Buffer already at/below threshold and reqirq set - fire immediately.
-                actions.push(Soundboard86Action::ScheduleTimer {
+                self.action_buffer.push(Soundboard86Action::ScheduleTimer {
                     kind: EventKind::Pcm86Irq,
                     fire_cycle: current_cycle + 1,
                 });
@@ -1354,7 +1359,7 @@ impl Soundboard86 {
                 // Workaround: set reqirq and retry after a delay to avoid
                 // infinite IRQ loops on systems like WinNT4.
                 self.pcm86.state.reqirq = true;
-                actions.push(Soundboard86Action::ScheduleTimer {
+                self.action_buffer.push(Soundboard86Action::ScheduleTimer {
                     kind: EventKind::Pcm86Irq,
                     fire_cycle: current_cycle + 100 * self.pcm86.clock_multiple,
                 });
@@ -1367,17 +1372,17 @@ impl Soundboard86 {
         let merged = (self.state.irq_asserted && !opna_masked) || self.state.pcm86_irq_asserted;
         if merged != was_merged {
             if merged {
-                actions.push(Soundboard86Action::AssertIrq {
+                self.action_buffer.push(Soundboard86Action::AssertIrq {
                     irq: self.state.irq_line,
                 });
             } else {
-                actions.push(Soundboard86Action::DeassertIrq {
+                self.action_buffer.push(Soundboard86Action::DeassertIrq {
                     irq: self.state.irq_line,
                 });
             }
         }
 
-        actions
+        self.action_buffer.as_slice()
     }
 
     /// Generates resampled stereo audio and mixes it into `output`.

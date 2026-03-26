@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use common::{
     CpuType, DISPLAY_FLAG_PEGC_256_COLOR, DisplaySnapshotUpload, EventKind, MachineModel,
-    PegcSnapshotUpload, Scheduler, cast_u32_slice_as_bytes_mut,
+    PegcSnapshotUpload, Scheduler, StackVec, cast_u32_slice_as_bytes_mut,
 };
 use device::{
     beeper::Beeper,
@@ -1257,7 +1257,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             let pcm86_pending =
                 self.scheduler.state.fire_cycles[EventKind::Pcm86Irq as usize].is_some();
             for action in sb86.drain_actions(pcm86_pending) {
-                match action {
+                match *action {
                     Soundboard86Action::ScheduleTimer { kind, fire_cycle } => {
                         self.scheduler.schedule(kind, fire_cycle);
                     }
@@ -1280,7 +1280,7 @@ impl<T: Tracing> Pc9801Bus<T> {
     fn process_soundboard_actions(&mut self) {
         if let Some(ref mut sb26k) = self.soundboard_26k {
             for action in sb26k.drain_actions() {
-                match action {
+                match *action {
                     Soundboard26kAction::ScheduleTimer { kind, fire_cycle } => {
                         self.scheduler.schedule(kind, fire_cycle);
                     }
@@ -1303,8 +1303,10 @@ impl<T: Tracing> Pc9801Bus<T> {
 
     fn process_soundboard_sb16_actions(&mut self) {
         if let Some(ref mut sb16) = self.sound_blaster_16 {
+            let dsp_sample_rate = sb16.state.dsp.sample_rate;
+            let dsp_dma_format = sb16.state.dsp.dma_format;
             for action in sb16.drain_actions() {
-                match action {
+                match *action {
                     SoundboardSb16Action::ScheduleTimer { kind, fire_cycle } => {
                         self.scheduler.schedule(kind, fire_cycle);
                     }
@@ -1319,7 +1321,14 @@ impl<T: Tracing> Pc9801Bus<T> {
                         self.pic.clear_irq(irq);
                     }
                     SoundboardSb16Action::StartDma { channel: _ } => {
-                        self.schedule_sb16_dma_transfer_at(self.current_cycle);
+                        Self::schedule_sb16_dma_from_params(
+                            &mut self.scheduler,
+                            dsp_sample_rate,
+                            dsp_dma_format,
+                            self.current_cycle,
+                            self.current_cycle,
+                            self.clocks.cpu_clock_hz,
+                        );
                     }
                     SoundboardSb16Action::StopDma => {
                         self.scheduler.cancel(EventKind::Sb16DspDma);
@@ -1330,21 +1339,39 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.update_next_event_cycle();
     }
 
-    fn schedule_sb16_dma_transfer_at(&mut self, reference_cycle: u64) {
-        if let Some(ref sb16) = self.sound_blaster_16 {
-            let sample_rate = sb16.state.dsp.sample_rate.max(1) as u64;
-            let bytes_per_sample =
-                device::sound_blaster_16::dma_format_bytes_per_sample(sb16.state.dsp.dma_format)
-                    as u64;
-            let byte_rate = sample_rate * bytes_per_sample.max(1);
-            let interval_cycles = device::sound_blaster_16::DMA_BATCH_SIZE as u64
-                * self.clocks.cpu_clock_hz as u64
-                / byte_rate;
-            // Schedule relative to the reference cycle (typically the previous event's
-            // fire cycle) to prevent timing drift when events are processed late.
-            let fire_cycle = (reference_cycle + interval_cycles.max(1)).max(self.current_cycle + 1);
-            self.scheduler.schedule(EventKind::Sb16DspDma, fire_cycle);
-        }
+    fn schedule_sb16_dma(
+        scheduler: &mut common::Scheduler,
+        sb16: &device::sound_blaster_16::SoundBlaster16,
+        reference_cycle: u64,
+        current_cycle: u64,
+        cpu_clock_hz: u32,
+    ) {
+        Self::schedule_sb16_dma_from_params(
+            scheduler,
+            sb16.state.dsp.sample_rate,
+            sb16.state.dsp.dma_format,
+            reference_cycle,
+            current_cycle,
+            cpu_clock_hz,
+        );
+    }
+
+    fn schedule_sb16_dma_from_params(
+        scheduler: &mut common::Scheduler,
+        sample_rate: u32,
+        dma_format: u8,
+        reference_cycle: u64,
+        current_cycle: u64,
+        cpu_clock_hz: u32,
+    ) {
+        let sample_rate = sample_rate.max(1) as u64;
+        let bytes_per_sample =
+            device::sound_blaster_16::dma_format_bytes_per_sample(dma_format) as u64;
+        let byte_rate = sample_rate * bytes_per_sample.max(1);
+        let interval_cycles =
+            device::sound_blaster_16::DMA_BATCH_SIZE as u64 * cpu_clock_hz as u64 / byte_rate;
+        let fire_cycle = (reference_cycle + interval_cycles.max(1)).max(current_cycle + 1);
+        scheduler.schedule(EventKind::Sb16DspDma, fire_cycle);
     }
 
     fn handle_sb16_dma_transfer(&mut self, event_fire_cycle: u64) {
@@ -1369,7 +1396,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         let mask_20bit = self.dma_access_ctrl & 0x04 != 0;
         let result = self.dma.transfer_read_from_memory(channel, batch_size);
 
-        let mut data = Vec::with_capacity(result.addresses.len());
+        let mut data: StackVec<u8, { device::sound_blaster_16::DMA_BATCH_SIZE }> = StackVec::new();
         for &addr in &result.addresses {
             let addr = if mask_20bit { addr & 0xF_FFFF } else { addr };
             data.push(self.read_byte_with_access_page(addr));
@@ -1387,7 +1414,13 @@ impl<T: Tracing> Pc9801Bus<T> {
         if let Some(ref sb16) = self.sound_blaster_16
             && sb16.dma_transfer_pending()
         {
-            self.schedule_sb16_dma_transfer_at(event_fire_cycle);
+            Self::schedule_sb16_dma(
+                &mut self.scheduler,
+                sb16,
+                event_fire_cycle,
+                self.current_cycle,
+                self.clocks.cpu_clock_hz,
+            );
         }
     }
 

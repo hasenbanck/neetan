@@ -271,6 +271,7 @@ impl OplCallbacks for Opl3Bridge {
 }
 
 /// Actions emitted by the SB16 device for the bus to apply.
+#[derive(Clone, Copy)]
 pub enum SoundboardSb16Action {
     /// Schedule a timer to fire at the given cycle.
     ScheduleTimer {
@@ -361,6 +362,7 @@ pub struct SoundBlaster16 {
     pending_dsp_actions: Vec<SoundboardSb16Action>,
     /// Set when DMA parameters change and a new resampler is needed.
     pcm_rate_dirty: bool,
+    action_buffer: Vec<SoundboardSb16Action>,
 }
 
 impl SoundBlaster16 {
@@ -405,6 +407,7 @@ impl SoundBlaster16 {
             cpu_clock_hz,
             pending_dsp_actions: Vec::new(),
             pcm_rate_dirty: false,
+            action_buffer: Vec::new(),
         }
     }
 
@@ -1042,15 +1045,15 @@ impl SoundBlaster16 {
     }
 
     /// Drains pending actions from the OPL3 bridge and DSP.
-    pub fn drain_actions(&mut self) -> Vec<SoundboardSb16Action> {
+    pub fn drain_actions(&mut self) -> &[SoundboardSb16Action] {
+        self.action_buffer.clear();
+
         let bridge = self.opl3.callbacks_mut();
         self.state.busy_end_cycle = bridge.busy_end_cycle.get();
         let current_cycle = bridge.current_cycle.get();
         let cpu_clock_hz = bridge.cpu_clock_hz;
 
         let was_merged = self.state.irq_asserted;
-
-        let mut actions = Vec::new();
 
         // Drain OPL3 bridge actions
         for pending in bridge.pending.borrow_mut().drain(..) {
@@ -1065,15 +1068,17 @@ impl SoundBlaster16 {
                         EventKind::Sb16OplTimerB
                     };
                     if duration_in_clocks < 0 {
-                        actions.push(SoundboardSb16Action::CancelTimer { kind });
+                        self.action_buffer
+                            .push(SoundboardSb16Action::CancelTimer { kind });
                     } else {
                         let cpu_cycles = u64::from(duration_in_clocks as u32)
                             * u64::from(cpu_clock_hz)
                             / u64::from(YMF262_CLOCK);
-                        actions.push(SoundboardSb16Action::ScheduleTimer {
-                            kind,
-                            fire_cycle: current_cycle + cpu_cycles,
-                        });
+                        self.action_buffer
+                            .push(SoundboardSb16Action::ScheduleTimer {
+                                kind,
+                                fire_cycle: current_cycle + cpu_cycles,
+                            });
                     }
                 }
                 PendingChipAction::UpdateIrq { asserted } => {
@@ -1083,7 +1088,7 @@ impl SoundBlaster16 {
         }
 
         // Drain DSP actions
-        actions.append(&mut self.pending_dsp_actions);
+        self.action_buffer.append(&mut self.pending_dsp_actions);
 
         // Update merged IRQ
         let dsp_irq = self.state.dsp.irq_pending_8bit || self.state.dsp.irq_pending_16bit;
@@ -1091,17 +1096,17 @@ impl SoundBlaster16 {
         if merged != was_merged {
             self.state.irq_asserted = merged;
             if merged {
-                actions.push(SoundboardSb16Action::AssertIrq {
+                self.action_buffer.push(SoundboardSb16Action::AssertIrq {
                     irq: self.state.irq_line,
                 });
             } else {
-                actions.push(SoundboardSb16Action::DeassertIrq {
+                self.action_buffer.push(SoundboardSb16Action::DeassertIrq {
                     irq: self.state.irq_line,
                 });
             }
         }
 
-        actions
+        self.action_buffer.as_slice()
     }
 
     /// Generates resampled stereo audio and mixes it into `output`.
