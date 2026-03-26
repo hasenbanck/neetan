@@ -867,6 +867,9 @@ fn host_local_time_bcd() -> [u8; 6] {
 
 fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<dyn Machine>> {
     let model = config.machine;
+
+    info!("Selected machine model {model}");
+
     let mut bus: machine::Pc9801Bus<Tracer> = machine::Pc9801Bus::new(model, sample_rate);
     bus.set_host_local_time_fn(host_local_time_bcd);
 
