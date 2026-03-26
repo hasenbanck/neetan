@@ -261,6 +261,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
             // 26K alternate base status (dual-board mode: 26K at 0x0088).
             0x0088 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
                 if self.soundboard_86.is_some()
                     && let Some(soundboard_26k) = self.soundboard_26k.as_mut()
                 {
@@ -273,6 +274,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
             // 26K alternate base data read (dual-board mode: 26K at 0x008A).
             0x008A => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
                 if self.soundboard_26k.is_some() && self.soundboard_86.is_some() {
                     let sb26k = self.soundboard_26k.as_mut().unwrap();
                     if sb26k.address() == 0x0E {
@@ -296,6 +298,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
             // FM sound board status (OPN / OPNA low bank).
             0x0188 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
                 if let Some(ref mut sb86) = self.soundboard_86 {
                     let value = sb86.read_status(self.current_cycle);
                     self.process_soundboard_86_actions();
@@ -310,6 +313,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
             // FM sound board data read (OPN / OPNA low bank).
             0x018A => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
                 if let Some(ref mut sb86) = self.soundboard_86 {
                     let value = sb86.read_data(self.current_cycle);
                     self.process_soundboard_86_actions();
@@ -335,6 +339,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
             // OPNA extended status (high bank).
             0x018C => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
                 if let Some(ref mut sb86) = self.soundboard_86 {
                     let value = sb86.read_status_hi(self.current_cycle);
                     self.process_soundboard_86_actions();
@@ -345,6 +350,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
             // OPNA extended data read (high bank).
             0x018E => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
                 if let Some(ref mut sb86) = self.soundboard_86 {
                     sb86.read_data_hi(self.current_cycle)
                 } else {
@@ -436,6 +442,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
             // PCM86 DAC ports.
             0xA460 | 0xA462 | 0xA464 | 0xA466 | 0xA468 | 0xA46A | 0xA46C | 0xA46E => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
                 if let Some(ref mut sb86) = self.soundboard_86 {
                     let pcm86_pending =
                         self.scheduler.state.fire_cycles[EventKind::Pcm86Irq as usize].is_some();
@@ -452,6 +459,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
             // PCM86 mute control port.
             0xA66E => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
                 if let Some(ref mut sb86) = self.soundboard_86 {
                     let pcm86_pending =
                         self.scheduler.state.fire_cycles[EventKind::Pcm86Irq as usize].is_some();
