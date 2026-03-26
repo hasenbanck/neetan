@@ -1375,7 +1375,7 @@ impl<T: Tracing> Pc9801Bus<T> {
     }
 
     fn handle_sb16_dma_transfer(&mut self, event_fire_cycle: u64) {
-        let (channel, batch_size, dma_active) = {
+        let (channel, batch_size, dma_active, is_recording, dma_format) = {
             let Some(ref sb16) = self.sound_blaster_16 else {
                 return;
             };
@@ -1386,6 +1386,8 @@ impl<T: Tracing> Pc9801Bus<T> {
                 sb16.state.dsp.dma_channel as usize,
                 device::sound_blaster_16::DMA_BATCH_SIZE,
                 sb16.state.dsp.dma_active,
+                sb16.state.dsp.dma_is_recording,
+                sb16.state.dsp.dma_format,
             )
         };
 
@@ -1394,20 +1396,49 @@ impl<T: Tracing> Pc9801Bus<T> {
         }
 
         let mask_20bit = self.dma_access_ctrl & 0x04 != 0;
-        let result = self.dma.transfer_read_from_memory(channel, batch_size);
 
-        let mut data: StackVec<u8, { device::sound_blaster_16::DMA_BATCH_SIZE }> = StackVec::new();
-        for &addr in &result.addresses {
-            let addr = if mask_20bit { addr & 0xF_FFFF } else { addr };
-            data.push(self.read_byte_with_access_page(addr));
-        }
+        if is_recording {
+            // Recording: generate silence and write to memory via DMA.
+            let silence_byte = if device::sound_blaster_16::dma_format_is_16bit(dma_format) {
+                0x00u8
+            } else {
+                0x80u8
+            };
+            let silence = [silence_byte; device::sound_blaster_16::DMA_BATCH_SIZE];
+            let result = self
+                .dma
+                .transfer_write_to_memory(channel, &silence[..batch_size]);
 
-        if let Some(ref mut sb16) = self.sound_blaster_16 {
-            sb16.accept_dma_data(&data);
-            if result.terminal_count {
-                sb16.dma_terminal_count();
+            for &(addr, value) in &result.writes {
+                let addr = if mask_20bit { addr & 0xF_FFFF } else { addr };
+                self.write_byte_with_access_page(addr, value);
+            }
+
+            if let Some(ref mut sb16) = self.sound_blaster_16 {
+                sb16.advance_dma_recording(result.writes.len() as u32);
+                if result.terminal_count {
+                    sb16.dma_terminal_count();
+                }
+            }
+        } else {
+            // Playback: read from memory via DMA.
+            let result = self.dma.transfer_read_from_memory(channel, batch_size);
+
+            let mut data: StackVec<u8, { device::sound_blaster_16::DMA_BATCH_SIZE }> =
+                StackVec::new();
+            for &addr in &result.addresses {
+                let addr = if mask_20bit { addr & 0xF_FFFF } else { addr };
+                data.push(self.read_byte_with_access_page(addr));
+            }
+
+            if let Some(ref mut sb16) = self.sound_blaster_16 {
+                sb16.accept_dma_data(&data);
+                if result.terminal_count {
+                    sb16.dma_terminal_count();
+                }
             }
         }
+
         self.process_soundboard_sb16_actions();
 
         // Reschedule relative to the original event fire cycle to prevent drift.

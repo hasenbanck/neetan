@@ -45,7 +45,8 @@ pub fn dma_format_bytes_per_sample(format: u8) -> u32 {
     }
 }
 
-fn dma_format_is_16bit(format: u8) -> bool {
+/// Returns whether the given DMA format uses 16-bit samples.
+pub fn dma_format_is_16bit(format: u8) -> bool {
     format == DMA_FORMAT_SIGNED_16_MONO || format == DMA_FORMAT_SIGNED_16_STEREO
 }
 
@@ -115,6 +116,8 @@ pub struct Sb16DspState {
     pub dma_bytes_remaining: u32,
     /// PC-98 DMA channel (0 or 3).
     pub dma_channel: u8,
+    /// Whether the current DMA transfer is recording (device→memory) rather than playback.
+    pub dma_is_recording: bool,
     /// 8-bit IRQ pending flag.
     pub irq_pending_8bit: bool,
     /// 16-bit IRQ pending flag.
@@ -147,6 +150,7 @@ impl Default for Sb16DspState {
             dma_block_size: 0,
             dma_bytes_remaining: 0,
             dma_channel: 3,
+            dma_is_recording: false,
             irq_pending_8bit: false,
             irq_pending_16bit: false,
             pcm_buffer: Box::new([0u8; DMA_RING_BUF_SIZE]),
@@ -608,7 +612,7 @@ impl SoundBlaster16 {
             0x14 => {
                 if params.len() >= 2 {
                     let length = params[0] as u32 | ((params[1] as u32) << 8);
-                    self.start_dma(DMA_FORMAT_UNSIGNED_8_MONO, length + 1, false);
+                    self.start_dma(DMA_FORMAT_UNSIGNED_8_MONO, length + 1, false, false);
                 }
             }
 
@@ -618,6 +622,7 @@ impl SoundBlaster16 {
                     DMA_FORMAT_UNSIGNED_8_MONO,
                     self.state.dsp.dma_block_size,
                     true,
+                    false,
                 );
             }
 
@@ -660,24 +665,18 @@ impl SoundBlaster16 {
                 if params.len() >= 3 {
                     let auto_init = cmd & 0x04 != 0;
                     let is_input = cmd & 0x08 != 0;
-                    if is_input {
-                        // Recording: immediately fire completion IRQ (no real ADC).
-                        self.state.dsp.irq_pending_16bit = true;
-                        self.update_merged_irq();
+                    let mode = params[0];
+                    let length = (params[1] as u32 | ((params[2] as u32) << 8)) + 1;
+                    let stereo = mode & 0x20 != 0;
+                    let format = if stereo {
+                        DMA_FORMAT_SIGNED_16_STEREO
                     } else {
-                        let mode = params[0];
-                        let length = (params[1] as u32 | ((params[2] as u32) << 8)) + 1;
-                        let stereo = mode & 0x20 != 0;
-                        let format = if stereo {
-                            DMA_FORMAT_SIGNED_16_STEREO
-                        } else {
-                            DMA_FORMAT_SIGNED_16_MONO
-                        };
-                        // Length counts individual 16-bit samples (both channels
-                        // interleaved for stereo). Each sample is 2 bytes.
-                        let byte_length = length * 2;
-                        self.start_dma(format, byte_length, auto_init);
-                    }
+                        DMA_FORMAT_SIGNED_16_MONO
+                    };
+                    // Length counts individual 16-bit samples (both channels
+                    // interleaved for stereo). Each sample is 2 bytes.
+                    let byte_length = length * 2;
+                    self.start_dma(format, byte_length, auto_init, is_input);
                 }
             }
 
@@ -686,21 +685,15 @@ impl SoundBlaster16 {
                 if params.len() >= 3 {
                     let auto_init = cmd & 0x04 != 0;
                     let is_input = cmd & 0x08 != 0;
-                    if is_input {
-                        // Recording: immediately fire completion IRQ (no real ADC).
-                        self.state.dsp.irq_pending_8bit = true;
-                        self.update_merged_irq();
+                    let mode = params[0];
+                    let length = (params[1] as u32 | ((params[2] as u32) << 8)) + 1;
+                    let stereo = mode & 0x20 != 0;
+                    let format = if stereo {
+                        DMA_FORMAT_UNSIGNED_8_STEREO
                     } else {
-                        let mode = params[0];
-                        let length = (params[1] as u32 | ((params[2] as u32) << 8)) + 1;
-                        let stereo = mode & 0x20 != 0;
-                        let format = if stereo {
-                            DMA_FORMAT_UNSIGNED_8_STEREO
-                        } else {
-                            DMA_FORMAT_UNSIGNED_8_MONO
-                        };
-                        self.start_dma(format, length, auto_init);
-                    }
+                        DMA_FORMAT_UNSIGNED_8_MONO
+                    };
+                    self.start_dma(format, length, auto_init, is_input);
                 }
             }
 
@@ -828,10 +821,11 @@ impl SoundBlaster16 {
         self.state.dsp.input_buffer.clear();
     }
 
-    fn start_dma(&mut self, format: u8, byte_length: u32, auto_init: bool) {
+    fn start_dma(&mut self, format: u8, byte_length: u32, auto_init: bool, recording: bool) {
         self.state.dsp.dma_active = true;
         self.state.dsp.dma_format = format;
         self.state.dsp.dma_auto_init = auto_init;
+        self.state.dsp.dma_is_recording = recording;
         if byte_length > 0 {
             self.state.dsp.dma_block_size = byte_length;
         }
@@ -1016,6 +1010,16 @@ impl SoundBlaster16 {
             self.dma_block_complete();
         } else {
             self.state.dsp.dma_bytes_remaining -= consumed;
+        }
+    }
+
+    /// Advances recording DMA progress after bytes have been written to memory.
+    pub fn advance_dma_recording(&mut self, bytes_written: u32) {
+        if bytes_written >= self.state.dsp.dma_bytes_remaining {
+            self.state.dsp.dma_bytes_remaining = 0;
+            self.dma_block_complete();
+        } else {
+            self.state.dsp.dma_bytes_remaining -= bytes_written;
         }
     }
 

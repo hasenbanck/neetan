@@ -820,3 +820,169 @@ fn sb16_opl3_timer_detection_66mhz() {
     bus.install_sound_blaster_16();
     opl3_timer_detection(&mut bus);
 }
+
+fn setup_dma_channel_3_write(bus: &mut Pc9801Bus<NoTracing>, address: u32, count: u16) {
+    let page = ((address >> 16) & 0xFF) as u8;
+    let addr_lo = (address & 0xFF) as u8;
+    let addr_hi = ((address >> 8) & 0xFF) as u8;
+    let count_lo = (count & 0xFF) as u8;
+    let count_hi = ((count >> 8) & 0xFF) as u8;
+
+    bus.io_write_byte(DMA_FLIP_FLOP_CLEAR, 0x00);
+    bus.io_write_byte(DMA_CH3_ADDR, addr_lo);
+    bus.io_write_byte(DMA_CH3_ADDR, addr_hi);
+    bus.io_write_byte(DMA_FLIP_FLOP_CLEAR, 0x00);
+    bus.io_write_byte(DMA_CH3_COUNT, count_lo);
+    bus.io_write_byte(DMA_CH3_COUNT, count_hi);
+    bus.io_write_byte(DMA_CH3_PAGE, page);
+    // Mode: single transfer, write (device→memory), no-autoinit, increment, channel 3
+    bus.io_write_byte(DMA_MODE, 0x47);
+    bus.io_write_byte(DMA_SINGLE_MASK, 0x03);
+}
+
+fn dsp_set_input_sample_rate(bus: &mut Pc9801Bus<NoTracing>, rate: u16) {
+    dsp_write(bus, 0x42);
+    dsp_write(bus, (rate >> 8) as u8);
+    dsp_write(bus, (rate & 0xFF) as u8);
+}
+
+fn read_ram_byte(bus: &mut Pc9801Bus<NoTracing>, address: u32) -> u8 {
+    bus.read_byte(address)
+}
+
+#[test]
+fn sb16_8bit_recording_dma_writes_silence_to_ram() {
+    let mut bus = setup_sb16_bus();
+    dsp_reset(&mut bus);
+
+    let block_size: u32 = 512;
+
+    // Fill RAM with non-silence marker.
+    for i in 0..block_size {
+        bus.write_byte(RAM_BASE + i, 0xAA);
+    }
+
+    // Set input sample rate.
+    dsp_set_input_sample_rate(&mut bus, 11025);
+
+    // Program DMA ch3 for write mode (device→memory).
+    setup_dma_channel_3_write(&mut bus, RAM_BASE, (block_size - 1) as u16);
+
+    // Start 8-bit single-transfer recording: 0xC8 = 8-bit DMA input, no auto-init.
+    // mode=0x00 (unsigned mono), length = block_size - 1.
+    dsp_write(&mut bus, 0xC8);
+    dsp_write(&mut bus, 0x00);
+    dsp_write(&mut bus, ((block_size - 1) & 0xFF) as u8);
+    dsp_write(&mut bus, (((block_size - 1) >> 8) & 0xFF) as u8);
+
+    // Advance clock past the transfer time.
+    let cycles_needed = block_size as u64 * CPU_CLOCK_HZ as u64 / 11025;
+    advance_clock_with_events(&mut bus, cycles_needed * 2);
+
+    // Verify RAM was overwritten with 8-bit unsigned silence (0x80).
+    let mut silence_count = 0;
+    for i in 0..block_size {
+        if read_ram_byte(&mut bus, RAM_BASE + i) == 0x80 {
+            silence_count += 1;
+        }
+    }
+    assert_eq!(
+        silence_count, block_size,
+        "Expected all {block_size} bytes to be 0x80 silence, got {silence_count}"
+    );
+}
+
+#[test]
+fn sb16_8bit_recording_dma_fires_irq_after_block() {
+    let mut bus = setup_sb16_bus();
+    dsp_reset(&mut bus);
+
+    let block_size: u32 = 512;
+    let sample_rate: u32 = 11025;
+
+    // Set input sample rate.
+    dsp_set_input_sample_rate(&mut bus, sample_rate as u16);
+
+    // Program DMA ch3 for write mode.
+    setup_dma_channel_3_write(&mut bus, RAM_BASE, (block_size - 1) as u16);
+
+    // Start 8-bit single-transfer recording.
+    dsp_write(&mut bus, 0xC8);
+    dsp_write(&mut bus, 0x00);
+    dsp_write(&mut bus, ((block_size - 1) & 0xFF) as u8);
+    dsp_write(&mut bus, (((block_size - 1) >> 8) & 0xFF) as u8);
+
+    // IRQ should NOT be pending immediately.
+    let irq_status_before = mixer_read(&mut bus, 0x82);
+    assert_eq!(
+        irq_status_before & 0x01,
+        0,
+        "8-bit IRQ should not be pending immediately after starting recording DMA"
+    );
+
+    // Advance clock halfway — still no IRQ.
+    let half_cycles = block_size as u64 * CPU_CLOCK_HZ as u64 / sample_rate as u64 / 2;
+    advance_clock_with_events(&mut bus, half_cycles);
+    let irq_status_half = mixer_read(&mut bus, 0x82);
+    assert_eq!(
+        irq_status_half & 0x01,
+        0,
+        "8-bit IRQ should not be pending halfway through the transfer"
+    );
+
+    // Advance clock well past the full transfer time.
+    let full_cycles = block_size as u64 * CPU_CLOCK_HZ as u64 / sample_rate as u64 * 2;
+    advance_clock_with_events(&mut bus, full_cycles);
+
+    // IRQ should now be pending (mixer register 0x82 bit 0 = 8-bit IRQ).
+    let irq_status_after = mixer_read(&mut bus, 0x82);
+    assert_ne!(
+        irq_status_after & 0x01,
+        0,
+        "8-bit IRQ should be pending after recording DMA block completes"
+    );
+}
+
+#[test]
+fn sb16_16bit_recording_dma_writes_silence_to_ram() {
+    let mut bus = setup_sb16_bus();
+    dsp_reset(&mut bus);
+
+    // 16-bit signed mono: 256 samples = 512 bytes.
+    let sample_count: u32 = 256;
+    let byte_count = sample_count * 2;
+
+    // Fill RAM with non-silence marker.
+    for i in 0..byte_count {
+        bus.write_byte(RAM_BASE + i, 0xAA);
+    }
+
+    // Set input sample rate.
+    dsp_set_input_sample_rate(&mut bus, 11025);
+
+    // Program DMA ch3 for write mode.
+    setup_dma_channel_3_write(&mut bus, RAM_BASE, (byte_count - 1) as u16);
+
+    // Start 16-bit single-transfer recording: 0xB8 = 16-bit DMA input, no auto-init.
+    // mode=0x10 (signed mono), length = sample_count - 1.
+    dsp_write(&mut bus, 0xB8);
+    dsp_write(&mut bus, 0x10);
+    dsp_write(&mut bus, ((sample_count - 1) & 0xFF) as u8);
+    dsp_write(&mut bus, (((sample_count - 1) >> 8) & 0xFF) as u8);
+
+    // Advance clock past the transfer time.
+    let cycles_needed = byte_count as u64 * CPU_CLOCK_HZ as u64 / 11025;
+    advance_clock_with_events(&mut bus, cycles_needed * 2);
+
+    // Verify RAM was overwritten with 16-bit signed silence (0x00).
+    let mut zero_count = 0;
+    for i in 0..byte_count {
+        if read_ram_byte(&mut bus, RAM_BASE + i) == 0x00 {
+            zero_count += 1;
+        }
+    }
+    assert_eq!(
+        zero_count, byte_count,
+        "Expected all {byte_count} bytes to be 0x00 (16-bit signed silence), got {zero_count}"
+    );
+}
