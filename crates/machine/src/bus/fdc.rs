@@ -1,4 +1,4 @@
-use common::EventKind;
+use common::{EventKind, StackVec};
 use device::upd765a_fdc::{FdcCommand, ST0_NOT_READY, ST1_MISSING_ADDRESS_MARK, ST1_NOT_WRITABLE};
 
 use crate::{Pc9801Bus, Tracing, bus::INTERRUPT_DELAY_CYCLES};
@@ -242,8 +242,9 @@ impl<T: Tracing> Pc9801Bus<T> {
             let sector_count = self.floppy.active_fdc().state.eot as usize;
             let fill_byte = self.floppy.active_fdc().state.dtl;
 
-            let mut chrn = Vec::with_capacity(sector_count);
-            for _ in 0..sector_count {
+            // PC-98 floppy formats have at most 26 sectors per track.
+            let mut chrn: StackVec<(u8, u8, u8, u8), 26> = StackVec::new();
+            for _ in 0..sector_count.min(26) {
                 let dma_result = self.dma.transfer_read_from_memory(dma_channel, 4);
                 let mut id = [0u8; 4];
                 for (i, &addr) in dma_result.addresses.iter().enumerate() {

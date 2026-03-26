@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use common::{DisplaySnapshotUpload, JisChar, cast_u32_slice_as_bytes_mut, str_to_jis};
+use common::{DisplaySnapshotUpload, JisChar, StackVec, cast_u32_slice_as_bytes_mut, str_to_jis};
 
 const VISIBLE_ITEMS: usize = 19;
 const COLS: usize = 80;
@@ -380,9 +380,8 @@ fn jis_display_width(chars: &[JisChar]) -> usize {
     chars.iter().map(|c| if c.is_ank() { 1 } else { 2 }).sum()
 }
 
-fn truncate_jis(chars: &[JisChar], max_cols: usize) -> Vec<JisChar> {
-    // TOOD: Remove allocation from hot path. Instead have a truncation buffer or truncate on load.
-    let mut result = Vec::new();
+fn truncate_jis(chars: &[JisChar], max_cols: usize) -> StackVec<JisChar, COLS> {
+    let mut result = StackVec::new();
     let mut width = 0;
     for &c in chars {
         let w = if c.is_ank() { 1 } else { 2 };

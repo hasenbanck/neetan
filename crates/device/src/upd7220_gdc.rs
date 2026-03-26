@@ -58,7 +58,7 @@ pub struct GdcScrollPartition {
 }
 
 /// VRAM write operation produced by drawing commands.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct VramOp {
     /// 18-bit word address in VRAM.
     pub address: u32,
@@ -70,12 +70,9 @@ pub struct VramOp {
     pub mode: u8,
 }
 
-// TODO: Is this an allocation in the hot path? Can we use tinyvec here?
 /// Result of a drawing operation.
 #[derive(Debug, Clone)]
 pub struct DrawResult {
-    /// VRAM write operations to execute.
-    pub writes: Vec<VramOp>,
     /// Number of dots drawn (for timing calculation).
     pub dot_count: u32,
 }
@@ -93,6 +90,8 @@ pub enum GdcAction {
     None,
     /// Execute VRAM writes from a drawing command.
     Draw(DrawResult),
+    /// Single VRAM write from a DMA (DACK) transfer byte.
+    DackWrite(VramOp),
     /// Read VRAM data for RDAT command.
     ReadVram(RdatRequest),
     /// Master GDC timing recomputed, bus should reschedule VSYNC events.
@@ -244,6 +243,8 @@ pub struct GdcState {
 pub struct Gdc {
     /// Embedded state for save/restore.
     pub state: GdcState,
+    /// Reusable buffer for drawing VramOps (avoids per-draw heap allocation).
+    pub draw_buffer: Vec<VramOp>,
 }
 
 impl Deref for Gdc {
@@ -332,6 +333,7 @@ impl Gdc {
                 dma_transfer_length: 0,
                 dma_data: 0,
             },
+            draw_buffer: Vec::new(),
         }
     }
 
@@ -404,6 +406,7 @@ impl Gdc {
                 dma_transfer_length: 0,
                 dma_data: 0,
             },
+            draw_buffer: Vec::new(),
         };
         gdc.recompute_timing();
         gdc
@@ -642,10 +645,7 @@ impl Gdc {
                         mode: self.dma_mod,
                     };
                     drawing::advance_ead_dma(&mut self.ead, dir, pitch);
-                    GdcAction::Draw(DrawResult {
-                        writes: vec![op],
-                        dot_count: 0,
-                    })
+                    GdcAction::DackWrite(op)
                 }
             }
             2 => {
@@ -658,10 +658,7 @@ impl Gdc {
                     mode: self.dma_mod,
                 };
                 drawing::advance_ead_dma(&mut self.ead, dir, pitch);
-                GdcAction::Draw(DrawResult {
-                    writes: vec![op],
-                    dot_count: 0,
-                })
+                GdcAction::DackWrite(op)
             }
             3 => {
                 // High byte only.
@@ -673,10 +670,7 @@ impl Gdc {
                     mode: self.dma_mod,
                 };
                 drawing::advance_ead_dma(&mut self.ead, dir, pitch);
-                GdcAction::Draw(DrawResult {
-                    writes: vec![op],
-                    dot_count: 0,
-                })
+                GdcAction::DackWrite(op)
             }
             _ => GdcAction::None,
         };

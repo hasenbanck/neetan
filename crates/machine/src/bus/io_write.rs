@@ -968,14 +968,19 @@ impl<T: Tracing> Pc9801Bus<T> {
         match action {
             GdcAction::None => {}
             GdcAction::Draw(result) => {
-                for op in &result.writes {
-                    self.apply_gdc_vram_op(op);
+                for i in 0..self.gdc_slave.draw_buffer.len() {
+                    let op = self.gdc_slave.draw_buffer[i];
+                    self.apply_gdc_vram_op(&op);
                 }
+                self.gdc_slave.draw_buffer.clear();
                 if result.dot_count > 0 {
                     self.schedule_drawing_timing(result.dot_count);
                 } else {
                     self.gdc_slave.state.status &= !STATUS_DRAWING;
                 }
+            }
+            GdcAction::DackWrite(op) => {
+                self.apply_gdc_vram_op(&op);
             }
             GdcAction::ReadVram(_request) => {
                 // Feed VRAM words to the GDC for RDAT.

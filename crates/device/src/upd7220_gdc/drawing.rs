@@ -112,27 +112,23 @@ impl Gdc {
 
     /// Executes the drawing operation defined by current FIGS parameters.
     pub(crate) fn execute_drawing(&mut self) -> DrawResult {
+        self.draw_buffer.clear();
         match self.figure_type {
             0 => self.draw_pixel(),
             1 => self.draw_line(),
             4 => self.draw_arc(),
             8 => self.draw_rectangle(),
-            _ => DrawResult {
-                writes: Vec::new(),
-                dot_count: 0,
-            },
+            _ => DrawResult { dot_count: 0 },
         }
     }
 
     /// Executes character drawing (GCHRD/TEXTE).
     pub(crate) fn execute_gchrd(&mut self) -> DrawResult {
+        self.draw_buffer.clear();
         if self.figure_type & 0x0F == 2 {
             self.draw_character()
         } else {
-            DrawResult {
-                writes: Vec::new(),
-                dot_count: 0,
-            }
+            DrawResult { dot_count: 0 }
         }
     }
 
@@ -140,17 +136,16 @@ impl Gdc {
     fn draw_pixel(&mut self) -> DrawResult {
         let dc = self.drawing_dc;
         let dir = self.drawing_dir;
-        let mut writes = Vec::with_capacity((dc + 1) as usize);
 
         for i in 0..=dc {
             let pattern = self.get_pattern(i & 0xF);
-            writes.push(self.make_vram_op(pattern));
+            let op = self.make_vram_op(pattern);
+            self.draw_buffer.push(op);
             self.next_pixel(dir);
         }
 
         DrawResult {
             dot_count: (dc + 1) as u32,
-            writes,
         }
     }
 
@@ -161,11 +156,11 @@ impl Gdc {
         let mut d = sign_extend_14(self.drawing_d) as i32;
         let d1 = sign_extend_14(self.drawing_d1) as i32;
         let d2 = sign_extend_14(self.drawing_d2) as i32;
-        let mut writes = Vec::with_capacity((dc + 1) as usize);
 
         for i in 0..=dc {
             let pattern = self.get_pattern(i & 0xF);
-            writes.push(self.make_vram_op(pattern));
+            let op = self.make_vram_op(pattern);
+            self.draw_buffer.push(op);
 
             let dir = if octant & 1 != 0 {
                 // Diagonal-dominant octant.
@@ -181,7 +176,6 @@ impl Gdc {
 
         DrawResult {
             dot_count: (dc + 1) as u32,
-            writes,
         }
     }
 
@@ -199,14 +193,14 @@ impl Gdc {
         };
         let mut err = -(self.drawing_d as i32);
         let mut d = self.drawing_d as i32 + 1;
-        let mut writes = Vec::new();
         let mut dot_count = 0u32;
 
         for i in 0..=dc {
             let pattern = self.get_pattern(i % 0xF);
 
             if i >= dm {
-                writes.push(self.make_vram_op(pattern));
+                let op = self.make_vram_op(pattern);
+                self.draw_buffer.push(op);
                 dot_count += 1;
             }
 
@@ -232,7 +226,7 @@ impl Gdc {
             self.next_pixel(dir);
         }
 
-        DrawResult { writes, dot_count }
+        DrawResult { dot_count }
     }
 
     /// Rectangle outline drawing (figure_type=8).
@@ -240,7 +234,6 @@ impl Gdc {
         let d_width = self.drawing_d;
         let d2_height = self.drawing_d2;
         let mut dir = self.drawing_dir;
-        let mut writes = Vec::new();
         let mut dot_count = 0u32;
 
         for side in 0..=3u16 {
@@ -248,7 +241,8 @@ impl Gdc {
 
             for j in 0..dist {
                 let pattern = self.get_pattern(j & 0xF);
-                writes.push(self.make_vram_op(pattern));
+                let op = self.make_vram_op(pattern);
+                self.draw_buffer.push(op);
                 dot_count += 1;
 
                 if side > 0 && j == 0 {
@@ -258,7 +252,7 @@ impl Gdc {
             }
         }
 
-        DrawResult { writes, dot_count }
+        DrawResult { dot_count }
     }
 
     /// Graphics character drawing using RA[8..15] font data.
@@ -267,7 +261,6 @@ impl Gdc {
         let d_width = self.drawing_d;
         let gchr = self.zoom_gchr as u16;
         let mut dir = self.drawing_dir;
-        let mut writes = Vec::new();
         let mut dot_count = 0u32;
 
         let figure_type = self.figure_type;
@@ -283,7 +276,7 @@ impl Gdc {
 
         for i in 0..=dc {
             let ra_byte = self.ra[15 - (i as usize & 7)];
-            self.pattern = u16::from(ra_byte) | (u16::from(ra_byte) << 8);
+            self.state.pattern = u16::from(ra_byte) | (u16::from(ra_byte) << 8);
 
             for _zdc in 0..=gchr {
                 for j in 0..d_width {
@@ -294,7 +287,8 @@ impl Gdc {
                     };
 
                     for zd in 0..=gchr {
-                        writes.push(self.make_vram_op(pat));
+                        let op = self.make_vram_op(pat);
+                        self.draw_buffer.push(op);
                         if pat != 0 {
                             dot_count += 1;
                         }
@@ -315,7 +309,7 @@ impl Gdc {
             }
         }
 
-        DrawResult { writes, dot_count }
+        DrawResult { dot_count }
     }
 
     /// WDAT bulk write: writes (DC+1) words to VRAM.
@@ -325,6 +319,7 @@ impl Gdc {
         transfer_type: u8,
         transfer_mode: u8,
     ) -> DrawResult {
+        self.draw_buffer.clear();
         let dc = self.drawing_dc;
         let effective_mask = match transfer_type {
             0 => self.mask,
@@ -334,11 +329,10 @@ impl Gdc {
         };
 
         let masked_data = data & effective_mask;
-        let mut writes = Vec::with_capacity((dc + 1) as usize);
 
         for _i in 0..=dc {
-            writes.push(VramOp {
-                address: self.ead & 0x3FFFF,
+            self.draw_buffer.push(VramOp {
+                address: self.state.ead & 0x3FFFF,
                 data: masked_data,
                 mask: effective_mask,
                 mode: transfer_mode,
@@ -346,12 +340,11 @@ impl Gdc {
 
             let dir = self.drawing_dir;
             let pitch = self.get_effective_pitch();
-            advance_ead_dma(&mut self.ead, dir, pitch);
+            advance_ead_dma(&mut self.state.ead, dir, pitch);
         }
 
         DrawResult {
             dot_count: (dc + 1) as u32,
-            writes,
         }
     }
 }

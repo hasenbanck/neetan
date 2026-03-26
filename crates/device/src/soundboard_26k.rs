@@ -120,6 +120,7 @@ impl Ym2203Callbacks for ChipBridge {
 }
 
 /// Action the bus must process after a sound board operation.
+#[derive(Clone, Copy)]
 pub enum Soundboard26kAction {
     /// Schedule a timer to fire at the given cycle.
     ScheduleTimer {
@@ -158,6 +159,7 @@ pub struct Soundboard26k {
     resampler: ResamplerFir,
     resample_input: Vec<f32>,
     resample_output: Vec<f32>,
+    action_buffer: Vec<Soundboard26kAction>,
 }
 
 impl Soundboard26k {
@@ -197,6 +199,7 @@ impl Soundboard26k {
             resampler,
             resample_input: vec![0.0; 4096],
             resample_output: vec![0.0; resample_output_size],
+            action_buffer: Vec::new(),
         }
     }
 
@@ -298,7 +301,8 @@ impl Soundboard26k {
     /// Returns actions the bus must process (timer scheduling and IRQ
     /// assertion/deassertion). Also updates `state.busy_end_cycle` and
     /// `state.irq_asserted` internally.
-    pub fn drain_actions(&mut self) -> Vec<Soundboard26kAction> {
+    pub fn drain_actions(&mut self) -> &[Soundboard26kAction] {
+        self.action_buffer.clear();
         let bridge = self.chip.callbacks_mut();
         self.state.busy_end_cycle = bridge.busy_end_cycle.get();
         let current_cycle = bridge.current_cycle.get();
@@ -307,7 +311,6 @@ impl Soundboard26k {
         let timer_a_kind = bridge.timer_a_kind;
         let timer_b_kind = bridge.timer_b_kind;
 
-        let mut actions = Vec::new();
         for pending in bridge.pending.borrow_mut().drain(..) {
             match pending {
                 PendingChipAction::SetTimer {
@@ -320,12 +323,13 @@ impl Soundboard26k {
                         timer_b_kind
                     };
                     if duration_in_clocks < 0 {
-                        actions.push(Soundboard26kAction::CancelTimer { kind });
+                        self.action_buffer
+                            .push(Soundboard26kAction::CancelTimer { kind });
                     } else {
                         let cpu_cycles = u64::from(duration_in_clocks as u32)
                             * u64::from(cpu_clock_hz)
                             / u64::from(YM2203_CLOCK);
-                        actions.push(Soundboard26kAction::ScheduleTimer {
+                        self.action_buffer.push(Soundboard26kAction::ScheduleTimer {
                             kind,
                             fire_cycle: current_cycle + cpu_cycles,
                         });
@@ -334,18 +338,18 @@ impl Soundboard26k {
                 PendingChipAction::UpdateIrq { asserted } => {
                     self.state.irq_asserted = asserted;
                     if asserted {
-                        actions.push(Soundboard26kAction::AssertIrq {
+                        self.action_buffer.push(Soundboard26kAction::AssertIrq {
                             irq: self.state.irq_line,
                         });
                     } else {
-                        actions.push(Soundboard26kAction::DeassertIrq {
+                        self.action_buffer.push(Soundboard26kAction::DeassertIrq {
                             irq: self.state.irq_line,
                         });
                     }
                 }
             }
         }
-        actions
+        self.action_buffer.as_slice()
     }
 
     /// Generates resampled FM+SSG audio and mixes it into `output`.
