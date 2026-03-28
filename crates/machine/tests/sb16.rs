@@ -920,7 +920,7 @@ fn sb16_8bit_recording_dma_fires_irq_after_block() {
         "8-bit IRQ should not be pending immediately after starting recording DMA"
     );
 
-    // Advance clock halfway — still no IRQ.
+    // Advance clock halfway - still no IRQ.
     let half_cycles = block_size as u64 * CPU_CLOCK_HZ as u64 / sample_rate as u64 / 2;
     advance_clock_with_events(&mut bus, half_cycles);
     let irq_status_half = mixer_read(&mut bus, 0x82);

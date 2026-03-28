@@ -202,7 +202,7 @@ func compute_graphics_address(x: uint, y: uint, pitch: uint) -> uint {
             continue;
         }
         if (scanline < line_count) {
-            return ((start_address * 2) + (scanline * pitch * 2) + (x / 8)) & 0x7FFF;
+            return ((start_address * 2) + (scanline * pitch) + (x / 8)) & 0x7FFF;
         }
         scanline -= line_count;
     }

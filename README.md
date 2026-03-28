@@ -61,6 +61,7 @@ neetan <COMMAND>
 | `--bios-rom <PATH>`      | Path to BIOS ROM file                                                    | HLE BIOS   |
 | `--font-rom <PATH>`      | Path to font ROM file                                                    | Built-in   |
 | `--soundboard <TYPE>`    | Sound board: `none`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`           | `86+26k`   |
+| `--gdc-clock <2.5\|5>`   | GDC clock: `2.5` MHz (200-line) or `5` MHz (400-line). VX and later only | `2.5`      |
 | `--printer <PATH>`       | Output file for printer (must exist)                                     | —          |
 | `-h, --help`             | Print help                                                               | —          |
 | `-V, --version`          | Print version                                                            | —          |
@@ -103,6 +104,7 @@ options and their defaults.
 # Example configuration
 machine = PC9801RA
 soundboard = 86+26k
+gdc-clock = 5
 audio-volume = 0.8
 aspect-mode = 4:3
 fdd1 = /path/to/disk_a.d88
@@ -139,9 +141,9 @@ Only D88 images preserve modifications written by the emulated software. HDM and
 
 ### Supported CD-ROM disc image formats
 
-| Format  | Extensions | Description                                      |
-|---------|------------|--------------------------------------------------|
-| CUE/BIN | `.cue`    | CUE sheet referencing a raw BIN image (PC-9821)  |
+| Format  | Extensions | Description                                     |
+|---------|------------|-------------------------------------------------|
+| CUE/BIN | `.cue`     | CUE sheet referencing a raw BIN image (PC-9821) |
 
 ## Multiple disk images
 

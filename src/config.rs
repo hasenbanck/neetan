@@ -47,6 +47,7 @@ Options:
       --font-rom <PATH>       Path to font ROM file
       --soundboard <TYPE>     Sound board type: none, 26k, 86, 86+26k, sb16, sb16+26k
       --adpcm-ram <on|off>    ADPCM RAM option for PC-9801-86 (default: on)
+      --gdc-clock <2.5|5>     GDC clock: 2.5 MHz (200-line) or 5 MHz (400-line) (default: 2.5)
       --printer <PATH>        Output file for printer (must exist)
   -h, --help                  Print help
   -V, --version               Print version
@@ -391,6 +392,14 @@ pub fn parse_args() -> crate::Result<Action> {
                 let val = value(&flag)?;
                 config.adpcm_ram = parse_on_off(&val, &flag)?;
             }
+            "--gdc-clock" => {
+                let val = value(&flag)?;
+                match val.as_str() {
+                    "2.5" => config.gdc_clock_5mhz = false,
+                    "5" => config.gdc_clock_5mhz = true,
+                    _ => bail!("invalid value '{val}' for --gdc-clock, expected 2.5 or 5"),
+                }
+            }
             "--printer" => config.printer = Some(PathBuf::from(value(&flag)?)),
             other => bail!("unknown argument: {other}"),
         }
@@ -444,6 +453,7 @@ pub struct EmulatorConfig {
     pub font_rom: Option<PathBuf>,
     pub soundboard: SoundboardType,
     pub adpcm_ram: bool,
+    pub gdc_clock_5mhz: bool,
     pub printer: Option<PathBuf>,
     pub key_map: KeyMap,
 }
@@ -464,6 +474,7 @@ impl Default for EmulatorConfig {
             font_rom: None,
             soundboard: SoundboardType::Sb86And26k,
             adpcm_ram: true,
+            gdc_clock_5mhz: false,
             printer: None,
             key_map: KeyMap::new(),
         }
@@ -518,6 +529,11 @@ pub fn parse_config_file(path: &Path) -> crate::Result<EmulatorConfig> {
                 "on" => config.adpcm_ram = true,
                 "off" => config.adpcm_ram = false,
                 _ => warn!("Invalid adpcm-ram in config: {val}, expected on or off"),
+            },
+            "gdc-clock" => match val {
+                "2.5" => config.gdc_clock_5mhz = false,
+                "5" => config.gdc_clock_5mhz = true,
+                _ => warn!("Invalid gdc-clock in config: {val}, expected 2.5 or 5"),
             },
             "printer" => config.printer = Some(PathBuf::from(val)),
             key if key.starts_with("key.") => {
