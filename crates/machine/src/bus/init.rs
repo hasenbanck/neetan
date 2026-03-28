@@ -411,8 +411,8 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x00
         };
 
-        // DISK_EQUIP (0x055C): 4 FDD drives present.
-        self.memory.state.ram[0x055C] = 0x0F;
+        // DISK_EQUIP (0x055C): 2 built-in FDD drives present (drives 0 and 1).
+        self.memory.state.ram[0x055C] = 0x03;
 
         // Keyboard shift table pointer → ROM shift table at FD80:0B28.
         self.memory.state.ram[0x0522] = 0x28; // KB_SHIFT_TBL low

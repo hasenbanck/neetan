@@ -15,8 +15,8 @@ fn sasi_initialization_vm() {
 
     let disk_equip = read_ram_u16(&state.memory.ram, BDA_DISK_EQUIP);
     assert_eq!(
-        disk_equip, 0x010F,
-        "DISK_EQUIP should have SASI drive 0 + 4 FDD drives (got {disk_equip:#06X})"
+        disk_equip, 0x0103,
+        "DISK_EQUIP should have SASI drive 0 + 2 FDD drives (got {disk_equip:#06X})"
     );
     assert_eq!(
         state.memory.ram[BDA_BOOT_DEVICE], 0x80,
@@ -35,8 +35,8 @@ fn sasi_initialization_vx() {
 
     let disk_equip = read_ram_u16(&state.memory.ram, BDA_DISK_EQUIP);
     assert_eq!(
-        disk_equip, 0x010F,
-        "DISK_EQUIP should have SASI drive 0 + 4 FDD drives (got {disk_equip:#06X})"
+        disk_equip, 0x0103,
+        "DISK_EQUIP should have SASI drive 0 + 2 FDD drives (got {disk_equip:#06X})"
     );
     assert_eq!(
         state.memory.ram[BDA_BOOT_DEVICE], 0x80,
@@ -55,8 +55,8 @@ fn sasi_initialization_ra() {
 
     let disk_equip = read_ram_u16(&state.memory.ram, BDA_DISK_EQUIP);
     assert_eq!(
-        disk_equip, 0x010F,
-        "DISK_EQUIP should have SASI drive 0 + 4 FDD drives (got {disk_equip:#06X})"
+        disk_equip, 0x0103,
+        "DISK_EQUIP should have SASI drive 0 + 2 FDD drives (got {disk_equip:#06X})"
     );
     assert_eq!(
         state.memory.ram[BDA_BOOT_DEVICE], 0x80,

@@ -12,8 +12,8 @@ fn ide_initialization_pc9821() {
 
     let disk_equip = read_ram_u16(&state.memory.ram, BDA_DISK_EQUIP);
     assert_eq!(
-        disk_equip, 0x010F,
-        "DISK_EQUIP should have IDE drive 0 + 4 FDD drives (got {disk_equip:#06X})"
+        disk_equip, 0x0103,
+        "DISK_EQUIP should have IDE drive 0 + 2 FDD drives (got {disk_equip:#06X})"
     );
     assert_eq!(
         state.memory.ram[BDA_BOOT_DEVICE], 0x80,

@@ -277,7 +277,7 @@ fn post_bios_state_vm() {
     check!(f, state.fdc_1mb.hut, 10, "FDC 1MB HUT");
     check!(f, state.fdc_1mb.hlt, 25, "FDC 1MB HLT");
     check_true!(f, state.fdc_1mb.tc, "FDC 1MB TC");
-    check!(f, state.fdc_1mb.drive_equipped, 15, "FDC 1MB equipped");
+    check!(f, state.fdc_1mb.drive_equipped, 3, "FDC 1MB equipped");
 
     // === FDC 640K ===
     check!(f, state.fdc_640k.status, 0x80, "FDC 640K MSR");
@@ -289,7 +289,7 @@ fn post_bios_state_vm() {
         [0, 0, 0, 0],
         "FDC 640K cylinders"
     );
-    check!(f, state.fdc_640k.drive_equipped, 15, "FDC 640K equipped");
+    check!(f, state.fdc_640k.drive_equipped, 3, "FDC 640K equipped");
 
     // === System PPI ===
     check!(f, state.system_ppi.port_b, 0x8A, "System PPI port B");
@@ -401,7 +401,7 @@ fn post_bios_state_vm() {
     check!(f, state.memory.ram[0x053C], 0x84, "BDA CRT_STS_FLAG");
     check!(f, state.memory.ram[0x054C], 0x4E, "BDA PRXCRT");
     check!(f, state.memory.ram[0x054D], 0x00, "BDA PRXDUPD");
-    check!(f, state.memory.ram[0x055C], 0x0F, "BDA DISK_EQUIP");
+    check!(f, state.memory.ram[0x055C], 0x03, "BDA DISK_EQUIP");
     check!(f, state.memory.ram[0x0584], 0x90, "BDA BOOT_DEVICE");
     check!(
         f,
@@ -718,7 +718,7 @@ fn post_bios_state_vx() {
     check!(f, state.memory.ram[0x0493], 0xFF, "BDA F2HD_MODE");
     check!(f, state.memory.ram[0x054C], 0x4E, "BDA PRXCRT");
     check!(f, state.memory.ram[0x054D], 0x50, "BDA PRXDUPD");
-    check!(f, state.memory.ram[0x055C], 0x0F, "BDA DISK_EQUIP");
+    check!(f, state.memory.ram[0x055C], 0x03, "BDA DISK_EQUIP");
     check!(f, state.memory.ram[0x0584], 0x90, "BDA BOOT_DEVICE");
     check!(
         f,
@@ -984,7 +984,7 @@ fn post_bios_state_ra() {
     check!(f, state.memory.ram[0x0493], 0xFF, "BDA F2HD_MODE");
     check!(f, state.memory.ram[0x054C], 0x4E, "BDA PRXCRT");
     check!(f, state.memory.ram[0x054D], 0x50, "BDA PRXDUPD");
-    check!(f, state.memory.ram[0x055C], 0x0F, "BDA DISK_EQUIP");
+    check!(f, state.memory.ram[0x055C], 0x03, "BDA DISK_EQUIP");
     check!(f, state.memory.ram[0x0584], 0x90, "BDA BOOT_DEVICE");
     check!(
         f,
