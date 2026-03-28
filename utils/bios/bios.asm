@@ -111,6 +111,7 @@ iret_stub:
 
 int_08h_handler:    hle_stub 0x08            ; Timer tick (IRQ 0)
 int_09h_handler:    hle_stub 0x09            ; Keyboard (IRQ 1)
+int_0ah_handler:    hle_stub 0x0A            ; VSYNC (IRQ 2)
 int_0ch_handler:    hle_stub 0x0C            ; Serial receive (IRQ 4)
 int_12h_handler:    hle_stub 0x12            ; FDC 640KB (slave IR2)
 int_13h_handler:    hle_stub 0x13            ; FDC 1MB (slave IR3)
@@ -137,39 +138,39 @@ bootstrap_entry:    hle_stub VEC_BOOTSTRAP       ; Bootstrap loader
 ; Terminated by 0xFFFF sentinel.
 
 vector_table:
-    dw 0x00, iret_stub      - BIOS_BASE_OFF    ; INT 00h — Division error
-    dw 0x01, iret_stub      - BIOS_BASE_OFF    ; INT 01h — Single step
-    dw 0x02, iret_stub      - BIOS_BASE_OFF    ; INT 02h — NMI
-    dw 0x03, iret_stub      - BIOS_BASE_OFF    ; INT 03h — Breakpoint
-    dw 0x04, iret_stub      - BIOS_BASE_OFF    ; INT 04h — Overflow
-    dw 0x05, iret_stub      - BIOS_BASE_OFF    ; INT 05h — STOP key IRQ
-    dw 0x06, iret_stub      - BIOS_BASE_OFF    ; INT 06h — COPY key
-    dw 0x07, iret_stub      - BIOS_BASE_OFF    ; INT 07h — Timer callback
+    dw 0x00, iret_stub       - BIOS_BASE_OFF   ; INT 00h — Division error
+    dw 0x01, iret_stub       - BIOS_BASE_OFF   ; INT 01h — Single step
+    dw 0x02, iret_stub       - BIOS_BASE_OFF   ; INT 02h — NMI
+    dw 0x03, iret_stub       - BIOS_BASE_OFF   ; INT 03h — Breakpoint
+    dw 0x04, iret_stub       - BIOS_BASE_OFF   ; INT 04h — Overflow
+    dw 0x05, iret_stub       - BIOS_BASE_OFF   ; INT 05h — STOP key IRQ
+    dw 0x06, iret_stub       - BIOS_BASE_OFF   ; INT 06h — COPY key
+    dw 0x07, iret_stub       - BIOS_BASE_OFF   ; INT 07h — Timer callback
     dw 0x08, int_08h_handler - BIOS_BASE_OFF   ; INT 08h — Timer tick
     dw 0x09, int_09h_handler - BIOS_BASE_OFF   ; INT 09h — Keyboard
-    dw 0x0A, iret_stub      - BIOS_BASE_OFF    ; INT 0Ah — VSYNC
-    dw 0x0B, iret_stub      - BIOS_BASE_OFF    ; INT 0Bh — INT0
+    dw 0x0A, int_0ah_handler - BIOS_BASE_OFF   ; INT 0Ah — VSYNC
+    dw 0x0B, iret_stub       - BIOS_BASE_OFF   ; INT 0Bh — INT0
     dw 0x0C, int_0ch_handler - BIOS_BASE_OFF   ; INT 0Ch — RS-232C
-    dw 0x0D, iret_stub      - BIOS_BASE_OFF    ; INT 0Dh — INT1
-    dw 0x0E, iret_stub      - BIOS_BASE_OFF    ; INT 0Eh — INT2
-    dw 0x0F, iret_stub      - BIOS_BASE_OFF    ; INT 0Fh — Spurious
-    dw 0x10, iret_stub      - BIOS_BASE_OFF    ; INT 10h — Printer / slave IR0
-    dw 0x11, iret_stub      - BIOS_BASE_OFF    ; INT 11h — Slave IR1
+    dw 0x0D, iret_stub       - BIOS_BASE_OFF   ; INT 0Dh — INT1
+    dw 0x0E, iret_stub       - BIOS_BASE_OFF   ; INT 0Eh — INT2
+    dw 0x0F, iret_stub       - BIOS_BASE_OFF   ; INT 0Fh — Spurious
+    dw 0x10, iret_stub       - BIOS_BASE_OFF   ; INT 10h — Printer / slave IR0
+    dw 0x11, iret_stub       - BIOS_BASE_OFF   ; INT 11h — Slave IR1
     dw 0x12, int_12h_handler - BIOS_BASE_OFF   ; INT 12h — FDC 640KB
     dw 0x13, int_13h_handler - BIOS_BASE_OFF   ; INT 13h — FDC 1MB
-    dw 0x14, iret_stub      - BIOS_BASE_OFF    ; INT 14h — INT5
-    dw 0x15, iret_stub      - BIOS_BASE_OFF    ; INT 15h — INT6
-    dw 0x16, iret_stub      - BIOS_BASE_OFF    ; INT 16h — Mouse
-    dw 0x17, iret_stub      - BIOS_BASE_OFF    ; INT 17h — Idle
+    dw 0x14, iret_stub       - BIOS_BASE_OFF   ; INT 14h — INT5
+    dw 0x15, iret_stub       - BIOS_BASE_OFF   ; INT 15h — INT6
+    dw 0x16, iret_stub       - BIOS_BASE_OFF   ; INT 16h — Mouse
+    dw 0x17, iret_stub       - BIOS_BASE_OFF   ; INT 17h — Idle
     dw 0x18, int_18h_handler - BIOS_BASE_OFF   ; INT 18h — CRT/KB/Graphics
     dw 0x19, int_19h_handler - BIOS_BASE_OFF   ; INT 19h — RS-232C
     dw 0x1A, int_1ah_handler - BIOS_BASE_OFF   ; INT 1Ah — Printer/CMT
     dw 0x1B, int_1bh_handler - BIOS_BASE_OFF   ; INT 1Bh — Disk BIOS
     dw 0x1C, int_1ch_handler - BIOS_BASE_OFF   ; INT 1Ch — Timer/Calendar
-    dw 0x1D, iret_stub      - BIOS_BASE_OFF    ; INT 1Dh — Unused
+    dw 0x1D, iret_stub       - BIOS_BASE_OFF   ; INT 1Dh — Unused
     dw 0x1F, int_1fh_handler - BIOS_BASE_OFF   ; INT 1Fh — Extended
     dw 0xD2, int_d2h_handler - BIOS_BASE_OFF   ; INT D2h — Sound BIOS
-    dw 0xFFFF                                   ; Sentinel
+    dw 0xFFFF                                  ; Sentinel
 
 
 ; ===========================================================================
