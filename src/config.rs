@@ -28,8 +28,9 @@ Usage: neetan [OPTIONS]
        neetan <COMMAND>
 
 Commands:
-  create-fdd <PATH>           Create an empty floppy disk image (D88)
-  create-hdd <PATH>           Create an empty hard disk image (HDI)
+  create-fdd <PATH>             Create an empty floppy disk image (D88)
+  create-hdd <PATH>             Create an empty hard disk image (HDI)
+  convert-hdd <INPUT> <OUTPUT>  Convert HDD image between SASI and IDE
 
 Options:
   -c, --config <PATH>         Load configuration from file
@@ -106,6 +107,43 @@ IDE types:
     );
 }
 
+fn print_convert_hdd_help() {
+    println!(
+        "\
+Convert a hard disk image between SASI and IDE formats
+
+Usage: neetan convert-hdd <INPUT> <OUTPUT>
+
+Arguments:
+  <INPUT>   Source HDD image (HDI, NHD, or THD)
+  <OUTPUT>  Destination path (must have .hdi extension)
+
+Options:
+  -h, --help  Print help
+
+The conversion direction is detected from the input image:
+  256 B/sector (SASI) -> converts to IDE
+  512 B/sector (IDE)  -> converts to SASI
+
+The smallest compatible target geometry is chosen automatically.
+
+SASI geometries:
+  sasi5      5 MB  (153 cyl, 4 heads, 33 spt, 256 B/sector)
+  sasi10    10 MB  (310 cyl, 4 heads, 33 spt, 256 B/sector)
+  sasi15    15 MB  (310 cyl, 6 heads, 33 spt, 256 B/sector)
+  sasi20    20 MB  (310 cyl, 8 heads, 33 spt, 256 B/sector)
+  sasi30    30 MB  (615 cyl, 6 heads, 33 spt, 256 B/sector)
+  sasi40    40 MB  (615 cyl, 8 heads, 33 spt, 256 B/sector)
+
+IDE geometries:
+  ide40     40 MB  (977 cyl, 5 heads, 17 spt, 512 B/sector)
+  ide80     80 MB  (977 cyl, 10 heads, 17 spt, 512 B/sector)
+  ide120   120 MB  (977 cyl, 15 heads, 17 spt, 512 B/sector)
+  ide200   200 MB  (977 cyl, 15 heads, 28 spt, 512 B/sector)
+  ide500   500 MB  (1015 cyl, 16 heads, 63 spt, 512 B/sector)"
+    );
+}
+
 fn print_version() {
     println!("neetan {}", crate::CARGO_PKG_VERSION);
 }
@@ -119,6 +157,10 @@ pub enum Action {
     CreateHdd {
         path: PathBuf,
         hdd_type: HddSizeType,
+    },
+    ConvertHdd {
+        input: PathBuf,
+        output: PathBuf,
     },
 }
 
@@ -248,6 +290,34 @@ fn parse_create_hdd_args(args: &mut impl Iterator<Item = String>) -> crate::Resu
     Ok(Action::CreateHdd { path, hdd_type })
 }
 
+fn parse_convert_hdd_args(args: &mut impl Iterator<Item = String>) -> crate::Result<Action> {
+    let mut input: Option<PathBuf> = None;
+    let mut output: Option<PathBuf> = None;
+
+    for arg in args {
+        match arg.as_str() {
+            "--help" | "-h" => {
+                print_convert_hdd_help();
+                std::process::exit(0);
+            }
+            other if !other.starts_with('-') => {
+                if input.is_none() {
+                    input = Some(PathBuf::from(other));
+                } else if output.is_none() {
+                    output = Some(PathBuf::from(other));
+                } else {
+                    bail!("unexpected argument: {other}");
+                }
+            }
+            other => bail!("unknown argument: {other}"),
+        }
+    }
+
+    let input = input.ok_or_else(|| StringError("missing required argument: <INPUT>".into()))?;
+    let output = output.ok_or_else(|| StringError("missing required argument: <OUTPUT>".into()))?;
+    Ok(Action::ConvertHdd { input, output })
+}
+
 pub fn parse_args() -> crate::Result<Action> {
     let mut config = EmulatorConfig::default();
     let mut args = std::env::args().skip(1);
@@ -258,6 +328,9 @@ pub fn parse_args() -> crate::Result<Action> {
         }
         if arg == "create-hdd" {
             return parse_create_hdd_args(&mut args);
+        }
+        if arg == "convert-hdd" {
+            return parse_convert_hdd_args(&mut args);
         }
         let (flag, inline_value) = match arg.split_once('=') {
             Some((f, v)) => (f.to_owned(), Some(v.to_owned())),

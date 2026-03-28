@@ -138,6 +138,11 @@ impl HddImage {
         }
     }
 
+    /// Returns the raw sector data.
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
     /// Returns a human-readable format name.
     pub fn format_name(&self) -> &'static str {
         match self.format {

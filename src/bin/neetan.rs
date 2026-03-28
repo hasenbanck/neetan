@@ -45,5 +45,11 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Action::ConvertHdd { input, output } => {
+            if let Err(error) = neetan::convert::convert_hdd_image(&input, &output) {
+                error!("{error:#}");
+                std::process::exit(1);
+            }
+        }
     }
 }
