@@ -402,14 +402,20 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.memory.state.ram[0x053C] = 0x84;
 
         // PRXCRT (0x054C): display config (color, GRCG present, 8MHz).
-        self.memory.state.ram[0x054C] = 0x4E;
+        // Bit 6: GDC 2.5 MHz mode (set when DIP SW 2-8 is OFF = 2.5 MHz).
+        let gdc_2_5mhz = self.system_ppi.state.dip_switch_2 & 0x80 != 0;
+        self.memory.state.ram[0x054C] = if gdc_2_5mhz { 0x4E } else { 0x0E };
 
-        // PRXDUPD (0x054D): graphics mode / GRCG version (0x50 = EGC present).
-        self.memory.state.ram[0x054D] = if self.machine_model.has_egc() {
-            0x50
-        } else {
-            0x00
-        };
+        // PRXDUPD (0x054D): graphics mode / GRCG version.
+        // Bit 4: EGC present. Bit 5: GDC 5 MHz capable (from DIP SW 2-8).
+        let mut prxdupd: u8 = 0x00;
+        if self.machine_model.has_egc() {
+            prxdupd |= 0x50;
+        }
+        if !gdc_2_5mhz {
+            prxdupd |= 0x20;
+        }
+        self.memory.state.ram[0x054D] = prxdupd;
 
         // DISK_EQUIP (0x055C): 2 built-in FDD drives present (drives 0 and 1).
         self.memory.state.ram[0x055C] = 0x03;
@@ -548,7 +554,8 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.gdc_slave.state.vfp = 7;
         self.gdc_slave.state.vbp = 25;
         self.gdc_slave.state.al = 400;
-        self.gdc_slave.state.lines_per_row = 2;
+        let gdc_is_2_5mhz = self.system_ppi.state.dip_switch_2 & 0x80 != 0;
+        self.gdc_slave.state.lines_per_row = if gdc_is_2_5mhz { 2 } else { 1 };
         self.gdc_slave.state.scroll[0] = GdcScrollPartition {
             start_address: 0x0000,
             line_count: 0x1FF,

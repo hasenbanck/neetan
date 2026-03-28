@@ -470,6 +470,25 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.mouse_ppi.set_buttons(left, right, middle);
     }
 
+    /// Sets or clears a single bit in DIP switch 2.
+    pub fn set_dip_switch_2_bit(&mut self, bit: u8, value: bool) {
+        if value {
+            self.system_ppi.state.dip_switch_2 |= 1 << bit;
+        } else {
+            self.system_ppi.state.dip_switch_2 &= !(1 << bit);
+        }
+    }
+
+    /// Configures the GDC clock to 5 MHz (400-line graphics mode).
+    ///
+    /// Equivalent to setting DIP switch 2-8 to ON on real hardware.
+    pub fn set_gdc_clock_5mhz(&mut self) {
+        self.system_ppi.state.dip_switch_2 &= !0x80;
+        self.memory.state.ram[0x054C] &= !0x40;
+        self.memory.state.ram[0x054D] |= 0x20;
+        self.gdc_slave.state.lines_per_row = 1;
+    }
+
     /// Returns the CPU clock frequency in Hz.
     pub fn cpu_clock_hz(&self) -> u32 {
         self.clocks.cpu_clock_hz
@@ -935,8 +954,16 @@ impl<T: Tracing> Pc9801Bus<T> {
                 area.start_address | (u32::from(area.line_count) << 16);
         }
 
-        // GDC graphics pitch.
-        snapshot.gdc_graphics_pitch = u32::from(self.gdc_slave.state.pitch);
+        // GDC graphics pitch - convert to byte stride following NP21W logic.
+        // In 2.5 MHz mode (DIP SW 2-8 OFF): pitch is in words, multiply by 2.
+        // In 5 MHz mode (DIP SW 2-8 ON):  pitch is already in bytes.
+        let gdc_5mhz = self.system_ppi.state.dip_switch_2 & 0x80 == 0;
+        let graphics_pitch = if gdc_5mhz {
+            self.gdc_slave.state.pitch
+        } else {
+            self.gdc_slave.state.pitch * 2
+        };
+        snapshot.gdc_graphics_pitch = u32::from(graphics_pitch & 0xFE);
 
         // Video mode register (port 0x68).
         snapshot.video_mode = u32::from(video_mode);
@@ -2066,7 +2093,7 @@ mod tests {
         assert_eq!(snapshot.gdc_text_pitch, 80);
         assert_eq!(snapshot.gdc_scroll_start_line[0], 0x00AB_1234);
         assert_eq!(snapshot.gdc_graphics_scroll[0], 0x00CD_5678);
-        assert_eq!(snapshot.gdc_graphics_pitch, 40);
+        assert_eq!(snapshot.gdc_graphics_pitch, 80);
         assert_eq!(snapshot.video_mode, 0x1C);
         assert_eq!(
             snapshot.text_vram_words[0],

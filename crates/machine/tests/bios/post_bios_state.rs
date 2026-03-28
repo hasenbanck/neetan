@@ -231,6 +231,11 @@ fn post_bios_state_vm() {
         0x1FF,
         "Slave GDC scroll[0] lines"
     );
+    check_false!(
+        f,
+        state.gdc_slave.scroll[0].im,
+        "Slave GDC scroll[0] bitmap mode"
+    );
     check!(f, state.gdc_slave.fifo.count, 0, "Slave GDC FIFO empty");
 
     // === NMI / A20 / misc ===
@@ -620,6 +625,11 @@ fn post_bios_state_vx() {
     check!(f, state.gdc_slave.hbp, 4, "Slave GDC HBP");
     check!(f, state.gdc_slave.vfp, 7, "Slave GDC VFP");
     check!(f, state.gdc_slave.vbp, 25, "Slave GDC VBP");
+    check_false!(
+        f,
+        state.gdc_slave.scroll[0].im,
+        "Slave GDC scroll[0] bitmap mode"
+    );
     check!(f, state.gdc_slave.fifo.count, 0, "Slave GDC FIFO empty");
 
     // === NMI / A20 / misc ===
@@ -903,6 +913,11 @@ fn post_bios_state_ra() {
     check!(f, state.gdc_slave.hbp, 4, "Slave GDC HBP");
     check!(f, state.gdc_slave.vfp, 7, "Slave GDC VFP");
     check!(f, state.gdc_slave.vbp, 25, "Slave GDC VBP");
+    check_false!(
+        f,
+        state.gdc_slave.scroll[0].im,
+        "Slave GDC scroll[0] bitmap mode"
+    );
     check!(f, state.gdc_slave.fifo.count, 0, "Slave GDC FIFO empty");
 
     // === NMI / A20 / misc ===
@@ -1174,6 +1189,11 @@ fn post_bios_state_pc9821as_ide() {
     check!(f, state.gdc_slave.hbp, 4, "Slave GDC HBP");
     check!(f, state.gdc_slave.vfp, 7, "Slave GDC VFP");
     check!(f, state.gdc_slave.vbp, 25, "Slave GDC VBP");
+    check_false!(
+        f,
+        state.gdc_slave.scroll[0].im,
+        "Slave GDC scroll[0] bitmap mode"
+    );
     check!(f, state.gdc_slave.fifo.count, 0, "Slave GDC FIFO empty");
 
     // === NMI / A20 / misc ===
