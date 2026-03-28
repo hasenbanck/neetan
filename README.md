@@ -28,6 +28,8 @@ We also support the following sound cards:
 * PC-9801-26k
 * PC-9801-86
 * PC-9801-86 + PC-9801-26k combo
+* Sound Blaster 16
+* Sound Blaster 16 + PC-9801-26k combo
 
 The default for the CLI is the PC-9801VX machine with the PC-9801-86 + PC-9801-26k combo soundboards.
 
@@ -58,7 +60,7 @@ neetan <COMMAND>
 | `--window-mode <MODE>`   | Window mode: `windowed` or `fullscreen`                                  | `windowed` |
 | `--bios-rom <PATH>`      | Path to BIOS ROM file                                                    | HLE BIOS   |
 | `--font-rom <PATH>`      | Path to font ROM file                                                    | Built-in   |
-| `--soundboard <TYPE>`    | Sound board: `none`, `26k`, `86`, `86+26k`                               | `86+26k`   |
+| `--soundboard <TYPE>`    | Sound board: `none`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`           | `86+26k`   |
 | `--printer <PATH>`       | Output file for printer (must exist)                                     | —          |
 | `-h, --help`             | Print help                                                               | —          |
 | `-V, --version`          | Print version                                                            | —          |
