@@ -55,10 +55,10 @@ const RESAMPLER_ATTENUTATION: Attenuation = Attenuation::Db60;
 
 const REAMPLER_LATENCY: Latency = Latency::Sample64;
 
-/// Embedded rhythm samples at 48000 Hz, packed as 6×u32 LE header + i16 LE data.
-/// These are not the original ROM files but recordings of the samples.
-/// Used under fair use and de minimis.
-static RHYTHM_BIN: &[u8] = include_bytes!("../../../utils/rhythm.bin");
+/// Algorithmically generated YM2608 ADPCM-A rhythm ROM (8 KB).
+/// Functional equivalent of the original chip samples with completely different
+/// binary content, produced by an evolutionary algorithm.
+static EVOLVED_RHYTHM_ROM: &[u8; 8192] = include_bytes!("../../../utils/rhythm/rhythm.bin");
 
 /// Snapshot of the PC-9801-86 sound board state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -280,157 +280,6 @@ impl Ym2608Callbacks for ChipBridge {
             ram.borrow_mut()[addr] = data;
         }
     }
-}
-
-/// Procedural rhythm track for fallback when no ROM is loaded.
-struct RhythmTrack {
-    samples: Vec<i16>,
-    position: usize,
-    playing: bool,
-    volume: u8,
-    pan: u8,
-}
-
-/// Procedural rhythm section for ROM-less fallback.
-struct RhythmSection {
-    enabled: bool,
-    tracks: [RhythmTrack; 6],
-    master_volume: u8,
-}
-
-impl RhythmSection {
-    fn new(enabled: bool) -> Self {
-        let tracks = if enabled {
-            Self::load_tracks_from_bin()
-        } else {
-            std::array::from_fn(|_| RhythmTrack {
-                samples: Vec::new(),
-                position: 0,
-                playing: false,
-                volume: 31,
-                pan: 0b11,
-            })
-        };
-        Self {
-            enabled,
-            tracks,
-            master_volume: 63,
-        }
-    }
-
-    fn load_tracks_from_bin() -> [RhythmTrack; 6] {
-        let header_size = 6 * 4;
-        let header = &RHYTHM_BIN[..header_size];
-        let mut counts = [0u32; 6];
-        for (i, count) in counts.iter_mut().enumerate() {
-            let offset = i * 4;
-            *count = u32::from_le_bytes([
-                header[offset],
-                header[offset + 1],
-                header[offset + 2],
-                header[offset + 3],
-            ]);
-        }
-
-        let mut data_offset = header_size;
-        std::array::from_fn(|i| {
-            let sample_count = counts[i] as usize;
-            let byte_len = sample_count * 2;
-            let bytes = &RHYTHM_BIN[data_offset..data_offset + byte_len];
-            let samples: Vec<i16> = bytes
-                .chunks_exact(2)
-                .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
-                .collect();
-            data_offset += byte_len;
-            RhythmTrack {
-                samples,
-                position: 0,
-                playing: false,
-                volume: 31,
-                pan: 0b11,
-            }
-        })
-    }
-
-    fn key_on(&mut self, mask: u8) {
-        for i in 0..6 {
-            if mask & (1 << i) != 0 {
-                self.tracks[i].position = 0;
-                self.tracks[i].playing = true;
-            }
-        }
-    }
-
-    fn key_off(&mut self, mask: u8) {
-        for i in 0..6 {
-            if mask & (1 << i) != 0 {
-                self.tracks[i].playing = false;
-            }
-        }
-    }
-
-    fn write_register(&mut self, register: u8, value: u8) {
-        match register {
-            0x10 => {
-                let mask = value & 0x3F;
-                if value & 0x80 != 0 {
-                    self.key_off(mask);
-                } else {
-                    self.key_on(mask);
-                }
-            }
-            0x11 => {
-                self.master_volume = value & 0x3F;
-            }
-            0x18..=0x1D => {
-                let idx = (register - 0x18) as usize;
-                if idx < 6 {
-                    self.tracks[idx].volume = value & 0x1F;
-                    self.tracks[idx].pan = (value >> 6) & 0x03;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn generate_stereo_sample(&mut self) -> (f32, f32) {
-        if !self.enabled {
-            return (0.0, 0.0);
-        }
-
-        let master_scale = volume_scale(self.master_volume as u32, 63);
-        let mut left = 0.0f32;
-        let mut right = 0.0f32;
-        for track in &mut self.tracks {
-            if !track.playing {
-                continue;
-            }
-            if track.position >= track.samples.len() {
-                track.playing = false;
-                continue;
-            }
-            let raw = track.samples[track.position] as f32 / 32768.0;
-            let vol_scale = volume_scale(track.volume as u32, 31);
-            let sample = raw * vol_scale;
-            // pan: bit 1 = left, bit 0 = right
-            if track.pan & 0b10 != 0 {
-                left += sample;
-            }
-            if track.pan & 0b01 != 0 {
-                right += sample;
-            }
-            track.position += 1;
-        }
-        (left * master_scale, right * master_scale)
-    }
-}
-
-fn volume_scale(level: u32, max: u32) -> f32 {
-    if level == 0 {
-        return 0.0;
-    }
-    let normalized = level as f32 / max as f32;
-    normalized * normalized
 }
 
 /// PCM86 DAC FIFO-based PCM playback engine.
@@ -972,7 +821,6 @@ pub struct Soundboard86 {
     resampler: ResamplerFir,
     resample_input: Vec<f32>,
     resample_output: Vec<f32>,
-    rhythm: RhythmSection,
     pcm86: Pcm86,
     sample_rate: u32,
     /// Set by `timer_expired` (FM timer callback), consumed by `drain_actions`
@@ -990,7 +838,7 @@ impl Soundboard86 {
     /// Creates a new PC-9801-86 sound board instance.
     ///
     /// `rhythm_rom` is the optional 8 KB `ym2608.rom` ADPCM-A rhythm data.
-    /// When `None`, procedural rhythm fallback is enabled.
+    /// When `None`, the embedded evolved rhythm ROM is used.
     /// `adpcm_ram` enables the 256 KiB ADPCM-B sample RAM upgrade.
     pub fn new(
         cpu_clock_hz: u32,
@@ -999,8 +847,8 @@ impl Soundboard86 {
         adpcm_ram: bool,
         machine_model: MachineModel,
     ) -> Self {
-        let has_rom = rhythm_rom.is_some();
-        let bridge = ChipBridge::new(cpu_clock_hz, rhythm_rom, adpcm_ram);
+        let rom_data = rhythm_rom.unwrap_or(EVOLVED_RHYTHM_ROM.as_slice());
+        let bridge = ChipBridge::new(cpu_clock_hz, Some(rom_data), adpcm_ram);
         let mut chip = Ym2608::new(bridge);
         chip.reset();
         chip.set_fidelity(FIDELITY);
@@ -1028,7 +876,6 @@ impl Soundboard86 {
             resampler,
             resample_input: vec![0.0; 4096 * 2],
             resample_output: vec![0.0; resample_output_size],
-            rhythm: RhythmSection::new(!has_rom),
             pcm86: Pcm86::new(sample_rate, cpu_clock_hz, machine_model),
             sample_rate,
             fm_timer_just_fired: false,
@@ -1173,11 +1020,6 @@ impl Soundboard86 {
         self.sync_to_cycle(current_cycle);
         self.chip.callbacks_mut().current_cycle.set(current_cycle);
         self.chip.write_data(value);
-
-        let addr = self.state.address_lo;
-        if self.rhythm.enabled && (0x10..=0x1D).contains(&addr) {
-            self.rhythm.write_register(addr, value);
-        }
     }
 
     /// Writes the register address latch for the high bank (port 0x018C write).
@@ -1487,15 +1329,6 @@ impl Soundboard86 {
             }
         }
 
-        // Mix in rhythm section at output rate (48 kHz embedded samples).
-        if self.rhythm.enabled {
-            for frame in output.chunks_exact_mut(2) {
-                let (left, right) = self.rhythm.generate_stereo_sample();
-                frame[0] += left * volume;
-                frame[1] += right * volume;
-            }
-        }
-
         // Mix in PCM86 stereo output using the full elapsed time since last generate call.
         // Advance vir_buf to current time before draining.
         self.pcm86.update_buffer_state(current_cycle, cpu_clock_hz);
@@ -1579,9 +1412,9 @@ impl Soundboard86 {
         self.pcm86
             .pcm_resample_output
             .resize(self.pcm86.pcm_resampler.buffer_size_output(), 0.0);
-        let has_rom = rhythm_rom.is_some();
         // TODO: Save/restore ymfm internal state
-        let bridge = ChipBridge::new(cpu_clock_hz, rhythm_rom, saved.adpcm_ram);
+        let rom_data = rhythm_rom.unwrap_or(EVOLVED_RHYTHM_ROM.as_slice());
+        let bridge = ChipBridge::new(cpu_clock_hz, Some(rom_data), saved.adpcm_ram);
         bridge.busy_end_cycle.set(self.state.busy_end_cycle);
         bridge.current_cycle.set(current_cycle);
         self.chip = Ym2608::new(bridge);
@@ -1597,7 +1430,6 @@ impl Soundboard86 {
         );
         self.resample_output
             .resize(self.resampler.buffer_size_output(), 0.0);
-        self.rhythm = RhythmSection::new(!has_rom);
         self.sample_rate = sample_rate;
     }
 }
