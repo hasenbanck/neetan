@@ -79,6 +79,14 @@ neetan <COMMAND>
 |-----------------|----------------------------------------------------------------------------------------------------------------------|
 | `--type <TYPE>` | SASI: `sasi5`, `sasi10`, `sasi15`, `sasi20`, `sasi30`, `sasi40`. IDE: `ide40`, `ide80`, `ide120`, `ide200`, `ide500` |
 
+`convert-hdd <INPUT> <OUTPUT>` — Convert a hard disk image between SASI and IDE formats.
+
+The conversion direction is auto-detected from the input image's sector size (256 bytes = SASI, 512 bytes = IDE).
+The smallest compatible target geometry is chosen automatically. Output is always in HDI format.
+
+SASI to IDE conversion always succeeds (all SASI sizes fit within ide40).
+IDE to SASI conversion will fail if the IDE image exceeds the largest SASI capacity (sasi40 at ~40 MB).
+
 ### Configuration file
 
 Instead of passing all options on the command line, you can use a configuration file with `-c`:
