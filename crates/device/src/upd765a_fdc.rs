@@ -279,8 +279,8 @@ const CTRL_RESET: u8 = 0x80;
 /// Ref: undoc98 `io_fdd.txt`
 const CTRL_FORCED_READY: u8 = 0x40;
 
-/// Default drive equipment bitmask: all 4 drives equipped (bits 0-3).
-const DEFAULT_DRIVE_EQUIPPED: u8 = 0x0F;
+/// Default drive equipment bitmask: 2 built-in drives equipped (bits 0-1).
+const DEFAULT_DRIVE_EQUIPPED: u8 = 0x03;
 
 /// Parameter count per command index (low 5 bits of command byte).
 const CMD_PARAMS: [u8; 32] = [
@@ -289,7 +289,7 @@ const CMD_PARAMS: [u8; 32] = [
 
 impl Upd765aFdc {
     /// Creates a new FDC in idle state with RQM set.
-    /// All 4 drives are equipped by default.
+    /// 2 built-in drives (0 and 1) are equipped by default.
     pub fn new() -> Self {
         Self {
             state: Upd765aFdcState {
