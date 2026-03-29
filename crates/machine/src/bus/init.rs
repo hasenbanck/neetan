@@ -14,7 +14,7 @@ use device::{
     i8255_mouse_ppi::I8255MousePpi,
     i8255_system_ppi::I8255SystemPpi,
     i8259a_pic::I8259aPic,
-    mpu401::Mpu401,
+    mpu_pc98ii::MpuPc98ii,
     palette::Palette,
     pegc::Pegc,
     printer::Printer,
@@ -200,7 +200,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             beeper: Beeper::new(sample_rate),
             rtc: Upd4990aRtc::new(),
             host_local_time_fn: default_local_time,
-            mpu401: Mpu401::new(),
+            mpu_pc98ii: MpuPc98ii::new(),
             #[cfg(feature = "sc55")]
             sc55: None,
             mouse_ppi: I8255MousePpi::new(),

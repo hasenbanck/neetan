@@ -21,7 +21,7 @@ pub mod i8255_mouse_ppi;
 pub mod i8255_system_ppi;
 pub mod i8259a_pic;
 pub mod ide;
-pub mod mpu401;
+pub mod mpu_pc98ii;
 pub mod palette;
 pub mod pegc;
 pub mod printer;

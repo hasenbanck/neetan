@@ -221,8 +221,8 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     /// Returns the current host local time as 6-byte BCD:
     /// `[year, month<<4|day_of_week, day, hour, minute, second]`.
     host_local_time_fn: fn() -> [u8; 6],
-    /// MPU-401 MIDI interface (C-Bus, default base 0xE0D0).
-    mpu401: device::mpu401::Mpu401,
+    /// MPU-PC98II MIDI interface (C-Bus, default base 0xE0D0).
+    mpu_pc98ii: device::mpu_pc98ii::MpuPc98ii,
     /// SC-55 sound module (optional, requires Nuked-SC55).
     #[cfg(feature = "sc55")]
     sc55: Option<device::sc55::Sc55>,
@@ -618,7 +618,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.sound_blaster_16 = Some(SoundBlaster16::new(self.clocks.cpu_clock_hz, sample_rate));
     }
 
-    /// Installs a Roland SC-55 sound module for MPU-401 MIDI output.
+    /// Installs a Roland SC-55 sound module for MPU-PC98II MIDI output.
     #[cfg(feature = "sc55")]
     pub fn install_sc55(
         &mut self,
@@ -1142,7 +1142,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         #[cfg(feature = "sc55")]
         if let Some(ref sc55) = self.sc55 {
-            sc55.exchange(volume, output, |buf| self.mpu401.flush_midi_into(buf));
+            sc55.exchange(volume, output, |buf| self.mpu_pc98ii.flush_midi_into(buf));
         }
 
         beeper_count
