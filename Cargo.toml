@@ -19,6 +19,7 @@ machine = { path = "crates/machine" }
 resampler = { path = "crates/resampler" }
 sdl3 = { path = "crates/sdl3" }
 softfloat = { path = "crates/softfloat" }
+nuked_sc55_oxide = { path = "crates/nuked_sc55_oxide" }
 ymfm_oxide = { path = "crates/ymfm_oxide" }
 # External dependencies
 jay-ash = { version = "0.3", default-features = false }
@@ -38,6 +39,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
+default = ["sc55"]
+sc55 = ["machine/sc55"]
 tracing = []
 sdl3-build-from-source = ["sdl3/build-from-source"]
 sdl3-use-pkg-config = ["sdl3/use-pkg-config"]
@@ -90,6 +93,10 @@ opt-level = 3
 codegen-units = 1
 
 [profile.dev.package.machine]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.nuked_sc55_oxide]
 opt-level = 3
 codegen-units = 1
 

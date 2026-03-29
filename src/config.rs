@@ -49,6 +49,7 @@ Options:
       --adpcm-ram <on|off>    ADPCM RAM option for PC-9801-86 (default: on)
       --gdc-compatibility     Force 2.5 MHz GDC clock (200-line compatibility mode)
       --printer <PATH>        Output file for printer (must exist)
+      --sc55-roms <PATH>      Path to SC55 ROM directory (enables MIDI output)
   -h, --help                  Print help
   -V, --version               Print version
 
@@ -394,6 +395,7 @@ pub fn parse_args() -> crate::Result<Action> {
             }
             "--gdc-compatibility" => config.gdc_compatibility = true,
             "--printer" => config.printer = Some(PathBuf::from(value(&flag)?)),
+            "--sc55-roms" => config.sc55_roms = Some(PathBuf::from(value(&flag)?)),
             other => bail!("unknown argument: {other}"),
         }
     }
@@ -448,6 +450,7 @@ pub struct EmulatorConfig {
     pub adpcm_ram: bool,
     pub gdc_compatibility: bool,
     pub printer: Option<PathBuf>,
+    pub sc55_roms: Option<PathBuf>,
     pub key_map: KeyMap,
 }
 
@@ -469,6 +472,7 @@ impl Default for EmulatorConfig {
             adpcm_ram: true,
             gdc_compatibility: false,
             printer: None,
+            sc55_roms: None,
             key_map: KeyMap::new(),
         }
     }
@@ -529,6 +533,7 @@ pub fn parse_config_file(path: &Path) -> crate::Result<EmulatorConfig> {
                 _ => warn!("Invalid gdc-compatibility in config: {val}, expected on or off"),
             },
             "printer" => config.printer = Some(PathBuf::from(val)),
+            "sc55-roms" => config.sc55_roms = Some(PathBuf::from(val)),
             key if key.starts_with("key.") => {
                 let host_name = &key[4..];
                 match keymap::parse_key_binding(host_name, val) {

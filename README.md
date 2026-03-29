@@ -30,6 +30,7 @@ We also support the following sound cards:
 * PC-9801-86 + PC-9801-26k combo
 * Sound Blaster 16
 * Sound Blaster 16 + PC-9801-26k combo
+* Roland SC-55 using the MPU-401 interface 
 
 The default for the CLI is the PC-9801VX machine with the PC-9801-86 + PC-9801-26k combo soundboards.
 
@@ -63,6 +64,7 @@ neetan <COMMAND>
 | `--soundboard <TYPE>`    | Sound board: `none`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`           | `86+26k`   |
 | `--gdc-compatibility`    | Force 2.5 MHz GDC clock (200-line compatibility mode). VX and later only | off        |
 | `--printer <PATH>`       | Output file for printer (must exist)                                     | —          |
+| `--sc55-roms <PATH>`     | Path to SC-55 ROM directory (requires `sc55` feature)                    | —          |
 | `-h, --help`             | Print help                                                               | —          |
 | `-V, --version`          | Print version                                                            | —          |
 
@@ -112,6 +114,7 @@ fdd1 = /path/to/disk_b.d88
 fdd2 = /path/to/save_game.d88
 hdd1 = /path/to/harddrive.hdi
 cdrom = /path/to/game.cue
+sc55-roms = /path/to/sc55_roms
 ```
 
 Command-line arguments override values from the configuration file.
@@ -177,11 +180,55 @@ The first image in each list is automatically inserted at startup.
 
 Press **GUI + Alt + F9** (drive 1), **GUI + Alt + F10** (drive 2), or **GUI + Alt + F11** (CD-ROM) to open the image selector.
 
-## Planned features
+## SC-55 sound module
 
-* Simple runtime savestates.
-* 256 KB ADPCM RAM option for PC-9801-86
-* Support for more sound cards
+neetan can emulate the Roland SC-55 sound module using a Rust port of the [Nuked-SC55](https://github.com/nukeykt/Nuked-SC55)
+for MIDI playback through the MPU-401 interface. This feature is enabled by default.
+
+### Why it is optional
+
+The Nuked-SC55 code is licensed under the original MAME license, which
+prohibits commercial use and redistribution for sale. Distributions that
+cannot comply with this license (such as Linux distributions) can disable the
+feature at build time:
+
+```bash
+cargo build --release --no-default-features
+```
+
+When built without the `sc55` feature, the `--sc55-roms` option is still
+accepted but the emulator will print a warning and continue without SC-55
+audio.
+
+### Required ROM files
+
+Place the ROM files for your device model into a single directory and point `--sc55-roms` at it.
+The emulator auto-detects the model from the filenames present.
+
+| Model                   | Required files                                                                                       |
+|-------------------------|------------------------------------------------------------------------------------------------------|
+| SC-55mk2 / SC-155mk2    | `rom1.bin`, `rom2.bin`, `rom_sm.bin`, `waverom1.bin`, `waverom2.bin`                                 |
+| SC-55st                 | `rom1.bin`, `rom2_st.bin`, `rom_sm.bin`, `waverom1.bin`, `waverom2.bin`                              |
+| SC-55 (mk1)             | `sc55_rom1.bin`, `sc55_rom2.bin`, `sc55_waverom1.bin`, `sc55_waverom2.bin`, `sc55_waverom3.bin`      |
+| CM-300 / SCC-1 / SCC-1A | `cm300_rom1.bin`, `cm300_rom2.bin`, `cm300_waverom1.bin`, `cm300_waverom2.bin`, `cm300_waverom3.bin` |
+| JV-880                  | `jv880_rom1.bin`, `jv880_rom2.bin`, `jv880_waverom1.bin`, `jv880_waverom2.bin`                       |
+| SCB-55 / RLP-3194       | `scb55_rom1.bin`, `scb55_rom2.bin`, `scb55_waverom1.bin`, `scb55_waverom2.bin`                       |
+| RLP-3237                | `rlp3237_rom1.bin`, `rlp3237_rom2.bin`, `rlp3237_waverom1.bin`                                       |
+| SC-155                  | `sc155_rom1.bin`, `sc155_rom2.bin`, `sc155_waverom1.bin`, `sc155_waverom2.bin`, `sc155_waverom3.bin` |
+
+### Usage
+
+Provide the path to a directory containing SC-55 ROM files:
+
+```bash
+neetan --sc55-roms /path/to/sc55_roms [other options...]
+```
+
+Or in a configuration file:
+
+```ini
+sc55-roms = /path/to/sc55_roms
+```
 
 ## FAQ
 
@@ -194,6 +241,9 @@ With these systems in place we are able to run th fast majority of PC-98 games a
 
 There are some BIOS extensions, mainly the sound API and LIO API that we currently haven't implemented, but outside
 some odd BASIC based games, they should not be used by games, which interface with the hardware I/O port directly.
+
+The only exception is the optional SC-55 support, which needs external ROM files to work correctly as described in the
+"SC-55 sound module" section.
 
 ### How can I use my mouse?
 
@@ -230,10 +280,16 @@ neetan:
 - [NP21W](https://simk98.github.io/np21w/)
 - [undoc98](https://www.webtech.co.jp/company/doc/undocumented_mem/index.html)
 
-We also ported the Yamaha OPN and OPL emulation from the amazing YMFM project to our own Rust port:
+We ported the Yamaha OPN and OPL emulation from the amazing YMFM project to our own Rust port:
 
 - [ymfm](https://github.com/aaronsgiles/ymfm)
+
+We ported the Roland SC-55 emulator from the incredible Nuked SC55 project to our own Rust port:
+
+- [Nuked-SC55](https://github.com/nukeykt/Nuked-SC55)
 
 ## License
 
 This project is licensed under [3-clause BSD](https://opensource.org/license/bsd-3-clause) license.
+
+Please read the "SC-55 sound module" section for the additional license requirement when activating the `sc55` feature.

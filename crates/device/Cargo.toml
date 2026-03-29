@@ -7,7 +7,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+sc55 = ["dep:nuked_sc55_oxide"]
+
 [dependencies]
 common = { workspace = true }
+nuked_sc55_oxide = { workspace = true, optional = true }
 resampler = { workspace = true }
 ymfm_oxide = { workspace = true }

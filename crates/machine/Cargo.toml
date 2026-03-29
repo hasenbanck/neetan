@@ -7,6 +7,9 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+sc55 = ["device/sc55"]
+
 [dependencies]
 common = { workspace = true }
 cpu = { workspace = true }

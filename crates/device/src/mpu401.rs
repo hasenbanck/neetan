@@ -35,6 +35,8 @@ pub struct Mpu401State {
 pub struct Mpu401 {
     /// Embedded state for save/restore.
     pub state: Mpu401State,
+    /// MIDI bytes buffered during the current audio chunk (transient, not serialized).
+    midi_buffer: Vec<u8>,
 }
 
 impl Deref for Mpu401 {
@@ -64,6 +66,7 @@ impl Mpu401 {
                 mode: Mpu401Mode::Intelligent,
                 pending_response: None,
             },
+            midi_buffer: Vec::new(),
         }
     }
 
@@ -90,6 +93,9 @@ impl Mpu401 {
                 self.mode = Mpu401Mode::Uart;
                 self.pending_response = Some(ACK);
             }
+            0x86..=0x8F => {
+                self.pending_response = Some(ACK);
+            }
             _ => {
                 if self.mode == Mpu401Mode::Intelligent {
                     warn!("MPU-401: unhandled intelligent-mode command: {value:#04X}");
@@ -113,11 +119,17 @@ impl Mpu401 {
     pub fn write_data(&mut self, value: u8) {
         match self.mode {
             Mpu401Mode::Uart => {
-                warn!("MPU-401: UART data write: {value:#04X}");
+                self.midi_buffer.push(value);
             }
             Mpu401Mode::Intelligent => {
                 warn!("MPU-401: intelligent-mode data write: {value:#04X}");
             }
         }
+    }
+
+    /// Appends all buffered MIDI bytes into `target` and clears the internal buffer.
+    pub fn flush_midi_into(&mut self, target: &mut Vec<u8>) {
+        target.extend_from_slice(&self.midi_buffer);
+        self.midi_buffer.clear();
     }
 }
