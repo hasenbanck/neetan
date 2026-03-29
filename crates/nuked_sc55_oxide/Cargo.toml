@@ -1,5 +1,5 @@
 [package]
-name = "ymfm_oxide"
+name = "nuked_sc55_oxide"
 version = "0.1.0"
 publish = false
 authors.workspace = true
@@ -8,3 +8,5 @@ rust-version.workspace = true
 license-file = "LICENSE"
 
 [dependencies]
+common = { workspace = true }
+resampler = { workspace = true }

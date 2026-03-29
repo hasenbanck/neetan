@@ -201,6 +201,8 @@ impl<T: Tracing> Pc9801Bus<T> {
             rtc: Upd4990aRtc::new(),
             host_local_time_fn: default_local_time,
             mpu401: Mpu401::new(),
+            #[cfg(feature = "sc55")]
+            sc55: None,
             mouse_ppi: I8255MousePpi::new(),
             mouse_timer_setting: MOUSE_TIMER_DEFAULT_SETTING,
             sasi: SasiController::new(),

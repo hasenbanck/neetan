@@ -74,6 +74,7 @@ name = "device"
 version = "0.1.0"
 dependencies = [
  "common",
+ "nuked_sc55_oxide",
  "resampler",
  "ymfm_oxide",
 ]
@@ -152,6 +153,14 @@ dependencies = [
  "jay-ash",
  "machine",
  "sdl3",
+]
+
+[[package]]
+name = "nuked_sc55_oxide"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "resampler",
 ]
 
 [[package]]

@@ -964,6 +964,21 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
         }
     }
 
+    if let Some(ref sc55_rom_dir) = config.sc55_roms {
+        #[cfg(feature = "sc55")]
+        {
+            match bus.install_sc55(sc55_rom_dir) {
+                Ok(()) => info!("Loaded Nuked-SC55 sound module"),
+                Err(error) => warn!("SC-55 unavailable: {error}"),
+            }
+        }
+        #[cfg(not(feature = "sc55"))]
+        {
+            let _ = sc55_rom_dir;
+            warn!("SC-55 ROM path specified, but SC-55 support was not compiled in");
+        }
+    }
+
     if let Some(ref printer_path) = config.printer {
         let file = File::options()
             .write(true)

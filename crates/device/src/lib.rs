@@ -26,6 +26,8 @@ pub mod palette;
 pub mod pegc;
 pub mod printer;
 pub mod sasi;
+#[cfg(feature = "sc55")]
+pub mod sc55;
 pub mod sdip;
 pub mod sound_blaster_16;
 pub mod soundboard_26k;
