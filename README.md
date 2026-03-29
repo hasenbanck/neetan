@@ -14,13 +14,13 @@ files is supported, but should provide no additional benefit.
 
 Currently, we aim to support all 16-bit era DOS games and emulate them accurately for 5 idealized machine targets:
 
-| Machine   | CPU      | CPU Speed | FPU (x87) | RAM     | Extended RAM | Graphics | Interface | CD-ROM | Implementation Status |
-|-----------|----------|-----------|-----------|---------|--------------|----------|-----------|--------|-----------------------|
-| PC-9801VM | V30      | 10 Mhz    | No        | 640 KiB | None         | GRCG     | SASI      | No     | Works                 |
-| PC-9801VX | 80286    | 10 Mhz    | No        | 640 KiB | 4 MiB        | ECG      | SASI      | No     | Works                 |
-| PC-9801RA | 80386DX  | 20 Mhz    | Yes       | 640 KiB | 12 MiB       | ECG      | SASI      | No     | Works                 |
-| PC-9821AS | 80486DX  | 33 Mhz    | Yes       | 640 KiB | 14 MiB       | PEGC     | IDE       | Yes    | In-progress           |
-| PC-9821AP | 80486DX2 | 66 Mhz    | Yes       | 640 KiB | 14 MiB       | PEGC     | IDE       | Yes    | In-progress           |
+| Machine   | CPU      | CPU Speed | FPU (x87) | RAM     | Extended RAM | Graphics | Interface | CD-ROM |
+|-----------|----------|-----------|-----------|---------|--------------|----------|-----------|--------|
+| PC-9801VM | V30      | 10 Mhz    | No        | 640 KiB | None         | GRCG     | SASI      | No     |
+| PC-9801VX | 80286    | 10 Mhz    | No        | 640 KiB | 4 MiB        | ECG      | SASI      | No     |
+| PC-9801RA | 80386DX  | 20 Mhz    | Yes       | 640 KiB | 12 MiB       | ECG      | SASI      | No     |
+| PC-9821AS | 80486DX  | 33 Mhz    | Yes       | 640 KiB | 14 MiB       | PEGC     | IDE       | Yes    |
+| PC-9821AP | 80486DX2 | 66 Mhz    | Yes       | 640 KiB | 14 MiB       | PEGC     | IDE       | Yes    |
 
 We also support the following sound cards:
 
