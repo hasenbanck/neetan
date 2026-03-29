@@ -1,4 +1,4 @@
-; debug_egc.asm — EGC test ROM for Neetan
+; debug_egc.asm - EGC test ROM for Neetan
 ; Assembles to a 192KB dual-bank ROM image for VX/RA machines.
 ;   Bank 0 (first 96KB, file offset 0x00000): F8000-FFFFF — reset vector only
 ;   Bank 1 (second 96KB, file offset 0x18000): E8000-F7FFF — all code and data
@@ -81,7 +81,7 @@ entry:
     mov ds, ax
 
     ; Enable 16-color analog palette (mode2 bit 0 via port 0x6A)
-    mov al, 0x01        ; ADR=0, DT=1 → set bit 0
+    mov al, 0x01        ; ADR=0, DT=1 -> set bit 0
     out 0x6A, al
 
     ; Set 16-color analog palette
@@ -143,7 +143,7 @@ enable_egc:
     mov al, 0x05
     out 0x6A, al        ; EGC request (mode2 bit 2)
     mov al, 0x80
-    out 0x7C, al        ; GRCG enable → EGC active
+    out 0x7C, al        ; GRCG enable -> EGC active
     ret
 
 disable_egc:

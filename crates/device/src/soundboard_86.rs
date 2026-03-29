@@ -447,7 +447,7 @@ impl Pcm86 {
             0xA468 => {
                 self.update_buffer_state(current_cycle, cpu_clock_hz);
                 let old_fifo = self.state.fifo;
-                // FIFO reset when bit 3 transitions 0→1.
+                // FIFO reset when bit 3 transitions 0->1.
                 if (value & 0x08) != 0 && (old_fifo & 0x08) == 0 {
                     self.state.write_pos = 0;
                     self.state.read_pos = 0;
@@ -472,7 +472,7 @@ impl Pcm86 {
                     self.state.irq_flag = true;
                 }
                 self.state.fifo = value;
-                // Reset audio clock when playback transitions off→on.
+                // Reset audio clock when playback transitions off->on.
                 if (old_fifo ^ value) & 0x80 != 0 && value & 0x80 != 0 {
                     self.state.audio_frame_start_cycle = current_cycle;
                     self.state.sample_remainder = FmSampleRemainder::default();
@@ -1468,7 +1468,7 @@ mod tests {
         pcm.state.vol[5] = 0; // max volume
         enable_playback(&mut pcm);
 
-        // Write 0x7F00 big-endian → +32512 → ~0.9922
+        // Write 0x7F00 big-endian -> +32512 -> ~0.9922
         write_bytes(&mut pcm, &[0x7F, 0x00]);
         let mut out = [0.0f32; 2];
         pcm.drain_samples_into(&mut out);
@@ -1486,7 +1486,7 @@ mod tests {
         pcm.state.vol[5] = 0;
         enable_playback(&mut pcm);
 
-        // Write 0x8000 big-endian → -32768 → -1.0
+        // Write 0x8000 big-endian -> -32768 -> -1.0
         write_bytes(&mut pcm, &[0x80, 0x00]);
         let mut out = [0.0f32; 2];
         pcm.drain_samples_into(&mut out);
@@ -1504,7 +1504,7 @@ mod tests {
         pcm.state.vol[5] = 0;
         enable_playback(&mut pcm);
 
-        // L = 0x4000 (+16384 → 0.5), R = 0xC000 (-16384 → -0.5)
+        // L = 0x4000 (+16384 -> 0.5), R = 0xC000 (-16384 -> -0.5)
         write_bytes(&mut pcm, &[0x40, 0x00, 0xC0, 0x00]);
         let mut out = [0.0f32; 2];
         pcm.drain_samples_into(&mut out);
@@ -1543,7 +1543,7 @@ mod tests {
         pcm.state.vol[5] = 0;
         enable_playback(&mut pcm);
 
-        // 0x40 as signed = +64 → 64/128 = 0.5
+        // 0x40 as signed = +64 -> 64/128 = 0.5
         write_bytes(&mut pcm, &[0x40]);
         let mut out = [0.0f32; 2];
         pcm.drain_samples_into(&mut out);
@@ -1561,7 +1561,7 @@ mod tests {
         pcm.state.vol[5] = 0;
         enable_playback(&mut pcm);
 
-        // 0x80 as signed = -128 → -128/128 = -1.0
+        // 0x80 as signed = -128 -> -128/128 = -1.0
         write_bytes(&mut pcm, &[0x80]);
         let mut out = [0.0f32; 2];
         pcm.drain_samples_into(&mut out);
@@ -1579,7 +1579,7 @@ mod tests {
         pcm.state.vol[5] = 0;
         enable_playback(&mut pcm);
 
-        // L = 0x40 (+64 → 0.5), R = 0xC0 (-64 → -0.5)
+        // L = 0x40 (+64 -> 0.5), R = 0xC0 (-64 -> -0.5)
         write_bytes(&mut pcm, &[0x40, 0xC0]);
         let mut out = [0.0f32; 2];
         pcm.drain_samples_into(&mut out);
@@ -1636,7 +1636,7 @@ mod tests {
         pcm.state.dactrl = 0x20; // 16-bit L only
         pcm.state.step_bit = PCM86_BITS[(0x20 >> 4) & 7];
         pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
-        // Volume 15 = minimum (inverted: 15 - 15 = 0 → 0.0)
+        // Volume 15 = minimum (inverted: 15 - 15 = 0 -> 0.0)
         pcm.state.vol[5] = 15;
         enable_playback(&mut pcm);
 
@@ -1645,7 +1645,7 @@ mod tests {
         pcm.drain_samples_into(&mut out);
         assert_eq!(out[0], 0.0, "volume 15 should silence output");
 
-        // Volume 0 = maximum (inverted: 15 - 0 = 15 → 1.0)
+        // Volume 0 = maximum (inverted: 15 - 0 = 15 -> 1.0)
         pcm.state.vol[5] = 0;
         write_bytes(&mut pcm, &[0x7F, 0x00]);
         let mut out = [0.0f32; 2];
@@ -1731,10 +1731,10 @@ mod tests {
         pcm.state.data_write_irq_wait = 1000;
         pcm.state.last_clock_for_wait = 50;
 
-        // Only 50 cycles elapsed, need 1000 → not met.
+        // Only 50 cycles elapsed, need 1000 -> not met.
         assert!(!pcm.irq_condition_met(100, false));
 
-        // 1050 cycles elapsed → met.
+        // 1050 cycles elapsed -> met.
         assert!(pcm.irq_condition_met(1050, false));
     }
 
@@ -1790,7 +1790,7 @@ mod tests {
         pcm.state.vol[5] = 0;
         enable_playback(&mut pcm);
 
-        // MSB 0xFF (as i8 = -1), LSB 0xFE → ((-1) << 8) | 0xFE = -2
+        // MSB 0xFF (as i8 = -1), LSB 0xFE -> ((-1) << 8) | 0xFE = -2
         write_bytes(&mut pcm, &[0xFF, 0xFE]);
         let mut out = [0.0f32; 2];
         pcm.drain_samples_into(&mut out);
@@ -2282,7 +2282,7 @@ mod tests {
         let vir_buf_before = pcm.state.vir_buf;
 
         let cycles = (10u64 * 8_000_000) / 44100 + 1;
-        // Write line 5 volume (bits 7:5 = 0b101 = 5, value 0xA5 → line 5, vol 5).
+        // Write line 5 volume (bits 7:5 = 0b101 = 5, value 0xA5 -> line 5, vol 5).
         pcm.write_port(0xA466, 0xA5, cycles, 8_000_000, 48000);
 
         assert!(
@@ -2472,7 +2472,7 @@ mod tests {
         let mut pcm = make_pcm86();
         pcm.state.fifo_size = 128;
         pcm.state.vir_buf = 500;
-        pcm.state.real_buf = 400; // deficit < 0 → underrun
+        pcm.state.real_buf = 400; // deficit < 0 -> underrun
 
         // First call establishes baseline (last_checkbuf_cycle starts at 0).
         pcm.reconcile_buffers(1000, 8_000_000);

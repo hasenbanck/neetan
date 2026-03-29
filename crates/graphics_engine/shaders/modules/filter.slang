@@ -12,8 +12,8 @@ public struct BandlimitedPixelInfo {
 [ForceInline]
 public func compute_pixel_weights(uv: float2, texture_size: float2, inverse_texture_size: float2) -> BandlimitedPixelInfo {
     // This variable allows tuning sharpness:
-    // - Smaller values → sharper (more aliasing)
-    // - Larger values → blurrier (less aliasing)
+    // - Smaller values -> sharper (more aliasing)
+    // - Larger values -> blurrier (less aliasing)
     let extent_mod = 1.0;
 
     // Get derivatives in texel space.

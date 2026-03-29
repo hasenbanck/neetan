@@ -425,7 +425,7 @@ impl I8253Pit {
     }
 }
 
-/// Returns the effective count period in PIT ticks, handling the 0 → max convention
+/// Returns the effective count period in PIT ticks, handling the 0 -> max convention
 /// and BCD mode.
 fn count_period(ch: &I8253PitChannelState) -> u64 {
     if ch.ctrl & 1 != 0 {
@@ -443,7 +443,7 @@ fn count_period(ch: &I8253PitChannelState) -> u64 {
 }
 
 /// Converts a 4-digit BCD value to its binary equivalent.
-/// e.g. 0x1234 → 1234, 0x9999 → 9999.
+/// e.g. 0x1234 -> 1234, 0x9999 -> 9999.
 fn bcd_to_binary(bcd: u16) -> u64 {
     let d0 = (bcd & 0x000F) as u64;
     let d1 = ((bcd >> 4) & 0x000F) as u64;
@@ -453,7 +453,7 @@ fn bcd_to_binary(bcd: u16) -> u64 {
 }
 
 /// Converts a binary value (0..=9999) to 4-digit BCD.
-/// e.g. 1234 → 0x1234, 9999 → 0x9999.
+/// e.g. 1234 -> 0x1234, 9999 -> 0x9999.
 fn binary_to_bcd(mut bin: u64) -> u16 {
     let d3 = bin / 1000;
     bin %= 1000;

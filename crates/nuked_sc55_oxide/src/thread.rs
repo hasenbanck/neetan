@@ -47,7 +47,7 @@ const STEP_FRAMES: u32 = 240;
 
 /// Shared buffer between the emulation thread and the SC-55 render thread.
 ///
-/// Both Vecs live here permanently and keep their capacity — no allocations
+/// Both Vecs live here permanently and keep their capacity - no allocations
 /// after the first chunk. The two threads synchronize via `midi_ready` and
 /// `render_done` flags on a single condvar.
 pub struct Sc55SharedBuffer {

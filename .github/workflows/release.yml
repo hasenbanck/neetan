@@ -242,7 +242,7 @@ jobs:
             RELEASE_ID="$DRAFT_ID"
             echo "Published existing draft release (id=${RELEASE_ID})"
           else
-            # No draft found — create a new release with auto-generated notes.
+            # No draft found - create a new release with auto-generated notes.
             RELEASE_ID=$(gh api repos/${GH_REPO}/releases \
               -f tag_name="${TAG}" \
               -f name="${TAG}" \

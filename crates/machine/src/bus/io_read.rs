@@ -592,7 +592,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x0549 if self.machine_model.is_pc9821() => 0xFF,
 
             // Memory status register (read-only).
-            // Bit 7,6 = 11 → no 2nd cache RAM board.
+            // Bit 7,6 = 11 -> no 2nd cache RAM board.
             // Ref: undoc98 `io_mem.txt` (port 0x063D)
             0x063D if self.machine_model.is_pc9821() => 0xFF,
 

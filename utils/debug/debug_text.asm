@@ -1,4 +1,4 @@
-; debug_text.asm — Text glyph coverage ROM for Neetan
+; debug_text.asm - Text glyph coverage ROM for Neetan
 ; Assembles to a 96KB ROM image loaded at physical 0xE8000-0xFFFFF
 ; Page 0: all ANK (0x00-0xFF)
 ; Pages 1-6: kanji code rows from the same ranges as utils/create_font

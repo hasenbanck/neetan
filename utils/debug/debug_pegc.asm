@@ -1,4 +1,4 @@
-; debug_pegc.asm — PEGC 256-color test ROM for Neetan
+; debug_pegc.asm - PEGC 256-color test ROM for Neetan
 ; Assembles to a 192KB dual-bank ROM image for PC-9821 machines.
 ;   Bank 0 (first 96KB, file offset 0x00000): F8000-FFFFF — reset vector only
 ;   Bank 1 (second 96KB, file offset 0x18000): E8000-F7FFF — all code and data

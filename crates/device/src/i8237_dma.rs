@@ -1,8 +1,8 @@
 //! i8237A DMA controller for the PC-98.
 //!
 //! Supports register programming and burst-mode transfers used by the
-//! FDC: write transfers (device→memory) for reads, read transfers
-//! (memory→device) for writes.
+//! FDC: write transfers (device->memory) for reads, read transfers
+//! (memory->device) for writes.
 
 /// All four channels masked (bits 0-3 set). Applied at power-on and master clear.
 /// Ref: undoc98 `io_dma.txt` (I/O 001Bh master clear)
@@ -299,7 +299,7 @@ impl I8237Dma {
         self.state.mask & (1 << channel) == 0
     }
 
-    /// Performs a write transfer (device→memory) on the given channel.
+    /// Performs a write transfer (device->memory) on the given channel.
     ///
     /// Iterates through `data`, computing physical addresses from
     /// extended_page:page:address registers, incrementing or decrementing
@@ -362,7 +362,7 @@ impl I8237Dma {
         }
     }
 
-    /// Performs a read transfer (memory→device) on the given channel.
+    /// Performs a read transfer (memory->device) on the given channel.
     ///
     /// Computes `byte_count` physical addresses from
     /// extended_page:page:address registers, advancing registers exactly
@@ -422,7 +422,7 @@ impl I8237Dma {
     }
 }
 
-/// Result of a DMA write transfer (device→memory).
+/// Result of a DMA write transfer (device->memory).
 pub struct DmaTransferResult {
     /// (physical_address, byte) pairs to write to memory.
     pub writes: Vec<(u32, u8)>,
@@ -430,7 +430,7 @@ pub struct DmaTransferResult {
     pub terminal_count: bool,
 }
 
-/// Result of a DMA read transfer (memory→device).
+/// Result of a DMA read transfer (memory->device).
 pub struct DmaReadTransferResult {
     /// Physical addresses to read from memory, in transfer order.
     pub addresses: Vec<u32>,
@@ -525,7 +525,7 @@ mod tests {
         assert_eq!(result.writes.len(), 4);
         assert_eq!(result.writes[0], (0x01FFFE, 0xAA));
         assert_eq!(result.writes[1], (0x01FFFF, 0xBB)); // Page still 0x01
-        // After 0xFFFF, page low nibble increments: 0x01 → 0x02
+        // After 0xFFFF, page low nibble increments: 0x01 -> 0x02
         assert_eq!(result.writes[2], (0x020000, 0xCC)); // Page now 0x02
         assert_eq!(result.writes[3], (0x020001, 0xDD));
         assert!(result.terminal_count);
@@ -746,16 +746,16 @@ mod tests {
         let mut dma = I8237Dma::new();
         // Program address as 0x1234.
         dma.clear_flip_flop();
-        dma.write_address(0, 0x34); // Low byte → address = 0x0034, start = 0x0034
+        dma.write_address(0, 0x34); // Low byte -> address = 0x0034, start = 0x0034
         assert_eq!(dma.state.channels[0].start_address, 0x0034);
-        dma.write_address(0, 0x12); // High byte → address = 0x1234, start = 0x1234
+        dma.write_address(0, 0x12); // High byte -> address = 0x1234, start = 0x1234
         assert_eq!(dma.state.channels[0].start_address, 0x1234);
 
         // Program count as 0x00FF.
         dma.clear_flip_flop();
-        dma.write_count(0, 0xFF); // Low byte → count = 0x00FF, start = 0x00FF
+        dma.write_count(0, 0xFF); // Low byte -> count = 0x00FF, start = 0x00FF
         assert_eq!(dma.state.channels[0].start_count, 0x00FF);
-        dma.write_count(0, 0x00); // High byte → count = 0x00FF, start = 0x00FF
+        dma.write_count(0, 0x00); // High byte -> count = 0x00FF, start = 0x00FF
         assert_eq!(dma.state.channels[0].start_count, 0x00FF);
     }
 }

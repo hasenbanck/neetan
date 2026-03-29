@@ -118,7 +118,7 @@ fn make_int18h_call_bx_cx_dx(ah: u8, bx: u16, cx: u16, dx: u16) -> Vec<u8> {
     ]
 }
 
-// Drawing test code: AH=40h (graphics start) → AH=42h CH=0xC0 (640x400) → draw call with DS:BX.
+// Drawing test code: AH=40h (graphics start) -> AH=42h CH=0xC0 (640x400) -> draw call with DS:BX.
 #[rustfmt::skip]
 fn make_draw_test_code(draw_ah: u8) -> Vec<u8> {
     let dt_lo = (DATA_TABLE & 0xFF) as u8;
@@ -522,7 +522,7 @@ fn kb_init_clears_key_status_and_sets_table_pointers_vm() {
 // ============================================================================
 
 // Inject Enter (0x1C): group = 0x1C >> 3 = 3, bit = 1 << (0x1C & 7) = 0x10.
-// Query group 3 → AH should have bit 4 set.
+// Query group 3 -> AH should have bit 4 set.
 
 #[test]
 fn key_state_sense_vm() {
@@ -1554,7 +1554,7 @@ fn draw_mode_set_vm() {
     let code = make_int18h_call_ch(0x4A, 0x16);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
     let state = machine.save_state();
-    // CH=0x16 has bit 4 set → PRXDUPD bit 3 should be cleared.
+    // CH=0x16 has bit 4 set -> PRXDUPD bit 3 should be cleared.
     assert_eq!(
         state.memory.ram[0x054D] & 0x08,
         0,
@@ -2488,10 +2488,10 @@ fn key_read_blocks_on_empty_buffer_ra() {
 #[test]
 fn palette_set_nibble_unpack_vm() {
     // GBCPC bytes: col[0]=0xAB, col[1]=0xCD, col[2]=0xEF, col[3]=0x12.
-    // Port 0xA8 → digital[0] = ((col[2] & 0x0F) << 4) | (col[0] & 0x0F) = 0xFB
-    // Port 0xAA → digital[1] = ((col[3] & 0x0F) << 4) | (col[1] & 0x0F) = 0x2D
-    // Port 0xAC → digital[2] = (col[2] & 0xF0) | (col[0] >> 4) = 0xEA
-    // Port 0xAE → digital[3] = (col[3] & 0xF0) | (col[1] >> 4) = 0x1C
+    // Port 0xA8 -> digital[0] = ((col[2] & 0x0F) << 4) | (col[0] & 0x0F) = 0xFB
+    // Port 0xAA -> digital[1] = ((col[3] & 0x0F) << 4) | (col[1] & 0x0F) = 0x2D
+    // Port 0xAC -> digital[2] = (col[2] & 0xF0) | (col[0] >> 4) = 0xEA
+    // Port 0xAE -> digital[3] = (col[3] & 0xF0) | (col[1] >> 4) = 0x1C
     let state = run_palette_set_vm(&[0xAB, 0xCD, 0xEF, 0x12]);
     assert_eq!(state.palette.digital[0], 0xFB, "digital[0]");
     assert_eq!(state.palette.digital[1], 0x2D, "digital[1]");
@@ -3008,7 +3008,7 @@ fn kanji_font_read_different_codes_vm() {
 
 #[test]
 fn display_area_set_400line_lines_per_row_vm() {
-    // CH=0xC0 → 400-line ALL mode → lines_per_row should be 1, video_mode bit 4 clear.
+    // CH=0xC0 -> 400-line ALL mode -> lines_per_row should be 1, video_mode bit 4 clear.
     let code = make_int18h_call_ch(0x42, 0xC0);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
     let state = machine.save_state();
@@ -3047,7 +3047,7 @@ fn display_area_set_400line_lines_per_row_ra() {
 
 #[test]
 fn display_area_set_200line_lines_per_row_vm() {
-    // CH=0x80 → 200-line LOWER mode. PRXCRT bit 6 set (24kHz) → lines_per_row=2,
+    // CH=0x80 -> 200-line LOWER mode. PRXCRT bit 6 set (24kHz) -> lines_per_row=2,
     // video_mode bit 4 set (hide_odd_rasters).
     let code = make_int18h_call_ch(0x42, 0x80);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
@@ -3202,7 +3202,7 @@ fn display_area_set_400line_preserves_slave_sync_ra() {
 #[test]
 fn draw_mode_set_sync_mode_byte_vm() {
     // AH=4Ah writes CH as the SYNC P1 mode byte to the GDC slave.
-    // CH=0x02 → param_buffer[0] = 0x02, display_mode=0x02.
+    // CH=0x02 -> param_buffer[0] = 0x02, display_mode=0x02.
     let code = make_int18h_call_ch(0x4A, 0x02);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
     let state = machine.save_state();
@@ -3233,7 +3233,7 @@ fn draw_mode_set_sync_mode_byte_ra() {
 
 #[test]
 fn draw_mode_set_sync_draw_on_retrace_vm() {
-    // CH=0x12 has bit 4 set → draw_on_retrace should be true.
+    // CH=0x12 has bit 4 set -> draw_on_retrace should be true.
     let code = make_int18h_call_ch(0x4A, 0x12);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
     let state = machine.save_state();

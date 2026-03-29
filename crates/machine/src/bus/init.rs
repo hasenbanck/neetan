@@ -424,7 +424,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         // DISK_EQUIP (0x055C): 2 built-in FDD drives present (drives 0 and 1).
         self.memory.state.ram[0x055C] = 0x03;
 
-        // Keyboard shift table pointer → ROM shift table at FD80:0B28.
+        // Keyboard shift table pointer -> ROM shift table at FD80:0B28.
         self.memory.state.ram[0x0522] = 0x28; // KB_SHIFT_TBL low
         self.memory.state.ram[0x0523] = 0x0B; // KB_SHIFT_TBL high
 
@@ -436,13 +436,13 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.memory.state.ram[0x0528] = 0x00; // KB_COUNT low
         self.memory.state.ram[0x0529] = 0x00; // KB_COUNT high
 
-        // Keyboard code table pointer → ROM code table at FD80:0B28.
+        // Keyboard code table pointer -> ROM code table at FD80:0B28.
         self.memory.state.ram[0x05C6] = 0x28; // KB_CODE_OFF low
         self.memory.state.ram[0x05C7] = 0x0B; // KB_CODE_OFF high
         self.memory.state.ram[0x05C8] = 0x80; // KB_CODE_SEG low
         self.memory.state.ram[0x05C9] = 0xFD; // KB_CODE_SEG high
 
-        // IVT: INT 1Eh at 0x0078 → E800:000A.
+        // IVT: INT 1Eh at 0x0078 -> E800:000A.
         self.memory.state.ram[0x0078] = 0x0A; // offset low
         self.memory.state.ram[0x0079] = 0x00; // offset high
         self.memory.state.ram[0x007A] = 0x00; // segment low

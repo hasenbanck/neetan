@@ -22,7 +22,7 @@ fn parse_on_off(val: &str, flag: &str) -> crate::Result<bool> {
 fn print_help() {
     println!(
         "\
-{} — PC-98 emulator
+{} - PC-98 emulator
 
 Usage: neetan [OPTIONS]
        neetan <COMMAND>

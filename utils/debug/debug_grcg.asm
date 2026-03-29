@@ -1,4 +1,4 @@
-; grcg.asm — GRCG test ROM for Neetan
+; grcg.asm - GRCG test ROM for Neetan
 ; Assembles to a 96KB ROM image loaded at physical 0xE8000–0xFFFFF
 ; Cycles through 8 fullscreen test patterns with Enter key
 
@@ -48,7 +48,7 @@ entry:
     mov ds, ax
 
     ; Enable 16-color analog palette (mode2 bit 0 via port 0x6A)
-    mov al, 0x01        ; ADR=0, DT=1 → set bit 0
+    mov al, 0x01        ; ADR=0, DT=1 -> set bit 0
     out 0x6A, al
 
     ; Set 16-color analog palette
@@ -79,11 +79,11 @@ entry:
     jmp .main_loop
 
 ; ============================================================================
-; draw_pattern — Dispatch to pattern routine based on SI
+; draw_pattern - Dispatch to pattern routine based on SI
 ; ============================================================================
 draw_pattern:
     ; Reset monochrome mode for clean state
-    mov al, 0x02        ; ADR=1, DT=0 → clear bit 1 (GRAPHIC_MODE=color)
+    mov al, 0x02        ; ADR=1, DT=0 -> clear bit 1 (GRAPHIC_MODE=color)
     out 0x68, al
 
     call clear_all_planes
@@ -164,7 +164,7 @@ pattern_individual_planes:
     ret
 
 ; ============================================================================
-; Pattern 2: TDW Full Fill — all planes
+; Pattern 2: TDW Full Fill - all planes
 ; Mode 0x80, tiles: B=0xAA, R=0x55, G=0xF0, E=0x0F.
 ; Fill entire screen via GRCG (CPU data ignored in TDW).
 ; ============================================================================
@@ -222,7 +222,7 @@ pattern_tdw_selective:
     ret
 
 ; ============================================================================
-; Pattern 4: TCR (Tile Compare Read) — 4 bands
+; Pattern 4: TCR (Tile Compare Read) - 4 bands
 ;
 ; Band 0 (lines 0-99):   B=0xFF, R=0x00, G=0xFF, E=0x00
 ; Band 1 (lines 100-199): B=0xFF, R=0xFF, G=0xFF, E=0xFF
@@ -230,7 +230,7 @@ pattern_tdw_selective:
 ; Band 3 (lines 300-399): B=0xAA, R=0x55, G=0xAA, E=0x55
 ;
 ; Tiles: B=0xFF, R=0x00, G=0xFF, E=0x00
-; TCR reads from lines 50, 150, 250, 350 → results at 0x0500-0x0503.
+; TCR reads from lines 50, 150, 250, 350 -> results at 0x0500-0x0503.
 ; ============================================================================
 pattern_tcr:
     ; Band 0: Lines 0-99: B=0xFF, G=0xFF (R,E = 0x00 from clear)
@@ -337,7 +337,7 @@ pattern_tcr:
     ret
 
 ; ============================================================================
-; Pattern 5: RMW Mode — all planes
+; Pattern 5: RMW Mode - all planes
 ; Pre-fill all planes with 0x55. Mode 0xC0 (RMW).
 ; Tiles: B=0xFF, R=0x00, G=0xAA, E=0x55. CPU mask: 0xF0.
 ; Formula: new = (cpu & tile) | (~cpu & old)
@@ -492,15 +492,15 @@ pattern_word_ops:
 
 ; ============================================================================
 ; Pattern 8: Monochrome Mode Test
-; Lines 0-319 (rows 0-19): G+E planes → color index 12 (analog green=0xF,
-;   bit 3 set → mono ON, shows text attribute colors)
-; Lines 320-399 (rows 20-24): B-plane only → color index 1 (analog green=0x0,
-;   bit 3 clear → mono OFF, shows black)
+; Lines 0-319 (rows 0-19): G+E planes -> color index 12 (analog green=0xF,
+;   bit 3 set -> mono ON, shows text attribute colors)
+; Lines 320-399 (rows 20-24): B-plane only -> color index 1 (analog green=0x0,
+;   bit 3 clear -> mono OFF, shows black)
 ; Text: 5 bands of colored attributes (white, red, green, cyan, yellow)
 ; ============================================================================
 pattern_monochrome:
     ; Enable monochrome mode
-    mov al, 0x03        ; ADR=1, DT=1 → set bit 1 (GRAPHIC_MODE=monochrome)
+    mov al, 0x03        ; ADR=1, DT=1 -> set bit 1 (GRAPHIC_MODE=monochrome)
     out 0x68, al
 
     ; Write colored text attributes (5 bands of 5 rows)
@@ -515,23 +515,23 @@ pattern_monochrome:
 
     ; Fill attribute VRAM with colored attributes per band
     mov di, 0x2000
-    ; Band 0: rows 0-4, color 7 (white) → attr 0xE1
+    ; Band 0: rows 0-4, color 7 (white) -> attr 0xE1
     mov ax, 0x00E1
     mov cx, 80 * 5
     rep stosw
-    ; Band 1: rows 5-9, color 2 (red) → attr 0x41
+    ; Band 1: rows 5-9, color 2 (red) -> attr 0x41
     mov ax, 0x0041
     mov cx, 80 * 5
     rep stosw
-    ; Band 2: rows 10-14, color 4 (green) → attr 0x81
+    ; Band 2: rows 10-14, color 4 (green) -> attr 0x81
     mov ax, 0x0081
     mov cx, 80 * 5
     rep stosw
-    ; Band 3: rows 15-19, color 5 (cyan) → attr 0xA1
+    ; Band 3: rows 15-19, color 5 (cyan) -> attr 0xA1
     mov ax, 0x00A1
     mov cx, 80 * 5
     rep stosw
-    ; Band 4: rows 20-24, color 6 (yellow) → attr 0xC1
+    ; Band 4: rows 20-24, color 6 (yellow) -> attr 0xC1
     mov ax, 0x00C1
     mov cx, 80 * 5
     rep stosw

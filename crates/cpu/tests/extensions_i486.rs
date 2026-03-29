@@ -180,7 +180,7 @@ fn i486dx_cmpxchg_byte_equal() {
     let cs: u16 = 0x1000;
     let ip: u16 = 0x0000;
     // Set AL=0x42, CL=0x42 (dest), DL=0xFF (src)
-    // CMPXCHG CL, DL: AL==CL → CL=DL, ZF=1
+    // CMPXCHG CL, DL: AL==CL -> CL=DL, ZF=1
     place_code(
         &mut bus,
         cs,
@@ -218,7 +218,7 @@ fn i486dx_cmpxchg_byte_not_equal() {
     let cs: u16 = 0x1000;
     let ip: u16 = 0x0000;
     // Set AL=0x10, CL=0x42 (dest), DL=0xFF (src)
-    // CMPXCHG CL, DL: AL!=CL → AL=CL, ZF=0
+    // CMPXCHG CL, DL: AL!=CL -> AL=CL, ZF=0
     place_code(
         &mut bus,
         cs,
@@ -260,7 +260,7 @@ fn i486dx_cmpxchg_word_equal() {
     let cs: u16 = 0x1000;
     let ip: u16 = 0x0000;
     // AX=0x1234, CX=0x1234, DX=0xABCD
-    // CMPXCHG CX, DX: AX==CX → CX=DX, ZF=1
+    // CMPXCHG CX, DX: AX==CX -> CX=DX, ZF=1
     place_code(
         &mut bus,
         cs,
@@ -298,7 +298,7 @@ fn i486dx_cmpxchg_word_not_equal() {
     let cs: u16 = 0x1000;
     let ip: u16 = 0x0000;
     // AX=0x0001, CX=0x0002, DX=0xABCD
-    // CMPXCHG CX, DX: AX!=CX → AX=CX, ZF=0
+    // CMPXCHG CX, DX: AX!=CX -> AX=CX, ZF=0
     place_code(
         &mut bus,
         cs,
@@ -577,7 +577,7 @@ fn i486dx_div_byte_toggles_af() {
 
     let cs: u16 = 0x1000;
     let ip: u16 = 0x0000;
-    // AX=100, CL=10 → DIV CL → AL=10, AH=0
+    // AX=100, CL=10 -> DIV CL -> AL=10, AH=0
     place_code(
         &mut bus,
         cs,
@@ -637,7 +637,7 @@ fn i486dx_idiv_byte_toggles_af() {
 
     let cs: u16 = 0x1000;
     let ip: u16 = 0x0000;
-    // AX=100, CL=10 → IDIV CL → AL=10, AH=0
+    // AX=100, CL=10 -> IDIV CL -> AL=10, AH=0
     place_code(
         &mut bus,
         cs,
@@ -670,7 +670,7 @@ fn i486dx_div_word_toggles_af() {
 
     let cs: u16 = 0x1000;
     let ip: u16 = 0x0000;
-    // DX:AX = 0:1000, CX=10 → DIV CX → AX=100, DX=0
+    // DX:AX = 0:1000, CX=10 -> DIV CX -> AX=100, DX=0
     place_code(
         &mut bus,
         cs,
@@ -702,7 +702,7 @@ fn i486dx_idiv_word_toggles_af() {
 
     let cs: u16 = 0x1000;
     let ip: u16 = 0x0000;
-    // DX:AX = 0:1000, CX=10 → IDIV CX → AX=100, DX=0
+    // DX:AX = 0:1000, CX=10 -> IDIV CX -> AX=100, DX=0
     place_code(
         &mut bus,
         cs,

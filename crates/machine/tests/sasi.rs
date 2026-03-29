@@ -642,7 +642,7 @@ fn setup_sasi_page_tables(bus: &mut Pc9801Bus<NoTracing>) {
         write_dword(bus, page_table + i * 4, phys | PTE_P | PTE_RW);
     }
 
-    // Remap linear page 0x20 (0x20000-0x20FFF) → physical page 0x30 (0x30000-0x30FFF).
+    // Remap linear page 0x20 (0x20000-0x20FFF) -> physical page 0x30 (0x30000-0x30FFF).
     write_dword(bus, page_table + 0x20 * 4, 0x30000 | PTE_P | PTE_RW);
 }
 
@@ -661,7 +661,7 @@ fn sasi_hle_read_with_paging() {
     }
 
     // AH=0x06 (read), AL=0x80 (drive 0), BX=256 (1 sector), CHS(0,0,5)=LBA 5.
-    // ES:BP = 0x2000:0x0000 → linear 0x20000 → remapped to physical 0x30000.
+    // ES:BP = 0x2000:0x0000 -> linear 0x20000 -> remapped to physical 0x30000.
     let frame = SasiTestFrame::new(&mut bus, 0x0680, 0x0100, 0x0000, 0x0005, 0x0000, 0x2000);
 
     bus.execute_sasi_hle(frame.ss, frame.sp);
@@ -706,7 +706,7 @@ fn sasi_hle_write_with_paging() {
     }
 
     // AH=0x05 (write), AL=0x80 (drive 0), BX=256 (1 sector), CX=10 (LBA 10).
-    // ES:BP = 0x2000:0x0000 → linear 0x20000 → remapped to physical 0x30000.
+    // ES:BP = 0x2000:0x0000 -> linear 0x20000 -> remapped to physical 0x30000.
     let frame = SasiTestFrame::new(&mut bus, 0x0580, 0x0100, 0x000A, 0x0000, 0x0000, 0x2000);
 
     bus.execute_sasi_hle(frame.ss, frame.sp);

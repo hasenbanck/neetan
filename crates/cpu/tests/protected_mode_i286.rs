@@ -754,7 +754,7 @@ fn i286_gp_escalates_to_double_fault() {
     );
 
     cpu.step(&mut bus); // MOV AX
-    cpu.step(&mut bus); // MOV DS - triggers #GP, #GP handler faults too → #DF
+    cpu.step(&mut bus); // MOV DS - triggers #GP, #GP handler faults too -> #DF
 
     // The CPU should now be at the #DF handler.
     // It may take one more step to execute the HLT.
@@ -802,7 +802,7 @@ fn i286_lgdt_at_cpl3_triggers_gp() {
 
     assert!(
         cpu.halted(),
-        "LGDT at CPL=3 should trigger #GP → halt at handler"
+        "LGDT at CPL=3 should trigger #GP -> halt at handler"
     );
 }
 
@@ -869,12 +869,12 @@ fn i286_ltr_busy_tss_triggers_gp() {
     );
 
     cpu.step(&mut bus); // MOV AX
-    cpu.step(&mut bus); // LTR on busy TSS → #GP
+    cpu.step(&mut bus); // LTR on busy TSS -> #GP
     cpu.step(&mut bus); // HLT at #GP handler
 
     assert!(
         cpu.halted(),
-        "LTR on busy TSS should trigger #GP → halt at handler"
+        "LTR on busy TSS should trigger #GP -> halt at handler"
     );
 }
 
@@ -892,7 +892,7 @@ fn i286_lar_accepts_tss_descriptor() {
     write_gdt_entry(&mut bus, PM_GDT_BASE, 4, 0x60000, 0x002B, 0x81);
 
     // MOV BX, 0x0020; LAR AX, BX
-    // LAR = 0F 02 modrm. modrm for LAR AX,BX: reg=AX(0), rm=BX(3) → 0xC3
+    // LAR = 0F 02 modrm. modrm for LAR AX,BX: reg=AX(0), rm=BX(3) -> 0xC3
     place_at(
         &mut bus,
         PM_CODE_BASE,
@@ -930,7 +930,7 @@ fn i286_lsl_rejects_call_gate() {
     write_gdt_entry(&mut bus, PM_GDT_BASE, 4, 0x60000, 0x002B, 0x84);
 
     // MOV BX, 0x0020; LSL AX, BX
-    // LSL = 0F 03 modrm. modrm for LSL AX,BX: reg=AX(0), rm=BX(3) → 0xC3
+    // LSL = 0F 03 modrm. modrm for LSL AX,BX: reg=AX(0), rm=BX(3) -> 0xC3
     place_at(
         &mut bus,
         PM_CODE_BASE,
@@ -962,7 +962,7 @@ fn i286_interrupt_conforming_code_dispatches() {
     // Rights: P=1, DPL=0, S=1, code=1, conforming=1, readable=1 = 0x9E
     write_gdt_entry(&mut bus, PM_GDT_BASE, 4, PM_CODE_BASE, 0xFFFF, 0x9E);
 
-    // Set up IDT gate for INT 0x40 → conforming code segment.
+    // Set up IDT gate for INT 0x40 -> conforming code segment.
     let handler_ip: u16 = 0x7000;
     write_idt_gate(&mut bus, PM_IDT_BASE, 0x40, handler_ip, 0x0020, 6, 3);
 
@@ -1082,7 +1082,7 @@ fn i286_gate_offset_exceeds_limit_gp_zero() {
     // Create a code segment with small limit at GDT index 4.
     write_gdt_entry(&mut bus, PM_GDT_BASE, 4, PM_CODE_BASE, 0x0010, 0x9B);
 
-    // IDT gate for INT 0x50 → offset 0x0100 in selector 0x0020 (limit 0x10 < 0x100).
+    // IDT gate for INT 0x50 -> offset 0x0100 in selector 0x0020 (limit 0x10 < 0x100).
     write_idt_gate(&mut bus, PM_IDT_BASE, 0x50, 0x0100, 0x0020, 6, 3);
 
     // Set up a #GP handler that stores the error code to check it.
@@ -1093,7 +1093,7 @@ fn i286_gate_offset_exceeds_limit_gp_zero() {
     // INT 0x50
     place_at(&mut bus, PM_CODE_BASE, &[0xCD, 0x50]);
 
-    cpu.step(&mut bus); // INT 0x50 → gate offset > limit → #GP(0)
+    cpu.step(&mut bus); // INT 0x50 -> gate offset > limit -> #GP(0)
     cpu.step(&mut bus); // HLT
 
     assert!(cpu.halted());
@@ -1117,8 +1117,8 @@ fn i286_lldt_selector_0x0004_is_nonnull() {
     cpu.load_state(&state);
 
     // Selector 0x0004 has TI=1 (LDT reference), index=0.
-    // With old `& !7` mask: 0x0004 & !7 == 0 → treated as null.
-    // With correct `& 0xFFFC` mask: 0x0004 & 0xFFFC == 4 → non-null → validate.
+    // With old `& !7` mask: 0x0004 & !7 == 0 -> treated as null.
+    // With correct `& 0xFFFC` mask: 0x0004 & 0xFFFC == 4 -> non-null -> validate.
     // Since no LDT is set up, this should fault (#GP).
 
     // MOV AX, 0x0004; LLDT AX (0F 00 /2 = modrm 0xD0)
@@ -1132,7 +1132,7 @@ fn i286_lldt_selector_0x0004_is_nonnull() {
     );
 
     cpu.step(&mut bus); // MOV AX
-    cpu.step(&mut bus); // LLDT 0x0004 → #GP (TI=1, must be from GDT)
+    cpu.step(&mut bus); // LLDT 0x0004 -> #GP (TI=1, must be from GDT)
     cpu.step(&mut bus); // HLT at handler
 
     assert!(
@@ -1172,7 +1172,7 @@ fn i286_wrong_type_not_present_gives_gp_not_np() {
     );
 
     cpu.step(&mut bus); // MOV AX
-    cpu.step(&mut bus); // MOV DS → #GP (code segment not readable as data)
+    cpu.step(&mut bus); // MOV DS -> #GP (code segment not readable as data)
     cpu.step(&mut bus); // HLT at #GP handler
 
     assert!(cpu.halted());
@@ -1206,7 +1206,7 @@ fn i286_indirect_call_far_invalid_segment_sp_unchanged() {
     // FF 1E 00 01 = CALL FAR [0x0100]
     place_at(&mut bus, PM_CODE_BASE, &[0xFF, 0x1E, 0x00, 0x01]);
 
-    cpu.step(&mut bus); // CALL FAR → fault before pushing
+    cpu.step(&mut bus); // CALL FAR -> fault before pushing
 
     // SP should be unchanged since segment validation happens before push.
     // Note: after the fault, we're at the #GP handler, so SP includes the
@@ -1383,7 +1383,7 @@ fn i286_ret_far_inter_privilege_ring0_to_ring3() {
     write_word_at(&mut bus, PM_STACK_BASE + sp as u32 + 4, 0xFF00);
     write_word_at(&mut bus, PM_STACK_BASE + sp as u32 + 6, PM_RING3_SS_SEL);
 
-    cpu.step(&mut bus); // RETF → ring 3
+    cpu.step(&mut bus); // RETF -> ring 3
     cpu.step(&mut bus); // HLT
 
     assert!(cpu.halted());
@@ -1440,7 +1440,7 @@ fn i286_iret_inter_privilege_ring0_to_ring3() {
     write_word_at(&mut bus, PM_STACK_BASE + sp as u32 + 6, 0xFF00);
     write_word_at(&mut bus, PM_STACK_BASE + sp as u32 + 8, PM_RING3_SS_SEL);
 
-    cpu.step(&mut bus); // IRET → ring 3
+    cpu.step(&mut bus); // IRET -> ring 3
     cpu.step(&mut bus); // HLT
 
     assert!(cpu.halted());
@@ -1465,7 +1465,7 @@ fn i286_ret_far_rpl_less_than_cpl_faults() {
     write_word_at(&mut bus, PM_RING3_STACK_BASE + 0xFFF0, 0x0000);
     write_word_at(&mut bus, PM_RING3_STACK_BASE + 0xFFF2, PM_CS_SEL); // RPL=0
 
-    cpu.step(&mut bus); // RETF → #GP (RPL < CPL)
+    cpu.step(&mut bus); // RETF -> #GP (RPL < CPL)
     cpu.step(&mut bus); // HLT at #GP handler
 
     assert!(cpu.halted());
@@ -1480,7 +1480,7 @@ fn i286_ret_far_nonconforming_dpl_ne_rpl_faults() {
     cpu.load_state(&state);
 
     // Create a code segment at GDT index 8 with DPL=0 but we'll use RPL=3.
-    // Non-conforming code: DPL(0) != RPL(3) → fault.
+    // Non-conforming code: DPL(0) != RPL(3) -> fault.
     write_gdt_entry(&mut bus, PM_GDT_BASE, 8, PM_RING3_CODE_BASE, 0xFFFF, 0x9B);
     // Extend GDT limit
     cpu.state.gdt_limit = 9 * 8 - 1;
@@ -1489,7 +1489,7 @@ fn i286_ret_far_nonconforming_dpl_ne_rpl_faults() {
     place_at(&mut bus, PM_CODE_BASE, &[0xCB]);
 
     // Stack: IP, CS = selector 0x0043 (GDT index 8, RPL=3)
-    // DPL=0 in descriptor, RPL=3 in selector → DPL != RPL → #GP
+    // DPL=0 in descriptor, RPL=3 in selector -> DPL != RPL -> #GP
     let sp = cpu.sp();
     write_word_at(&mut bus, PM_STACK_BASE + sp as u32, 0x0100);
     write_word_at(&mut bus, PM_STACK_BASE + sp as u32 + 2, 0x0043);
@@ -1497,7 +1497,7 @@ fn i286_ret_far_nonconforming_dpl_ne_rpl_faults() {
     write_word_at(&mut bus, PM_STACK_BASE + sp as u32 + 4, 0xFF00);
     write_word_at(&mut bus, PM_STACK_BASE + sp as u32 + 6, PM_RING3_SS_SEL);
 
-    cpu.step(&mut bus); // RETF → #GP (DPL != RPL)
+    cpu.step(&mut bus); // RETF -> #GP (DPL != RPL)
     cpu.step(&mut bus); // HLT at #GP handler
 
     assert!(cpu.halted());
@@ -1521,7 +1521,7 @@ fn i286_interrupt_inter_privilege_ring3_to_ring0() {
     // Ring 3 code: NOP (something to execute after interrupt)
     place_at(&mut bus, PM_RING3_CODE_BASE, &[0x90]);
 
-    // Set up IDT gate for vector 0x20 (DPL=0, INT gate → ring 0)
+    // Set up IDT gate for vector 0x20 (DPL=0, INT gate -> ring 0)
     // Note: hardware interrupt ignores gate DPL check.
     write_idt_gate(&mut bus, PM_IDT_BASE, 0x20, 0x0300, PM_CS_SEL, 6, 0);
     bus.ram[(PM_CODE_BASE + 0x0300) as usize] = 0xF4; // HLT at handler
@@ -1530,7 +1530,7 @@ fn i286_interrupt_inter_privilege_ring3_to_ring0() {
     bus.irq_vector = 0x20;
     cpu.signal_irq();
 
-    cpu.step(&mut bus); // Processes IRQ → switches to ring 0 → HLT
+    cpu.step(&mut bus); // Processes IRQ -> switches to ring 0 -> HLT
 
     assert!(cpu.halted());
     assert_eq!(cpu.cs() & 3, 0, "CPL should be 0 after interrupt");
@@ -1554,18 +1554,18 @@ fn i286_interrupt_inter_privilege_ss_fault_uses_ts_vector() {
 
     // #TS handler (vector 10) in ring 3 code to avoid cascade.
     // Using ring 3 code segment (selector 0x0020, DPL=3) so the dispatch
-    // is same-privilege (ring 3 → ring 3) and doesn't need TSS stack switch.
+    // is same-privilege (ring 3 -> ring 3) and doesn't need TSS stack switch.
     let ts_handler_ip: u16 = 0x0500;
     write_idt_gate(&mut bus, PM_IDT_BASE, 10, ts_handler_ip, 0x0020, 6, 0);
     bus.ram[(PM_RING3_CODE_BASE + ts_handler_ip as u32) as usize] = 0xF4; // HLT
 
-    // TSS: null SS for ring 0 → will fail SS validation
+    // TSS: null SS for ring 0 -> will fail SS validation
     write_word_at(&mut bus, PM_TSS_BASE + 4, 0x0000);
 
     bus.irq_vector = 0x20;
     cpu.signal_irq();
 
-    // One step: IRQ dispatch → null SS → #TS → same-privilege dispatch → HLT
+    // One step: IRQ dispatch -> null SS -> #TS -> same-privilege dispatch -> HLT
     cpu.step(&mut bus);
 
     assert!(cpu.halted());
@@ -1602,7 +1602,7 @@ fn i286_ret_far_imm_inter_privilege_reads_correct_offset() {
     write_word_at(&mut bus, PM_STACK_BASE + sp as u32 + 8, 0xFE00); // new SP
     write_word_at(&mut bus, PM_STACK_BASE + sp as u32 + 10, PM_RING3_SS_SEL); // new SS
 
-    cpu.step(&mut bus); // RETF 4 → ring 3
+    cpu.step(&mut bus); // RETF 4 -> ring 3
     cpu.step(&mut bus); // HLT
 
     assert!(cpu.halted());
@@ -1630,7 +1630,7 @@ fn i286_ret_far_ip_exceeds_limit_faults() {
     write_word_at(&mut bus, PM_STACK_BASE + sp as u32, 0x0200); // IP > limit
     write_word_at(&mut bus, PM_STACK_BASE + sp as u32 + 2, 0x0040); // sel 0x40 = GDT index 8
 
-    cpu.step(&mut bus); // RETF → #GP (IP > limit)
+    cpu.step(&mut bus); // RETF -> #GP (IP > limit)
     cpu.step(&mut bus); // HLT at #GP handler
 
     assert!(cpu.halted());
@@ -1669,7 +1669,7 @@ fn i286_invalidate_nonconforming_code_in_ds_on_return() {
     write_word_at(&mut bus, PM_STACK_BASE + sp as u32 + 4, 0xFF00);
     write_word_at(&mut bus, PM_STACK_BASE + sp as u32 + 6, PM_RING3_SS_SEL);
 
-    cpu.step(&mut bus); // RETF → ring 3
+    cpu.step(&mut bus); // RETF -> ring 3
 
     assert_eq!(cpu.cs() & 3, 3);
     assert!(
@@ -1699,7 +1699,7 @@ fn i286_keep_nonconforming_code_in_ds_when_dpl_sufficient() {
     write_word_at(&mut bus, PM_STACK_BASE + sp as u32 + 4, 0xFF00);
     write_word_at(&mut bus, PM_STACK_BASE + sp as u32 + 6, PM_RING3_SS_SEL);
 
-    cpu.step(&mut bus); // RETF → ring 3
+    cpu.step(&mut bus); // RETF -> ring 3
 
     assert_eq!(cpu.cs() & 3, 3);
     assert!(
@@ -1729,7 +1729,7 @@ fn i286_keep_conforming_code_in_ds_on_return() {
     write_word_at(&mut bus, PM_STACK_BASE + sp as u32 + 4, 0xFF00);
     write_word_at(&mut bus, PM_STACK_BASE + sp as u32 + 6, PM_RING3_SS_SEL);
 
-    cpu.step(&mut bus); // RETF → ring 3
+    cpu.step(&mut bus); // RETF -> ring 3
 
     assert_eq!(cpu.cs() & 3, 3);
     assert!(
@@ -1753,7 +1753,7 @@ fn i286_ss_limit_violation_uses_ss_vector() {
     // PUSH AX - writes to SS:SP-2, which exceeds limit
     place_at(&mut bus, PM_RING3_CODE_BASE, &[0x50]);
 
-    cpu.step(&mut bus); // PUSH AX → SS limit fault → #SS
+    cpu.step(&mut bus); // PUSH AX -> SS limit fault -> #SS
     cpu.step(&mut bus); // HLT at #SS handler
 
     assert!(cpu.halted());
@@ -1785,7 +1785,7 @@ fn i286_ds_limit_violation_uses_gp_vector() {
     // MOV [0x0020], AX (opcode 0xA3 + imm16) - writes to DS:0x0020 > limit
     place_at(&mut bus, PM_CODE_BASE, &[0xA3, 0x20, 0x00]);
 
-    cpu.step(&mut bus); // MOV → DS limit fault → #GP
+    cpu.step(&mut bus); // MOV -> DS limit fault -> #GP
     cpu.step(&mut bus); // HLT at #GP handler
 
     assert!(cpu.halted());
@@ -1822,7 +1822,7 @@ fn i286_hardware_interrupt_error_code_has_ext_bit() {
     bus.irq_vector = 14;
     cpu.signal_irq();
 
-    // One step: IRQ dispatch → IDT bounds fault → #GP dispatch → HLT
+    // One step: IRQ dispatch -> IDT bounds fault -> #GP dispatch -> HLT
     cpu.step(&mut bus);
 
     assert!(cpu.halted());
@@ -1851,7 +1851,7 @@ fn i286_software_interrupt_error_code_no_ext_bit() {
     // INT 14 (CD 0E) - software interrupt for vector beyond IDT limit
     place_at(&mut bus, PM_CODE_BASE, &[0xCD, 0x0E]);
 
-    // Step 1: INT 14 → IDT bounds fault → #GP dispatch
+    // Step 1: INT 14 -> IDT bounds fault -> #GP dispatch
     cpu.step(&mut bus);
     // Step 2: HLT at #GP handler
     cpu.step(&mut bus);
@@ -2033,7 +2033,7 @@ fn i286_ss_type_violation_raises_gp_not_ss() {
     place_at(&mut bus, PM_CODE_BASE, &[0xB8, 0x18, 0x00, 0x8E, 0xD0]);
 
     cpu.step(&mut bus); // MOV AX, 0x0018
-    cpu.step(&mut bus); // MOV SS, AX → should fault
+    cpu.step(&mut bus); // MOV SS, AX -> should fault
     cpu.step(&mut bus); // HLT in handler
 
     assert!(cpu.halted());
@@ -2052,14 +2052,14 @@ fn i286_ss_privilege_violation_raises_gp_not_ss() {
     cpu.load_state(&state);
 
     // Put a ring-3 writable data segment at GDT entry 3 (SS slot).
-    // CPL=0 but DPL=3 → privilege mismatch → should be #GP.
+    // CPL=0 but DPL=3 -> privilege mismatch -> should be #GP.
     write_gdt_entry(&mut bus, PM_GDT_BASE, 3, PM_STACK_BASE, 0xFFFF, 0xF3);
 
     // MOV AX, 0x0018; MOV SS, AX
     place_at(&mut bus, PM_CODE_BASE, &[0xB8, 0x18, 0x00, 0x8E, 0xD0]);
 
     cpu.step(&mut bus); // MOV AX, 0x0018
-    cpu.step(&mut bus); // MOV SS, AX → should fault
+    cpu.step(&mut bus); // MOV SS, AX -> should fault
     cpu.step(&mut bus); // HLT in handler
 
     assert!(cpu.halted());
@@ -2078,14 +2078,14 @@ fn i286_ss_not_present_raises_ss() {
     cpu.load_state(&state);
 
     // Put a not-present writable data segment at GDT entry 3.
-    // Type and privilege are correct, but not present → should be #SS (vector 12).
+    // Type and privilege are correct, but not present -> should be #SS (vector 12).
     write_gdt_entry(&mut bus, PM_GDT_BASE, 3, PM_STACK_BASE, 0xFFFF, 0x13);
 
     // MOV AX, 0x0018; MOV SS, AX
     place_at(&mut bus, PM_CODE_BASE, &[0xB8, 0x18, 0x00, 0x8E, 0xD0]);
 
     cpu.step(&mut bus); // MOV AX, 0x0018
-    cpu.step(&mut bus); // MOV SS, AX → should fault
+    cpu.step(&mut bus); // MOV SS, AX -> should fault
     cpu.step(&mut bus); // HLT in handler
 
     assert!(cpu.halted());
@@ -2337,7 +2337,7 @@ fn i286_jmp_far_call_gate_inner_privilege_faults() {
         &[0xEA, 0x00, 0x00, 0x40, 0x00],
     );
 
-    cpu.step(&mut bus); // JMP FAR → #GP
+    cpu.step(&mut bus); // JMP FAR -> #GP
     cpu.step(&mut bus); // HLT in handler
 
     assert!(cpu.halted());
@@ -2366,7 +2366,7 @@ fn i286_call_gate_dpl_insufficient_faults() {
         &[0x9A, 0x00, 0x00, 0x43, 0x00],
     );
 
-    cpu.step(&mut bus); // CALL FAR → #GP
+    cpu.step(&mut bus); // CALL FAR -> #GP
     cpu.step(&mut bus); // HLT
 
     assert!(cpu.halted());
@@ -2419,7 +2419,7 @@ fn i286_jmp_far_to_tss_switches_task() {
     // JMP FAR 0x0048:0x0000 (TSS selector).
     place_at(&mut bus, PM_CODE_BASE, &[0xEA, 0x00, 0x00, 0x48, 0x00]);
 
-    cpu.step(&mut bus); // JMP FAR → task switch
+    cpu.step(&mut bus); // JMP FAR -> task switch
     cpu.step(&mut bus); // HLT in new task
 
     assert!(cpu.halted());
@@ -2486,7 +2486,7 @@ fn i286_call_far_to_tss_sets_nt_and_backlink() {
     // CALL FAR 0x0048:0x0000
     place_at(&mut bus, PM_CODE_BASE, &[0x9A, 0x00, 0x00, 0x48, 0x00]);
 
-    cpu.step(&mut bus); // CALL FAR → task switch
+    cpu.step(&mut bus); // CALL FAR -> task switch
     cpu.step(&mut bus); // HLT
 
     assert!(cpu.halted());
@@ -2556,8 +2556,8 @@ fn i286_iret_with_nt_returns_to_previous_task() {
     let tss1_rights_addr = (PM_GDT_BASE + 7 * 8 + 5) as usize;
     bus.ram[tss1_rights_addr] |= 0x02;
 
-    cpu.step(&mut bus); // CALL FAR → switch to task 2
-    cpu.step(&mut bus); // IRET in task 2 (NT set) → switch back to task 1
+    cpu.step(&mut bus); // CALL FAR -> switch to task 2
+    cpu.step(&mut bus); // IRET in task 2 (NT set) -> switch back to task 1
     cpu.step(&mut bus); // HLT in task 1
 
     assert!(cpu.halted());
@@ -2618,8 +2618,8 @@ fn i286_task_switch_saves_and_restores_registers() {
     // CALL FAR 0x0048:0x0000
     place_at(&mut bus, PM_CODE_BASE, &[0x9A, 0x00, 0x00, 0x48, 0x00]);
 
-    cpu.step(&mut bus); // CALL FAR → task 2
-    cpu.step(&mut bus); // IRET → back to task 1
+    cpu.step(&mut bus); // CALL FAR -> task 2
+    cpu.step(&mut bus); // IRET -> back to task 1
     cpu.step(&mut bus); // HLT
 
     assert!(cpu.halted());

@@ -1204,7 +1204,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             return;
         }
         let active_mask = Self::reverse_bits_in_bytes(raw_mask);
-        // GDC word address → byte offset. Each GDC word is 2 bytes.
+        // GDC word address -> byte offset. Each GDC word is 2 bytes.
         let byte_offset = (op.address as usize & 0x3FFF) * 2;
         // Convert the 16-bit active mask to an EGC word write at the word-aligned address.
         // The address is already word-aligned (GDC addresses are word addresses).
@@ -1432,7 +1432,7 @@ mod tests {
         let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
         // Shadow RAM read mode (bit 1) so we can read back writes to the BIOS range.
         bus.memory.set_shadow_control(0x02);
-        // Map RAM window to E0000-FFFFF range (window value 0x0E → physical base 0xE0000).
+        // Map RAM window to E0000-FFFFF range (window value 0x0E -> physical base 0xE0000).
         // Use offset 0x88000 to reach physical 0xE8000 (BIOS ROM / shadow RAM area).
         bus.ram_window = 0x0E;
         bus.write_byte_with_access_page(0x88000, 0xAB);
@@ -1659,7 +1659,7 @@ mod tests {
     #[test]
     fn port_f0_shutdown_sets_flag() {
         let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
-        // Set SHUT0=1 (bit 7), clear SHUT1 (bit 5) → shutdown.
+        // Set SHUT0=1 (bit 7), clear SHUT1 (bit 5) -> shutdown.
         bus.io_write_byte(0x37, 0x0F); // set SHUT0
         bus.io_write_byte(0x37, 0x0A); // clear SHUT1
         assert_ne!(bus.system_ppi.state.port_c & 0x80, 0, "SHUT0 should be set");
@@ -1753,10 +1753,10 @@ mod tests {
         bus.install_soundboard_86(None, true);
 
         // Write volume to line 5 (PCM direct, bits 7-5 = 101).
-        bus.io_write_byte(0xA466, 0xA5); // 101_00101 → line 5, value 5
+        bus.io_write_byte(0xA466, 0xA5); // 101_00101 -> line 5, value 5
 
         // Write volume to line 0 (FM direct, bits 7-5 = 000).
-        bus.io_write_byte(0xA466, 0x0A); // 000_01010 → line 0, value 10
+        bus.io_write_byte(0xA466, 0x0A); // 000_01010 -> line 0, value 10
 
         // Snapshot the live state and verify both were stored.
         let state = bus.soundboard_86.as_ref().unwrap().save_state();
@@ -1776,13 +1776,13 @@ mod tests {
         // This also sets last_clock_for_wait = current_cycle (IRQ clear + empty buffer).
         bus.io_write_byte(0xA468, 0xA0); // bit 7=1 (play), bit 5=1 (IRQ en)
 
-        // Set IRQ threshold to 128 bytes (value 0 → (0+1)*128 = 128).
+        // Set IRQ threshold to 128 bytes (value 0 -> (0+1)*128 = 128).
         bus.io_write_byte(0xA46A, 0x00);
 
         // Advance cycle past data_write_irq_wait before reading status.
         bus.current_cycle = 400_000;
 
-        // FIFO is empty and below threshold → IRQ should be flagged.
+        // FIFO is empty and below threshold -> IRQ should be flagged.
         let ctrl = bus.io_read_byte(0xA468);
         assert_ne!(
             ctrl & 0x10,

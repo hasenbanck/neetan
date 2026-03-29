@@ -1,4 +1,4 @@
-; sasi.asm — SASI HLE ROM stub for Neetan
+; sasi.asm - SASI HLE ROM stub for Neetan
 ;
 ; Assembles to a 4096-byte expansion ROM image mapped at physical 0xD7000.
 ; Provides High-Level Emulation (HLE) for SASI disk I/O by intercepting

@@ -1,6 +1,6 @@
-; debug_fpu.asm — x87 FPU test ROM for Neetan with ULP-based precision verification
+; debug_fpu.asm - x87 FPU test ROM for Neetan with ULP-based precision verification
 ; Assembles to a 192KB dual-bank ROM image for RA/AP/AS machines.
-;   Bank 0 (first 96KB, file offset 0x00000): F8000-FFFFF — reset vector only
+;   Bank 0 (first 96KB, file offset 0x00000): F8000-FFFFF - reset vector only
 ;   Bank 1 (second 96KB, file offset 0x18000): E8000-F7FFF — all code and data
 ; Cycles through 3 test pages with Enter key:
 ;   Page 1: FPU constants (FLDPI, FLD1, FLDZ, FLDL2T, FLDL2E, FLDLG2, FLDLN2)

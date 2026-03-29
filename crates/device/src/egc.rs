@@ -1487,7 +1487,7 @@ mod tests {
     #[test]
     fn cpu_broadcast_write_word() {
         let mut egc = Egc::new();
-        egc.write_register_word(0x04, 0x0000); // ope=0 → CPU broadcast
+        egc.write_register_word(0x04, 0x0000); // ope=0 -> CPU broadcast
         let vram = [0u16; 4];
         let (data, mask) = egc.write_word(0xA8000, 0xBEEF, vram);
         assert_eq!(data, [0xBEEF, 0xBEEF, 0xBEEF, 0xBEEF]);
@@ -1569,7 +1569,7 @@ mod tests {
     #[test]
     fn write_byte_cpu_broadcast() {
         let mut egc = Egc::new();
-        egc.write_register_word(0x04, 0x0000); // ope=0 → CPU broadcast
+        egc.write_register_word(0x04, 0x0000); // ope=0 -> CPU broadcast
         let vram = [0u8; 4];
         let (data, mask) = egc.write_byte(0xA8000, 0xAB, vram);
         assert_eq!(data, [0xAB, 0xAB, 0xAB, 0xAB]);
@@ -1607,7 +1607,7 @@ mod tests {
         assert_eq!(result, 0x00, "no pixels match fg color 5");
 
         // Partial match: only some bits match across all planes.
-        // fg=5 → fgc=[0xFF,0x00,0xFF,0x00]
+        // fg=5 -> fgc=[0xFF,0x00,0xFF,0x00]
         // B=0xF0, R=0x00, G=0xFF, E=0x00
         // XOR: B=0x0F, R=0x00, G=0x00, E=0x00
         // NOT XOR: B=0xF0, R=0xFF, G=0xFF, E=0xFF

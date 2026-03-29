@@ -940,7 +940,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         let snapshot = &mut *self.vsync_snapshot;
 
-        // Palette: pack analog [green_4bit, red_4bit, blue_4bit] → u32 as 0xFF_BB_GG_RR.
+        // Palette: pack analog [green_4bit, red_4bit, blue_4bit] -> u32 as 0xFF_BB_GG_RR.
         for i in 0..16 {
             let [g4, r4, b4] = self.palette.state.analog[i];
             let r8 = (r4 & 0x0F) * 17;
@@ -2301,7 +2301,7 @@ mod tests {
     #[test]
     fn ram_window_remaps_to_extended_ram() {
         let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
-        // Set RAM window to 0x10 → physical base 0x100000 (1 MB).
+        // Set RAM window to 0x10 -> physical base 0x100000 (1 MB).
         bus.ram_window = 0x10;
         // Write via remapped window.
         bus.write_byte_with_access_page(0x80000, 0xAB);

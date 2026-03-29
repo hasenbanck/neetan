@@ -49,13 +49,13 @@ neetan <COMMAND>
 
 | Option                   | Description                                                              | Default    |
 |--------------------------|--------------------------------------------------------------------------|------------|
-| `-c, --config <PATH>`    | Load configuration from file                                             | —          |
+| `-c, --config <PATH>`    | Load configuration from file                                             | -          |
 | `--machine <TYPE>`       | Machine type: `PC9801VM`, `PC9801VX`, `PC9801RA`, `PC9821AS`, `PC9821AP` | `PC9801VX` |
-| `--fdd1 <PATH>`          | Floppy disk image for drive 1 (repeatable)                               | —          |
-| `--fdd2 <PATH>`          | Floppy disk image for drive 2 (repeatable)                               | —          |
-| `--hdd1 <PATH>`          | Hard disk image for SASI drive 1                                         | —          |
-| `--hdd2 <PATH>`          | Hard disk image for SASI drive 2                                         | —          |
-| `--cdrom <PATH>`         | CD-ROM disc image CUE file (repeatable, PC-9821 only)                    | —          |
+| `--fdd1 <PATH>`          | Floppy disk image for drive 1 (repeatable)                               | -          |
+| `--fdd2 <PATH>`          | Floppy disk image for drive 2 (repeatable)                               | -          |
+| `--hdd1 <PATH>`          | Hard disk image for SASI drive 1                                         | -          |
+| `--hdd2 <PATH>`          | Hard disk image for SASI drive 2                                         | -          |
+| `--cdrom <PATH>`         | CD-ROM disc image CUE file (repeatable, PC-9821 only)                    | -          |
 | `--audio-volume <FLOAT>` | Audio volume 0.0–1.0                                                     | `1.0`      |
 | `--aspect-mode <MODE>`   | Display aspect mode: `4:3` or `1:1`                                      | `4:3`      |
 | `--window-mode <MODE>`   | Window mode: `windowed` or `fullscreen`                                  | `windowed` |
@@ -63,26 +63,26 @@ neetan <COMMAND>
 | `--font-rom <PATH>`      | Path to font ROM file                                                    | Built-in   |
 | `--soundboard <TYPE>`    | Sound board: `none`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`           | `86+26k`   |
 | `--gdc-compatibility`    | Force 2.5 MHz GDC clock (200-line compatibility mode). VX and later only | off        |
-| `--printer <PATH>`       | Output file for printer (must exist)                                     | —          |
-| `--sc55-roms <PATH>`     | Path to SC-55 ROM directory (requires `sc55` feature)                    | —          |
-| `-h, --help`             | Print help                                                               | —          |
-| `-V, --version`          | Print version                                                            | —          |
+| `--printer <PATH>`       | Output file for printer (must exist)                                     | -          |
+| `--sc55-roms <PATH>`     | Path to SC-55 ROM directory (requires `sc55` feature)                    | -          |
+| `-h, --help`             | Print help                                                               | -          |
+| `-V, --version`          | Print version                                                            | -          |
 
 ### Commands
 
-`create-fdd <PATH> [OPTIONS]` — Create an empty floppy disk image (D88 format).
+`create-fdd <PATH> [OPTIONS]` - Create an empty floppy disk image (D88 format).
 
 | Option          | Description                         | Default |
 |-----------------|-------------------------------------|---------|
 | `--type <TYPE>` | `2hd` (1232 KiB) or `2dd` (640 KiB) | `2hd`   |
 
-`create-hdd <PATH> [OPTIONS]` — Create an empty hard disk image (HDI format).
+`create-hdd <PATH> [OPTIONS]` - Create an empty hard disk image (HDI format).
 
 | Option          | Description                                                                                                          |
 |-----------------|----------------------------------------------------------------------------------------------------------------------|
 | `--type <TYPE>` | SASI: `sasi5`, `sasi10`, `sasi15`, `sasi20`, `sasi30`, `sasi40`. IDE: `ide40`, `ide80`, `ide120`, `ide200`, `ide500` |
 
-`convert-hdd <INPUT> <OUTPUT>` — Convert a hard disk image between SASI and IDE formats.
+`convert-hdd <INPUT> <OUTPUT>` - Convert a hard disk image between SASI and IDE formats.
 
 The conversion direction is auto-detected from the input image's sector size (256 bytes = SASI, 512 bytes = IDE).
 The smallest compatible target geometry is chosen automatically. Output is always in HDI format.

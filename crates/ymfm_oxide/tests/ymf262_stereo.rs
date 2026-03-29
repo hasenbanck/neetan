@@ -136,7 +136,7 @@ fn output_mute() {
 #[test]
 fn per_channel_independent_routing() {
     let mut chip = setup_ymf262();
-    // ch0 → output A
+    // ch0 -> output A
     write_reg_opl3(&mut chip, 0xC0, 0x11);
     for op in 0..2u8 {
         let off = opl_op_offset(0, op);
@@ -147,7 +147,7 @@ fn per_channel_independent_routing() {
         write_reg_opl3(&mut chip, 0xE0 + off, 0x00);
     }
     write_reg_opl3(&mut chip, 0xA0, 0x41);
-    // ch1 → output B
+    // ch1 -> output B
     write_reg_opl3(&mut chip, 0xC1, 0x21);
     for op in 0..2u8 {
         let off = opl_op_offset(1, op);

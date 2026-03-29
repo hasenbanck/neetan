@@ -356,7 +356,7 @@ impl I286 {
                     self.raise_segment_protection(seg, selector, bus);
                     return false;
                 }
-                // Present check for CS → #NP.
+                // Present check for CS -> #NP.
                 if !Self::descriptor_present(rights) {
                     self.raise_segment_not_present(seg, selector, bus);
                     return false;
@@ -381,7 +381,7 @@ impl I286 {
                     self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
                     return false;
                 }
-                // Present check for SS → #SS (vector 12).
+                // Present check for SS -> #SS (vector 12).
                 if !Self::descriptor_present(rights) {
                     self.raise_fault_with_code(12, Self::segment_error_code(selector), bus);
                     return false;
@@ -400,7 +400,7 @@ impl I286 {
                     self.raise_segment_protection(seg, selector, bus);
                     return false;
                 }
-                // Present check for DS/ES → #NP.
+                // Present check for DS/ES -> #NP.
                 if !Self::descriptor_present(rights) {
                     self.raise_segment_not_present(seg, selector, bus);
                     return false;

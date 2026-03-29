@@ -1,4 +1,4 @@
-; debug_mouse.asm — Mouse integration test ROM for Neetan
+; debug_mouse.asm - Mouse integration test ROM for Neetan
 ; Assembles to a 96KB ROM image loaded at physical 0xE8000–0xFFFFF
 ; Draws a 4x4 white pixel cursor controlled by the mouse.
 ; Right Ctrl in the emulator toggles mouse capture.
@@ -118,7 +118,7 @@ entry:
     jmp .main_loop
 
 ; ============================================================================
-; read_mouse — Read mouse deltas via PPI and update cursor position
+; read_mouse - Read mouse deltas via PPI and update cursor position
 ; ============================================================================
 read_mouse:
     ; Clear HC, keep INT# disabled
@@ -203,7 +203,7 @@ read_mouse:
     ret
 
 ; ============================================================================
-; erase_cursor — Erase cursor at old position using GRCG TDW (all planes)
+; erase_cursor - Erase cursor at old position using GRCG TDW (all planes)
 ; ============================================================================
 erase_cursor:
     ; GRCG TDW mode, tiles = 0x00 (black on all planes)
@@ -224,7 +224,7 @@ erase_cursor:
     ret
 
 ; ============================================================================
-; draw_cursor — Draw cursor at current position using GRCG RMW (all planes)
+; draw_cursor - Draw cursor at current position using GRCG RMW (all planes)
 ; ============================================================================
 draw_cursor:
     ; GRCG RMW mode, tiles = 0xFF (white on all planes)
@@ -245,7 +245,7 @@ draw_cursor:
     ret
 
 ; ============================================================================
-; render_cursor — Write 4x4 cursor pattern at (AX=x, BX=y)
+; render_cursor - Write 4x4 cursor pattern at (AX=x, BX=y)
 ;
 ; GRCG must be configured by caller. Writes go through VRAM_B segment;
 ; GRCG applies the operation to all enabled planes simultaneously.
@@ -306,7 +306,7 @@ cursor_masks:
     db 0x01, 0xE0           ; x%8=7: .......# ###.....
 
 ; ============================================================================
-; flush_keyboard — Drain any pending scan codes from the keyboard FIFO
+; flush_keyboard - Drain any pending scan codes from the keyboard FIFO
 ; ============================================================================
 flush_keyboard:
     in al, 0x43
@@ -318,7 +318,7 @@ flush_keyboard:
     ret
 
 ; ============================================================================
-; wait_vsync — Wait for GDC master vertical blanking transition (0 -> 1)
+; wait_vsync - Wait for GDC master vertical blanking transition (0 -> 1)
 ; ============================================================================
 wait_vsync:
 .wait_active:
@@ -332,7 +332,7 @@ wait_vsync:
     ret
 
 ; ============================================================================
-; draw_text — Write title and instructions to text VRAM
+; draw_text - Write title and instructions to text VRAM
 ; ============================================================================
 draw_text:
     mov ax, TEXT_VRAM
@@ -367,7 +367,7 @@ str_title:  db 'MOUSE TEST', 0
 str_help:   db 'RIGHT CTRL TO CAPTURE', 0
 
 ; ============================================================================
-; set_palette — Set analog palette entries 0 (black) and 15 (white)
+; set_palette - Set analog palette entries 0 (black) and 15 (white)
 ; ============================================================================
 set_palette:
     ; Entry 0: Black
@@ -388,7 +388,7 @@ set_palette:
     ret
 
 ; ============================================================================
-; clear_all_planes — Zero all 4 VRAM planes
+; clear_all_planes - Zero all 4 VRAM planes
 ; ============================================================================
 clear_all_planes:
     mov bx, VRAM_B
@@ -409,7 +409,7 @@ clear_plane:
     ret
 
 ; ============================================================================
-; clear_text_vram — Fill text VRAM with spaces and invisible attributes
+; clear_text_vram - Fill text VRAM with spaces and invisible attributes
 ; ============================================================================
 clear_text_vram:
     mov ax, TEXT_VRAM

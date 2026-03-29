@@ -105,7 +105,7 @@ fn arithmetic_div() {
     let a = Fp80::from_f64(355.0, &mut ef);
     let b = Fp80::from_f64(113.0, &mut ef);
     let result = a.div(b, RC, PC, &mut ef);
-    // Bytes from mpmath: 0x09,0xBC,0xFD,0x90,0xC0,0xDB,0x0F,0xC9 → sig = 0xC90FDBC090FDBC09
+    // Bytes from mpmath: 0x09,0xBC,0xFD,0x90,0xC0,0xDB,0x0F,0xC9 -> sig = 0xC90FDBC090FDBC09
     check("355/113", result, 0x4000, 0xC90FDBC090FDBC09, 0);
 }
 

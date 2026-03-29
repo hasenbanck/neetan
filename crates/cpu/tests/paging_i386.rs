@@ -574,7 +574,7 @@ fn paging_fault_pde_not_present_read() {
     // Now clear PDE 1 - code/stack remain under PDE 0.
     write_dword_at(&mut bus, PG_PAGE_DIR + 4, 0);
 
-    // MOV AL, [0x0000] - DS:0 = linear 0x400000, PDE 1 not present → #PF.
+    // MOV AL, [0x0000] - DS:0 = linear 0x400000, PDE 1 not present -> #PF.
     place_at(&mut bus, PG_CODE_BASE, &[0xA0, 0x00, 0x00]);
     cpu.step(&mut bus); // faults
     cpu.step(&mut bus); // executes HLT in #PF handler
@@ -701,7 +701,7 @@ fn paging_fault_user_reads_supervisor_page() {
     assert!(cpu.halted());
     assert_eq!(cpu.ip(), PG_PF_HANDLER_IP as u32 + 1);
 
-    // Error code: present=1, read=0, user=1 → 0x05.
+    // Error code: present=1, read=0, user=1 -> 0x05.
     let sp = cpu.esp();
     let error_code = read_word_at(&bus, PG_STACK_BASE + sp);
     assert_eq!(error_code, 0x0005, "error code: present, read, user");
@@ -921,8 +921,8 @@ fn paging_movsb_between_remapped_pages() {
     let state = setup_paged_protected_mode(&mut bus);
     cpu.load_state(&state);
 
-    // Source: DS:SI → data page (identity-mapped at PG_DATA_BASE).
-    // Dest: ES:DI → we'll remap ES's target page.
+    // Source: DS:SI -> data page (identity-mapped at PG_DATA_BASE).
+    // Dest: ES:DI -> we'll remap ES's target page.
     //
     // DS base = PG_DATA_BASE = 0x10000
     // ES base = PG_DATA_BASE = 0x10000
@@ -1284,8 +1284,8 @@ fn paging_two_pages_different_physical() {
     cpu.load_state(&state);
 
     // DS base is PG_DATA_BASE = 0x10000.
-    // DS:0x0000 → page 0x10 (identity → phys 0x10000).
-    // DS:0x1000 → page 0x11 (we'll remap to PG_REMAP_PAGE).
+    // DS:0x0000 -> page 0x10 (identity -> phys 0x10000).
+    // DS:0x1000 -> page 0x11 (we'll remap to PG_REMAP_PAGE).
     let pte_11 = (PG_DATA_BASE >> 12) + 1; // page index 0x11
     write_dword_at(
         &mut bus,
@@ -1345,7 +1345,7 @@ fn paging_requires_pe_and_pg() {
     bus.ram[PG_REMAP_PAGE as usize] = 0xAA;
     bus.ram[PG_DATA_BASE as usize] = 0xBB;
 
-    // Read should go through page tables → get 0xAA from remapped page.
+    // Read should go through page tables -> get 0xAA from remapped page.
     place_at(&mut bus, PG_CODE_BASE, &[0xA0, 0x00, 0x00]);
     cpu.step(&mut bus);
     assert_eq!(
@@ -1471,7 +1471,7 @@ fn paging_pde_pte_permission_conflict() {
     let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
-    // Scenario (a): PDE has U/S+R/W, PTE has U/S but NO R/W. User write → error 0x0007.
+    // Scenario (a): PDE has U/S+R/W, PTE has U/S but NO R/W. User write -> error 0x0007.
     let mut state = setup_paged_protected_mode(&mut bus);
     make_ring3(&mut state);
     cpu.load_state(&state);
@@ -1517,7 +1517,7 @@ fn paging_pde_pte_permission_conflict() {
     let error_code = read_word_at(&bus, PG_STACK_BASE + sp);
     assert_eq!(error_code, 0x0007, "present + write + user");
 
-    // Scenario (b): PDE has NO U/S, PTE has U/S+R/W. User read → error 0x0005.
+    // Scenario (b): PDE has NO U/S, PTE has U/S+R/W. User read -> error 0x0005.
     let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
@@ -1672,7 +1672,7 @@ fn paging_outsb_translates_source() {
 
     let mut state = setup_paged_protected_mode(&mut bus);
 
-    // Remap DS data page (linear 0x10000) → physical PG_REMAP_PAGE (0xB0000).
+    // Remap DS data page (linear 0x10000) -> physical PG_REMAP_PAGE (0xB0000).
     let pte_index = PG_DATA_BASE >> 12;
     write_dword_at(
         &mut bus,
@@ -1711,7 +1711,7 @@ fn paging_lgdt_from_paged_memory() {
     let state = setup_paged_protected_mode(&mut bus);
     cpu.load_state(&state);
 
-    // Remap DS data page (linear 0x10000) → physical PG_REMAP_PAGE (0xB0000).
+    // Remap DS data page (linear 0x10000) -> physical PG_REMAP_PAGE (0xB0000).
     let pte_index = PG_DATA_BASE >> 12;
     write_dword_at(
         &mut bus,
@@ -1870,7 +1870,7 @@ fn paging_supervisor_override_ring3_interrupt() {
         );
     }
 
-    // Set up IRQ vector 0x40 → ring-0 handler at a known offset in code segment.
+    // Set up IRQ vector 0x40 -> ring-0 handler at a known offset in code segment.
     let irq_handler_offset: u32 = 0xA000;
     write_idt_gate(
         &mut bus,
@@ -1966,7 +1966,7 @@ fn paging_rep_movsb_fault_mid_operation() {
     }
 
     // Destination: ES base=0x30000, DI=0x0FFC. Linear addresses 0x30FFC-0x31003.
-    // Page 0x30 is identity-mapped, page 0x31 is unmapped → fault at 0x31000.
+    // Page 0x30 is identity-mapped, page 0x31 is unmapped -> fault at 0x31000.
     state.seg_bases[cpu::SegReg32::ES as usize] = 0x30000;
     state.set_esi(0x0000);
     state.set_edi(0x0FFC);

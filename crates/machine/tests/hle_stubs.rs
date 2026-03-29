@@ -229,7 +229,7 @@ fn hle_int1ah_dos_chain_vm() {
     let hook = make_dos_chain_hook(orig_seg, orig_off);
     write_bytes(&mut machine.bus, HOOK_HANDLER, &hook);
 
-    // Patch IVT: INT 1Ah → 0x0000:HOOK_HANDLER
+    // Patch IVT: INT 1Ah -> 0x0000:HOOK_HANDLER
     machine.bus.write_word(0x1A * 4, HOOK_HANDLER as u16);
     machine.bus.write_word(0x1A * 4 + 2, 0x0000);
 

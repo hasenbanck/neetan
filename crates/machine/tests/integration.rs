@@ -15,7 +15,7 @@ fn pit_timer_interrupt_fires() {
     machine.bus.io_write_byte(0x02, 0x1D); // ICW4
     machine.bus.io_write_byte(0x02, 0x00); // OCW1: IMR=0 (all unmasked)
 
-    // Set up IVT: vector 0x08 → handler at 0x0000:0x1000
+    // Set up IVT: vector 0x08 -> handler at 0x0000:0x1000
     machine.bus.write_word(0x08 * 4, 0x1000);
     machine.bus.write_word(0x08 * 4 + 2, 0x0000);
 
@@ -71,7 +71,7 @@ fn pit_timer_interrupt_fires() {
     );
     assert!(
         machine.cpu.halted(),
-        "CPU should be halted after IRET → HLT"
+        "CPU should be halted after IRET -> HLT"
     );
 }
 
@@ -89,7 +89,7 @@ fn pit_timer_multiple_interrupts() {
     machine.bus.io_write_byte(0x02, 0x1D);
     machine.bus.io_write_byte(0x02, 0x00);
 
-    // IVT: vector 0x08 → 0x0000:0x1000
+    // IVT: vector 0x08 -> 0x0000:0x1000
     machine.bus.write_word(0x08 * 4, 0x1000);
     machine.bus.write_word(0x08 * 4 + 2, 0x0000);
 
@@ -153,7 +153,7 @@ fn run_pit_test<C: Cpu>(
     machine.bus.io_write_byte(0x02, 0x1D); // ICW4
     machine.bus.io_write_byte(0x02, 0x00); // OCW1: IMR=0 (all unmasked)
 
-    // IVT: vector 0x08 → 0x0000:0x1000
+    // IVT: vector 0x08 -> 0x0000:0x1000
     machine.bus.write_word(0x08 * 4, 0x1000);
     machine.bus.write_word(0x08 * 4 + 2, 0x0000);
 
@@ -197,7 +197,7 @@ fn pit_timer_single_interrupt_test<C: Cpu>(
     );
     assert!(
         machine.cpu.halted(),
-        "CPU should be halted after IRET → HLT"
+        "CPU should be halted after IRET -> HLT"
     );
 }
 
@@ -298,9 +298,9 @@ fn hle_cold_reset_reinitialises_devices() {
     assert_eq!(machine.bus.io_read_byte(0x02), 0xFF);
 
     // Guest code at 0000:0100:
-    //   MOV AL, 0x0F  → OUT 0x37, AL   (set SHUT0=1)
-    //   MOV AL, 0x0B  → OUT 0x37, AL   (set SHUT1=1)
-    //   MOV AL, 0x00  → OUT 0xF0, AL   (trigger cold reset)
+    //   MOV AL, 0x0F  -> OUT 0x37, AL   (set SHUT0=1)
+    //   MOV AL, 0x0B  -> OUT 0x37, AL   (set SHUT1=1)
+    //   MOV AL, 0x00  -> OUT 0xF0, AL   (trigger cold reset)
     //   HLT
     #[rustfmt::skip]
     let code: &[u8] = &[
@@ -321,7 +321,7 @@ fn hle_cold_reset_reinitialises_devices() {
         s
     });
 
-    // Run enough cycles for the cold reset → stub ROM → HLE INT F0h.
+    // Run enough cycles for the cold reset -> stub ROM -> HLE INT F0h.
     machine.run_for(50_000);
 
     assert_eq!(
@@ -365,8 +365,8 @@ fn hle_warm_reset_resumes_execution() {
     machine.bus.write_word(0x0406, 0x0000); // SS
 
     // Guest code at 0000:0100:
-    //   MOV AL, 0x0E  → OUT 0x37, AL   (clear SHUT0 → warm reset)
-    //   MOV AL, 0x00  → OUT 0xF0, AL   (trigger warm reset)
+    //   MOV AL, 0x0E  -> OUT 0x37, AL   (clear SHUT0 -> warm reset)
+    //   MOV AL, 0x00  -> OUT 0xF0, AL   (trigger warm reset)
     //   HLT           (should not reach here)
     #[rustfmt::skip]
     let code: &[u8] = &[
@@ -406,9 +406,9 @@ fn hle_shutdown_stops_machine() {
     );
 
     // Guest code at 0000:0100:
-    //   MOV AL, 0x0F  → OUT 0x37, AL   (set SHUT0=1)
-    //   MOV AL, 0x0A  → OUT 0x37, AL   (clear SHUT1=0)
-    //   MOV AL, 0x00  → OUT 0xF0, AL   (trigger shutdown)
+    //   MOV AL, 0x0F  -> OUT 0x37, AL   (set SHUT0=1)
+    //   MOV AL, 0x0A  -> OUT 0x37, AL   (clear SHUT1=0)
+    //   MOV AL, 0x00  -> OUT 0xF0, AL   (trigger shutdown)
     //   HLT
     #[rustfmt::skip]
     let code: &[u8] = &[

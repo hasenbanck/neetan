@@ -84,7 +84,7 @@ fn egc_cpu_broadcast_write_byte() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
     setup_egc(&mut bus);
 
-    // ope=0 (default) → CPU broadcast mode.
+    // ope=0 (default) -> CPU broadcast mode.
     bus.write_byte(VRAM_B, 0x5A);
 
     disable_grcg(&mut bus);
@@ -119,7 +119,7 @@ fn egc_foreground_color_fill() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
     setup_egc(&mut bus);
 
-    write_egc_register(&mut bus, 0x06, 5); // fg=5 → planes 0,2 = 0xFFFF
+    write_egc_register(&mut bus, 0x06, 5); // fg=5 -> planes 0,2 = 0xFFFF
     write_egc_register(&mut bus, 0x02, 0x4000); // fgbg: FGC source
     write_egc_register(&mut bus, 0x04, 0x1000); // ope: pattern source
 
@@ -127,7 +127,7 @@ fn egc_foreground_color_fill() {
 
     disable_grcg(&mut bus);
 
-    // fg=5 = 0b0101 → B-plane(0)=1, R-plane(1)=0, G-plane(2)=1, E-plane(3)=0
+    // fg=5 = 0b0101 -> B-plane(0)=1, R-plane(1)=0, G-plane(2)=1, E-plane(3)=0
     assert_eq!(bus.read_byte_direct(VRAM_B), 0xFF);
     assert_eq!(bus.read_byte_direct(VRAM_B + 1), 0xFF);
     assert_eq!(bus.read_byte_direct(VRAM_R), 0x00);
@@ -158,8 +158,8 @@ fn egc_write_with_mask() {
     disable_grcg(&mut bus);
 
     // mask=0xF0F0: bits where mask=1 get new data (0x00), bits where mask=0 keep old (0xFF).
-    // Low byte: mask=0xF0 → result = (0xFF & ~0xF0) | (0x00 & 0xF0) = 0x0F
-    // High byte: mask=0xF0 → result = 0x0F
+    // Low byte: mask=0xF0 -> result = (0xFF & ~0xF0) | (0x00 & 0xF0) = 0x0F
+    // High byte: mask=0xF0 -> result = 0x0F
     for &base in &[VRAM_B, VRAM_R, VRAM_G, VRAM_E] {
         assert_eq!(
             bus.read_byte_direct(base),
@@ -266,7 +266,7 @@ fn egc_register_write_via_io_ports() {
     setup_egc(&mut bus);
 
     // Write access register to disable plane 2 (G): set bit 2.
-    // access = 0xFFF4 (bit 2 set → plane 2 disabled).
+    // access = 0xFFF4 (bit 2 set -> plane 2 disabled).
     write_egc_register(&mut bus, 0x00, 0xFFF4);
 
     // CPU broadcast write.
@@ -336,9 +336,9 @@ fn egc_aligned_word_block_copy_no_shift() {
     // leng: 15 (16 bits).
     write_egc_register_word(&mut bus, 0x0E, 0x000F);
 
-    // Read source at offset 0 → feeds shift pipeline.
+    // Read source at offset 0 -> feeds shift pipeline.
     let _ = bus.read_word(VRAM_B);
-    // Write destination at offset 2 → applies shifted data via ROP.
+    // Write destination at offset 2 -> applies shifted data via ROP.
     bus.write_word(VRAM_B + 2, 0x0000);
 
     disable_grcg(&mut bus);
@@ -583,7 +583,7 @@ fn egc_compare_read_byte_full_match() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
-    // FGC color 5 → B=0xFF, R=0x00, G=0xFF, E=0x00
+    // FGC color 5 -> B=0xFF, R=0x00, G=0xFF, E=0x00
     bus.write_byte(VRAM_B, 0xFF);
     bus.write_byte(VRAM_R, 0x00);
     bus.write_byte(VRAM_G, 0xFF);
@@ -628,7 +628,7 @@ fn egc_compare_read_byte_partial_match() {
 
     // FGC=5: B=0xFF, R=0x00, G=0xFF, E=0x00
     // VRAM: B=0xF0, R=0x00, G=0xFF, E=0x00
-    // Mismatch on B plane bits 0-3 → result should be 0xF0
+    // Mismatch on B plane bits 0-3 -> result should be 0xF0
     bus.write_byte(VRAM_B, 0xF0);
     bus.write_byte(VRAM_R, 0x00);
     bus.write_byte(VRAM_G, 0xFF);
@@ -750,8 +750,8 @@ fn egc_mixed_fgc_bgc_pattern() {
 
     disable_grcg(&mut bus);
 
-    // FGC=0xF → fgc=[0xFFFF,0xFFFF,0xFFFF,0xFFFF].
-    // BGC=0x0 → bgc=[0x0000,0x0000,0x0000,0x0000].
+    // FGC=0xF -> fgc=[0xFFFF,0xFFFF,0xFFFF,0xFFFF].
+    // BGC=0x0 -> bgc=[0x0000,0x0000,0x0000,0x0000].
     // Mixed (0x6000): [fgc[0], fgc[1], bgc[2], bgc[3]] = [0xFFFF, 0xFFFF, 0x0000, 0x0000].
     assert_eq!(read_plane_word(&bus, VRAM_B, 2), 0xFFFF, "B=FGC");
     assert_eq!(read_plane_word(&bus, VRAM_R, 2), 0xFFFF, "R=FGC");
@@ -772,7 +772,7 @@ fn egc_mask_write_blocked_when_fgbg_nonzero() {
 
     setup_egc(&mut bus);
 
-    // Set fgbg to 0x2000 (BGC source) → mask writes should be blocked.
+    // Set fgbg to 0x2000 (BGC source) -> mask writes should be blocked.
     write_egc_register_word(&mut bus, 0x02, 0x2000);
     // Attempt to set mask to 0x0000 - should be ignored because fgbg bits 13-12 != 0.
     write_egc_register_word(&mut bus, 0x08, 0x0000);
@@ -868,7 +868,7 @@ fn egc_compare_read_bgc_source() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
     bus.io_write_byte(0x6A, 0x01);
 
-    // BGC color 0xA → B=0x0000, R=0xFFFF, G=0x0000, E=0xFFFF
+    // BGC color 0xA -> B=0x0000, R=0xFFFF, G=0x0000, E=0xFFFF
     // Fill VRAM matching color 0xA.
     prefill_planes_word(&mut bus, 0, [0x0000, 0xFFFF, 0x0000, 0xFFFF]);
 
@@ -907,7 +907,7 @@ fn egc_compare_read_patreg_source() {
     setup_egc(&mut bus);
 
     // ope=0x2100: compare-read (bit13=1) + load patreg on read (bits 9-8=01).
-    // fgbg=0x0000: default → patreg compare source.
+    // fgbg=0x0000: default -> patreg compare source.
     write_egc_register_word(&mut bus, 0x04, 0x2100);
 
     // First read loads patreg from VRAM at offset 0.
@@ -1004,7 +1004,7 @@ fn egc_shift_right_ascending() {
     setup_egc(&mut bus);
 
     write_egc_register_word(&mut bus, 0x04, 0x08F0); // ROP source copy, VRAM source
-    // sft: ascending, srcbit=3, dstbit=7 → src8=3, dst8=7 → func=2 (right shift 4).
+    // sft: ascending, srcbit=3, dstbit=7 -> src8=3, dst8=7 -> func=2 (right shift 4).
     write_egc_register_word(&mut bus, 0x0C, 0x0073);
     write_egc_register_word(&mut bus, 0x0E, 0x001F); // 32 bits
 
@@ -1037,7 +1037,7 @@ fn egc_shift_left_ascending() {
     setup_egc(&mut bus);
 
     write_egc_register_word(&mut bus, 0x04, 0x08F0); // ROP source copy, VRAM source
-    // sft: ascending, srcbit=7, dstbit=3 → src8=7, dst8=3 → func=4 (left shift 4).
+    // sft: ascending, srcbit=7, dstbit=3 -> src8=7, dst8=3 -> func=4 (left shift 4).
     write_egc_register_word(&mut bus, 0x0C, 0x0037);
     write_egc_register_word(&mut bus, 0x0E, 0x001F); // 32 bits
 
@@ -1123,7 +1123,7 @@ fn egc_rop_pattern_and_source() {
 
     setup_egc(&mut bus);
 
-    // fg=0xF → fgc = all 0xFFFF. Pattern source = FGC.
+    // fg=0xF -> fgc = all 0xFFFF. Pattern source = FGC.
     write_egc_register_word(&mut bus, 0x06, 0xF);
     write_egc_register_word(&mut bus, 0x02, 0x4000); // fgbg: FGC source for pattern
     // ope=0x0880: ROP=0x80 = P & S & D (ope_xx path).
@@ -1155,19 +1155,19 @@ fn egc_rop_ope_nd_pattern_only() {
 
     setup_egc(&mut bus);
 
-    // fg=0xA → fgc=[0x0000, 0xFFFF, 0x0000, 0xFFFF].
+    // fg=0xA -> fgc=[0x0000, 0xFFFF, 0x0000, 0xFFFF].
     write_egc_register_word(&mut bus, 0x06, 0xA);
     write_egc_register_word(&mut bus, 0x02, 0x4000);
     // ope=0x080A: ROP=0x0A (ope_nd path): result = P & ~S | 0 = P & ~S.
-    // Actually 0x0A = bit3(P & ~S) | bit1(~P & ~S) → simplified: ~S.
-    // Wait, 0x0A = 0b00001010: bit3=1 (P & ~S), bit1=1 (~P & ~S) → ~S regardless of P.
+    // Actually 0x0A = bit3(P & ~S) | bit1(~P & ~S) -> simplified: ~S.
+    // Wait, 0x0A = 0b00001010: bit3=1 (P & ~S), bit1=1 (~P & ~S) -> ~S regardless of P.
     // But ope_nd requires !uses_dest && uses_pat. Let me verify:
     // uses_dest: (0x08!=0x02)=yes. So this is NOT ope_nd actually.
-    // Let me use 0x0C instead: 0b00001100: bit3=1(P&~S&D), bit2=1(~P&~S&D) → ~S & D.
-    // Actually let me just use ROP=0xA0: 0b10100000: bit7=1(P&S&D), bit5=1(P&S&~D) → P & S.
+    // Let me use 0x0C instead: 0b00001100: bit3=1(P&~S&D), bit2=1(~P&~S&D) -> ~S & D.
+    // Actually let me just use ROP=0xA0: 0b10100000: bit7=1(P&S&D), bit5=1(P&S&~D) -> P & S.
     // For ope_nd: uses_dest=false, uses_pat=true.
-    // ROP 0xA0: bit7(P&S&D),bit5(P&S&~D) → D doesn't matter → P & S. uses_dest=false.
-    // uses_pat: bit7!=bit6(0)? 0x80!=0x40 → yes for bit7=1,bit6=0. So uses_pat=true.
+    // ROP 0xA0: bit7(P&S&D),bit5(P&S&~D) -> D doesn't matter -> P & S. uses_dest=false.
+    // uses_pat: bit7!=bit6(0)? 0x80!=0x40 -> yes for bit7=1,bit6=0. So uses_pat=true.
     write_egc_register_word(&mut bus, 0x04, 0x08A0);
     write_egc_register_word(&mut bus, 0x0C, 0x0000);
     write_egc_register_word(&mut bus, 0x0E, 0x000F);
@@ -1204,21 +1204,21 @@ fn egc_rop_ope_np_no_pattern() {
     // 0x22 = bit5=1(0x20: S&~D in np context? No...)
     // Actually for ope_np: bit7=S&D, bit5=S&~D, bit3=~S&D, bit1=~S&~D.
     // Wait, let me re-read the code. ope_np uses: bit7(S&D), bit5(S&~D), bit3(~S&D), bit1(~S&~D).
-    // Hmm, code says: 0x80→S&D, 0x20→S&~D, 0x08→~S&D, 0x02→~S&~D.
+    // Hmm, code says: 0x80->S&D, 0x20->S&~D, 0x08->~S&D, 0x02->~S&~D.
     // 0x22 = 0x20|0x02 = (S&~D) | (~S&~D) = ~D.
     // Let me use 0x0C instead: 0x0C = 0x08|0x04. But 0x04 maps to ~P&~S&D in full...
-    // For ope_np it's: 0x08→~S&D. 0x04 isn't used in ope_np.
-    // Let me just use ROP=0x0A → but earlier analysis showed ope_np needs uses_dest && !uses_pat.
+    // For ope_np it's: 0x08->~S&D. 0x04 isn't used in ope_np.
+    // Let me just use ROP=0x0A -> but earlier analysis showed ope_np needs uses_dest && !uses_pat.
     // ROP 0x22 = 0b00100010:
-    //   uses_dest: (bit7!=bit5)→(0!=1)=true OR (bit6!=bit4)→(0!=0)=false OR (bit3!=bit1)→(0!=1)=true
-    //   uses_pat: (bit7!=bit6)→(0!=0)=false, (bit5!=bit4)→(1!=0)=true. So uses_pat=true.
+    //   uses_dest: (bit7!=bit5)->(0!=1)=true OR (bit6!=bit4)->(0!=0)=false OR (bit3!=bit1)->(0!=1)=true
+    //   uses_pat: (bit7!=bit6)->(0!=0)=false, (bit5!=bit4)->(1!=0)=true. So uses_pat=true.
     //   This means 0x22 goes to ope_xx, not ope_np.
     // For pure ope_np we need !uses_pat: all pairs (bit7,bit6), (bit5,bit4), (bit3,bit2), (bit1,bit0) must be equal.
-    // That means bits come in pairs. 0xCC = 0b11001100: pairs (1,1)(0,0)(1,1)(0,0) → each pair equal → !uses_pat.
-    // uses_dest: (0x80!=0x20)→(1!=0)=true. Yes.
-    // 0xCC: in ope_np: bit7(S&D)=1, bit5(S&~D)=0, bit3(~S&D)=1, bit1(~S&~D)=0 → S&D | ~S&D = D.
-    // That's boring. Let me use 0x44 = 0b01000100: pairs (0,1)(0,0)(0,1)(0,0) → !uses_pat.
-    // Hmm wait, uses_pat checks (bit7!=bit6), i.e., 0!=1 → true. So 0x44 uses_pat.
+    // That means bits come in pairs. 0xCC = 0b11001100: pairs (1,1)(0,0)(1,1)(0,0) -> each pair equal -> !uses_pat.
+    // uses_dest: (0x80!=0x20)->(1!=0)=true. Yes.
+    // 0xCC: in ope_np: bit7(S&D)=1, bit5(S&~D)=0, bit3(~S&D)=1, bit1(~S&~D)=0 -> S&D | ~S&D = D.
+    // That's boring. Let me use 0x44 = 0b01000100: pairs (0,1)(0,0)(0,1)(0,0) -> !uses_pat.
+    // Hmm wait, uses_pat checks (bit7!=bit6), i.e., 0!=1 -> true. So 0x44 uses_pat.
     // I need pairs to be equal: bits 7,6 same; bits 5,4 same; bits 3,2 same; bits 1,0 same.
     // Valid ope_np ROPs: 0x00, 0x0A, 0x50, 0x5A, 0xA0, 0xAA, 0xF0, 0xFA, 0x05, 0x0F, 0x55, 0x5F, 0xA5, 0xAF, 0xF5, 0xFF
     // Hmm, let me recalculate. uses_pat checks if ANY of these pairs differ:
@@ -1227,13 +1227,13 @@ fn egc_rop_ope_np_no_pattern() {
     // This means each pair of bits is 00 or 11. The ROP is determined by 4 bits: (b7, b5, b3, b1).
     // And uses_dest requires at least one of: b7!=b5, b6!=b4, b3!=b1, b2!=b0.
     // Since b7=b6, b5=b4, b3=b2, b1=b0, this simplifies to: b7!=b5 or b3!=b1.
-    // Let's pick: b7=1,b5=0,b3=1,b1=0 → S&D | ~S&D = D. (boring)
-    // b7=1,b5=0,b3=0,b1=0 → S&D → 0xC0. pairs: (1,1)(0,0)(0,0)(0,0) → !uses_pat. uses_dest: b7!=b5=yes.
+    // Let's pick: b7=1,b5=0,b3=1,b1=0 -> S&D | ~S&D = D. (boring)
+    // b7=1,b5=0,b3=0,b1=0 -> S&D -> 0xC0. pairs: (1,1)(0,0)(0,0)(0,0) -> !uses_pat. uses_dest: b7!=b5=yes.
     // Hmm 0xC0 is already a fast-path. Let me use 0xC0 differently...
     // Actually 0xC0 hits the fast path. Let me find one that doesn't.
-    // b7=0,b5=1,b3=0,b1=0 → S&~D → pairs: (0,0)(1,1)(0,0)(0,0) = 0x30.
-    // 0x30 doesn't have a fast path. uses_dest: b7!=b5→0!=1→yes. uses_pat: all pairs equal→no. → ope_np!
-    // ope_np for 0x30: bit7(S&D)=0, bit5(S&~D)=1, bit3(~S&D)=0, bit1(~S&~D)=0 → S & ~D.
+    // b7=0,b5=1,b3=0,b1=0 -> S&~D -> pairs: (0,0)(1,1)(0,0)(0,0) = 0x30.
+    // 0x30 doesn't have a fast path. uses_dest: b7!=b5->0!=1->yes. uses_pat: all pairs equal->no. -> ope_np!
+    // ope_np for 0x30: bit7(S&D)=0, bit5(S&~D)=1, bit3(~S&D)=0, bit1(~S&~D)=0 -> S & ~D.
     write_egc_register_word(&mut bus, 0x04, 0x0830);
     write_egc_register_word(&mut bus, 0x0C, 0x0000);
     write_egc_register_word(&mut bus, 0x0E, 0x000F);
@@ -1243,7 +1243,7 @@ fn egc_rop_ope_np_no_pattern() {
 
     disable_grcg(&mut bus);
 
-    // S & ~D: S=0xF0F0, D=0xFF00, ~D=0x00FF → 0xF0F0 & 0x00FF = 0x00F0
+    // S & ~D: S=0xF0F0, D=0xFF00, ~D=0x00FF -> 0xF0F0 & 0x00FF = 0x00F0
     for &base in &[VRAM_B, VRAM_R, VRAM_G, VRAM_E] {
         assert_eq!(read_plane_word(&bus, base, 2), 0x00F0, "S&~D result");
     }
@@ -1287,7 +1287,7 @@ fn egc_ope_word_pattern_source_patreg() {
     setup_egc(&mut bus);
 
     // ope=0x1100: pattern source (bits 12-11=10), load patreg on read (bits 9-8=01).
-    // fgbg=0x0000 → patreg used as pattern.
+    // fgbg=0x0000 -> patreg used as pattern.
     write_egc_register_word(&mut bus, 0x04, 0x1100);
     write_egc_register_word(&mut bus, 0x0C, 0x0000);
     write_egc_register_word(&mut bus, 0x0E, 0x000F);
@@ -1325,7 +1325,7 @@ fn egc_aligned_word_partial_mask() {
 
     disable_grcg(&mut bus);
 
-    // High byte → 0x00 (from write), low byte → 0xAA (preserved by mask).
+    // High byte -> 0x00 (from write), low byte -> 0xAA (preserved by mask).
     for &base in &[VRAM_B, VRAM_R, VRAM_G, VRAM_E] {
         assert_eq!(read_plane_word(&bus, base, 0), 0x00AA, "partial mask");
     }
@@ -1358,7 +1358,7 @@ fn egc_sub_byte_leng() {
     disable_grcg(&mut bus);
 
     // srcmask for leng=3 (4 bits), dstbit=0, ascending:
-    // BYTEMASK_U1[3] = 0xF0 → top 4 bits from source (0x00), bottom 4 preserved (0x0F).
+    // BYTEMASK_U1[3] = 0xF0 -> top 4 bits from source (0x00), bottom 4 preserved (0x0F).
     assert_eq!(
         bus.read_byte_direct(VRAM_B + 2),
         0x0F,
@@ -1544,10 +1544,10 @@ fn egc_firmware_all_patterns() {
     );
 
     // Pattern 2: CPU Broadcast + Access
-    // TL: B only  → B=FF,R=00,G=00,E=00
-    // TR: R only  → B=00,R=FF,G=00,E=00
-    // BL: B+G     → B=FF,R=00,G=FF,E=00
-    // BR: R+E     → B=00,R=FF,G=00,E=FF
+    // TL: B only  -> B=FF,R=00,G=00,E=00
+    // TR: R only  -> B=00,R=FF,G=00,E=00
+    // BL: B+G     -> B=FF,R=00,G=FF,E=00
+    // BR: R+E     -> B=00,R=FF,G=00,E=FF
     send_enter_vx(&mut machine.bus);
     run_vx_steps(&mut machine, STEPS_PER_PATTERN);
 

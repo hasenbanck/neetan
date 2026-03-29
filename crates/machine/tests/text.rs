@@ -84,7 +84,7 @@ fn debug_text_debug_firmware_pages_and_wrap() {
     );
 
     // Page 1 (Kanji block 1): starts at VRAM row 0x01, column 0x21.
-    // JIS: ku = 0x01 + 0x20 = 0x21, ten = 0x21 → JIS 0x2121
+    // JIS: ku = 0x01 + 0x20 = 0x21, ten = 0x21 -> JIS 0x2121
     send_enter(&mut machine.bus);
     run_steps(&mut machine, STEPS_PER_PAGE);
 
@@ -94,14 +94,14 @@ fn debug_text_debug_firmware_pages_and_wrap() {
     );
 
     // Last entry on block-1 page (index 959): VRAM row 0x0B, column 0x34.
-    // JIS: ku = 0x0B + 0x20 = 0x2B, ten = 0x34 → JIS 0x2B34
+    // JIS: ku = 0x0B + 0x20 = 0x2B, ten = 0x34 -> JIS 0x2B34
     assert_eq!(
         read_text_char(&machine.bus, 24, 78),
         JisChar::from_u16(0x2B34)
     );
 
     // Page 2 (Kanji block 2): starts at VRAM row 0x0B, column 0x35.
-    // JIS: ku = 0x0B + 0x20 = 0x2B, ten = 0x35 → JIS 0x2B35
+    // JIS: ku = 0x0B + 0x20 = 0x2B, ten = 0x35 -> JIS 0x2B35
     send_enter(&mut machine.bus);
     run_steps(&mut machine, STEPS_PER_PAGE);
 

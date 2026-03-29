@@ -688,7 +688,7 @@ impl Application {
             MediaType::CdRom => (&self.cdrom_entries, self.cdrom_index),
         };
 
-        // Display position: None (empty) → 0, Some(n) → n + 1.
+        // Display position: None (empty) -> 0, Some(n) -> n + 1.
         let display_cursor = current_index.map_or(0, |n| n + 1);
         let display_count = entries.len() + 1;
 

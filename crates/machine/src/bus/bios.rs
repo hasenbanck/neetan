@@ -243,7 +243,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         // Send EOI to master PIC.
         self.pic.write_port0(0, 0x20);
 
-        // COPY key (0x60) → INT 06H, STOP key (0x61) → INT 05H.
+        // COPY key (0x60) -> INT 06H, STOP key (0x61) -> INT 05H.
         // The real BIOS dispatches these after EOI via the assembly wrapper.
         if !is_release {
             let int_vector = match key_code {

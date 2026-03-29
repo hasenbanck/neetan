@@ -2231,8 +2231,8 @@ fn i386_iret_with_nt_returns_to_previous_task() {
 
     bus.ram[(PM_GDT_BASE + 7 * 8 + 5) as usize] |= 0x02;
 
-    cpu.step(&mut bus); // CALL FAR → task 2
-    cpu.step(&mut bus); // IRET → task 1
+    cpu.step(&mut bus); // CALL FAR -> task 2
+    cpu.step(&mut bus); // IRET -> task 1
     cpu.step(&mut bus); // HLT
 
     assert!(cpu.halted());
@@ -2379,7 +2379,7 @@ fn i386_granularity_bit_scales_limit() {
     state.gdt_limit = 6 * 8 - 1;
     cpu.load_state(&state);
 
-    // G=1, limit[19:16]=0xF, raw limit 0x0FFFF → scaled = (0x0FFFF << 12) | 0xFFF = 0x0FFFFFFF
+    // G=1, limit[19:16]=0xF, raw limit 0x0FFFF -> scaled = (0x0FFFF << 12) | 0xFFF = 0x0FFFFFFF
     write_gdt_entry(&mut bus, PM_GDT_BASE, 4, PM_DATA_BASE, 0x0FFFF, 0x93, 0x80);
 
     // MOV BX, 0x0020; 66 0F 03 C3 = LSL EAX, EBX
@@ -3819,7 +3819,7 @@ fn i386_loop_clears_ip_upper() {
     let mut bus = TestBus::new();
 
     cpu.load_state(&real_mode_stale_ip_upper());
-    cpu.state.set_ecx(5); // CX=5, will decrement to 4 (nonzero → loop taken).
+    cpu.state.set_ecx(5); // CX=5, will decrement to 4 (nonzero -> loop taken).
 
     // E2 10 = LOOP +16. After 2 bytes, IP=0x0002, then IP += 0x10 = 0x0012.
     place_at(&mut bus, 0x10000, &[0xE2, 0x10]);
@@ -3837,7 +3837,7 @@ fn i386_jcxz_clears_ip_upper() {
     let mut bus = TestBus::new();
 
     cpu.load_state(&real_mode_stale_ip_upper());
-    cpu.state.set_ecx(0); // CX=0 → jump taken.
+    cpu.state.set_ecx(0); // CX=0 -> jump taken.
 
     // E3 10 = JCXZ +16. After 2 bytes, IP=0x0002, then IP += 0x10 = 0x0012.
     place_at(&mut bus, 0x10000, &[0xE3, 0x10]);
@@ -3958,12 +3958,12 @@ fn setup_vm86(bus: &mut TestBus) -> cpu::I386State {
     write_gdt_entry16(bus, VM86_GDT_BASE, 0, 0, 0, 0);
     write_gdt_entry16(bus, VM86_GDT_BASE, 1, VM86_CODE_BASE, 0xFFFF, 0x9B); // code, DPL=0
     write_gdt_entry16(bus, VM86_GDT_BASE, 2, 0x00000, 0xFFFF, 0x93); // data, DPL=0
-    // 32-bit stack: granularity byte = 0x40 sets D/B=1 → use_esp() = true
+    // 32-bit stack: granularity byte = 0x40 sets D/B=1 -> use_esp() = true
     write_gdt_entry(bus, VM86_GDT_BASE, 3, 0x00000, 0xFFFF, 0x93, 0x40); // 32-bit stack
     // 386 TSS (type 9, present, DPL=0): rights=0x89
     write_gdt_entry16(bus, VM86_GDT_BASE, 4, VM86_TSS_BASE, 0x0A, 0x89); // TSS
 
-    // IDT: vector 0x42 → 386 interrupt gate, DPL=3, targets CPL0 handler
+    // IDT: vector 0x42 -> 386 interrupt gate, DPL=3, targets CPL0 handler
     write_idt_gate(
         bus,
         VM86_IDT_BASE,
@@ -4044,7 +4044,7 @@ fn vm86_interrupt_dispatch_uses_pl0_stack_correctly() {
     let state = setup_vm86(&mut bus);
     cpu.load_state(&state);
 
-    // INT 0x42 at VM86 code base (CS=0x1000 → physical 0x10000)
+    // INT 0x42 at VM86 code base (CS=0x1000 -> physical 0x10000)
     bus.ram[0x10000] = 0xCD; // INT imm8
     bus.ram[0x10001] = 0x42; // vector 0x42
 
@@ -4118,7 +4118,7 @@ fn vm86_iret_cannot_change_iopl() {
     // VM86 stack: push 16-bit IRET frame with FLAGS that has IOPL=3 (bits 12-13 set).
     // Frame (16-bit IRET in VM86, IOPL=3 path): IP, CS, FLAGS
     // The IRET short path (IOPL=3 check) will pop: IP, CS, FLAGS
-    let vm86_stack_base: u32 = 0x20000; // SS=0x2000 → base 0x20000
+    let vm86_stack_base: u32 = 0x20000; // SS=0x2000 -> base 0x20000
     let sp: u16 = 0xF000;
     // Push FLAGS with IOPL=3 (bits 12-13 = 0x3000) at stack top
     let new_flags: u16 = 0x3202; // IOPL=3, IF=1, bit1=1
@@ -4194,7 +4194,7 @@ fn iopb_boundary_raises_gp_at_limit() {
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
     // Force CPL=3 by setting RPL bits in CS selector.
     state.set_cs(PM_CS_SEL | 3);
-    state.flags.iopl = 0; // IOPL=0 < CPL=3 → IOPB will be consulted
+    state.flags.iopl = 0; // IOPL=0 < CPL=3 -> IOPB will be consulted
 
     // Add TSS to GDT (entry 5, selector 0x28), extend GDT limit.
     const TSS_BASE: u32 = 0xC0000;
@@ -4203,26 +4203,26 @@ fn iopb_boundary_raises_gp_at_limit() {
     write_gdt_entry16(&mut bus, PM_GDT_BASE, 5, TSS_BASE, 0x69, 0x89);
     state.gdt_limit = 6 * 8 - 1;
 
-    // TSS: provide ESP0/SS0 for the CPL3→CPL0 #GP dispatch (offset 4=ESP0, 8=SS0).
+    // TSS: provide ESP0/SS0 for the CPL3->CPL0 #GP dispatch (offset 4=ESP0, 8=SS0).
     write_dword_at(&mut bus, TSS_BASE + 0x04, 0xFF00); // ESP0: PL0 stack at top of PM_STACK
     write_word_at(&mut bus, TSS_BASE + 0x08, PM_SS_SEL); // SS0: existing CPL0 stack segment
     // IOPB pointer at offset 0x66 = 0x0068 (IOPB starts at TSS+0x68).
     write_word_at(&mut bus, TSS_BASE + 0x66, 0x0068);
-    // IOPB byte for ports 0-7: all bits 0 → ports 0-7 allowed.
+    // IOPB byte for ports 0-7: all bits 0 -> ports 0-7 allowed.
     bus.ram[(TSS_BASE + 0x68) as usize] = 0x00;
-    // No sentinel byte (TSS+0x69 is exactly at tr_limit=0x69 → boundary check triggers).
+    // No sentinel byte (TSS+0x69 is exactly at tr_limit=0x69 -> boundary check triggers).
 
     state.tr = TSS_SEL;
     state.tr_base = TSS_BASE;
-    state.tr_limit = 0x69; // byte_idx for port 8 = 0x68+1 = 0x69 ≥ 0x69 → #GP
+    state.tr_limit = 0x69; // byte_idx for port 8 = 0x68+1 = 0x69 ≥ 0x69 -> #GP
     state.tr_rights = 0x89;
     cpu.load_state(&state);
 
-    // IN AL, 0 (port 0): byte_idx = 0x68 < 0x69 → reads IOPB, bit 0 = 0 → allowed.
-    // IN AL, 8 (port 8): byte_idx = 0x69 ≥ 0x69 → must raise #GP.
+    // IN AL, 0 (port 0): byte_idx = 0x68 < 0x69 -> reads IOPB, bit 0 = 0 -> allowed.
+    // IN AL, 8 (port 8): byte_idx = 0x69 ≥ 0x69 -> must raise #GP.
     place_at(&mut bus, PM_CODE_BASE, &[0xE4, 0x00, 0xE4, 0x08]);
 
-    cpu.step(&mut bus); // IN AL, 0 → should succeed
+    cpu.step(&mut bus); // IN AL, 0 -> should succeed
     assert_eq!(
         cpu.al(),
         0xFF,
@@ -4230,7 +4230,7 @@ fn iopb_boundary_raises_gp_at_limit() {
     );
     assert_eq!(cpu.ip() as u16, 2, "IP should advance past IN AL, 0");
 
-    cpu.step(&mut bus); // IN AL, 8 → byte_idx=0x69 >= tr_limit=0x69 → #GP dispatched
+    cpu.step(&mut bus); // IN AL, 8 -> byte_idx=0x69 >= tr_limit=0x69 -> #GP dispatched
     cpu.step(&mut bus); // HLT at #GP handler
     assert!(
         cpu.halted(),
@@ -4252,7 +4252,7 @@ fn iret_cpl0_to_vm86_clocks_60() {
     // Set up CPL0 protected mode.
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
 
-    // Build a 9-dword CPL0→VM86 IRET stack frame on the PM stack.
+    // Build a 9-dword CPL0->VM86 IRET stack frame on the PM stack.
     // Frame order on stack (high to low, ESP points to EIP):
     //   EIP, CS, EFLAGS (VM=1), ESP, SS, ES, DS, FS, GS
     let stack_base: u32 = PM_STACK_BASE;
@@ -4299,7 +4299,7 @@ fn iopb_32bit_eax_denied_at_port_plus_two() {
 
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
     state.set_cs(PM_CS_SEL | 3); // Force CPL=3
-    state.flags.iopl = 0; // IOPL=0 < CPL=3 → IOPB consulted
+    state.flags.iopl = 0; // IOPL=0 < CPL=3 -> IOPB consulted
 
     const TSS_BASE: u32 = 0xC0000;
     const TSS_SEL: u16 = 0x0028;
@@ -4322,7 +4322,7 @@ fn iopb_32bit_eax_denied_at_port_plus_two() {
     // 66 E5 00 = operand-size override + IN EAX, imm=0 (accesses port 0 and port 2)
     place_at(&mut bus, PM_CODE_BASE, &[0x66, 0xE5, 0x00]);
 
-    cpu.step(&mut bus); // IN EAX,0 → port 2 denied → #GP dispatched
+    cpu.step(&mut bus); // IN EAX,0 -> port 2 denied -> #GP dispatched
     cpu.step(&mut bus); // HLT at #GP handler
     assert!(
         cpu.halted(),
@@ -4386,7 +4386,7 @@ fn vm86_iret_16bit_clears_rf() {
 
     let mut state = setup_vm86(&mut bus);
     // Push a 16-bit IRET frame: [SP+0]=new IP, [SP+2]=new CS, [SP+4]=new FLAGS
-    let vm86_stack_base: u32 = 0x20000; // SS=0x2000 → base 0x20000
+    let vm86_stack_base: u32 = 0x20000; // SS=0x2000 -> base 0x20000
     let sp: u16 = 0xF000;
     write_word_at(&mut bus, vm86_stack_base + sp as u32 - 6, 0x0010); // new IP
     write_word_at(&mut bus, vm86_stack_base + sp as u32 - 4, 0x1000); // new CS
@@ -4463,9 +4463,9 @@ fn i386_stored_cpl_tracks_privilege_transitions() {
 /// handler, the processor shuts down."
 ///
 /// Fault cascade with IDT limit = 0:
-///  1. INT 3 → interrupt_protected → IDT too small → #GP (trap_level 1)
-///  2. #GP dispatch → IDT too small → #DF (trap_level 2)
-///  3. #DF dispatch → IDT too small → shutdown (trap_level 3, CPU halts)
+///  1. INT 3 -> interrupt_protected -> IDT too small -> #GP (trap_level 1)
+///  2. #GP dispatch -> IDT too small -> #DF (trap_level 2)
+///  3. #DF dispatch -> IDT too small -> shutdown (trap_level 3, CPU halts)
 #[test]
 fn i386_triple_fault_halts_cpu() {
     let mut cpu: I386 = I386::new();
@@ -4509,7 +4509,7 @@ fn i386_triple_fault_halts_cpu() {
 
 const PM_DF_HANDLER_IP: u16 = 0xC000;
 
-/// Protected mode: contributory + contributory → double fault.
+/// Protected mode: contributory + contributory -> double fault.
 ///
 /// Per Intel 386 manual Table 9-4: when a contributory exception occurs
 /// while dispatching another contributory exception, the CPU escalates
@@ -4584,7 +4584,7 @@ fn i386_double_fault_contributory_plus_contributory() {
 
     cpu.load_state(&state);
 
-    // DIV CL with AX=1, CL=0 → #DE (vector 0, contributory).
+    // DIV CL with AX=1, CL=0 -> #DE (vector 0, contributory).
     // F6 F1 = DIV CL
     place_at(
         &mut bus,
@@ -4598,7 +4598,7 @@ fn i386_double_fault_contributory_plus_contributory() {
 
     cpu.step(&mut bus); // MOV AL, 1
     cpu.step(&mut bus); // MOV CL, 0
-    cpu.step(&mut bus); // DIV CL → #DE → #GP → #DF
+    cpu.step(&mut bus); // DIV CL -> #DE -> #GP -> #DF
     cpu.step(&mut bus); // HLT in #DF handler
 
     assert!(cpu.halted(), "CPU must be halted in #DF handler");
@@ -4609,7 +4609,7 @@ fn i386_double_fault_contributory_plus_contributory() {
     );
 }
 
-/// Protected mode: benign + contributory → normal (no escalation).
+/// Protected mode: benign + contributory -> normal (no escalation).
 ///
 /// Per Intel 386 manual Table 9-4: when a contributory exception occurs
 /// while dispatching a benign exception, the CPU handles it normally
@@ -4685,10 +4685,10 @@ fn i386_no_double_fault_benign_plus_contributory() {
 
     cpu.load_state(&state);
 
-    // 0F FF is an undefined opcode → #UD (vector 6, benign).
+    // 0F FF is an undefined opcode -> #UD (vector 6, benign).
     place_at(&mut bus, PM_CODE_BASE, &[0x0F, 0xFF]);
 
-    cpu.step(&mut bus); // #UD → dispatch fails → #GP (benign + contrib = OK)
+    cpu.step(&mut bus); // #UD -> dispatch fails -> #GP (benign + contrib = OK)
     cpu.step(&mut bus); // HLT in #GP handler
 
     assert!(cpu.halted(), "CPU must be halted in #GP handler");
@@ -4761,10 +4761,10 @@ fn i386_jmp_short_preserves_eip_upper_in_32bit_mode() {
     // Place HLT at target (0x10002).
     bus.ram[0x1_0002] = 0xF4; // HLT
 
-    cpu.step(&mut bus); // JMP short → EIP = 0x10002
+    cpu.step(&mut bus); // JMP short -> EIP = 0x10002
     cpu.step(&mut bus); // HLT
 
-    assert!(cpu.halted(), "CPU must halt after JMP short → HLT");
+    assert!(cpu.halted(), "CPU must halt after JMP short -> HLT");
     assert_eq!(
         cpu.ip(),
         0x1_0003,
@@ -4810,7 +4810,7 @@ fn i386_jcc_short_preserves_eip_upper_in_32bit_mode() {
     cpu.load_state(&state);
 
     // XOR EAX, EAX (sets ZF=1) then JZ +4 at EIP=0x10002.
-    // After JZ instruction (2 bytes), IP = 0x10004. Disp +4 → EIP = 0x10008.
+    // After JZ instruction (2 bytes), IP = 0x10004. Disp +4 -> EIP = 0x10008.
     bus.ram[start_eip as usize] = 0x31; // XOR AX, AX (2 bytes: 31 C0)
     bus.ram[start_eip as usize + 1] = 0xC0;
     bus.ram[start_eip as usize + 2] = 0x74; // JZ rel8
@@ -4818,7 +4818,7 @@ fn i386_jcc_short_preserves_eip_upper_in_32bit_mode() {
     bus.ram[0x1_0008] = 0xF4; // HLT at target
 
     cpu.step(&mut bus); // XOR AX, AX (ZF=1)
-    cpu.step(&mut bus); // JZ +4 → EIP = 0x10008
+    cpu.step(&mut bus); // JZ +4 -> EIP = 0x10008
     cpu.step(&mut bus); // HLT
 
     assert!(cpu.halted());
@@ -4876,10 +4876,10 @@ fn i386_loop_preserves_eip_upper_in_32bit_mode() {
     bus.ram[start_eip as usize + 1] = 0xFE; // -2 (back to self)
     bus.ram[0x1_0002] = 0xF4; // HLT
 
-    cpu.step(&mut bus); // LOOP: ECX 2→1, branch to 0x10000
+    cpu.step(&mut bus); // LOOP: ECX 2->1, branch to 0x10000
     assert_eq!(cpu.ip(), 0x1_0000, "LOOP should branch back to 0x10000");
 
-    cpu.step(&mut bus); // LOOP: ECX 1→0, fall through to 0x10002
+    cpu.step(&mut bus); // LOOP: ECX 1->0, fall through to 0x10002
     assert_eq!(cpu.ip(), 0x1_0002, "LOOP should fall through to 0x10002");
 
     cpu.step(&mut bus); // HLT
@@ -5077,7 +5077,7 @@ fn i386_idiv_overflow_raises_de() {
     let state = setup_protected_mode_with_exception_handlers(&mut bus);
     cpu.load_state(&state);
 
-    // IDIV CL with AX=0x8000 (-32768), CL=0xFF (-1) → quotient 32768 overflows signed byte
+    // IDIV CL with AX=0x8000 (-32768), CL=0xFF (-1) -> quotient 32768 overflows signed byte
     cpu.state.set_eax(0x8000);
     cpu.state.set_ecx(0x00FF);
     // F6 F9 = IDIV CL
@@ -5391,8 +5391,8 @@ fn i386_into_with_overflow_raises_of() {
     );
 
     cpu.step(&mut bus); // MOV AX, 0x7FFF
-    cpu.step(&mut bus); // ADD AX, 1 → OF=1
-    cpu.step(&mut bus); // INTO → vector 4
+    cpu.step(&mut bus); // ADD AX, 1 -> OF=1
+    cpu.step(&mut bus); // INTO -> vector 4
     cpu.step(&mut bus); // HLT
 
     assert!(cpu.halted());
@@ -5575,7 +5575,7 @@ fn i386_movsb_forward() {
     bus.ram[(PM_DATA_BASE + 0x100) as usize] = 0xAB;
     cpu.state.set_esi(0x0100);
     cpu.state.set_edi(0x0200);
-    cpu.state.flags.df = false; // DF=0 → forward
+    cpu.state.flags.df = false; // DF=0 -> forward
 
     // A4 = MOVSB, F4 = HLT
     place_at(&mut bus, PM_CODE_BASE, &[0xA4, 0xF4]);
@@ -5599,7 +5599,7 @@ fn i386_movsb_backward() {
     bus.ram[(PM_DATA_BASE + 0x100) as usize] = 0xCD;
     cpu.state.set_esi(0x0100);
     cpu.state.set_edi(0x0200);
-    cpu.state.flags.df = true; // DF=1 → backward
+    cpu.state.flags.df = true; // DF=1 -> backward
 
     place_at(&mut bus, PM_CODE_BASE, &[0xA4, 0xF4]);
 
@@ -6016,7 +6016,7 @@ fn i386_load_null_ss_at_cpl0_raises_gp() {
     place_at(&mut bus, PM_CODE_BASE, &[0xB8, 0x00, 0x00, 0x8E, 0xD0]);
 
     cpu.step(&mut bus); // MOV AX, 0
-    cpu.step(&mut bus); // MOV SS, AX → #GP
+    cpu.step(&mut bus); // MOV SS, AX -> #GP
     cpu.step(&mut bus); // HLT in GP handler
 
     assert!(cpu.halted());
@@ -6042,7 +6042,7 @@ fn i386_access_via_null_ds_raises_gp() {
 
     cpu.step(&mut bus); // MOV AX, 0
     cpu.step(&mut bus); // MOV DS, AX
-    cpu.step(&mut bus); // MOV AL, [0x0000] → #GP (null DS)
+    cpu.step(&mut bus); // MOV AL, [0x0000] -> #GP (null DS)
     cpu.step(&mut bus); // HLT in GP handler
 
     assert!(cpu.halted());
@@ -6203,7 +6203,7 @@ fn i386_lea_disp32_only() {
     let state = setup_protected_mode_with_exception_handlers(&mut bus);
     cpu.load_state(&state);
 
-    // 67 8D 05 78 56 34 12 = LEA AX, [0x12345678] (ModRM: mod=00, rm=101 → disp32)
+    // 67 8D 05 78 56 34 12 = LEA AX, [0x12345678] (ModRM: mod=00, rm=101 -> disp32)
     // F4 = HLT
     place_at(
         &mut bus,
@@ -6501,7 +6501,7 @@ fn iopb_word_io_checks_two_consecutive_bits() {
     write_dword_at(&mut bus, TSS_BASE + 0x04, 0xFF00);
     write_word_at(&mut bus, TSS_BASE + 0x08, PM_SS_SEL);
     write_word_at(&mut bus, TSS_BASE + 0x66, 0x0068);
-    // bit 1 set → port 1 denied; word IN from port 0 checks ports 0 and 1
+    // bit 1 set -> port 1 denied; word IN from port 0 checks ports 0 and 1
     bus.ram[(TSS_BASE + 0x68) as usize] = 0x02;
 
     state.tr = TSS_SEL;
@@ -6539,7 +6539,7 @@ fn iopb_dword_io_checks_four_consecutive_bits() {
     write_dword_at(&mut bus, TSS_BASE + 0x04, 0xFF00);
     write_word_at(&mut bus, TSS_BASE + 0x08, PM_SS_SEL);
     write_word_at(&mut bus, TSS_BASE + 0x66, 0x0068);
-    // bit 3 set → port 3 denied; dword IN from port 0 checks ports 0-3
+    // bit 3 set -> port 3 denied; dword IN from port 0 checks ports 0-3
     bus.ram[(TSS_BASE + 0x68) as usize] = 0x08;
 
     state.tr = TSS_SEL;
@@ -6577,7 +6577,7 @@ fn iopb_dword_io_checks_port_plus_one() {
     write_dword_at(&mut bus, TSS_BASE + 0x04, 0xFF00);
     write_word_at(&mut bus, TSS_BASE + 0x08, PM_SS_SEL);
     write_word_at(&mut bus, TSS_BASE + 0x66, 0x0068);
-    // only bit 1 set → port 1 denied; dword IN from port 0 must check port 1 too
+    // only bit 1 set -> port 1 denied; dword IN from port 0 must check port 1 too
     bus.ram[(TSS_BASE + 0x68) as usize] = 0x02;
 
     state.tr = TSS_SEL;
@@ -6617,7 +6617,7 @@ fn iopb_cross_byte_boundary() {
     write_word_at(&mut bus, TSS_BASE + 0x66, 0x0068);
     // byte 0 (ports 0-7): all clear
     bus.ram[(TSS_BASE + 0x68) as usize] = 0x00;
-    // byte 1 (ports 8-15): bit 0 set → port 8 denied
+    // byte 1 (ports 8-15): bit 0 set -> port 8 denied
     // Word IN from port 7 checks bit 7 of byte 0 and bit 0 of byte 1
     bus.ram[(TSS_BASE + 0x69) as usize] = 0x01;
 
@@ -6656,7 +6656,7 @@ fn iopb_word_io_allowed_when_bits_clear() {
     write_dword_at(&mut bus, TSS_BASE + 0x04, 0xFF00);
     write_word_at(&mut bus, TSS_BASE + 0x08, PM_SS_SEL);
     write_word_at(&mut bus, TSS_BASE + 0x66, 0x0068);
-    // all bits clear → all ports allowed
+    // all bits clear -> all ports allowed
     bus.ram[(TSS_BASE + 0x68) as usize] = 0x00;
 
     state.tr = TSS_SEL;
@@ -6896,7 +6896,7 @@ fn task_switch_tss_t_bit_raises_debug_trap() {
     // EA 00 00 48 00 = JMP FAR 0x0048:0x0000
     place_at(&mut bus, PM_CODE_BASE, &[0xEA, 0x00, 0x00, 0x48, 0x00]);
 
-    cpu.step(&mut bus); // JMP FAR → task switch, debug trap fires
+    cpu.step(&mut bus); // JMP FAR -> task switch, debug trap fires
     cpu.step(&mut bus); // HLT at #DB handler
 
     assert!(cpu.halted());
@@ -6962,7 +6962,7 @@ fn task_switch_tss_t_bit_clear_no_debug_trap() {
 
     place_at(&mut bus, PM_CODE_BASE, &[0xEA, 0x00, 0x00, 0x48, 0x00]);
 
-    cpu.step(&mut bus); // JMP FAR → task switch, no debug trap
+    cpu.step(&mut bus); // JMP FAR -> task switch, no debug trap
     cpu.step(&mut bus); // HLT at new task's first instruction
 
     assert!(cpu.halted());
@@ -7029,7 +7029,7 @@ fn task_switch_tss_t_bit_sets_dr6_bt() {
     // Clear DR6 lower bits to verify only BT gets set.
     cpu.dr6 = 0xFFFF_0FF0;
 
-    cpu.step(&mut bus); // JMP FAR → task switch + debug trap
+    cpu.step(&mut bus); // JMP FAR -> task switch + debug trap
     cpu.step(&mut bus); // HLT at #DB handler
 
     assert!(cpu.halted());

@@ -2,13 +2,13 @@ use super::I386;
 
 impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     pub(super) fn fpu_escape(&mut self, opcode: u8, bus: &mut impl common::Bus) {
-        // CR0.EM=1 → #NM
+        // CR0.EM=1 -> #NM
         if self.cr0 & 0x04 != 0 {
             self.raise_fault(7, bus);
             return;
         }
 
-        // CR0.TS=1 → #NM
+        // CR0.TS=1 -> #NM
         if self.cr0 & 0x08 != 0 {
             self.raise_fault(7, bus);
             return;
@@ -17,7 +17,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let modrm = self.fetch(bus);
         let has_memory = modrm < 0xC0;
 
-        // ES=1 → deliver pending exception before executing
+        // ES=1 -> deliver pending exception before executing
         if self.fpu_es_pending() {
             self.fpu_raise_exception(bus);
             return;
@@ -42,13 +42,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     pub(super) fn fpu_wait(&mut self, bus: &mut impl common::Bus) {
-        // CR0.MP=1 AND CR0.TS=1 → #NM
+        // CR0.MP=1 AND CR0.TS=1 -> #NM
         if self.cr0 & 0x02 != 0 && self.cr0 & 0x08 != 0 {
             self.raise_fault(7, bus);
             return;
         }
 
-        // ES=1 → deliver pending exception
+        // ES=1 -> deliver pending exception
         if self.fpu_es_pending() {
             self.fpu_raise_exception(bus);
             return;

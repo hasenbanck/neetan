@@ -165,10 +165,10 @@ fn grcg_firmware_all_patterns() {
     check_plane_lines(&machine.bus, VRAM_E, 300, 400, 0x55, "P4 E lines 300-399");
 
     // TCR results stored in RAM at physical addresses 0x500-0x503
-    // Line 50 (band 0): all match tiles → 0xFF
-    // Line 150 (band 1): R,E mismatch → 0x00
-    // Line 250 (band 2): B,G mismatch → 0x00
-    // Line 350 (band 3): partial match → 0xAA
+    // Line 50 (band 0): all match tiles -> 0xFF
+    // Line 150 (band 1): R,E mismatch -> 0x00
+    // Line 250 (band 2): B,G mismatch -> 0x00
+    // Line 350 (band 3): partial match -> 0xAA
     let tcr0 = machine.bus.read_byte_direct(0x0500);
     let tcr1 = machine.bus.read_byte_direct(0x0501);
     let tcr2 = machine.bus.read_byte_direct(0x0502);
@@ -748,7 +748,7 @@ fn grcg_tcr_partial_plane_combinations() {
     bus.io_write_byte(0x7E, 0xFF); // E tile (disabled)
 
     let result = bus.read_byte(VRAM_B_BASE);
-    assert_eq!(result, 0xFF, "B+G match, R+E disabled → all match");
+    assert_eq!(result, 0xFF, "B+G match, R+E disabled -> all match");
 
     disable_grcg_mode(&mut bus);
 
@@ -760,7 +760,7 @@ fn grcg_tcr_partial_plane_combinations() {
     bus.io_write_byte(0x7E, 0x0F); // E tile (matches)
 
     let result = bus.read_byte(VRAM_B_BASE);
-    assert_eq!(result, 0xFF, "R+E match, B+G disabled → all match");
+    assert_eq!(result, 0xFF, "R+E match, B+G disabled -> all match");
 
     disable_grcg_mode(&mut bus);
 
@@ -772,7 +772,7 @@ fn grcg_tcr_partial_plane_combinations() {
     bus.io_write_byte(0x7E, 0x00); // E tile (disabled)
 
     let result = bus.read_byte(VRAM_B_BASE);
-    assert_eq!(result, 0xFF, "B only match → all match");
+    assert_eq!(result, 0xFF, "B only match -> all match");
 }
 
 #[test]
@@ -869,7 +869,7 @@ fn grcg_e_plane_disabled_skips_write() {
     // Disable the graphics extension board.
     bus.set_graphics_extension_enabled(false);
 
-    // TDW: all planes enabled, but graphics_extension is off → E-plane skipped.
+    // TDW: all planes enabled, but graphics_extension is off -> E-plane skipped.
     enable_grcg_tdw(&mut bus, [0xFF, 0xFF, 0xFF, 0xFF]);
     bus.write_byte(VRAM_B_BASE, 0xFF);
 

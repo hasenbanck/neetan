@@ -1,4 +1,4 @@
-; debug_crtc.asm — CRTC text rendering effects test ROM for Neetan
+; debug_crtc.asm - CRTC text rendering effects test ROM for Neetan
 ; Assembles to a 96KB ROM image loaded at physical 0xE8000-0xFFFFF
 ; 8 pages testing attribute effects, colors, and CRTC register behavior
 
@@ -144,7 +144,7 @@ render_page_attributes:
     mov ah, 0xE1
     call write_string_at
 
-    ; Row 5: Secret (bit 0 = 0 → hidden)
+    ; Row 5: Secret (bit 0 = 0 -> hidden)
     mov si, label_secret
     mov bh, 5
     mov bl, 2

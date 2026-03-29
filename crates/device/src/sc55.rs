@@ -1,7 +1,7 @@
 //! Roland SC-55 sound module device.
 //!
 //! Wraps the Nuked-SC55 emulation core, managing the render thread internally.
-//! The thread is an implementation detail — callers only interact with
+//! The thread is an implementation detail - callers only interact with
 //! [`Sc55::new`] (initialization) and [`Sc55::exchange`] (audio synchronization).
 
 use std::{

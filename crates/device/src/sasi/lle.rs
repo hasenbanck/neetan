@@ -10,8 +10,8 @@
 //!
 //! Software that talks directly to the SASI hardware ports (bypassing the
 //! BIOS) uses this path. The LLE controller implements the full SASI command
-//! protocol as a state machine: Free → Command → Read/Write → Status →
-//! Message → Free.
+//! protocol as a state machine: Free -> Command -> Read/Write -> Status ->
+//! Message -> Free.
 
 use crate::disk::HddImage;
 
@@ -225,7 +225,7 @@ impl Controller {
         let old = self.output_control;
         self.output_control = value;
 
-        // RST falling edge (1→0) resets the controller.
+        // RST falling edge (1->0) resets the controller.
         if (old & OCR_RST) != 0 && (value & OCR_RST) == 0 {
             self.phase = SasiPhase::Free;
         }

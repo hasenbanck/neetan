@@ -591,7 +591,7 @@ fn fxam_negative_qnan() {
 
 #[test]
 fn fchs_negate_basic() {
-    // Negate +1.0 → -1.0
+    // Negate +1.0 -> -1.0
     let r = run_x87(&[0xD9, 0xE0], &[Fp80::ONE]);
     assert!(r.st(0).sign());
     assert_eq!(r.st(0).exponent(), Fp80::ONE.exponent());
@@ -1464,7 +1464,7 @@ fn fistp_m16_basic() {
     // FISTP m16 = DF 1E 00 00
     let (r, bus) = run_x87_mem(&[0xDF, 0x1E, 0x00, 0x00], &[Fp80::ONE], CW_NEAREST_EXT, &[]);
     assert_eq!(read_mem_i16(&bus, 0), 1);
-    assert_eq!(r.tag(0), 0b11); // popped → empty
+    assert_eq!(r.tag(0), 0b11); // popped -> empty
 
     let (_, bus) = run_x87_mem(
         &[0xDF, 0x1E, 0x00, 0x00],
@@ -2788,7 +2788,7 @@ fn fprem_basic() {
     let r = run_x87(&[0xD9, 0xF8], &[FIVE, THREE]);
     assert_eq!(r.st(0), TWO);
     assert!(!r.c2()); // complete
-    // quotient bits: Q2=C0, Q1=C3, Q0=C1. quotient=1 → C0=0, C3=0, C1=1
+    // quotient bits: Q2=C0, Q1=C3, Q0=C1. quotient=1 -> C0=0, C3=0, C1=1
     assert!(!r.c0());
     assert!(!r.c3());
     assert!(r.c1());
@@ -2850,7 +2850,7 @@ fn fprem_negative_operand() {
 
 #[test]
 fn fprem_quotient_bits() {
-    // 7 % 2 = 1, quotient=3. Q2=0, Q1=1, Q0=1 → C0=0, C3=1, C1=1
+    // 7 % 2 = 1, quotient=3. Q2=0, Q1=1, Q0=1 -> C0=0, C3=1, C1=1
     let r = run_x87(&[0xD9, 0xF8], &[SEVEN, TWO]);
     assert_eq!(r.st(0), Fp80::ONE);
     assert!(!r.c0()); // Q2=0
@@ -2874,7 +2874,7 @@ fn fprem1_basic() {
     let r = run_x87(&[0xD9, 0xF5], &[FIVE, THREE]);
     assert_eq!(r.st(0), NEGATIVE_ONE);
     assert!(!r.c2());
-    // quotient=2 → Q2=0, Q1=1, Q0=0 → C0=0, C3=1, C1=0
+    // quotient=2 -> Q2=0, Q1=1, Q0=0 -> C0=0, C3=1, C1=0
     assert!(!r.c0());
     assert!(r.c3());
     assert!(!r.c1());

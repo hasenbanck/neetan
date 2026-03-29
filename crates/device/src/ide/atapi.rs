@@ -1638,7 +1638,7 @@ mod tests {
         let mut state = AtapiState::new();
         state.media_loaded = true;
 
-        // START/STOP: LoEj=1, Start=0 → eject.
+        // START/STOP: LoEj=1, Start=0 -> eject.
         state.packet = [0x1B, 0, 0, 0, 0x02, 0, 0, 0, 0, 0, 0, 0];
 
         let (_, is_error) = state.cmd_start_stop_unit();
@@ -1653,7 +1653,7 @@ mod tests {
         state.media_loaded = true;
         state.prevent_removal = true;
 
-        // START/STOP: LoEj=1, Start=0 → eject (should fail).
+        // START/STOP: LoEj=1, Start=0 -> eject (should fail).
         state.packet = [0x1B, 0, 0, 0, 0x02, 0, 0, 0, 0, 0, 0, 0];
 
         let (_, is_error) = state.cmd_start_stop_unit();

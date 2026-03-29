@@ -265,7 +265,7 @@ fn timer_tick_reloads_pit_vm() {
         state.pit.channels[0].ctrl, 0x36,
         "PIT ch0 ctrl should be 0x36 (mode 3) after INT 08h reload"
     );
-    // VM BIOS uses 5MHz PIT clock lineage → divider 0x6000.
+    // VM BIOS uses 5MHz PIT clock lineage -> divider 0x6000.
     assert_eq!(
         state.pit.channels[0].value, 0x6000,
         "PIT ch0 value should be 0x6000 (5MHz-lineage 10ms divider)"
@@ -282,7 +282,7 @@ fn timer_tick_reloads_pit_vx() {
         state.pit.channels[0].ctrl, 0x36,
         "PIT ch0 ctrl should be 0x36 (mode 3) after INT 08h reload"
     );
-    // VX BIOS uses 5MHz PIT clock lineage → divider 0x6000.
+    // VX BIOS uses 5MHz PIT clock lineage -> divider 0x6000.
     assert_eq!(
         state.pit.channels[0].value, 0x6000,
         "PIT ch0 value should be 0x6000 (5MHz-lineage 10ms divider)"
@@ -299,7 +299,7 @@ fn timer_tick_reloads_pit_ra() {
         state.pit.channels[0].ctrl, 0x36,
         "PIT ch0 ctrl should be 0x36 (mode 3) after INT 08h reload"
     );
-    // RA BIOS uses 8MHz PIT clock lineage → divider 0x4E00.
+    // RA BIOS uses 8MHz PIT clock lineage -> divider 0x4E00.
     assert_eq!(
         state.pit.channels[0].value, 0x4E00,
         "PIT ch0 value should be 0x4E00 (8MHz-lineage 10ms divider)"
@@ -338,7 +338,7 @@ fn make_pit_preserve_code(custom_divider: u16) -> Vec<u8> {
         0xF4,                               // HLT  (wait for timer tick)
         0xFA,                               // CLI  (prevent further ticks)
 
-        0xA1, 0x8A, 0x05,                   // MOV AX, [0x058A]  → CA_TIM_CNT
+        0xA1, 0x8A, 0x05,                   // MOV AX, [0x058A]  -> CA_TIM_CNT
         0xA3, 0x00, 0x06,                   // MOV [RESULT], AX
 
         0xF4,                               // HLT

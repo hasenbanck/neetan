@@ -172,14 +172,14 @@ mod tests {
 
         // Position starts at 63 (MSB of reg[7]).
         // reg[7] = 0x45 = 0100_0101.
-        // Position 63 → bit ((!63) & 7) = bit 0 → (0x45 >> 0) & 1 = 1.
+        // Position 63 -> bit ((!63) & 7) = bit 0 -> (0x45 >> 0) & 1 = 1.
         assert_eq!(rtc.cdat(), 1);
 
-        // Clock to position 62 → bit 1 → (0x45 >> 1) & 1 = 0.
+        // Clock to position 62 -> bit 1 -> (0x45 >> 1) & 1 = 0.
         clock_pulse(&mut rtc);
         assert_eq!(rtc.cdat(), 0);
 
-        // Clock to position 61 → bit 2 → (0x45 >> 2) & 1 = 1.
+        // Clock to position 61 -> bit 2 -> (0x45 >> 2) & 1 = 1.
         clock_pulse(&mut rtc);
         assert_eq!(rtc.cdat(), 1);
     }
@@ -255,7 +255,7 @@ mod tests {
         // Accumulate serial bits via CLK pulses.
         // Each CLK right-shifts the serial register.
         // Bit 5 of the data byte feeds into bit 4 of serial register.
-        // Write bit 5 = 1 → serial bit 4 = 1.
+        // Write bit 5 = 1 -> serial bit 4 = 1.
         rtc.write_port(0x27, &TEST_TIME); // DATA phase: parallel=7, serial |= (0x27 >> 1) & 0x10 = 0x10.
         assert_eq!(rtc.state.serial & 0x10, 0x10);
 

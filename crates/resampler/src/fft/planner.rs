@@ -14,10 +14,10 @@ use crate::{Radix, SampleRate, SampleRateFamily};
 ///
 /// | Conversion Type              | Input Size | Output Size | Ratio Error | Input FFT           | Output FFT          | Factorization            |
 /// |------------------------------|------------|-------------|-------------|---------------------|---------------------|--------------------------|
-/// | Inside same family           | 2          | 2           | 0.0%        | Radix-2             | Radix-2             | 2 → 2                    |
-/// | Between 22.05 kHz and 48 kHz | 588        | 1280        | 0.0%        | Mixed-Radix (3,4,7) | Mixed-Radix (4,5)   | 3 × 4 × 7 × 7 → 4⁴ × 5   |
-/// | Between 16 kHz and 48 kHz    | 64         | 192         | 0.0%        | Radix-2             | Mixed-Radix (2,3)   | 2⁶ → 2⁶ × 3              |
-/// | Between 16 kHz and 44.1 kHz  | 640        | 882         | 0.0%        | Mixed-Radix (2,4,5) | Mixed-Radix (2,3,7) | 2 × 4⁴ × 5 → 2 × 3² × 7² |
+/// | Inside same family           | 2          | 2           | 0.0%        | Radix-2             | Radix-2             | 2 -> 2                    |
+/// | Between 22.05 kHz and 48 kHz | 588        | 1280        | 0.0%        | Mixed-Radix (3,4,7) | Mixed-Radix (4,5)   | 3 × 4 × 7 × 7 -> 4⁴ × 5   |
+/// | Between 16 kHz and 48 kHz    | 64         | 192         | 0.0%        | Radix-2             | Mixed-Radix (2,3)   | 2⁶ -> 2⁶ × 3              |
+/// | Between 16 kHz and 44.1 kHz  | 640        | 882         | 0.0%        | Mixed-Radix (2,4,5) | Mixed-Radix (2,3,7) | 2 × 4⁴ × 5 -> 2 × 3² × 7² |
 #[derive(Debug, Clone)]
 pub(crate) struct ConversionConfig {
     /// Base input FFT size (minimal latency).
@@ -43,7 +43,7 @@ impl ConversionConfig {
         let output_multiplier = output_rate.family_multiplier() as usize;
 
         let base_config = match (input_family, output_family) {
-            // Same family: base 1:1 ratio (2 → 2)
+            // Same family: base 1:1 ratio (2 -> 2)
             (SampleRateFamily::Hz48000, SampleRateFamily::Hz48000)
             | (SampleRateFamily::Hz22050, SampleRateFamily::Hz22050)
             | (SampleRateFamily::Hz16000, SampleRateFamily::Hz16000) => ConversionConfig {
@@ -53,7 +53,7 @@ impl ConversionConfig {
                 base_factors_out: vec![Radix::Factor2],
             },
 
-            // 22.05 kHz → 48 kHz family (3 × 4 × 7 × 7 → 4⁴ × 5)
+            // 22.05 kHz -> 48 kHz family (3 × 4 × 7 × 7 -> 4⁴ × 5)
             (SampleRateFamily::Hz22050, SampleRateFamily::Hz48000) => ConversionConfig {
                 base_fft_size_in: 588,
                 base_fft_size_out: 1280,
@@ -71,7 +71,7 @@ impl ConversionConfig {
                     Radix::Factor5,
                 ],
             },
-            // 48 kHz → 22.05 kHz family (4⁴ × 5 → 3 × 4 × 7 × 7)
+            // 48 kHz -> 22.05 kHz family (4⁴ × 5 -> 3 × 4 × 7 × 7)
             (SampleRateFamily::Hz48000, SampleRateFamily::Hz22050) => ConversionConfig {
                 base_fft_size_in: 1280,
                 base_fft_size_out: 588,
@@ -90,7 +90,7 @@ impl ConversionConfig {
                 ],
             },
 
-            // 16 kHz → 48 kHz family (2⁶ → 2⁶ × 3)
+            // 16 kHz -> 48 kHz family (2⁶ -> 2⁶ × 3)
             (SampleRateFamily::Hz16000, SampleRateFamily::Hz48000) => ConversionConfig {
                 base_fft_size_in: 64,
                 base_fft_size_out: 192,
@@ -102,7 +102,7 @@ impl ConversionConfig {
                     Radix::Factor3,
                 ],
             },
-            // 48 kHz → 16 kHz family (2⁶ × 3 → 2⁶)
+            // 48 kHz -> 16 kHz family (2⁶ × 3 -> 2⁶)
             (SampleRateFamily::Hz48000, SampleRateFamily::Hz16000) => ConversionConfig {
                 base_fft_size_in: 192,
                 base_fft_size_out: 64,
@@ -115,7 +115,7 @@ impl ConversionConfig {
                 base_factors_out: vec![Radix::Factor2; 6],
             },
 
-            // 16 kHz → 22.05 kHz family (2 × 4⁴ × 5 → 2 × 3² × 7²)
+            // 16 kHz -> 22.05 kHz family (2 × 4⁴ × 5 -> 2 × 3² × 7²)
             (SampleRateFamily::Hz16000, SampleRateFamily::Hz22050) => ConversionConfig {
                 base_fft_size_in: 640,
                 base_fft_size_out: 882,
@@ -134,7 +134,7 @@ impl ConversionConfig {
                     Radix::Factor7,
                 ],
             },
-            // 22.05 kHz → 16 kHz family (2 × 3² × 7² → 2 × 4⁴ × 5)
+            // 22.05 kHz -> 16 kHz family (2 × 3² × 7² -> 2 × 4⁴ × 5)
             (SampleRateFamily::Hz22050, SampleRateFamily::Hz16000) => ConversionConfig {
                 base_fft_size_in: 882,
                 base_fft_size_out: 640,
@@ -163,7 +163,7 @@ impl ConversionConfig {
         let input_multiplier_factors = Self::decompose_multiplier(input_multiplier);
         let output_multiplier_factors = Self::decompose_multiplier(output_multiplier);
 
-        // Append multiplier factors to base factors (maintains high→low ordering).
+        // Append multiplier factors to base factors (maintains high->low ordering).
         let mut scaled_factors_in = base_config.base_factors_in.clone();
         scaled_factors_in.extend(input_multiplier_factors);
 
@@ -179,7 +179,7 @@ impl ConversionConfig {
     }
 
     /// Decompose a power-of-2 multiplier into radix factors.
-    /// Prefers Factor8 for power-of-2 efficiency: 8 → Factor8, 16 → 2×Factor8, etc.
+    /// Prefers Factor8 for power-of-2 efficiency: 8 -> Factor8, 16 -> 2×Factor8, etc.
     fn decompose_multiplier(multiplier: usize) -> Vec<Radix> {
         if multiplier == 1 {
             return Vec::new();
@@ -195,7 +195,7 @@ impl ConversionConfig {
 
         let mut factors = vec![Radix::Factor8; num_factor8];
 
-        // Handle remainder: 1 bit → Factor2, 2 bits → Factor4
+        // Handle remainder: 1 bit -> Factor2, 2 bits -> Factor4
         match remainder {
             0 => {} // No remainder
             1 => factors.push(Radix::Factor2),

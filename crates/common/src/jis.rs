@@ -189,13 +189,13 @@ mod tests {
 
     #[test]
     fn ank_halfwidth_katakana() {
-        // U+FF61 (。) → 0xA1
+        // U+FF61 (。) -> 0xA1
         let jis = char_to_jis('\u{FF61}');
         assert!(jis.is_ank());
         assert_eq!(jis.as_u16(), 0xA1);
         assert_eq!(jis_to_char(jis), Some('\u{FF61}'));
 
-        // U+FF9F (゚) → 0xDF
+        // U+FF9F (゚) -> 0xDF
         let jis = char_to_jis('\u{FF9F}');
         assert!(jis.is_ank());
         assert_eq!(jis.as_u16(), 0xDF);
@@ -335,7 +335,7 @@ mod tests {
                     assert_eq!(
                         jis_to_char(round_tripped),
                         Some(ch),
-                        "Round-trip mismatch for JIS 0x{:04X} → U+{:04X} → JIS 0x{:04X}",
+                        "Round-trip mismatch for JIS 0x{:04X} -> U+{:04X} -> JIS 0x{:04X}",
                         jis_code,
                         ch as u32,
                         round_tripped.as_u16()

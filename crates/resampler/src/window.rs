@@ -109,7 +109,7 @@ pub(crate) fn calculate_cutoff_kaiser(sample_count: usize, beta: f64) -> f64 {
     let n = sample_count as f64;
 
     // Kaiser window transition bandwidth (from theory).
-    // beta → stopband attenuation → transition width
+    // beta -> stopband attenuation -> transition width
     let a_db = beta / 0.1102 + 8.7; // Stopband attenuation (dB)
     let delta_f_nyquist = (a_db - 7.95) / (14.36 * n); // Transition width
 

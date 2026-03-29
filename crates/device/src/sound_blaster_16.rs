@@ -94,7 +94,7 @@ pub struct Sb16DspState {
     pub params_needed: u8,
     /// Accumulated command parameter bytes.
     pub input_buffer: Vec<u8>,
-    /// DSP→CPU output FIFO.
+    /// DSP->CPU output FIFO.
     pub output_buffer: VecDeque<u8>,
     /// Test register (written via 0xE4, read via 0xE8).
     pub test_register: u8,
@@ -116,7 +116,7 @@ pub struct Sb16DspState {
     pub dma_bytes_remaining: u32,
     /// PC-98 DMA channel (0 or 3).
     pub dma_channel: u8,
-    /// Whether the current DMA transfer is recording (device→memory) rather than playback.
+    /// Whether the current DMA transfer is recording (device->memory) rather than playback.
     pub dma_is_recording: bool,
     /// 8-bit IRQ pending flag.
     pub irq_pending_8bit: bool,
@@ -868,10 +868,10 @@ impl SoundBlaster16 {
                 // to PC-98 IRQ lines differently from standard ISA.
                 self.state.mixer.registers[addr as usize] = value;
                 self.state.irq_line = match value & 0x0F {
-                    0x01 => 3,  // ISA IRQ 2 → PC-98 IRQ 3
-                    0x02 => 10, // ISA IRQ 5 → PC-98 IRQ 10
-                    0x04 => 12, // ISA IRQ 7 → PC-98 IRQ 12
-                    0x08 => 5,  // ISA IRQ 10 → PC-98 IRQ 5
+                    0x01 => 3,  // ISA IRQ 2 -> PC-98 IRQ 3
+                    0x02 => 10, // ISA IRQ 5 -> PC-98 IRQ 10
+                    0x04 => 12, // ISA IRQ 7 -> PC-98 IRQ 12
+                    0x08 => 5,  // ISA IRQ 10 -> PC-98 IRQ 5
                     _ => self.state.irq_line,
                 };
             }
@@ -934,7 +934,7 @@ impl SoundBlaster16 {
         let addr = self.state.mixer.address;
         match addr {
             0x80 => {
-                // IRQ config readback (PC-98 IRQ → mixer register value)
+                // IRQ config readback (PC-98 IRQ -> mixer register value)
                 match self.state.irq_line {
                     3 => 0x01,
                     10 => 0x02,
@@ -1465,7 +1465,7 @@ mod tests {
     #[test]
     fn dsp_set_time_constant() {
         let mut sb16 = make_sb16();
-        // TC = 211 → rate = 1000000 / (256 - 211) = 22222
+        // TC = 211 -> rate = 1000000 / (256 - 211) = 22222
         sb16.write_dsp_command(0x40);
         sb16.write_dsp_command(211);
         assert_eq!(sb16.state.dsp.sample_rate, 1_000_000 / (256 - 211));
@@ -1510,7 +1510,7 @@ mod tests {
         assert_eq!(sb16.state.irq_line, 3);
 
         sb16.write_mixer_address(0x80);
-        sb16.write_mixer_data(0x04); // ISA IRQ 7 → PC-98 IRQ 12
+        sb16.write_mixer_data(0x04); // ISA IRQ 7 -> PC-98 IRQ 12
         assert_eq!(sb16.state.irq_line, 12);
 
         sb16.write_mixer_address(0x80);

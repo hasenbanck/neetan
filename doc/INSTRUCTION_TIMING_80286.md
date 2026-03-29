@@ -42,11 +42,11 @@
 | `MOV`    | `r16, r/m16`   |           `reg 2` |             `mem 11 (+4 odd)` |                          |
 | `MOV`    | `r/m8, imm8`   |           `reg 4` |                      `mem 11` |                          |
 | `MOV`    | `r/m16, imm16` |           `reg 4` |             `mem 11 (+4 odd)` |                          |
-| `MOV`    | `r8, imm8`     |               `4` |                             — |                          |
-| `MOV`    | `r16, imm16`   |               `4` |                             — |                          |
-| `MOV`    | `AL, moffs8`   |              `10` |                             — |                          |
+| `MOV`    | `r8, imm8`     |               `4` |                             - |                          |
+| `MOV`    | `r16, imm16`   |               `4` |                             - |                          |
+| `MOV`    | `AL, moffs8`   |              `10` |                             - |                          |
 | `MOV`    | `AX, moffs16`  |              `10` |                   `14 if odd` |                          |
-| `MOV`    | `moffs8, AL`   |               `9` |                             — |                          |
+| `MOV`    | `moffs8, AL`   |               `9` |                             - |                          |
 | `MOV`    | `moffs16, AX`  |               `9` |                   `13 if odd` |                          |
 | `MOV`    | `r/m16, Sreg`  |           `reg 2` |             `mem 10 (+4 odd)` |                          |
 | `MOV`    | `Sreg, r/m16`  |           `reg 2` |             `mem 11 (+4 odd)` |                          |

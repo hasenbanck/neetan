@@ -92,7 +92,7 @@ fn setup_dma_channel_3(bus: &mut Pc9801Bus<NoTracing>, address: u32, count: u16)
     bus.io_write_byte(DMA_CH3_COUNT, count_hi);
     // Set page
     bus.io_write_byte(DMA_CH3_PAGE, page);
-    // Set mode: single transfer, read (memory→device), channel 3, auto-init off, increment
+    // Set mode: single transfer, read (memory->device), channel 3, auto-init off, increment
     bus.io_write_byte(DMA_MODE, 0x43); // bits: 01 00 0 0 11 (single, read, no-autoinit, incr, ch3)
     // Unmask channel 3
     bus.io_write_byte(DMA_SINGLE_MASK, 0x03); // bit 2 = 0 (unmask), channel = 3
@@ -272,7 +272,7 @@ fn sb16_mixer_irq_and_dma_config() {
     // Default DMA should be 3 (code 0x08)
     assert_eq!(mixer_read(&mut bus, 0x81), 0x08);
 
-    // Write 0x02 (ISA IRQ 5 → PC-98 IRQ 10), reads back as 0x02.
+    // Write 0x02 (ISA IRQ 5 -> PC-98 IRQ 10), reads back as 0x02.
     mixer_write(&mut bus, 0x80, 0x02);
     assert_eq!(mixer_read(&mut bus, 0x80), 0x02);
 
@@ -288,7 +288,7 @@ fn sb16_16bit_stereo_signed_1khz() {
     let pcm_data = generate_sine_16bit_signed_stereo(num_frames, TONE_FREQ, pcm_rate as f64);
 
     // 0xB0 = 16-bit DMA output, single transfer
-    // mode_byte: bit 4 = signed (0x10), bit 5 = stereo (0x20) → 0x30
+    // mode_byte: bit 4 = signed (0x10), bit 5 = stereo (0x20) -> 0x30
     let (left, right) = run_sb16_dma_playback(&pcm_data, pcm_rate, 0xB0, 0x30, num_frames);
 
     let (peak_freq, peak_mag) =
@@ -320,7 +320,7 @@ fn sb16_16bit_mono_signed_1khz() {
     let pcm_data = generate_sine_16bit_signed_mono(num_frames, TONE_FREQ, pcm_rate as f64);
 
     // 0xB0 = 16-bit DMA output, single transfer
-    // mode_byte: bit 4 = signed (0x10), bit 5 = 0 (mono) → 0x10
+    // mode_byte: bit 4 = signed (0x10), bit 5 = 0 (mono) -> 0x10
     let (left, right) = run_sb16_dma_playback(&pcm_data, pcm_rate, 0xB0, 0x10, num_frames);
 
     let (peak_freq, peak_mag) =
@@ -349,7 +349,7 @@ fn sb16_8bit_unsigned_stereo_1khz() {
     let pcm_data = generate_sine_8bit_unsigned_stereo(num_frames, TONE_FREQ, pcm_rate as f64);
 
     // 0xC0 = 8-bit DMA output, single transfer
-    // mode_byte: bit 5 = stereo (0x20), unsigned → 0x20
+    // mode_byte: bit 5 = stereo (0x20), unsigned -> 0x20
     let (left, right) = run_sb16_dma_playback(&pcm_data, pcm_rate, 0xC0, 0x20, num_frames);
 
     let (peak_freq, peak_mag) =
@@ -377,7 +377,7 @@ fn sb16_8bit_unsigned_mono_1khz() {
     let pcm_data = generate_sine_8bit_unsigned_mono(num_frames, TONE_FREQ, pcm_rate as f64);
 
     // 0xC0 = 8-bit DMA output, single transfer
-    // mode_byte: unsigned mono → 0x00
+    // mode_byte: unsigned mono -> 0x00
     let (left, right) = run_sb16_dma_playback(&pcm_data, pcm_rate, 0xC0, 0x00, num_frames);
 
     let (peak_freq, peak_mag) =
@@ -835,7 +835,7 @@ fn setup_dma_channel_3_write(bus: &mut Pc9801Bus<NoTracing>, address: u32, count
     bus.io_write_byte(DMA_CH3_COUNT, count_lo);
     bus.io_write_byte(DMA_CH3_COUNT, count_hi);
     bus.io_write_byte(DMA_CH3_PAGE, page);
-    // Mode: single transfer, write (device→memory), no-autoinit, increment, channel 3
+    // Mode: single transfer, write (device->memory), no-autoinit, increment, channel 3
     bus.io_write_byte(DMA_MODE, 0x47);
     bus.io_write_byte(DMA_SINGLE_MASK, 0x03);
 }
@@ -865,7 +865,7 @@ fn sb16_8bit_recording_dma_writes_silence_to_ram() {
     // Set input sample rate.
     dsp_set_input_sample_rate(&mut bus, 11025);
 
-    // Program DMA ch3 for write mode (device→memory).
+    // Program DMA ch3 for write mode (device->memory).
     setup_dma_channel_3_write(&mut bus, RAM_BASE, (block_size - 1) as u16);
 
     // Start 8-bit single-transfer recording: 0xC8 = 8-bit DMA input, no auto-init.

@@ -742,7 +742,7 @@ mod tests {
         );
         let disk = D88Disk::from_bytes(&image).unwrap();
 
-        // Track 0 = cylinder 0, head 0 → index 0.
+        // Track 0 = cylinder 0, head 0 -> index 0.
         assert_eq!(disk.sector_count(0), 3);
         assert_eq!(disk.sector_at_index(0, 0).unwrap().record, 1);
         assert_eq!(disk.sector_at_index(0, 1).unwrap().record, 2);

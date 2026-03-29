@@ -62,7 +62,7 @@ fn rtc_time_read_and_shift_out_48_bits() {
     // Reconstruct the 6 BCD bytes.
     // The shift register outputs reg[7] first (seconds), then reg[6] (minutes), etc.
     // Within each byte, bits come out LSB-first due to the bit indexing scheme:
-    //   pos 63 → bit 0 of reg[7], pos 62 → bit 1, ..., pos 56 → bit 7.
+    //   pos 63 -> bit 0 of reg[7], pos 62 -> bit 1, ..., pos 56 -> bit 7.
     let mut reconstructed = [0u8; 6];
     for (i, bit) in bits.iter().enumerate() {
         let byte_idx = 5 - (i / 8);

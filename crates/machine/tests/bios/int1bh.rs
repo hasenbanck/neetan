@@ -1777,7 +1777,7 @@ fn assert_sasi_read_chs(ram: &[u8; 0xA0000]) {
 
 #[test]
 fn int1bh_sasi_read_chs_vm() {
-    // CHS: C=0, H=0, S=0 → LBA 0. Read 256 bytes.
+    // CHS: C=0, H=0, S=0 -> LBA 0. Read 256 bytes.
     let code = make_int1bh_sasi_rw(
         0x06,
         DA_SASI_CHS_DRIVE0,
@@ -2877,7 +2877,7 @@ fn int1bh_ide_format_pc9821() {
 }
 
 // INT 1Bh function codes with high nibble set must be dispatched correctly
-// via the lower nibble mask (e.g. AH=0x8E → mode set, AH=0x21 → verify).
+// via the lower nibble mask (e.g. AH=0x8E -> mode set, AH=0x21 -> verify).
 
 #[test]
 fn int1bh_ide_mode_set_high_nibble_pc9821() {

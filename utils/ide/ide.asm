@@ -1,4 +1,4 @@
-; ide.asm — IDE HLE ROM stub for Neetan
+; ide.asm - IDE HLE ROM stub for Neetan
 ;
 ; Assembles to an 8192-byte expansion ROM image mapped at physical 0xD8000.
 ; Provides High-Level Emulation (HLE) for IDE disk I/O by intercepting

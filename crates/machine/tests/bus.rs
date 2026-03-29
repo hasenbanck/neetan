@@ -326,7 +326,7 @@ fn pit_mirror_ports() {
     // Channel 1 via mirror.
     bus.io_write_byte(0x3FDF, 0x74); // ch1: word, mode 2
     bus.io_write_byte(0x3FDB, 0xC8); // ch1 LSB via mirror
-    bus.io_write_byte(0x3FDB, 0x00); // ch1 MSB → 200
+    bus.io_write_byte(0x3FDB, 0x00); // ch1 MSB -> 200
 
     // Latch ch1 and read via mirror.
     bus.io_write_byte(0x3FDF, 0x40);
@@ -437,7 +437,7 @@ fn timer_reprogram_mid_count() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
     init_pic(&mut bus);
 
-    // PIT ch0: mode 2, reload = 100 → fire at cycle 1001
+    // PIT ch0: mode 2, reload = 100 -> fire at cycle 1001
     bus.io_write_byte(0x77, 0x34);
     bus.io_write_byte(0x71, 0x64);
     bus.io_write_byte(0x71, 0x00);
@@ -466,7 +466,7 @@ fn timer_reprogram_larger_value_delays_fire() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
     init_pic(&mut bus);
 
-    // PIT ch0: mode 2, reload = 100 → fire at cycle 1001
+    // PIT ch0: mode 2, reload = 100 -> fire at cycle 1001
     bus.io_write_byte(0x77, 0x34);
     bus.io_write_byte(0x71, 0x64);
     bus.io_write_byte(0x71, 0x00);
@@ -520,7 +520,7 @@ fn multiple_timer_periods_accumulate() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
     init_pic(&mut bus);
 
-    // PIT ch0: mode 2, reload = 100 → fire every 1001 cycles
+    // PIT ch0: mode 2, reload = 100 -> fire every 1001 cycles
     bus.io_write_byte(0x77, 0x34);
     bus.io_write_byte(0x71, 0x64);
     bus.io_write_byte(0x71, 0x00);
@@ -545,7 +545,7 @@ fn timer_count_readable_while_running() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
     init_pic(&mut bus);
 
-    // PIT ch0: mode 2, reload = 1000 → fire at cycle ~10016
+    // PIT ch0: mode 2, reload = 1000 -> fire at cycle ~10016
     bus.io_write_byte(0x77, 0x34);
     bus.io_write_byte(0x71, 0xE8);
     bus.io_write_byte(0x71, 0x03);

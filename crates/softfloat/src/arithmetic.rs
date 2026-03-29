@@ -223,7 +223,7 @@ impl Fp80 {
             b_exp -= shift as i32;
         }
 
-        // 64×64 → 128-bit product. Product at bit 126 (min) to 127 (max).
+        // 64×64 -> 128-bit product. Product at bit 126 (min) to 127 (max).
         let product = (a_sig as u128) * (b_sig as u128);
 
         if product == 0 {
@@ -332,7 +332,7 @@ impl Fp80 {
             b_exp -= shift as i32;
         }
 
-        // (sig_a << 64) / sig_b → quotient at ~bit 64
+        // (sig_a << 64) / sig_b -> quotient at ~bit 64
         let dividend = (a_sig as u128) << 64;
         let divisor = b_sig as u128;
         let quotient = dividend / divisor;
@@ -457,7 +457,7 @@ impl Fp80 {
             let round_up = match rc {
                 RoundingMode::NearestEven => {
                     if exp == -1 {
-                        // Value is in [0.5, 1.0) - check if exactly 0.5 (round to even → 0)
+                        // Value is in [0.5, 1.0) - check if exactly 0.5 (round to even -> 0)
                         // or > 0.5 (round up to 1)
                         // sig with exp=-1 means the value is sig * 2^(-1) / 2^63 = sig / 2^64
                         // Value = sig * 2^(exp-63). For exp=-1, value = sig * 2^(-64).

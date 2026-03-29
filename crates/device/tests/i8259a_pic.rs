@@ -96,14 +96,14 @@ fn read_irr_and_isr_via_ocw3() {
     pic.set_irq(3);
 
     // Default reads IRR
-    pic.write_port0(0, 0x08 | 0x02); // OCW3: RR=1, RIS=0 → read IRR
+    pic.write_port0(0, 0x08 | 0x02); // OCW3: RR=1, RIS=0 -> read IRR
     assert_eq!(pic.read_port0(0), 0x08); // IRQ 3 = bit 3
 
     let vector = pic.acknowledge();
     assert_eq!(vector, 0x0B); // 0x08 + 3
 
     // Switch to read ISR
-    pic.write_port0(0, 0x08 | 0x02 | 0x01); // OCW3: RR=1, RIS=1 → read ISR
+    pic.write_port0(0, 0x08 | 0x02 | 0x01); // OCW3: RR=1, RIS=1 -> read ISR
     assert_eq!(pic.read_port0(0), 0x08); // IRQ 3 in-service
 
     // EOI
@@ -300,7 +300,7 @@ fn reinit_preserves_isr() {
     pic.write_port2(0, 0x1D);
     pic.write_port2(0, 0x00);
 
-    // Set IRQ 3, acknowledge → ISR bit 3 set
+    // Set IRQ 3, acknowledge -> ISR bit 3 set
     pic.set_irq(3);
     pic.acknowledge();
     assert_eq!(pic.chips[0].isr, 0x08);
@@ -523,7 +523,7 @@ fn slave_irq_blocked_by_master_isr() {
     // Set slave IRQ 8 (slave IR0) - cascade on IR7
     pic.set_irq(8);
 
-    // Cascade IR7 is lower priority than ISR'd IRQ 3 → blocked
+    // Cascade IR7 is lower priority than ISR'd IRQ 3 -> blocked
     assert!(!pic.has_pending_irq());
 
     // EOI for IRQ 3
@@ -546,7 +546,7 @@ fn non_specific_eoi_with_rotated_priority() {
     pic.write_port2(0, 0x1D);
     pic.write_port2(0, 0x00);
 
-    // Set priority: 0xC0 | 3 → pry = (3+1)&7 = 4
+    // Set priority: 0xC0 | 3 -> pry = (3+1)&7 = 4
     pic.write_port0(0, 0xC3);
     assert_eq!(pic.chips[0].pry, 4);
 
@@ -554,12 +554,12 @@ fn non_specific_eoi_with_rotated_priority() {
     pic.chips[0].isr = 0x22; // bits 1 and 5
 
     // Non-specific EOI: scans from pry=4
-    // Scan: bit 4=0, bit 5=1 → clears bit 5
+    // Scan: bit 4=0, bit 5=1 -> clears bit 5
     pic.write_port0(0, 0x20);
     assert_eq!(pic.chips[0].isr, 0x02);
 
     // Another non-specific EOI: scan from pry=4
-    // Scan: 4=0, 5=0, 6=0, 7=0, 0=0, 1=1 → clears bit 1
+    // Scan: 4=0, 5=0, 6=0, 7=0, 0=0, 1=1 -> clears bit 1
     pic.write_port0(0, 0x20);
     assert_eq!(pic.chips[0].isr, 0x00);
 }
@@ -649,14 +649,14 @@ fn ocw2_rotate_only_no_eoi() {
     let mut pic = I8259aPic::new_zeroed();
     init_master(&mut pic);
 
-    // Acknowledge IRQ 2 → ISR bit 2 set
+    // Acknowledge IRQ 2 -> ISR bit 2 set
     pic.set_irq(2);
     pic.acknowledge();
     assert_eq!(pic.chips[0].isr, 0x04);
     assert_eq!(pic.chips[0].pry, 0);
 
     // OCW2 0x80: R=1, SL=0, EOI=0 (rotate only, no EOI)
-    // Non-specific scan from pry=0 finds ISR bit 2 → pry=(2+1)&7=3
+    // Non-specific scan from pry=0 finds ISR bit 2 -> pry=(2+1)&7=3
     // EOI bit is NOT set, so ISR is NOT cleared
     pic.write_port0(0, 0x80);
     assert_eq!(pic.chips[0].pry, 3);
@@ -687,7 +687,7 @@ fn specific_eoi_for_wrong_level() {
     let mut pic = I8259aPic::new_zeroed();
     init_master(&mut pic);
 
-    // Acknowledge IRQ 3 → ISR bit 3
+    // Acknowledge IRQ 3 -> ISR bit 3
     pic.set_irq(3);
     pic.acknowledge();
     assert_eq!(pic.chips[0].isr, 0x08);
@@ -746,7 +746,7 @@ fn priority_wrap_around() {
     let mut pic = I8259aPic::new_zeroed();
     init_master(&mut pic);
 
-    // Set pry=6 via 0xC5 (R=1, SL=1, EOI=0, L=5 → pry=(5+1)&7=6)
+    // Set pry=6 via 0xC5 (R=1, SL=1, EOI=0, L=5 -> pry=(5+1)&7=6)
     pic.write_port0(0, 0xC5);
     assert_eq!(pic.chips[0].pry, 6);
 
@@ -848,7 +848,7 @@ fn slave_irq_blocked_by_own_isr() {
     init_master(&mut pic);
     init_slave(&mut pic);
 
-    // Acknowledge slave IRQ 8 (IR0) → sets slave ISR bit 0
+    // Acknowledge slave IRQ 8 (IR0) -> sets slave ISR bit 0
     pic.set_irq(8);
     pic.acknowledge();
     assert_eq!(pic.chips[1].isr, 0x01);
@@ -910,7 +910,7 @@ fn master_irq_at_cascade_position_without_slave() {
     // Raise master IRQ 7 directly (cascade bit position, no slave IRQs)
     pic.set_irq(7);
 
-    // Priority scan hits bit 7 → enters cascade branch → sir==0 → returns None
+    // Priority scan hits bit 7 -> enters cascade branch -> sir==0 -> returns None
     assert!(!pic.has_pending_irq());
 
     // But if a slave IRQ is also pending, the cascade fires
