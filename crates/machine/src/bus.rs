@@ -221,6 +221,8 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     /// Returns the current host local time as 6-byte BCD:
     /// `[year, month<<4|day_of_week, day, hour, minute, second]`.
     host_local_time_fn: fn() -> [u8; 6],
+    /// MPU-401 MIDI interface (C-Bus, default base 0xE0D0).
+    mpu401: device::mpu401::Mpu401,
     mouse_ppi: I8255MousePpi,
     /// Mouse interrupt timer register (port 0xBFDB).
     mouse_timer_setting: u8,
