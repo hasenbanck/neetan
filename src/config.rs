@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use common::{Context, MachineModel, StringError, bail, warn};
+use common::{Context, MachineModel, StringError, bail, info, warn};
 
 use crate::keymap::{self, KeyMap};
 
@@ -52,6 +52,10 @@ Options:
       --sc55-roms <PATH>      Path to SC55 ROM directory (enables MIDI output)
   -h, --help                  Print help
   -V, --version               Print version
+
+Global configuration:
+  A global config is loaded from the OS data directory if it exists.
+  Layering: defaults -> global config -> --config file -> CLI arguments
 
 Run 'neetan <COMMAND> --help' for more information on a command.",
         crate::GAME_NAME,
@@ -322,6 +326,14 @@ fn parse_convert_hdd_args(args: &mut impl Iterator<Item = String>) -> crate::Res
 
 pub fn parse_args() -> crate::Result<Action> {
     let mut config = EmulatorConfig::default();
+
+    if let Some(global_path) = global_config_path()
+        && global_path.exists()
+    {
+        apply_config_file(&mut config, &global_path)?;
+        info!("Loaded global config: {}", global_path.display());
+    }
+
     let mut args = std::env::args().skip(1);
 
     while let Some(arg) = args.next() {
@@ -358,7 +370,7 @@ pub fn parse_args() -> crate::Result<Action> {
             }
             "-c" | "--config" => {
                 let path = value(&flag)?;
-                config = parse_config_file(Path::new(&path))?;
+                apply_config_file(&mut config, Path::new(&path))?;
             }
             "--machine" => {
                 let val = value(&flag)?;
@@ -479,10 +491,14 @@ impl Default for EmulatorConfig {
 }
 
 pub fn parse_config_file(path: &Path) -> crate::Result<EmulatorConfig> {
+    let mut config = EmulatorConfig::default();
+    apply_config_file(&mut config, path)?;
+    Ok(config)
+}
+
+fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<()> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read {}", path.display()))?;
-
-    let mut config = EmulatorConfig::default();
 
     for line in contents.lines() {
         let line = line.trim();
@@ -545,7 +561,12 @@ pub fn parse_config_file(path: &Path) -> crate::Result<EmulatorConfig> {
         }
     }
 
-    Ok(config)
+    Ok(())
+}
+
+fn global_config_path() -> Option<PathBuf> {
+    let pref_path = sdl3::filesystem::get_pref_path(crate::COMPANY_NAME, crate::GAME_NAME)?;
+    Some(pref_path.join("neetan.conf"))
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

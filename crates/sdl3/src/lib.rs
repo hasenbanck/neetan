@@ -5,6 +5,8 @@
 pub mod audio;
 /// Event polling.
 pub mod event;
+/// Filesystem path utilities.
+pub mod filesystem;
 /// System information queries (version, platform, CPU, RAM).
 pub mod info;
 /// Keyboard scancodes and modifiers.
