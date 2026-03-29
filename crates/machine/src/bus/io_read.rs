@@ -734,6 +734,16 @@ impl<T: Tracing> Pc9801Bus<T> {
                 }
             }
 
+            // MPU-401 MIDI interface (C-Bus, default base 0xE0D0).
+            0xE0D0 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                self.mpu401.read_data()
+            }
+            0xE0D2 => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                self.mpu401.read_status()
+            }
+
             _ => {
                 self.tracer.trace_io_unhandled_read(port);
                 warn!("Unhandled I/O read: port={port:#06X}");
