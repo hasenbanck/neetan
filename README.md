@@ -119,6 +119,37 @@ sc55-roms = /path/to/sc55_roms
 
 Command-line arguments override values from the configuration file.
 
+### Global configuration
+
+neetan automatically loads a global configuration file from the OS data directory if it exists.
+This is useful for setting persistent defaults like your preferred machine type, sound card, or keyboard mapping
+without needing to pass `--config` or CLI flags every time.
+
+The global config file uses the same `key = value` format as regular configuration files.
+
+#### File location
+
+| OS      | Path                                                         |
+|---------|--------------------------------------------------------------|
+| Linux   | `~/.local/share/neetan/neetan/neetan.conf`                   |
+| Windows | `C:\Users\<user>\AppData\Roaming\neetan\neetan\neetan.conf`  |
+| macOS   | `~/Library/Application Support/neetan/neetan/neetan.conf`    |
+
+The directory is created automatically. The configuration file must be created manually.
+
+#### Layering order 
+
+Settings are applied in this order, with later layers overriding earlier ones:
+
+1. Built-in defaults
+2. Global configuration file (`neetan.conf` in OS data directory)
+3. Per-invocation configuration file (`--config`)
+4. Command-line arguments
+
+For example, if your global config sets `machine = PC9801RA` and you run
+`neetan --config game.cfg --soundboard sb16`, the machine will be PC9801RA
+(from global config) unless `game.cfg` or CLI args override it.
+
 ### Emulator controls
 
 | Key                | Action                           |
