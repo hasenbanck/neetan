@@ -30,7 +30,7 @@ We also support the following sound cards:
 * PC-9801-86 + PC-9801-26k combo
 * Sound Blaster 16
 * Sound Blaster 16 + PC-9801-26k combo
-* Roland SC-55 using the MPU-401 interface 
+* Roland SC-55 using the MPU-PC98II interface
 
 The default for the CLI is the PC-9801VX machine with the PC-9801-86 + PC-9801-26k combo soundboards.
 
@@ -214,7 +214,7 @@ Press **GUI + Alt + F9** (drive 1), **GUI + Alt + F10** (drive 2), or **GUI + Al
 ## SC-55 sound module
 
 neetan can emulate the Roland SC-55 sound module using a Rust port of the [Nuked-SC55](https://github.com/nukeykt/Nuked-SC55)
-for MIDI playback through the MPU-401 interface. This feature is enabled by default.
+for MIDI playback through the MPU-PC98II interface. This feature is enabled by default.
 
 ### Why it is optional
 
