@@ -874,13 +874,14 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
     let mut bus: machine::Pc9801Bus<Tracer> = machine::Pc9801Bus::new(model, sample_rate);
     bus.set_host_local_time_fn(host_local_time_bcd);
 
-    if config.gdc_clock_5mhz {
-        if model.has_egc() {
-            bus.set_gdc_clock_5mhz();
-            info!("GDC clock set to 5 MHz (400-line graphics mode)");
-        } else {
-            warn!("{model} does not support 5 MHz GDC clock, ignoring --gdc-clock 5");
+    match (model.has_egc(), config.gdc_compatibility) {
+        (true, true) => {
+            info!("GDC clock set to 2.5 MHz (200-line graphics mode)");
         }
+        (true, false) => {
+            bus.set_gdc_clock_5mhz();
+        }
+        _ => {}
     }
 
     if config.bios_rom.is_some() && model.is_pc9821() {

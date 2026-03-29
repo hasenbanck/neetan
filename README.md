@@ -61,7 +61,7 @@ neetan <COMMAND>
 | `--bios-rom <PATH>`      | Path to BIOS ROM file                                                    | HLE BIOS   |
 | `--font-rom <PATH>`      | Path to font ROM file                                                    | Built-in   |
 | `--soundboard <TYPE>`    | Sound board: `none`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`           | `86+26k`   |
-| `--gdc-clock <2.5\|5>`   | GDC clock: `2.5` MHz (200-line) or `5` MHz (400-line). VX and later only | `2.5`      |
+| `--gdc-compatibility`    | Force 2.5 MHz GDC clock (200-line compatibility mode). VX and later only | off        |
 | `--printer <PATH>`       | Output file for printer (must exist)                                     | —          |
 | `-h, --help`             | Print help                                                               | —          |
 | `-V, --version`          | Print version                                                            | —          |
@@ -104,7 +104,7 @@ options and their defaults.
 # Example configuration
 machine = PC9801RA
 soundboard = 86+26k
-gdc-clock = 5
+gdc-compatibility = on
 audio-volume = 0.8
 aspect-mode = 4:3
 fdd1 = /path/to/disk_a.d88
