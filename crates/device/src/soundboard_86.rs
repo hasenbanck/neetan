@@ -403,13 +403,19 @@ impl Pcm86 {
         if !self.irq_enabled() {
             return false;
         }
+        // If the timer callback already confirmed the IRQ condition, report it
+        // immediately regardless of the data-write wait. The wait only gates
+        // the automatic buffer-level detection path below, not the
+        // timer-confirmed path. Without this, edge-triggered PICs lose the
+        // interrupt: the ISR misses bit 4, pcm86_irq_asserted stays high,
+        // and no new edge is generated for subsequent FM timer IRQs.
+        if self.state.irq_flag {
+            return true;
+        }
         if current_cycle.wrapping_sub(self.state.last_clock_for_wait)
             < self.state.data_write_irq_wait
         {
             return false;
-        }
-        if self.state.irq_flag {
-            return true;
         }
         // Only set irq_flag from the buffer condition if no PCM86 timer event
         // is pending.
