@@ -154,7 +154,7 @@ pub struct Pcm86State {
     pub data_write_irq_wait: u64,
     /// Audio frame start cycle.
     pub audio_frame_start_cycle: u64,
-    /// Fractional sample remainder for audio drain path.
+    /// Fractional sample remainder for the cycle-based PCM drain.
     pub sample_remainder: FmSampleRemainder,
     /// Fractional sample remainder for `update_buffer_state` vir_buf tracking.
     pub vir_buf_remainder: FmSampleRemainder,
@@ -1346,49 +1346,47 @@ impl Soundboard86 {
             }
         }
 
-        // Mix in PCM86 stereo output.
+        // Mix in PCM86 stereo output. Drain is cycle-based to match the PCM
+        // playback rate, preventing eager over-drain between bursty IRQ refills.
         self.pcm86.update_buffer_state(current_cycle, cpu_clock_hz);
         self.pcm86.reconcile_buffers(current_cycle, cpu_clock_hz);
         let pcm_frame_cycles = current_cycle.saturating_sub(self.state.audio_frame_start_cycle);
         if self.pcm86.is_playing() && self.pcm86.state.real_buf > 0 && pcm_frame_cycles > 0 {
-            {
-                let pcm_rate = self.pcm86.pcm_rate();
-                let exact_pcm = (pcm_frame_cycles as f64 * pcm_rate as f64)
-                    / f64::from(cpu_clock_hz)
-                    + self.pcm86.state.sample_remainder.0;
-                let pcm_count = exact_pcm as usize;
-                self.pcm86.state.sample_remainder = FmSampleRemainder(exact_pcm - pcm_count as f64);
+            let pcm_rate = self.pcm86.pcm_rate();
+            let exact_pcm = (pcm_frame_cycles as f64 * pcm_rate as f64) / f64::from(cpu_clock_hz)
+                + self.pcm86.state.sample_remainder.0;
+            let pcm_count = exact_pcm as usize;
+            self.pcm86.state.sample_remainder = FmSampleRemainder(exact_pcm - pcm_count as f64);
 
-                if pcm_count > 0 {
-                    let total_interleaved = pcm_count * 2;
-                    if self.pcm86.pcm_resample_input.len() < total_interleaved {
-                        self.pcm86.pcm_resample_input.resize(total_interleaved, 0.0);
+            if pcm_count > 0 {
+                let total_interleaved = pcm_count * 2;
+                if self.pcm86.pcm_resample_input.len() < total_interleaved {
+                    self.pcm86.pcm_resample_input.resize(total_interleaved, 0.0);
+                }
+                // Temporarily take the buffer to avoid double-mutable-borrow
+                // on Pcm86 (drain_samples_into needs &mut self + &mut slice).
+                let mut buf = std::mem::take(&mut self.pcm86.pcm_resample_input);
+                self.pcm86.drain_samples_into(&mut buf[..total_interleaved]);
+                self.pcm86.pcm_resample_input = buf;
+
+                let mut input_offset = 0;
+                let mut output_offset = 0;
+                let sample_count = output.len();
+                while input_offset < total_interleaved && output_offset < sample_count {
+                    let Ok((consumed, produced)) = self.pcm86.pcm_resampler.resample(
+                        &self.pcm86.pcm_resample_input[input_offset..total_interleaved],
+                        &mut self.pcm86.pcm_resample_output,
+                    ) else {
+                        break;
+                    };
+                    let usable = produced.min(sample_count - output_offset);
+                    for i in 0..usable {
+                        output[output_offset + i] += self.pcm86.pcm_resample_output[i] * volume;
                     }
-                    // Temporarily take the buffer to avoid double-mutable-borrow
-                    // on Pcm86 (drain_samples_into needs &mut self + &mut slice).
-                    let mut buf = std::mem::take(&mut self.pcm86.pcm_resample_input);
-                    self.pcm86.drain_samples_into(&mut buf[..total_interleaved]);
-                    self.pcm86.pcm_resample_input = buf;
-
-                    let mut input_offset = 0;
-                    let mut output_offset = 0;
-                    let sample_count = output.len();
-                    while input_offset < total_interleaved && output_offset < sample_count {
-                        let Ok((consumed, produced)) = self.pcm86.pcm_resampler.resample(
-                            &self.pcm86.pcm_resample_input[input_offset..total_interleaved],
-                            &mut self.pcm86.pcm_resample_output,
-                        ) else {
-                            break;
-                        };
-                        let usable = produced.min(sample_count - output_offset);
-                        for i in 0..usable {
-                            output[output_offset + i] += self.pcm86.pcm_resample_output[i] * volume;
-                        }
-                        input_offset += consumed;
-                        output_offset += usable;
-                        if consumed == 0 {
-                            break;
-                        }
+                    input_offset += consumed;
+                    output_offset += usable;
+                    if consumed == 0 {
+                        break;
                     }
                 }
             }
