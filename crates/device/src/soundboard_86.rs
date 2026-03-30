@@ -295,6 +295,10 @@ struct Pcm86 {
     state: Pcm86State,
     buffer: Box<[u8; PCM86_BUFSIZE]>,
     pcm_resampler: ResamplerFir,
+    /// Persistent buffer accumulating drained PCM samples across calls.
+    /// The resampler consumes from this; the remainder carries over,
+    /// bridging per-chunk count variations from rate ratio truncation.
+    pcm_input_buffer: Vec<f32>,
     pcm_resample_input: Vec<f32>,
     pcm_resample_output: Vec<f32>,
     pending_irq_change: Option<bool>,
@@ -331,6 +335,7 @@ impl Pcm86 {
             },
             buffer: Box::new([0u8; PCM86_BUFSIZE]),
             pcm_resampler: resampler,
+            pcm_input_buffer: Vec::new(),
             pcm_resample_input: vec![0.0; 4096 * 2],
             pcm_resample_output: vec![0.0; output_size],
             pending_irq_change: None,
@@ -1348,6 +1353,8 @@ impl Soundboard86 {
 
         // Mix in PCM86 stereo output. Drain is cycle-based to match the PCM
         // playback rate, preventing eager over-drain between bursty IRQ refills.
+        // Drained samples accumulate in pcm_input_buffer; the resampler consumes
+        // from it and the remainder carries over, absorbing per-chunk variations.
         self.pcm86.update_buffer_state(current_cycle, cpu_clock_hz);
         self.pcm86.reconcile_buffers(current_cycle, cpu_clock_hz);
         let pcm_frame_cycles = current_cycle.saturating_sub(self.state.audio_frame_start_cycle);
@@ -1359,37 +1366,50 @@ impl Soundboard86 {
             self.pcm86.state.sample_remainder = FmSampleRemainder(exact_pcm - pcm_count as f64);
 
             if pcm_count > 0 {
-                let total_interleaved = pcm_count * 2;
-                if self.pcm86.pcm_resample_input.len() < total_interleaved {
-                    self.pcm86.pcm_resample_input.resize(total_interleaved, 0.0);
+                let drain_interleaved = pcm_count * 2;
+                if self.pcm86.pcm_resample_input.len() < drain_interleaved {
+                    self.pcm86.pcm_resample_input.resize(drain_interleaved, 0.0);
                 }
-                // Temporarily take the buffer to avoid double-mutable-borrow
-                // on Pcm86 (drain_samples_into needs &mut self + &mut slice).
+                // TODO: This allocates in the hot loop. drain_samples_into() should just drain into the pcm_resample_input!
                 let mut buf = std::mem::take(&mut self.pcm86.pcm_resample_input);
-                self.pcm86.drain_samples_into(&mut buf[..total_interleaved]);
+                self.pcm86.drain_samples_into(&mut buf[..drain_interleaved]);
                 self.pcm86.pcm_resample_input = buf;
 
-                let mut input_offset = 0;
-                let mut output_offset = 0;
-                let sample_count = output.len();
-                while input_offset < total_interleaved && output_offset < sample_count {
-                    let Ok((consumed, produced)) = self.pcm86.pcm_resampler.resample(
-                        &self.pcm86.pcm_resample_input[input_offset..total_interleaved],
-                        &mut self.pcm86.pcm_resample_output,
-                    ) else {
-                        break;
-                    };
-                    let usable = produced.min(sample_count - output_offset);
-                    for i in 0..usable {
-                        output[output_offset + i] += self.pcm86.pcm_resample_output[i] * volume;
-                    }
-                    input_offset += consumed;
-                    output_offset += usable;
-                    if consumed == 0 {
-                        break;
-                    }
+                self.pcm86
+                    .pcm_input_buffer
+                    .extend_from_slice(&self.pcm86.pcm_resample_input[..drain_interleaved]);
+            }
+        }
+
+        // Resample from the accumulated input buffer into the output.
+        // Limit the resampler's output capacity to exactly the remaining
+        // output space so it stops consuming input once the output is full.
+        // Unconsumed input stays in the persistent buffer for next call.
+        if !self.pcm86.pcm_input_buffer.is_empty() {
+            let total_interleaved = self.pcm86.pcm_input_buffer.len();
+            let mut input_offset = 0;
+            let mut output_offset = 0;
+            let sample_count = output.len();
+            while input_offset < total_interleaved && output_offset < sample_count {
+                let remaining_output =
+                    (sample_count - output_offset).min(self.pcm86.pcm_resample_output.len());
+                let out_buf = &mut self.pcm86.pcm_resample_output[..remaining_output];
+                let Ok((consumed, produced)) = self.pcm86.pcm_resampler.resample(
+                    &self.pcm86.pcm_input_buffer[input_offset..total_interleaved],
+                    out_buf,
+                ) else {
+                    break;
+                };
+                for i in 0..produced {
+                    output[output_offset + i] += out_buf[i] * volume;
+                }
+                input_offset += consumed;
+                output_offset += produced;
+                if consumed == 0 {
+                    break;
                 }
             }
+            self.pcm86.pcm_input_buffer.drain(..input_offset);
         }
         self.pcm86.state.audio_frame_start_cycle = current_cycle;
 
