@@ -34,8 +34,12 @@ pub struct Soundboard26kState {
     pub irq_asserted: bool,
     /// CPU cycle at which the busy flag clears.
     pub busy_end_cycle: u64,
-    /// CPU cycle at which the current audio frame started.
+    /// CPU cycle at which the current audio output frame started.
+    /// Only advanced by `generate_samples()`.
     pub audio_frame_start_cycle: u64,
+    /// CPU cycle up to which the FM chip has been clocked.
+    /// Advanced by `sync_to_cycle()` on every port access.
+    pub fm_sync_cursor: u64,
     /// Fractional sample remainder carried across frames.
     pub sample_remainder: FmSampleRemainder,
     /// Whether this board uses alternate timer event kinds (dual-board config).
@@ -50,6 +54,7 @@ impl Default for Soundboard26kState {
             irq_asserted: false,
             busy_end_cycle: 0,
             audio_frame_start_cycle: 0,
+            fm_sync_cursor: 0,
             sample_remainder: FmSampleRemainder::default(),
             alternate_timers: false,
         }
@@ -225,14 +230,14 @@ impl Soundboard26k {
     /// registers are read or written, eliminating timer scheduling
     /// non-determinism caused by varying audio generation intervals.
     fn sync_to_cycle(&mut self, current_cycle: u64) {
-        let frame_start = self.state.audio_frame_start_cycle;
-        let frame_cycles = current_cycle.saturating_sub(frame_start);
-        if frame_cycles == 0 {
+        let sync_start = self.state.fm_sync_cursor;
+        let elapsed_cycles = current_cycle.saturating_sub(sync_start);
+        if elapsed_cycles == 0 {
             return;
         }
 
         let native_rate = u64::from(self.native_rate);
-        let exact_native = (frame_cycles as f64 * native_rate as f64)
+        let exact_native = (elapsed_cycles as f64 * native_rate as f64)
             / f64::from(self.cpu_clock_hz)
             + self.state.sample_remainder.0;
         let native_count = exact_native as usize;
@@ -241,7 +246,7 @@ impl Soundboard26k {
         }
 
         self.state.sample_remainder = FmSampleRemainder(exact_native - native_count as f64);
-        self.state.audio_frame_start_cycle = current_cycle;
+        self.state.fm_sync_cursor = current_cycle;
 
         if self.native_buffer.len() < native_count {
             self.native_buffer
@@ -368,15 +373,16 @@ impl Soundboard26k {
             self.sync_to_cycle(current_cycle);
             self.pending_native.clear();
             self.state.audio_frame_start_cycle = current_cycle;
+            self.state.fm_sync_cursor = current_cycle;
             return;
         }
 
-        // Generate remaining native samples from last sync to current_cycle.
-        let frame_start = self.state.audio_frame_start_cycle;
-        let frame_cycles = current_cycle.saturating_sub(frame_start);
-        let remaining_native = if frame_cycles > 0 {
+        // Generate remaining FM native samples from fm_sync_cursor to current_cycle.
+        let sync_cursor = self.state.fm_sync_cursor;
+        let gap_cycles = current_cycle.saturating_sub(sync_cursor);
+        let remaining_native = if gap_cycles > 0 {
             let native_rate = u64::from(self.native_rate);
-            let exact_native = (frame_cycles as f64 * native_rate as f64) / f64::from(cpu_clock_hz)
+            let exact_native = (gap_cycles as f64 * native_rate as f64) / f64::from(cpu_clock_hz)
                 + self.state.sample_remainder.0;
             let count = exact_native as usize;
             self.state.sample_remainder = FmSampleRemainder(exact_native - count as f64);
@@ -455,6 +461,7 @@ impl Soundboard26k {
 
         self.pending_native.clear();
         self.state.audio_frame_start_cycle = current_cycle;
+        self.state.fm_sync_cursor = current_cycle;
     }
 
     /// Creates a snapshot of the current state for save/restore.

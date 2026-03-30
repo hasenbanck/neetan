@@ -75,8 +75,12 @@ pub struct Soundboard86State {
     pub pcm86_irq_asserted: bool,
     /// CPU cycle at which the busy flag clears.
     pub busy_end_cycle: u64,
-    /// CPU cycle at which the current audio frame started.
+    /// CPU cycle at which the current audio output frame started.
+    /// Only advanced by `generate_samples()`.
     pub audio_frame_start_cycle: u64,
+    /// CPU cycle up to which the FM chip has been clocked.
+    /// Advanced by `sync_to_cycle()` on every port access.
+    pub fm_sync_cursor: u64,
     /// Fractional sample remainder carried across frames.
     pub sample_remainder: FmSampleRemainder,
     /// Whether extended mode (6-ch FM + ADPCM) is enabled.
@@ -99,6 +103,7 @@ impl Default for Soundboard86State {
             pcm86_irq_asserted: false,
             busy_end_cycle: 0,
             audio_frame_start_cycle: 0,
+            fm_sync_cursor: 0,
             sample_remainder: FmSampleRemainder::default(),
             extend_enabled: false,
             adpcm_ram: true,
@@ -920,14 +925,14 @@ impl Soundboard86 {
     /// Advances the YM2608 chip clock to `current_cycle` by generating native
     /// samples, buffering them for later resampling in `generate_samples()`.
     fn sync_to_cycle(&mut self, current_cycle: u64) {
-        let frame_start = self.state.audio_frame_start_cycle;
-        let frame_cycles = current_cycle.saturating_sub(frame_start);
-        if frame_cycles == 0 {
+        let sync_start = self.state.fm_sync_cursor;
+        let elapsed_cycles = current_cycle.saturating_sub(sync_start);
+        if elapsed_cycles == 0 {
             return;
         }
 
         let native_rate = u64::from(self.native_rate);
-        let exact_native = (frame_cycles as f64 * native_rate as f64)
+        let exact_native = (elapsed_cycles as f64 * native_rate as f64)
             / f64::from(self.cpu_clock_hz)
             + self.state.sample_remainder.0;
         let native_count = exact_native as usize;
@@ -936,7 +941,7 @@ impl Soundboard86 {
         }
 
         self.state.sample_remainder = FmSampleRemainder(exact_native - native_count as f64);
-        self.state.audio_frame_start_cycle = current_cycle;
+        self.state.fm_sync_cursor = current_cycle;
 
         if self.native_buffer.len() < native_count {
             self.native_buffer
@@ -1251,22 +1256,20 @@ impl Soundboard86 {
         volume: f32,
         output: &mut [f32],
     ) {
-        // Save frame start before sync may advance it (needed for PCM86 timing).
-        let pcm_frame_start = self.state.audio_frame_start_cycle;
-
         if output.is_empty() {
             self.sync_to_cycle(current_cycle);
             self.pending_native.clear();
             self.state.audio_frame_start_cycle = current_cycle;
+            self.state.fm_sync_cursor = current_cycle;
             return;
         }
 
-        // Generate remaining FM native samples since last sync.
-        let frame_start = self.state.audio_frame_start_cycle;
-        let frame_cycles = current_cycle.saturating_sub(frame_start);
-        let remaining_native = if frame_cycles > 0 {
+        // Generate remaining FM native samples from fm_sync_cursor to current_cycle.
+        let sync_cursor = self.state.fm_sync_cursor;
+        let gap_cycles = current_cycle.saturating_sub(sync_cursor);
+        let remaining_native = if gap_cycles > 0 {
             let native_rate = u64::from(self.native_rate);
-            let exact_native = (frame_cycles as f64 * native_rate as f64) / f64::from(cpu_clock_hz)
+            let exact_native = (gap_cycles as f64 * native_rate as f64) / f64::from(cpu_clock_hz)
                 + self.state.sample_remainder.0;
             let count = exact_native as usize;
             self.state.sample_remainder = FmSampleRemainder(exact_native - count as f64);
@@ -1343,11 +1346,10 @@ impl Soundboard86 {
             }
         }
 
-        // Mix in PCM86 stereo output using the full elapsed time since last generate call.
-        // Advance vir_buf to current time before draining.
+        // Mix in PCM86 stereo output.
         self.pcm86.update_buffer_state(current_cycle, cpu_clock_hz);
         self.pcm86.reconcile_buffers(current_cycle, cpu_clock_hz);
-        let pcm_frame_cycles = current_cycle.saturating_sub(pcm_frame_start);
+        let pcm_frame_cycles = current_cycle.saturating_sub(self.state.audio_frame_start_cycle);
         if self.pcm86.is_playing() && self.pcm86.state.real_buf > 0 && pcm_frame_cycles > 0 {
             {
                 let pcm_rate = self.pcm86.pcm_rate();
@@ -1395,6 +1397,7 @@ impl Soundboard86 {
 
         self.pending_native.clear();
         self.state.audio_frame_start_cycle = current_cycle;
+        self.state.fm_sync_cursor = current_cycle;
     }
 
     /// Creates a snapshot of the current state for save/restore.
