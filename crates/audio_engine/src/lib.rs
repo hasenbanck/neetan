@@ -65,8 +65,8 @@ type Result<T> = std::result::Result<T, Error>;
 /// Audio sample rate in Hz used by the emulator.
 pub const SAMPLE_RATE: i32 = 48000;
 
-/// Desired number of stereo frames buffered in the audio pipeline (~25 ms at 48 kHz).
-const TARGET_BUFFER_FRAMES: usize = 1200;
+/// Desired number of stereo frames buffered in the audio pipeline (~37.5 ms at 48 kHz).
+const TARGET_BUFFER_FRAMES: usize = 1800;
 
 /// Frames to produce per chunk (~5 ms at 48 kHz).
 const STEP_FRAMES: usize = 240;
