@@ -199,8 +199,12 @@ pub struct SoundBlaster16State {
     pub opl3_address: u16,
     /// CPU cycle at which the busy flag clears.
     pub busy_end_cycle: u64,
-    /// CPU cycle at which the current audio frame started.
+    /// CPU cycle at which the current audio output frame started.
+    /// Only advanced by `generate_samples()`.
     pub audio_frame_start_cycle: u64,
+    /// CPU cycle up to which the OPL3 chip has been clocked.
+    /// Advanced by `sync_to_cycle()` on every port access.
+    pub fm_sync_cursor: u64,
     /// Fractional sample remainder carried across frames.
     pub sample_remainder: FmSampleRemainder,
     /// DSP state.
@@ -219,6 +223,7 @@ impl Default for SoundBlaster16State {
             opl3_address: 0,
             busy_end_cycle: 0,
             audio_frame_start_cycle: 0,
+            fm_sync_cursor: 0,
             sample_remainder: FmSampleRemainder::default(),
             dsp: Sb16DspState::default(),
             mixer: Sb16MixerState::default(),
@@ -426,14 +431,14 @@ impl SoundBlaster16 {
     }
 
     fn sync_to_cycle(&mut self, current_cycle: u64) {
-        let frame_start = self.state.audio_frame_start_cycle;
-        let frame_cycles = current_cycle.saturating_sub(frame_start);
-        if frame_cycles == 0 {
+        let sync_start = self.state.fm_sync_cursor;
+        let elapsed_cycles = current_cycle.saturating_sub(sync_start);
+        if elapsed_cycles == 0 {
             return;
         }
 
         let native_rate = u64::from(self.opl3_native_rate);
-        let exact_native = (frame_cycles as f64 * native_rate as f64)
+        let exact_native = (elapsed_cycles as f64 * native_rate as f64)
             / f64::from(self.cpu_clock_hz)
             + self.state.sample_remainder.0;
         let native_count = exact_native as usize;
@@ -442,7 +447,7 @@ impl SoundBlaster16 {
         }
 
         self.state.sample_remainder = FmSampleRemainder(exact_native - native_count as f64);
-        self.state.audio_frame_start_cycle = current_cycle;
+        self.state.fm_sync_cursor = current_cycle;
 
         if self.opl3_native_buffer.len() < native_count {
             self.opl3_native_buffer
@@ -1134,6 +1139,7 @@ impl SoundBlaster16 {
             self.sync_to_cycle(current_cycle);
             self.opl3_pending_native.clear();
             self.state.audio_frame_start_cycle = current_cycle;
+            self.state.fm_sync_cursor = current_cycle;
             return;
         }
 
@@ -1152,12 +1158,12 @@ impl SoundBlaster16 {
                 .resize(self.pcm_resampler.buffer_size_output(), 0.0);
         }
 
-        // Generate remaining OPL3 native samples since last sync
-        let frame_start = self.state.audio_frame_start_cycle;
-        let frame_cycles = current_cycle.saturating_sub(frame_start);
-        let remaining_native = if frame_cycles > 0 {
+        // Generate remaining OPL3 native samples from fm_sync_cursor to current_cycle.
+        let sync_cursor = self.state.fm_sync_cursor;
+        let gap_cycles = current_cycle.saturating_sub(sync_cursor);
+        let remaining_native = if gap_cycles > 0 {
             let native_rate = u64::from(self.opl3_native_rate);
-            let exact_native = (frame_cycles as f64 * native_rate as f64) / f64::from(cpu_clock_hz)
+            let exact_native = (gap_cycles as f64 * native_rate as f64) / f64::from(cpu_clock_hz)
                 + self.state.sample_remainder.0;
             let count = exact_native as usize;
             self.state.sample_remainder = FmSampleRemainder(exact_native - count as f64);
@@ -1302,6 +1308,7 @@ impl SoundBlaster16 {
 
         self.opl3_pending_native.clear();
         self.state.audio_frame_start_cycle = current_cycle;
+        self.state.fm_sync_cursor = current_cycle;
     }
 
     fn read_pcm_byte(&mut self) -> u8 {
