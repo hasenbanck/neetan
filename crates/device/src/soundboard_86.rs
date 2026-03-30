@@ -149,8 +149,10 @@ pub struct Pcm86State {
     pub data_write_irq_wait: u64,
     /// Audio frame start cycle.
     pub audio_frame_start_cycle: u64,
-    /// Fractional sample remainder.
+    /// Fractional sample remainder for audio drain path.
     pub sample_remainder: FmSampleRemainder,
+    /// Fractional sample remainder for `update_buffer_state` vir_buf tracking.
+    pub vir_buf_remainder: FmSampleRemainder,
     /// WaveStar handshake sequence index (0..=5).
     pub wavestar_seq_index: u8,
     /// WaveStar port 0xA464 readback value.
@@ -180,6 +182,7 @@ impl Default for Pcm86State {
             data_write_irq_wait: 0,
             audio_frame_start_cycle: 0,
             sample_remainder: FmSampleRemainder::default(),
+            vir_buf_remainder: FmSampleRemainder::default(),
             wavestar_seq_index: 0,
             wavestar_value: 0xFF,
         }
@@ -461,6 +464,7 @@ impl Pcm86 {
                     self.state.vir_buf = 0;
                     self.state.audio_frame_start_cycle = current_cycle;
                     self.state.sample_remainder = FmSampleRemainder::default();
+                    self.state.vir_buf_remainder = FmSampleRemainder::default();
                     self.state.last_clock_for_wait = current_cycle;
                 }
                 // IRQ clear when bit 4 is written as 0.
@@ -482,6 +486,7 @@ impl Pcm86 {
                 if (old_fifo ^ value) & 0x80 != 0 && value & 0x80 != 0 {
                     self.state.audio_frame_start_cycle = current_cycle;
                     self.state.sample_remainder = FmSampleRemainder::default();
+                    self.state.vir_buf_remainder = FmSampleRemainder::default();
                 }
                 // Update rescue and resampler if rate changed.
                 if (old_fifo ^ value) & 7 != 0 {
@@ -598,7 +603,10 @@ impl Pcm86 {
             return;
         }
         let rate = self.pcm_rate() as u64;
-        let samples_elapsed = (elapsed as f64 * rate as f64 / f64::from(cpu_clock_hz)) as i64;
+        let exact_samples =
+            elapsed as f64 * rate as f64 / f64::from(cpu_clock_hz) + self.state.vir_buf_remainder.0;
+        let samples_elapsed = exact_samples as i64;
+        self.state.vir_buf_remainder = FmSampleRemainder(exact_samples - samples_elapsed as f64);
         let dec_value = samples_elapsed << self.state.step_bit;
         if self.state.vir_buf as i64 - dec_value < self.state.vir_buf as i64 {
             self.state.vir_buf -= dec_value as i32;
@@ -1908,6 +1916,76 @@ mod tests {
         assert_eq!(
             pcm.state.vir_buf, vir_buf_before,
             "vir_buf should not change when not playing"
+        );
+    }
+
+    #[test]
+    fn update_buffer_state_split_call_equivalence() {
+        // A single update_buffer_state(T) and two calls update_buffer_state(T/2)
+        // should produce the same vir_buf (within 1 byte) thanks to fractional tracking.
+        let cpu_hz = 20_000_000u32;
+
+        let mut single = make_pcm86();
+        single.state.dactrl = 0x70; // 8-bit stereo
+        single.state.step_bit = PCM86_BITS[(0x70 >> 4) & 7];
+        single.state.step_mask = (1u32 << single.state.step_bit) - 1;
+        enable_playback(&mut single);
+        single.state.audio_frame_start_cycle = 0;
+        write_bytes(&mut single, &[0u8; 1000]);
+        let vir_before = single.state.vir_buf;
+
+        let elapsed = 500_000u64; // 25ms at 20MHz
+        single.update_buffer_state(elapsed, cpu_hz);
+        let single_result = single.state.vir_buf;
+
+        let mut split = make_pcm86();
+        split.state.dactrl = 0x70;
+        split.state.step_bit = PCM86_BITS[(0x70 >> 4) & 7];
+        split.state.step_mask = (1u32 << split.state.step_bit) - 1;
+        enable_playback(&mut split);
+        split.state.audio_frame_start_cycle = 0;
+        write_bytes(&mut split, &[0u8; 1000]);
+        assert_eq!(split.state.vir_buf, vir_before);
+
+        split.update_buffer_state(elapsed / 2, cpu_hz);
+        split.update_buffer_state(elapsed, cpu_hz);
+        let split_result = split.state.vir_buf;
+
+        let diff = (single_result - split_result).unsigned_abs();
+        assert!(
+            diff <= 1,
+            "split calls should match single call within 1 byte: single={single_result} split={split_result} (started at {vir_before})"
+        );
+    }
+
+    #[test]
+    fn update_buffer_state_accumulates_fractional_samples() {
+        // Calling update_buffer_state with very small increments (each < 1 sample)
+        // should still eventually decrement vir_buf via accumulated fractions.
+        let cpu_hz = 20_000_000u32;
+
+        let mut pcm = make_pcm86();
+        pcm.state.dactrl = 0x70; // 8-bit stereo, rate index from fifo
+        pcm.state.step_bit = PCM86_BITS[(0x70 >> 4) & 7];
+        pcm.state.step_mask = (1u32 << pcm.state.step_bit) - 1;
+        enable_playback(&mut pcm);
+        pcm.state.audio_frame_start_cycle = 0;
+        write_bytes(&mut pcm, &[0u8; 100]);
+        let vir_before = pcm.state.vir_buf;
+
+        // At 44100 Hz (rate index 0, default), 1 sample = 20M/44100 = ~453 cycles.
+        // Use increments of 100 cycles (< 1 sample each).
+        let increment = 100u64;
+        let mut cycle = 0u64;
+        for _ in 0..1000 {
+            cycle += increment;
+            pcm.update_buffer_state(cycle, cpu_hz);
+        }
+
+        assert!(
+            pcm.state.vir_buf < vir_before,
+            "vir_buf should have decreased after many small increments: before={vir_before} after={}",
+            pcm.state.vir_buf
         );
     }
 
