@@ -1352,6 +1352,8 @@ impl<T: Tracing> Pc9801Bus<T> {
         if let Some(ref mut sb16) = self.sound_blaster_16 {
             let dsp_sample_rate = sb16.state.dsp.sample_rate;
             let dsp_dma_format = sb16.state.dsp.dma_format;
+            let dsp_dma_channel = sb16.state.dsp.dma_channel as usize;
+            let dsp_dma_channel_register = sb16.state.dsp.dma_channel_register;
             for action in sb16.drain_actions() {
                 match *action {
                     SoundboardSb16Action::ScheduleTimer { kind, fire_cycle } => {
@@ -1368,6 +1370,25 @@ impl<T: Tracing> Pc9801Bus<T> {
                         self.pic.clear_irq(irq);
                     }
                     SoundboardSb16Action::StartDma { channel: _ } => {
+                        // When high-DMA channels are configured and the
+                        // transfer is 16-bit, the software may have
+                        // programmed the DMA controller with ISA-style word
+                        // count and word address. Convert to byte-based
+                        // values for the PC-98 8-bit DMA controller.
+                        let high_dma_16bit = dsp_dma_channel_register & 0xE0 != 0
+                            && device::sound_blaster_16::dma_format_is_16bit(dsp_dma_format);
+                        if high_dma_16bit {
+                            let ch = &mut self.dma.state.channels[dsp_dma_channel];
+                            // Word count -> byte count.
+                            let byte_count = (u32::from(ch.start_count) + 1) * 2 - 1;
+                            ch.start_count = byte_count as u16;
+                            ch.count = ch.start_count;
+                            // Word address -> byte address (within 64K page).
+                            let byte_address = ch.start_address.wrapping_shl(1);
+                            ch.start_address = byte_address;
+                            ch.address = byte_address;
+                        }
+
                         Self::schedule_sb16_dma_from_params(
                             &mut self.scheduler,
                             dsp_sample_rate,
