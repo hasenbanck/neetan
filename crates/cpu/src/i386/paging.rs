@@ -29,7 +29,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus: &mut impl common::Bus,
     ) -> Option<u32> {
         if !self.is_paging_enabled() {
-            return Some(linear & 0x00FF_FFFF);
+            return Some(linear);
         }
 
         let page = linear >> 12;
@@ -128,7 +128,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             true
         };
 
-        Some(physical & 0x00FF_FFFF)
+        Some(physical)
     }
 
     fn raise_page_fault(
@@ -155,26 +155,24 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     #[inline(always)]
     pub(super) fn read_dword_phys_raw(&self, bus: &mut impl common::Bus, addr: u32) -> u32 {
-        let a = addr & 0x00FF_FFFF;
-        if a & 0xFFF <= 0xFFC {
-            return bus.read_dword(a);
+        if addr & 0xFFF <= 0xFFC {
+            return bus.read_dword(addr);
         }
-        bus.read_byte(a) as u32
-            | ((bus.read_byte(a.wrapping_add(1) & 0x00FF_FFFF) as u32) << 8)
-            | ((bus.read_byte(a.wrapping_add(2) & 0x00FF_FFFF) as u32) << 16)
-            | ((bus.read_byte(a.wrapping_add(3) & 0x00FF_FFFF) as u32) << 24)
+        bus.read_byte(addr) as u32
+            | ((bus.read_byte(addr.wrapping_add(1)) as u32) << 8)
+            | ((bus.read_byte(addr.wrapping_add(2)) as u32) << 16)
+            | ((bus.read_byte(addr.wrapping_add(3)) as u32) << 24)
     }
 
     #[inline(always)]
     pub(super) fn write_dword_phys_raw(&self, bus: &mut impl common::Bus, addr: u32, value: u32) {
-        let a = addr & 0x00FF_FFFF;
-        if a & 0xFFF <= 0xFFC {
-            bus.write_dword(a, value);
+        if addr & 0xFFF <= 0xFFC {
+            bus.write_dword(addr, value);
             return;
         }
-        bus.write_byte(a, value as u8);
-        bus.write_byte(a.wrapping_add(1) & 0x00FF_FFFF, (value >> 8) as u8);
-        bus.write_byte(a.wrapping_add(2) & 0x00FF_FFFF, (value >> 16) as u8);
-        bus.write_byte(a.wrapping_add(3) & 0x00FF_FFFF, (value >> 24) as u8);
+        bus.write_byte(addr, value as u8);
+        bus.write_byte(addr.wrapping_add(1), (value >> 8) as u8);
+        bus.write_byte(addr.wrapping_add(2), (value >> 16) as u8);
+        bus.write_byte(addr.wrapping_add(3), (value >> 24) as u8);
     }
 }
