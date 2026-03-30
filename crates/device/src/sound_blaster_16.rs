@@ -61,6 +61,8 @@ fn mixer_default_registers() -> [u8; 256] {
     // FM/MIDI L/R
     regs[0x34] = 0xC0;
     regs[0x35] = 0xC0;
+    // DMA channel (DMA 3 = bit 3)
+    regs[0x81] = 0x08;
     // Output switch
     regs[0x3C] = 0x1F;
     // Input switch L/R
@@ -116,6 +118,8 @@ pub struct Sb16DspState {
     pub dma_bytes_remaining: u32,
     /// PC-98 DMA channel (0 or 3).
     pub dma_channel: u8,
+    /// Raw mixer register 0x81 value (low + high DMA channel bits).
+    pub dma_channel_register: u8,
     /// Whether the current DMA transfer is recording (device->memory) rather than playback.
     pub dma_is_recording: bool,
     /// 8-bit IRQ pending flag.
@@ -150,6 +154,7 @@ impl Default for Sb16DspState {
             dma_block_size: 0,
             dma_bytes_remaining: 0,
             dma_channel: 3,
+            dma_channel_register: 0x08,
             dma_is_recording: false,
             irq_pending_8bit: false,
             irq_pending_16bit: false,
@@ -876,16 +881,24 @@ impl SoundBlaster16 {
                 };
             }
             0x81 => {
-                // DMA channel configuration
+                // DMA channel configuration.
+                // Bits 0,1,3: low DMA channel (0/1/3).
+                // Bits 5,6,7: high DMA channel (5/6/7).
+                // On PC-98 CT2720, both low and high channels map to
+                // PC-98 DMA channel 0 or 3. Reserved bits 2 and 4 are
+                // masked off. The raw value (with reserved bits cleared)
+                // is stored for high-DMA detection during 16-bit transfers.
                 self.state.mixer.registers[addr as usize] = value;
-                let low = value & 0x0F;
-                self.state.dsp.dma_channel = if low & 0x08 != 0 {
-                    3
-                } else if low & 0x01 != 0 {
-                    0
-                } else {
-                    self.state.dsp.dma_channel
-                };
+                let masked = value & !0x14;
+                self.state.dsp.dma_channel_register = masked;
+                // DMA 0 (bit 0) or DMA 5 (bit 5) -> PC-98 DMA ch 0
+                if masked & 0x21 != 0 {
+                    self.state.dsp.dma_channel = 0;
+                }
+                // DMA 1 (bit 1), DMA 3 (bit 3), DMA 6 (bit 6), DMA 7 (bit 7) -> PC-98 DMA ch 3
+                if masked & 0xCA != 0 {
+                    self.state.dsp.dma_channel = 3;
+                }
             }
             // Legacy SB Pro volume mapping
             0x04 => {
@@ -944,12 +957,8 @@ impl SoundBlaster16 {
                 }
             }
             0x81 => {
-                // DMA config readback
-                match self.state.dsp.dma_channel {
-                    0 => 0x01,
-                    3 => 0x08,
-                    _ => 0x00,
-                }
+                // DMA config readback.
+                self.state.mixer.registers[addr as usize]
             }
             0x82 => {
                 // IRQ pending status
@@ -1297,7 +1306,12 @@ impl SoundBlaster16 {
 
     fn read_pcm_byte(&mut self) -> u8 {
         if self.state.dsp.pcm_buffered == 0 {
-            return 0x80; // silence for unsigned 8-bit
+            // Silence: 0x80 for unsigned 8-bit, 0x00 for signed 16-bit.
+            return if dma_format_is_16bit(self.state.dsp.dma_format) {
+                0x00
+            } else {
+                0x80
+            };
         }
         let rp = self.state.dsp.pcm_read_pos;
         let byte = self.state.dsp.pcm_buffer[rp];
