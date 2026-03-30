@@ -994,7 +994,7 @@ fn post_bios_state_ra() {
     check!(f, state.mouse_ppi.port_c, 0x00, "Mouse PPI port C");
 
     // === Memory: BDA fields ===
-    check!(f, state.memory.ram[0x0400], 0x06, "BDA byte 0x0400");
+    check!(f, state.memory.ram[0x0400], 0x00, "BDA byte 0x0400");
     check!(f, state.memory.ram[0x0401], 0x60, "BDA EXPMMSZ");
     check!(f, state.memory.ram[0x0493], 0xFF, "BDA F2HD_MODE");
     check!(f, state.memory.ram[0x054C], 0x4E, "BDA PRXCRT");

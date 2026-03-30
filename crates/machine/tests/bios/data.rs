@@ -171,7 +171,7 @@ fn system_config_ra() {
     let mut machine = create_machine_ra();
     let _cycles = boot_to_halt!(machine);
 
-    assert_eq!(machine.bus.read_byte(BDA_BIOS_FLAG2), 0x06, "BIOS_FLAG2");
+    assert_eq!(machine.bus.read_byte(BDA_BIOS_FLAG2), 0x00, "BIOS_FLAG2");
     assert_eq!(machine.bus.read_byte(BDA_EXPMMSZ), 0x60, "EXPMMSZ");
     assert_eq!(machine.bus.read_byte(BDA_ITF_WORK), 0x00, "ITF_WORK");
     assert_eq!(machine.bus.read_word(BDA_USER_SP), 0x00F8, "USER_SP");

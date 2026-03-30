@@ -335,22 +335,31 @@ impl<T: Tracing> Pc9801Bus<T> {
             | (msw3 & 0x07);
         self.memory.state.ram[0x0501] = bios_flag1;
 
-        // BIOS_FLAG2 (0x0400): 386 machines get extended memory + protected mode bits.
-        let bios_flag2 = match cpu_type {
-            CpuType::I386 => 0x06,
-            _ => 0x00,
-        };
-        self.memory.state.ram[0x0400] = bios_flag2;
+        // BIOS_FLAG2 (0x0400): per undoc98/memsys.txt:
+        //   bit 7: RAM drive capability
+        //   bit 5: RESUME feature ON/OFF
+        //   bit 4: resume/suspend notification
+        //   bit 3: V33A identification
+        //   bit 2: CPU speed middle mode
+        //   bit 0: BRANCH BIOS 4670 I/F
+        self.memory.state.ram[0x0400] = 0x00;
 
         // SYS_TYPE (0x0480): CPU type + hardware detection flags.
         //   bits 0-1: CPU type (V30=0x00, I286=0x01, I386=0x03)
         //   bit 3: dual-use FDD present
         //   bit 6: EGC / protected mode test passed
+        //   bit 7: IDE hard disk controller present
         let sys_type = match cpu_type {
             CpuType::V30 => 0x00,
             CpuType::I286 => 0x01,
             CpuType::I386 | CpuType::I486DX => 0x4B,
         };
+        let sys_type = sys_type
+            | if self.machine_model.has_ide() {
+                0x80
+            } else {
+                0x00
+            };
         self.memory.state.ram[0x0480] = sys_type;
 
         // USER_SP / USER_SS (0x0404 / 0x0406): saved stack from the ITF
@@ -368,8 +377,8 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         // BIOS_FLAG3 (0x0481): 386 machines have bit 5 set.
         self.memory.state.ram[0x0481] = match cpu_type {
-            CpuType::I386 | CpuType::I486DX => 0x20,
             CpuType::I286 | CpuType::V30 => 0x00,
+            CpuType::I386 | CpuType::I486DX => 0x20,
         };
 
         // F2HD_MODE (0x0493): all drives 2HD.
