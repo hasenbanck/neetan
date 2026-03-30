@@ -4105,6 +4105,83 @@ fn vm86_interrupt_dispatch_uses_pl0_stack_correctly() {
     );
 }
 
+/// When TSS ESP0 exceeds 0xFFFF, the interrupt dispatch from VM86 must use
+/// full 32-bit ESP (not truncated 16-bit SP). The VM flag must be cleared
+/// before the ESP assignment so that `use_esp()` consults the B bit of the
+/// new SS descriptor rather than unconditionally returning false for VM86.
+#[test]
+fn vm86_interrupt_dispatch_esp0_above_64k() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_vm86(&mut bus);
+
+    // Override the ring 0 stack descriptor (GDT entry 3) to be a 4GB flat
+    // segment (G=1, B=1, limit=0xFFFFF) so ESP0 values above 0xFFFF are valid.
+    write_gdt_entry(
+        &mut bus,
+        VM86_GDT_BASE,
+        3,
+        0x00000,
+        0xFFFFF,
+        0x93,
+        0xC0, // G=1, B=1
+    );
+
+    // Set TSS ESP0 to a value above 0xFFFF.
+    let esp0: u32 = 0x1_E000;
+    write_dword_at(&mut bus, VM86_TSS_BASE + 0x04, esp0);
+
+    cpu.load_state(&state);
+
+    // INT 0x42 at VM86 code base (CS=0x1000 -> physical 0x10000)
+    bus.ram[0x10000] = 0xCD; // INT imm8
+    bus.ram[0x10001] = 0x42; // vector 0x42
+
+    cpu.step(&mut bus);
+
+    // After dispatch the handler should be running at CPL0.
+    assert_eq!(cpu.cs(), VM86_CS_SEL);
+    assert_eq!(cpu.ip() as u16, VM86_HANDLER_IP);
+
+    // ESP must be ESP0 - 36 (9 dword pushes) using FULL 32-bit arithmetic.
+    let expected_esp = esp0 - 36;
+    let actual_esp = cpu.esp();
+    assert_eq!(
+        actual_esp,
+        expected_esp,
+        "ESP should be {expected_esp:#X} (ESP0={esp0:#X} - 36), got {actual_esp:#X}. \
+         If ESP is {:#X}, the VM flag was not cleared before the ESP assignment, \
+         causing 16-bit SP truncation.",
+        (esp0 as u16).wrapping_sub(36) as u32
+    );
+
+    // Verify EFLAGS on the PL0 stack has VM=1 at the correct (32-bit) address.
+    // SS0 base = 0 (GDT entry 3), so physical address = ESP0 - 28.
+    let eflags_addr = esp0 - 28;
+    let pushed_eflags = read_dword_at(&bus, eflags_addr);
+    assert_ne!(
+        pushed_eflags & 0x0002_0000,
+        0,
+        "VM bit must be set in pushed EFLAGS at {eflags_addr:#X}"
+    );
+    assert_eq!(
+        (pushed_eflags >> 12) & 3,
+        3,
+        "IOPL=3 must be preserved in pushed EFLAGS"
+    );
+
+    // Verify the rest of the V86 frame is at the correct addresses.
+    assert_eq!(read_dword_at(&bus, esp0 - 4), 0x6000, "GS");
+    assert_eq!(read_dword_at(&bus, esp0 - 8), 0x5000, "FS");
+    assert_eq!(read_dword_at(&bus, esp0 - 12), 0x4000, "DS");
+    assert_eq!(read_dword_at(&bus, esp0 - 16), 0x3000, "ES");
+    assert_eq!(read_dword_at(&bus, esp0 - 20), 0x2000, "old SS");
+    assert_eq!(read_dword_at(&bus, esp0 - 24), 0xF000, "old SP");
+    assert_eq!(read_dword_at(&bus, esp0 - 32), 0x1000, "old CS");
+    assert_eq!(read_dword_at(&bus, esp0 - 36), 0x0002, "return EIP");
+}
+
 /// IRET in VM86 must not allow the VM86 task to raise its own IOPL.
 /// expand() sets IOPL unconditionally; load_flags(..., 3, true) preserves it.
 #[test]

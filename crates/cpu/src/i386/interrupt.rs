@@ -323,12 +323,12 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             }
             self.set_accessed_bit(new_ss, bus);
             self.set_loaded_segment_cache(SegReg32::SS, new_ss, ss_descriptor);
+            self.eflags_upper &= !0x0003_0000; // Clear RF and VM before setting ESP.
             if self.use_esp() {
                 self.regs.set_dword(crate::DwordReg::ESP, new_esp);
             } else {
                 self.regs.set_word(crate::WordReg::SP, new_esp as u16);
             }
-            self.eflags_upper &= !0x0003_0000; // Clear RF and VM before pushes.
 
             if is_386_gate {
                 if from_vm86 {
