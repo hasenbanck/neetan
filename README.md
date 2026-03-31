@@ -59,12 +59,13 @@ neetan <COMMAND>
 | `--audio-volume <FLOAT>`     | Audio volume 0.0–1.0                                                     | `1.0`      |
 | `--aspect-mode <MODE>`       | Display aspect mode: `4:3` or `1:1`                                      | `4:3`      |
 | `--window-mode <MODE>`       | Window mode: `windowed` or `fullscreen`                                  | `windowed` |
+| `--force-gdc-clock <2.5\|5>` | Force GDC clock to 2.5 or 5 MHz. VX and later only                       | auto       |
 | `--bios-rom <PATH>`          | Path to BIOS ROM file                                                    | HLE BIOS   |
 | `--font-rom <PATH>`          | Path to font ROM file                                                    | Built-in   |
 | `--soundboard <TYPE>`        | Sound board: `none`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`           | `86+26k`   |
-| `--force-gdc-clock <2.5\|5>` | Force GDC clock to 2.5 or 5 MHz. VX and later only                       | auto       |
-| `--printer <PATH>`           | Output file for printer (must exist)                                     | -          |
+| `--midi <DEVICE>`            | MIDI device: `none`, `sc55`                                              | `none`     |
 | `--sc55-roms <PATH>`         | Path to SC-55 ROM directory (requires `sc55` feature)                    | -          |
+| `--printer <PATH>`           | Output file for printer (must exist)                                     | -          |
 | `-h, --help`                 | Print help                                                               | -          |
 | `-V, --version`              | Print version                                                            | -          |
 
@@ -114,6 +115,7 @@ fdd1 = /path/to/disk_b.d88
 fdd2 = /path/to/save_game.d88
 hdd1 = /path/to/harddrive.hdi
 cdrom = /path/to/game.cue
+midi = sc55
 sc55-roms = /path/to/sc55_roms
 ```
 
@@ -249,17 +251,22 @@ The emulator auto-detects the model from the filenames present.
 
 ### Usage
 
-Provide the path to a directory containing SC-55 ROM files:
+Set the MIDI device to `sc55` and provide the path to a directory containing SC-55 ROM files:
 
 ```bash
-neetan --sc55-roms /path/to/sc55_roms [other options...]
+neetan --midi sc55 --sc55-roms /path/to/sc55_roms [other options...]
 ```
 
 Or in a configuration file:
 
 ```ini
+midi = sc55
 sc55-roms = /path/to/sc55_roms
 ```
+
+The `sc55-roms` path can be set in the global configuration file so it only needs to be specified once.
+SC-55 emulation is only activated when both `--midi sc55` and `--sc55-roms` are set, so you can
+toggle it per-game without removing the ROM path from your global config.
 
 ## FAQ
 

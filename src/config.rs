@@ -43,13 +43,14 @@ Options:
       --audio-volume <FLOAT>    Audio volume 0.0-1.0
       --aspect-mode <MODE>      Display aspect mode: 4:3 or 1:1
       --window-mode <MODE>      Window mode: windowed or fullscreen
+      --force-gdc-clock <2.5|5> Force GDC clock to 2.5 or 5 MHz (default: auto)
       --bios-rom <PATH>         Path to BIOS ROM file
       --font-rom <PATH>         Path to font ROM file
       --soundboard <TYPE>       Sound board type: none, 26k, 86, 86+26k, sb16, sb16+26k
       --adpcm-ram <on|off>      ADPCM RAM option for PC-9801-86 (default: on)
-      --force-gdc-clock <2.5|5> Force GDC clock to 2.5 or 5 MHz (default: auto)
+      --midi <DEVICE>            MIDI device: none, sc55 (default: none)
+      --sc55-roms <PATH>        Path to SC55 ROM directory
       --printer <PATH>          Output file for printer (must exist)
-      --sc55-roms <PATH>        Path to SC55 ROM directory (enables MIDI output)
   -h, --help                    Print help
   -V, --version                 Print version
 
@@ -411,6 +412,10 @@ pub fn parse_args() -> crate::Result<Action> {
             }
             "--printer" => config.printer = Some(PathBuf::from(value(&flag)?)),
             "--sc55-roms" => config.sc55_roms = Some(PathBuf::from(value(&flag)?)),
+            "--midi" => {
+                let val = value(&flag)?;
+                config.midi = val.parse::<MidiDevice>().map_err(StringError)?;
+            }
             other => bail!("unknown argument: {other}"),
         }
     }
@@ -466,6 +471,7 @@ pub struct EmulatorConfig {
     pub force_gdc_clock: Option<ForceGdcClock>,
     pub printer: Option<PathBuf>,
     pub sc55_roms: Option<PathBuf>,
+    pub midi: MidiDevice,
     pub key_map: KeyMap,
 }
 
@@ -488,6 +494,7 @@ impl Default for EmulatorConfig {
             force_gdc_clock: None,
             printer: None,
             sc55_roms: None,
+            midi: MidiDevice::default(),
             key_map: KeyMap::new(),
         }
     }
@@ -552,6 +559,10 @@ fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<
             },
             "printer" => config.printer = Some(PathBuf::from(val)),
             "sc55-roms" => config.sc55_roms = Some(PathBuf::from(val)),
+            "midi" => match val.parse::<MidiDevice>() {
+                Ok(device) => config.midi = device,
+                Err(_) => warn!("Unknown MIDI device in config: {val}"),
+            },
             key if key.starts_with("key.") => {
                 let host_name = &key[4..];
                 match keymap::parse_key_binding(host_name, val) {
@@ -701,6 +712,37 @@ impl std::str::FromStr for WindowMode {
             _ => Err(format!(
                 "unknown window mode '{s}', expected windowed or fullscreen"
             )),
+        }
+    }
+}
+
+/// MIDI output device.
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+pub enum MidiDevice {
+    /// No MIDI output.
+    #[default]
+    None,
+    /// Roland SC-55 (requires SC-55 ROMs).
+    Sc55,
+}
+
+impl std::fmt::Display for MidiDevice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => f.write_str("none"),
+            Self::Sc55 => f.write_str("sc55"),
+        }
+    }
+}
+
+impl std::str::FromStr for MidiDevice {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "none" => Ok(Self::None),
+            "sc55" => Ok(Self::Sc55),
+            _ => Err(format!("unknown MIDI device '{s}', expected none or sc55")),
         }
     }
 }
