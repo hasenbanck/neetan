@@ -133,9 +133,9 @@ The global config file uses the same `key = value` format as regular configurati
 
 | OS      | Path                                                         |
 |---------|--------------------------------------------------------------|
-| Linux   | `~/.local/share/neetan/neetan/neetan.conf`                   |
-| Windows | `C:\Users\<user>\AppData\Roaming\neetan\neetan\neetan.conf`  |
-| macOS   | `~/Library/Application Support/neetan/neetan/neetan.conf`    |
+| Linux   | `~/.local/share/neetan/neetan/global.conf`                   |
+| Windows | `C:\Users\<user>\AppData\Roaming\neetan\neetan\global.conf`  |
+| macOS   | `~/Library/Application Support/neetan/neetan/global.conf`    |
 
 The directory is created automatically. The configuration file must be created manually.
 
@@ -144,7 +144,7 @@ The directory is created automatically. The configuration file must be created m
 Settings are applied in this order, with later layers overriding earlier ones:
 
 1. Built-in defaults
-2. Global configuration file (`neetan.conf` in OS data directory)
+2. Global configuration file (`global.conf` in OS data directory)
 3. Per-invocation configuration file (`--config`)
 4. Command-line arguments
 

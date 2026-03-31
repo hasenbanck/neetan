@@ -579,7 +579,7 @@ fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<
 
 fn global_config_path() -> Option<PathBuf> {
     let pref_path = sdl3::filesystem::get_pref_path(crate::COMPANY_NAME, crate::GAME_NAME)?;
-    Some(pref_path.join("neetan.conf"))
+    Some(pref_path.join("global.conf"))
 }
 
 /// Forced GDC clock speed.
