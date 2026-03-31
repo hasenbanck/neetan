@@ -164,7 +164,6 @@ jobs:
 
       - name: Build AppImage
         env:
-          LDAI_UPDATE_INFORMATION: ""
           DISABLE_COPYRIGHT_FILES_DEPLOYMENT: "1"
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
@@ -177,10 +176,12 @@ jobs:
 
           cp target/release/neetan "$APPDIR/usr/bin/"
           cp "${{ steps.sdl3.outputs.path }}" "$APPDIR/usr/lib/"
+          ln -sf "$(basename "${{ steps.sdl3.outputs.path }}")" "$APPDIR/usr/lib/libSDL3.so.0"
           cp -r licenses/* "$APPDIR/usr/share/licenses/neetan/"
           cp assets/neetan.metainfo.xml "$APPDIR/usr/share/metainfo/"
 
-          VERSION="$VERSION" \
+          LINUXDEPLOY_OUTPUT_VERSION="$VERSION" \
+          LD_LIBRARY_PATH="$APPDIR/usr/lib:${LD_LIBRARY_PATH:-}" \
           "$RUNNER_TEMP/linuxdeploy" \
             --appdir "$APPDIR" \
             --executable target/release/neetan \
