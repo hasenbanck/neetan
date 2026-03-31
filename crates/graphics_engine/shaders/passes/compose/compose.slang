@@ -88,23 +88,38 @@ func fs_main(FullscreenVertex input) -> float4 {
     }
 
     let is_monochrome = (upload_buffer[0].video_mode & 0x02) != 0;
+    let is_16_color = (upload_buffer[0].display_flags & 0x08) != 0;
 
+    var use_text_color: bool;
     var color_index: uint;
     if (is_monochrome && text_enabled && graphics_enabled) {
         let graphics_on = ((upload_buffer[0].graphics_monochrome_mask >> graphics_color) & 1) != 0;
         if (text_on) {
+            use_text_color = true;
             color_index = text_color_index;
         } else if (graphics_on) {
+            use_text_color = true;
             color_index = text_color_index;
         } else {
+            use_text_color = false;
             color_index = 0;
         }
     } else {
         if (text_on) {
+            use_text_color = true;
             color_index = text_color_index;
         } else {
+            use_text_color = false;
             color_index = graphics_color;
         }
+    }
+
+    // In 16-color analog mode, text attributes use fixed 8 colors (BRG encoding)
+    // independent of the analog palette. The analog palette only applies to
+    // graphics plane pixels. In 8-color digital mode, both text and graphics
+    // share the same digital palette.
+    if (use_text_color && is_16_color) {
+        return fixed_text_color(color_index);
     }
 
     let packed = upload_buffer[0].palette_rgba[color_index];
@@ -124,8 +139,7 @@ func compute_pegc_composited_pixel(x: uint, y: uint) -> float4 {
     }
 
     if (text_on) {
-        let packed = upload_buffer[0].palette_rgba[text_color_index];
-        return color::unpack_srgb(packed);
+        return fixed_text_color(text_color_index);
     }
 
     let graphics_enabled = (upload_buffer[0].display_flags & 0x20) != 0;
@@ -467,6 +481,14 @@ func compute_text_pixel(x: uint, y: uint, out pixel_on: bool, out color_index: u
     }
 
     pixel_on = on;
+}
+
+[ForceInline]
+func fixed_text_color(index: uint) -> float4 {
+    let b = float((index >> 0) & 1);
+    let r = float((index >> 1) & 1);
+    let g = float((index >> 2) & 1);
+    return float4(r, g, b, 1.0);
 }
 
 [ForceInline]
