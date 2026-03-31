@@ -492,6 +492,16 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.memory.state.ram[0x054C] &= !0x40;
         self.memory.state.ram[0x054D] |= 0x20;
         self.gdc_slave.state.lines_per_row = 1;
+        self.display_control.state.mode2 |= 0x0600;
+    }
+
+    /// Advertises 5 MHz GDC capability without switching to 5 MHz.
+    ///
+    /// Sets PRXDUPD bit 5 so software knows it can switch to 5 MHz via
+    /// INT 18h or port 0x6A. The DIP switch and initial display mode
+    /// remain at 2.5 MHz.
+    pub fn set_gdc_5mhz_capable(&mut self) {
+        self.memory.state.ram[0x054D] |= 0x20;
     }
 
     /// Returns the CPU clock frequency in Hz.
@@ -970,9 +980,9 @@ impl<T: Tracing> Pc9801Bus<T> {
         }
 
         // GDC graphics pitch - convert to byte stride following NP21W logic.
-        // In 2.5 MHz mode (DIP SW 2-8 OFF): pitch is in words, multiply by 2.
-        // In 5 MHz mode (DIP SW 2-8 ON):  pitch is already in bytes.
-        let gdc_5mhz = self.system_ppi.state.dip_switch_2 & 0x80 == 0;
+        // In 2.5 MHz mode (mode2 bits 9-10 clear): pitch is in words, multiply by 2.
+        // In 5 MHz mode (mode2 bits 9-10 set):     pitch is already in bytes.
+        let gdc_5mhz = self.display_control.is_gdc_5mhz();
         let graphics_pitch = if gdc_5mhz {
             self.gdc_slave.state.pitch
         } else {

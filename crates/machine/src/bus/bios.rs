@@ -1009,6 +1009,8 @@ impl<T: Tracing> Pc9801Bus<T> {
                 self.gdc_slave.load_sync_params(&GDC_SLAVE_SYNC[3]);
                 self.gdc_slave.state.pitch = 80;
                 self.memory.state.ram[0x054D] |= 0x08;
+                self.display_control.state.mode2 |= 0x0600;
+                self.apply_gdc_dot_clock();
             }
         } else {
             if (prxdupd & 0x24) == 0x24 {
@@ -1022,6 +1024,8 @@ impl<T: Tracing> Pc9801Bus<T> {
                 self.gdc_slave.load_sync_params(&GDC_SLAVE_SYNC[sync_idx]);
                 self.gdc_slave.state.pitch = 40;
                 self.memory.state.ram[0x054D] |= 0x08;
+                self.display_control.state.mode2 &= !0x0600;
+                self.apply_gdc_dot_clock();
             }
             if crtmode & 1 != 0 {
                 // UPPER: set scroll start to page 1.
