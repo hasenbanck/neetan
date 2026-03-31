@@ -182,11 +182,6 @@ func compute_pegc_address(x: uint, y: uint, pitch: uint, is_one_screen: bool, di
 
 [ForceInline]
 func compute_graphics_pixel(x: uint, y: uint) -> uint {
-    let hide_odd = (upload_buffer[0].display_flags & 0x04) != 0;
-    if (hide_odd && (y % 2) == 1) {
-        return 0;
-    }
-
     let lr = max(upload_buffer[0].gdc_graphics_lines_per_row, 1u);
     let zoom = upload_buffer[0].gdc_graphics_zoom_display + 1;
     let effective_y = y / (lr * zoom);
