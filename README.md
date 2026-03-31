@@ -47,26 +47,26 @@ neetan <COMMAND>
 
 ### Options
 
-| Option                   | Description                                                              | Default    |
-|--------------------------|--------------------------------------------------------------------------|------------|
-| `-c, --config <PATH>`    | Load configuration from file                                             | -          |
-| `--machine <TYPE>`       | Machine type: `PC9801VM`, `PC9801VX`, `PC9801RA`, `PC9821AS`, `PC9821AP` | `PC9801VX` |
-| `--fdd1 <PATH>`          | Floppy disk image for drive 1 (repeatable)                               | -          |
-| `--fdd2 <PATH>`          | Floppy disk image for drive 2 (repeatable)                               | -          |
-| `--hdd1 <PATH>`          | Hard disk image for SASI drive 1                                         | -          |
-| `--hdd2 <PATH>`          | Hard disk image for SASI drive 2                                         | -          |
-| `--cdrom <PATH>`         | CD-ROM disc image CUE file (repeatable, PC-9821 only)                    | -          |
-| `--audio-volume <FLOAT>` | Audio volume 0.0–1.0                                                     | `1.0`      |
-| `--aspect-mode <MODE>`   | Display aspect mode: `4:3` or `1:1`                                      | `4:3`      |
-| `--window-mode <MODE>`   | Window mode: `windowed` or `fullscreen`                                  | `windowed` |
-| `--bios-rom <PATH>`      | Path to BIOS ROM file                                                    | HLE BIOS   |
-| `--font-rom <PATH>`      | Path to font ROM file                                                    | Built-in   |
-| `--soundboard <TYPE>`    | Sound board: `none`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`           | `86+26k`   |
-| `--gdc-compatibility`    | Force 2.5 MHz GDC clock (200-line compatibility mode). VX and later only | off        |
-| `--printer <PATH>`       | Output file for printer (must exist)                                     | -          |
-| `--sc55-roms <PATH>`     | Path to SC-55 ROM directory (requires `sc55` feature)                    | -          |
-| `-h, --help`             | Print help                                                               | -          |
-| `-V, --version`          | Print version                                                            | -          |
+| Option                       | Description                                                              | Default    |
+|------------------------------|--------------------------------------------------------------------------|------------|
+| `-c, --config <PATH>`        | Load configuration from file                                             | -          |
+| `--machine <TYPE>`           | Machine type: `PC9801VM`, `PC9801VX`, `PC9801RA`, `PC9821AS`, `PC9821AP` | `PC9801VX` |
+| `--fdd1 <PATH>`              | Floppy disk image for drive 1 (repeatable)                               | -          |
+| `--fdd2 <PATH>`              | Floppy disk image for drive 2 (repeatable)                               | -          |
+| `--hdd1 <PATH>`              | Hard disk image for SASI drive 1                                         | -          |
+| `--hdd2 <PATH>`              | Hard disk image for SASI drive 2                                         | -          |
+| `--cdrom <PATH>`             | CD-ROM disc image CUE file (repeatable, PC-9821 only)                    | -          |
+| `--audio-volume <FLOAT>`     | Audio volume 0.0–1.0                                                     | `1.0`      |
+| `--aspect-mode <MODE>`       | Display aspect mode: `4:3` or `1:1`                                      | `4:3`      |
+| `--window-mode <MODE>`       | Window mode: `windowed` or `fullscreen`                                  | `windowed` |
+| `--bios-rom <PATH>`          | Path to BIOS ROM file                                                    | HLE BIOS   |
+| `--font-rom <PATH>`          | Path to font ROM file                                                    | Built-in   |
+| `--soundboard <TYPE>`        | Sound board: `none`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`           | `86+26k`   |
+| `--force-gdc-clock <2.5\|5>` | Force GDC clock to 2.5 or 5 MHz. VX and later only                       | auto       |
+| `--printer <PATH>`           | Output file for printer (must exist)                                     | -          |
+| `--sc55-roms <PATH>`         | Path to SC-55 ROM directory (requires `sc55` feature)                    | -          |
+| `-h, --help`                 | Print help                                                               | -          |
+| `-V, --version`              | Print version                                                            | -          |
 
 ### Commands
 
@@ -106,7 +106,7 @@ options and their defaults.
 # Example configuration
 machine = PC9801RA
 soundboard = 86+26k
-gdc-compatibility = on
+force-gdc-clock = 2.5
 audio-volume = 0.8
 aspect-mode = 4:3
 fdd1 = /path/to/disk_a.d88

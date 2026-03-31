@@ -33,25 +33,25 @@ Commands:
   convert-hdd <INPUT> <OUTPUT>  Convert HDD image between SASI and IDE
 
 Options:
-  -c, --config <PATH>         Load configuration from file
-      --machine <TYPE>        Machine type: PC9801VM, PC9801VX, PC9801RA, PC9821AS, PC9821AP
-      --fdd1 <PATH>           Floppy disk image for drive 1 (repeatable)
-      --fdd2 <PATH>           Floppy disk image for drive 2 (repeatable)
-      --hdd1 <PATH>           Hard disk image for drive 1 (SASI or IDE)
-      --hdd2 <PATH>           Hard disk image for drive 2 (SASI or IDE)
-      --cdrom <PATH>          CD-ROM disc image CUE file (repeatable, PC-9821 only)
-      --audio-volume <FLOAT>  Audio volume 0.0-1.0
-      --aspect-mode <MODE>    Display aspect mode: 4:3 or 1:1
-      --window-mode <MODE>    Window mode: windowed or fullscreen
-      --bios-rom <PATH>       Path to BIOS ROM file
-      --font-rom <PATH>       Path to font ROM file
-      --soundboard <TYPE>     Sound board type: none, 26k, 86, 86+26k, sb16, sb16+26k
-      --adpcm-ram <on|off>    ADPCM RAM option for PC-9801-86 (default: on)
-      --gdc-compatibility     Force 2.5 MHz GDC clock (200-line compatibility mode)
-      --printer <PATH>        Output file for printer (must exist)
-      --sc55-roms <PATH>      Path to SC55 ROM directory (enables MIDI output)
-  -h, --help                  Print help
-  -V, --version               Print version
+  -c, --config <PATH>           Load configuration from file
+      --machine <TYPE>          Machine type: PC9801VM, PC9801VX, PC9801RA, PC9821AS, PC9821AP
+      --fdd1 <PATH>             Floppy disk image for drive 1 (repeatable)
+      --fdd2 <PATH>             Floppy disk image for drive 2 (repeatable)
+      --hdd1 <PATH>             Hard disk image for drive 1 (SASI or IDE)
+      --hdd2 <PATH>             Hard disk image for drive 2 (SASI or IDE)
+      --cdrom <PATH>            CD-ROM disc image CUE file (repeatable, PC-9821 only)
+      --audio-volume <FLOAT>    Audio volume 0.0-1.0
+      --aspect-mode <MODE>      Display aspect mode: 4:3 or 1:1
+      --window-mode <MODE>      Window mode: windowed or fullscreen
+      --bios-rom <PATH>         Path to BIOS ROM file
+      --font-rom <PATH>         Path to font ROM file
+      --soundboard <TYPE>       Sound board type: none, 26k, 86, 86+26k, sb16, sb16+26k
+      --adpcm-ram <on|off>      ADPCM RAM option for PC-9801-86 (default: on)
+      --force-gdc-clock <2.5|5> Force GDC clock to 2.5 or 5 MHz (default: auto)
+      --printer <PATH>          Output file for printer (must exist)
+      --sc55-roms <PATH>        Path to SC55 ROM directory (enables MIDI output)
+  -h, --help                    Print help
+  -V, --version                 Print version
 
 Global configuration:
   A global config is loaded from the OS data directory if it exists.
@@ -405,7 +405,10 @@ pub fn parse_args() -> crate::Result<Action> {
                 let val = value(&flag)?;
                 config.adpcm_ram = parse_on_off(&val, &flag)?;
             }
-            "--gdc-compatibility" => config.gdc_compatibility = true,
+            "--force-gdc-clock" => {
+                let val = value(&flag)?;
+                config.force_gdc_clock = Some(val.parse::<ForceGdcClock>().map_err(StringError)?);
+            }
             "--printer" => config.printer = Some(PathBuf::from(value(&flag)?)),
             "--sc55-roms" => config.sc55_roms = Some(PathBuf::from(value(&flag)?)),
             other => bail!("unknown argument: {other}"),
@@ -460,7 +463,7 @@ pub struct EmulatorConfig {
     pub font_rom: Option<PathBuf>,
     pub soundboard: SoundboardType,
     pub adpcm_ram: bool,
-    pub gdc_compatibility: bool,
+    pub force_gdc_clock: Option<ForceGdcClock>,
     pub printer: Option<PathBuf>,
     pub sc55_roms: Option<PathBuf>,
     pub key_map: KeyMap,
@@ -482,7 +485,7 @@ impl Default for EmulatorConfig {
             font_rom: None,
             soundboard: SoundboardType::Sb86And26k,
             adpcm_ram: true,
-            gdc_compatibility: false,
+            force_gdc_clock: None,
             printer: None,
             sc55_roms: None,
             key_map: KeyMap::new(),
@@ -543,10 +546,9 @@ fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<
                 "off" => config.adpcm_ram = false,
                 _ => warn!("Invalid adpcm-ram in config: {val}, expected on or off"),
             },
-            "gdc-compatibility" => match val {
-                "on" => config.gdc_compatibility = true,
-                "off" => config.gdc_compatibility = false,
-                _ => warn!("Invalid gdc-compatibility in config: {val}, expected on or off"),
+            "force-gdc-clock" => match val.parse::<ForceGdcClock>() {
+                Ok(mode) => config.force_gdc_clock = Some(mode),
+                Err(_) => warn!("Invalid force-gdc-clock in config: {val}, expected 2.5 or 5"),
             },
             "printer" => config.printer = Some(PathBuf::from(val)),
             "sc55-roms" => config.sc55_roms = Some(PathBuf::from(val)),
@@ -567,6 +569,36 @@ fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<
 fn global_config_path() -> Option<PathBuf> {
     let pref_path = sdl3::filesystem::get_pref_path(crate::COMPANY_NAME, crate::GAME_NAME)?;
     Some(pref_path.join("neetan.conf"))
+}
+
+/// Forced GDC clock speed.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ForceGdcClock {
+    /// Force 2.5 MHz (200-line compatibility mode).
+    Force2_5,
+    /// Force 5 MHz (400-line graphics mode).
+    Force5,
+}
+
+impl std::fmt::Display for ForceGdcClock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Force2_5 => f.write_str("2.5"),
+            Self::Force5 => f.write_str("5"),
+        }
+    }
+}
+
+impl std::str::FromStr for ForceGdcClock {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "2.5" => Ok(Self::Force2_5),
+            "5" => Ok(Self::Force5),
+            _ => Err(format!("unknown GDC clock mode '{s}', expected 2.5 or 5")),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
