@@ -87,6 +87,12 @@ entry:
     mov al, 0x07
     out 0x6A, al
 
+    ; Switch GDC to 5 MHz (mode2 bits 9+10 via extended page)
+    mov al, 0x83
+    out 0x6A, al
+    mov al, 0x85
+    out 0x6A, al
+
     ; Start GDC slave (graphics)
     mov al, 0x6B
     out 0xA2, al

@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use common::{Bus, MachineModel};
+use common::{Bus, MachineModel, PegcSnapshotUpload};
 use machine::{NoTracing, Pc9801Bus, Pc9801Vm};
+use spirv::ComposeShader;
 
 const CYCLES_PER_STEP: u64 = 200_000;
 const STEPS_PER_PATTERN: usize = 200;
@@ -56,6 +57,100 @@ fn check_plane_full(bus: &Pc9801Bus, plane_base: u32, expected: u8, plane_name: 
     }
 }
 
+fn render_snapshot(shader: &ComposeShader, bus: &mut Pc9801Bus) -> spirv::ComposeOutput {
+    bus.capture_vsync_snapshot();
+    let display = bus.vsync_snapshot();
+    let pegc = PegcSnapshotUpload::default();
+    shader
+        .execute(display, &[], &pegc)
+        .expect("shader execution failed")
+}
+
+fn get_pixel(output: &spirv::ComposeOutput, x: u32, y: u32) -> [u8; 4] {
+    let offset = (y * output.width + x) as usize * 4;
+    [
+        output.framebuffer[offset],
+        output.framebuffer[offset + 1],
+        output.framebuffer[offset + 2],
+        output.framebuffer[offset + 3],
+    ]
+}
+
+fn expected_palette_rgba(
+    snapshot: &common::DisplaySnapshotUpload,
+    palette_index: usize,
+) -> [u8; 4] {
+    let packed = snapshot.palette_rgba[palette_index];
+    let r = (packed & 0xFF) as u8;
+    let g = ((packed >> 8) & 0xFF) as u8;
+    let b = ((packed >> 16) & 0xFF) as u8;
+    [r, g, b, 255]
+}
+
+fn check_shader_solid_band(
+    output: &spirv::ComposeOutput,
+    snapshot: &common::DisplaySnapshotUpload,
+    start_line: u32,
+    end_line: u32,
+    palette_index: usize,
+    label: &str,
+) {
+    let hide_odd = (snapshot.display_flags & 0x04) != 0;
+    let expected = expected_palette_rgba(snapshot, palette_index);
+    let black = expected_palette_rgba(snapshot, 0);
+    for y in start_line..end_line {
+        let line_expected = if hide_odd && (y % 2) == 1 {
+            black
+        } else {
+            expected
+        };
+        for x in 0..640 {
+            let actual = get_pixel(output, x, y);
+            assert_eq!(
+                actual, line_expected,
+                "{label} at ({x}, {y}): expected palette {palette_index} {line_expected:?}, got {actual:?}"
+            );
+        }
+    }
+}
+
+fn check_shader_tile_band(
+    output: &spirv::ComposeOutput,
+    snapshot: &common::DisplaySnapshotUpload,
+    start_line: u32,
+    end_line: u32,
+    tiles: [u8; 4],
+    label: &str,
+) {
+    let [tile_b, tile_r, tile_g, tile_e] = tiles;
+    let hide_odd = (snapshot.display_flags & 0x04) != 0;
+    let black = expected_palette_rgba(snapshot, 0);
+    for y in start_line..end_line {
+        for x in 0..640u32 {
+            if hide_odd && (y % 2) == 1 {
+                let actual = get_pixel(output, x, y);
+                assert_eq!(
+                    actual, black,
+                    "{label} at ({x}, {y}): expected black (hide_odd), got {actual:?}"
+                );
+                continue;
+            }
+            let bit = 7 - (x % 8);
+            let b = (tile_b >> bit) & 1;
+            let r = (tile_r >> bit) & 1;
+            let g = (tile_g >> bit) & 1;
+            let e = (tile_e >> bit) & 1;
+            let palette_index = (b | (r << 1) | (g << 2) | (e << 3)) as usize;
+            let expected = expected_palette_rgba(snapshot, palette_index);
+            let actual = get_pixel(output, x, y);
+            assert_eq!(
+                actual, expected,
+                "{label} at ({x}, {y}): expected palette {palette_index} {expected:?}, got {actual:?}"
+            );
+        }
+    }
+}
+
 fn check_plane_lines(
     bus: &Pc9801Bus,
     plane_base: u32,
@@ -97,6 +192,13 @@ fn grcg_firmware_all_patterns() {
     check_plane_full(&machine.bus, VRAM_G, 0xFF, "P0 G-plane");
     check_plane_full(&machine.bus, VRAM_E, 0xFF, "P0 E-plane");
 
+    let shader = ComposeShader::from_embedded().expect("failed to load compose shader");
+
+    // Shader verification: pattern 0 - all planes 0xFF = palette index 15
+    let output = render_snapshot(&shader, &mut machine.bus);
+    let snapshot = machine.bus.vsync_snapshot();
+    check_shader_solid_band(&output, snapshot, 0, 400, 15, "P0");
+
     // Pattern 1: Individual Planes (Direct Write)
     // Lines 0-99: B only, 100-199: R only, 200-299: G only, 300-399: E only
     send_enter(&mut machine.bus);
@@ -113,6 +215,14 @@ fn grcg_firmware_all_patterns() {
     check_plane_lines(&machine.bus, VRAM_E, 0, 300, 0x00, "P1 E lines 0-299");
     check_plane_lines(&machine.bus, VRAM_E, 300, 400, 0xFF, "P1 E lines 300-399");
 
+    // Shader verification: pattern 1 - individual planes in bands
+    let output = render_snapshot(&shader, &mut machine.bus);
+    let snapshot = machine.bus.vsync_snapshot();
+    check_shader_solid_band(&output, snapshot, 0, 100, 1, "P1 B-only");
+    check_shader_solid_band(&output, snapshot, 100, 200, 2, "P1 R-only");
+    check_shader_solid_band(&output, snapshot, 200, 300, 4, "P1 G-only");
+    check_shader_solid_band(&output, snapshot, 300, 400, 8, "P1 E-only");
+
     // Pattern 2: TDW Full Fill - all planes
     // Mode 0x80, tiles: B=0xAA, R=0x55, G=0xF0, E=0x0F
     send_enter(&mut machine.bus);
@@ -122,6 +232,11 @@ fn grcg_firmware_all_patterns() {
     check_plane_full(&machine.bus, VRAM_R, 0x55, "P2 R-plane");
     check_plane_full(&machine.bus, VRAM_G, 0xF0, "P2 G-plane");
     check_plane_full(&machine.bus, VRAM_E, 0x0F, "P2 E-plane");
+
+    // Shader verification: pattern 2 - TDW tile fill B=0xAA, R=0x55, G=0xF0, E=0x0F
+    let output = render_snapshot(&shader, &mut machine.bus);
+    let snapshot = machine.bus.vsync_snapshot();
+    check_shader_tile_band(&output, snapshot, 0, 400, [0xAA, 0x55, 0xF0, 0x0F], "P2");
 
     // Pattern 3: TDW Selective Plane Enable
     // Pre-fill=0xFF. Mode 0x8A (TDW, R+E disabled). Tiles: B=0x00, G=0x00.
@@ -133,6 +248,11 @@ fn grcg_firmware_all_patterns() {
     check_plane_full(&machine.bus, VRAM_R, 0xFF, "P3 R-plane (unchanged)");
     check_plane_full(&machine.bus, VRAM_G, 0x00, "P3 G-plane");
     check_plane_full(&machine.bus, VRAM_E, 0xFF, "P3 E-plane (unchanged)");
+
+    // Shader verification: pattern 3 - B=0x00, R=0xFF, G=0x00, E=0xFF = palette index 10
+    let output = render_snapshot(&shader, &mut machine.bus);
+    let snapshot = machine.bus.vsync_snapshot();
+    check_shader_solid_band(&output, snapshot, 0, 400, 10, "P3");
 
     // Pattern 4: TCR (Tile Compare Read)
     // Band 0 (lines 0-99):   B=0xFF, R=0x00, G=0xFF, E=0x00
@@ -191,6 +311,25 @@ fn grcg_firmware_all_patterns() {
         "P4 TCR line 350: expected 0xAA (partial match), got 0x{tcr3:02X}"
     );
 
+    // Shader verification: pattern 4 - four VRAM bands
+    let output = render_snapshot(&shader, &mut machine.bus);
+    let snapshot = machine.bus.vsync_snapshot();
+    // Band 0: B=0xFF, R=0x00, G=0xFF, E=0x00 = solid index 5
+    check_shader_solid_band(&output, snapshot, 0, 100, 5, "P4 band 0");
+    // Band 1: all 0xFF = solid index 15
+    check_shader_solid_band(&output, snapshot, 100, 200, 15, "P4 band 1");
+    // Band 2: all 0x00 = solid index 0
+    check_shader_solid_band(&output, snapshot, 200, 300, 0, "P4 band 2");
+    // Band 3: B=0xAA, R=0x55, G=0xAA, E=0x55
+    check_shader_tile_band(
+        &output,
+        snapshot,
+        300,
+        400,
+        [0xAA, 0x55, 0xAA, 0x55],
+        "P4 band 3",
+    );
+
     // Pattern 5: RMW Mode - all planes
     // Pre-fill=0x55. Mode 0xC0. Tiles: B=0xFF, R=0x00, G=0xAA, E=0x55. CPU=0xF0.
     // new = (0xF0 & tile) | (0x0F & 0x55)
@@ -206,6 +345,11 @@ fn grcg_firmware_all_patterns() {
     check_plane_full(&machine.bus, VRAM_G, 0xA5, "P5 G-plane");
     check_plane_full(&machine.bus, VRAM_E, 0x55, "P5 E-plane");
 
+    // Shader verification: pattern 5 - RMW result B=0xF5, R=0x05, G=0xA5, E=0x55
+    let output = render_snapshot(&shader, &mut machine.bus);
+    let snapshot = machine.bus.vsync_snapshot();
+    check_shader_tile_band(&output, snapshot, 0, 400, [0xF5, 0x05, 0xA5, 0x55], "P5");
+
     // Pattern 6: RMW Selective Plane Enable
     // Pre-fill=0xAA. Mode 0xCC (RMW, G+E disabled). Tiles: B=0xFF, R=0xFF. CPU=0xFF.
     // Expected: B=0xFF, R=0xFF, G=0xAA (unchanged), E=0xAA (unchanged)
@@ -216,6 +360,11 @@ fn grcg_firmware_all_patterns() {
     check_plane_full(&machine.bus, VRAM_R, 0xFF, "P6 R-plane");
     check_plane_full(&machine.bus, VRAM_G, 0xAA, "P6 G-plane (unchanged)");
     check_plane_full(&machine.bus, VRAM_E, 0xAA, "P6 E-plane (unchanged)");
+
+    // Shader verification: pattern 6 - B=0xFF, R=0xFF, G=0xAA, E=0xAA
+    let output = render_snapshot(&shader, &mut machine.bus);
+    let snapshot = machine.bus.vsync_snapshot();
+    check_shader_tile_band(&output, snapshot, 0, 400, [0xFF, 0xFF, 0xAA, 0xAA], "P6");
 
     // Pattern 7: Word-Width GRCG Operations
     // Top (lines 0-199): TDW, tiles B=0x33, R=0xCC, G=0x55, E=0xAA
@@ -239,6 +388,28 @@ fn grcg_firmware_all_patterns() {
     check_plane_lines(&machine.bus, VRAM_R, 200, 400, 0x5F, "P7 R lines 200-399");
     check_plane_lines(&machine.bus, VRAM_G, 200, 400, 0xFF, "P7 G lines 200-399");
     check_plane_lines(&machine.bus, VRAM_E, 200, 400, 0x55, "P7 E lines 200-399");
+
+    // Shader verification: pattern 7 - two halves
+    let output = render_snapshot(&shader, &mut machine.bus);
+    let snapshot = machine.bus.vsync_snapshot();
+    // Top: TDW tiles B=0x33, R=0xCC, G=0x55, E=0xAA
+    check_shader_tile_band(
+        &output,
+        snapshot,
+        0,
+        200,
+        [0x33, 0xCC, 0x55, 0xAA],
+        "P7 top",
+    );
+    // Bottom: RMW result B=0xF5, R=0x5F, G=0xFF, E=0x55
+    check_shader_tile_band(
+        &output,
+        snapshot,
+        200,
+        400,
+        [0xF5, 0x5F, 0xFF, 0x55],
+        "P7 bottom",
+    );
 
     // Pattern 8: Mode1 Monochrome test
     // Lines 0-319: G+E planes (index 12, mono ON). Lines 320-399: B-plane (index 1, mono OFF).
@@ -301,11 +472,6 @@ fn grcg_firmware_all_patterns() {
     );
 }
 
-const VRAM_B_BASE: u32 = 0xA8000;
-const VRAM_R_BASE: u32 = 0xB0000;
-const VRAM_G_BASE: u32 = 0xB8000;
-const VRAM_E_BASE: u32 = 0xE0000;
-
 fn setup_grcg_bus() -> Pc9801Bus<NoTracing> {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
     bus.io_write_byte(0x6A, 0x01); // analog mode for E-plane access
@@ -336,15 +502,15 @@ fn read_plane_byte(bus: &Pc9801Bus<NoTracing>, plane_base: u32, offset: u32) -> 
 
 fn read_all_planes_byte(bus: &Pc9801Bus<NoTracing>, offset: u32) -> [u8; 4] {
     [
-        bus.read_byte_direct(VRAM_B_BASE + offset),
-        bus.read_byte_direct(VRAM_R_BASE + offset),
-        bus.read_byte_direct(VRAM_G_BASE + offset),
-        bus.read_byte_direct(VRAM_E_BASE + offset),
+        bus.read_byte_direct(VRAM_B + offset),
+        bus.read_byte_direct(VRAM_R + offset),
+        bus.read_byte_direct(VRAM_G + offset),
+        bus.read_byte_direct(VRAM_E + offset),
     ]
 }
 
 fn prefill_all_planes_byte(bus: &mut Pc9801Bus<NoTracing>, offset: u32, values: [u8; 4]) {
-    let bases = [VRAM_B_BASE, VRAM_R_BASE, VRAM_G_BASE, VRAM_E_BASE];
+    let bases = [VRAM_B, VRAM_R, VRAM_G, VRAM_E];
     for (i, &base) in bases.iter().enumerate() {
         bus.write_byte(base + offset, values[i]);
     }
@@ -356,7 +522,7 @@ fn grcg_tdw_byte_write_all_planes() {
     enable_grcg_tdw(&mut bus, [0xAA, 0x55, 0xF0, 0x0F]);
 
     // Write any byte - CPU data is ignored in TDW, all planes get tile values.
-    bus.write_byte(VRAM_B_BASE, 0xFF);
+    bus.write_byte(VRAM_B, 0xFF);
 
     disable_grcg_mode(&mut bus);
 
@@ -368,12 +534,12 @@ fn grcg_tdw_word_write_all_planes() {
     let mut bus = setup_grcg_bus();
     enable_grcg_tdw(&mut bus, [0x33, 0xCC, 0x55, 0xAA]);
 
-    bus.write_word(VRAM_B_BASE, 0xFFFF);
+    bus.write_word(VRAM_B, 0xFFFF);
 
     disable_grcg_mode(&mut bus);
 
     // Both bytes should get tile value.
-    let bases = [VRAM_B_BASE, VRAM_R_BASE, VRAM_G_BASE, VRAM_E_BASE];
+    let bases = [VRAM_B, VRAM_R, VRAM_G, VRAM_E];
     let tiles = [0x33, 0xCC, 0x55, 0xAA];
     for (i, &base) in bases.iter().enumerate() {
         assert_eq!(bus.read_byte_direct(base), tiles[i], "plane {i} low byte");
@@ -395,7 +561,7 @@ fn grcg_tcr_byte_read_all_match() {
     // Enable GRCG TCR mode (0x80 = TDW/TCR, reads are TCR).
     enable_grcg_tdw(&mut bus, [0xAA, 0x55, 0xF0, 0x0F]);
 
-    let result = bus.read_byte(VRAM_B_BASE);
+    let result = bus.read_byte(VRAM_B);
     assert_eq!(result, 0xFF, "all bits should match");
 }
 
@@ -408,7 +574,7 @@ fn grcg_tcr_byte_read_no_match() {
 
     enable_grcg_tdw(&mut bus, [0xAA, 0x55, 0xF0, 0x0F]);
 
-    let result = bus.read_byte(VRAM_B_BASE);
+    let result = bus.read_byte(VRAM_B);
     assert_eq!(result, 0x00, "no bits should match");
 }
 
@@ -421,7 +587,7 @@ fn grcg_tcr_byte_read_partial_match() {
 
     enable_grcg_tdw(&mut bus, [0xAA, 0x55, 0xF0, 0x0F]);
 
-    let result = bus.read_byte(VRAM_B_BASE);
+    let result = bus.read_byte(VRAM_B);
     // R-plane mismatch: !(0xFF ^ 0x55) = !(0xAA) = 0x55. AND with 0xFF from others = 0x55.
     assert_eq!(result, 0x55, "partial match from R-plane mismatch");
 }
@@ -431,7 +597,7 @@ fn grcg_tcr_word_read_all_match() {
     let mut bus = setup_grcg_bus();
 
     // Pre-fill 2 bytes per plane.
-    let bases = [VRAM_B_BASE, VRAM_R_BASE, VRAM_G_BASE, VRAM_E_BASE];
+    let bases = [VRAM_B, VRAM_R, VRAM_G, VRAM_E];
     let tiles = [0xAA_u8, 0x55, 0xF0, 0x0F];
     for (i, &base) in bases.iter().enumerate() {
         bus.write_byte(base, tiles[i]);
@@ -440,7 +606,7 @@ fn grcg_tcr_word_read_all_match() {
 
     enable_grcg_tdw(&mut bus, tiles);
 
-    let result = bus.read_word(VRAM_B_BASE);
+    let result = bus.read_word(VRAM_B);
     assert_eq!(result, 0xFFFF, "both bytes fully match");
 }
 
@@ -458,7 +624,7 @@ fn grcg_rmw_byte_write() {
     //   R: (0xF0 & 0x00) | (0x0F & 0x55) = 0x00 | 0x05 = 0x05
     //   G: (0xF0 & 0xAA) | (0x0F & 0x55) = 0xA0 | 0x05 = 0xA5
     //   E: (0xF0 & 0x55) | (0x0F & 0x55) = 0x50 | 0x05 = 0x55
-    bus.write_byte(VRAM_B_BASE, 0xF0);
+    bus.write_byte(VRAM_B, 0xF0);
 
     disable_grcg_mode(&mut bus);
 
@@ -469,7 +635,7 @@ fn grcg_rmw_byte_write() {
 fn grcg_rmw_word_write() {
     let mut bus = setup_grcg_bus();
 
-    let bases = [VRAM_B_BASE, VRAM_R_BASE, VRAM_G_BASE, VRAM_E_BASE];
+    let bases = [VRAM_B, VRAM_R, VRAM_G, VRAM_E];
     for &base in &bases {
         bus.write_byte(base, 0xFF);
         bus.write_byte(base + 1, 0xFF);
@@ -483,7 +649,7 @@ fn grcg_rmw_word_write() {
     //   R: (0xAA & 0x00) | (0x55 & 0xFF) = 0x00 | 0x55 = 0x55
     //   G: (0xAA & 0xAA) | (0x55 & 0xFF) = 0xAA | 0x55 = 0xFF
     //   E: (0xAA & 0x55) | (0x55 & 0xFF) = 0x00 | 0x55 = 0x55
-    bus.write_word(VRAM_B_BASE, 0xAAAA);
+    bus.write_word(VRAM_B, 0xAAAA);
 
     disable_grcg_mode(&mut bus);
 
@@ -512,16 +678,16 @@ fn grcg_rmw_read_returns_raw_vram() {
     enable_grcg_rmw(&mut bus, [0xFF, 0xFF, 0xFF, 0xFF]);
 
     // In RMW mode, reads should bypass GRCG and return normal VRAM data.
-    let result = bus.read_byte(VRAM_B_BASE);
+    let result = bus.read_byte(VRAM_B);
     assert_eq!(result, 0xAB, "RMW read should return B-plane data");
 
-    let result = bus.read_byte(VRAM_R_BASE);
+    let result = bus.read_byte(VRAM_R);
     assert_eq!(result, 0xCD, "RMW read should return R-plane data");
 
-    let result = bus.read_byte(VRAM_G_BASE);
+    let result = bus.read_byte(VRAM_G);
     assert_eq!(result, 0xEF, "RMW read should return G-plane data");
 
-    let result = bus.read_byte(VRAM_E_BASE);
+    let result = bus.read_byte(VRAM_E);
     assert_eq!(result, 0x12, "RMW read should return E-plane data");
 }
 
@@ -529,7 +695,7 @@ fn grcg_rmw_read_returns_raw_vram() {
 fn grcg_rmw_read_word_returns_raw_vram() {
     let mut bus = setup_grcg_bus();
 
-    let bases = [VRAM_B_BASE, VRAM_R_BASE, VRAM_G_BASE, VRAM_E_BASE];
+    let bases = [VRAM_B, VRAM_R, VRAM_G, VRAM_E];
     let values: [u8; 4] = [0x12, 0x34, 0x56, 0x78];
     for (i, &base) in bases.iter().enumerate() {
         bus.write_byte(base, values[i]);
@@ -538,10 +704,10 @@ fn grcg_rmw_read_word_returns_raw_vram() {
 
     enable_grcg_rmw(&mut bus, [0xFF; 4]);
 
-    let result = bus.read_word(VRAM_B_BASE);
+    let result = bus.read_word(VRAM_B);
     assert_eq!(result, 0x1212, "RMW word read B-plane");
 
-    let result = bus.read_word(VRAM_R_BASE);
+    let result = bus.read_word(VRAM_R);
     assert_eq!(result, 0x3434, "RMW word read R-plane");
 }
 
@@ -559,15 +725,15 @@ fn grcg_tdw_selective_plane_enable() {
     bus.io_write_byte(0x7E, 0x00); // G tile
     bus.io_write_byte(0x7E, 0x00); // E tile (disabled)
 
-    bus.write_byte(VRAM_B_BASE, 0xFF);
+    bus.write_byte(VRAM_B, 0xFF);
 
     disable_grcg_mode(&mut bus);
 
     // B and G should get tile (0x00), R and E unchanged (0xFF).
-    assert_eq!(read_plane_byte(&bus, VRAM_B_BASE, 0), 0x00, "B written");
-    assert_eq!(read_plane_byte(&bus, VRAM_R_BASE, 0), 0xFF, "R unchanged");
-    assert_eq!(read_plane_byte(&bus, VRAM_G_BASE, 0), 0x00, "G written");
-    assert_eq!(read_plane_byte(&bus, VRAM_E_BASE, 0), 0xFF, "E unchanged");
+    assert_eq!(read_plane_byte(&bus, VRAM_B, 0), 0x00, "B written");
+    assert_eq!(read_plane_byte(&bus, VRAM_R, 0), 0xFF, "R unchanged");
+    assert_eq!(read_plane_byte(&bus, VRAM_G, 0), 0x00, "G written");
+    assert_eq!(read_plane_byte(&bus, VRAM_E, 0), 0xFF, "E unchanged");
 }
 
 #[test]
@@ -585,15 +751,15 @@ fn grcg_rmw_selective_plane_enable() {
     bus.io_write_byte(0x7E, 0xFF); // E tile
 
     // CPU writes 0xFF: new = (0xFF & tile) | (0x00 & current) = tile
-    bus.write_byte(VRAM_B_BASE, 0xFF);
+    bus.write_byte(VRAM_B, 0xFF);
 
     disable_grcg_mode(&mut bus);
 
     // B and G unchanged (0xAA), R and E get tile (0xFF).
-    assert_eq!(read_plane_byte(&bus, VRAM_B_BASE, 0), 0xAA, "B unchanged");
-    assert_eq!(read_plane_byte(&bus, VRAM_R_BASE, 0), 0xFF, "R written");
-    assert_eq!(read_plane_byte(&bus, VRAM_G_BASE, 0), 0xAA, "G unchanged");
-    assert_eq!(read_plane_byte(&bus, VRAM_E_BASE, 0), 0xFF, "E written");
+    assert_eq!(read_plane_byte(&bus, VRAM_B, 0), 0xAA, "B unchanged");
+    assert_eq!(read_plane_byte(&bus, VRAM_R, 0), 0xFF, "R written");
+    assert_eq!(read_plane_byte(&bus, VRAM_G, 0), 0xAA, "G unchanged");
+    assert_eq!(read_plane_byte(&bus, VRAM_E, 0), 0xFF, "E written");
 }
 
 #[test]
@@ -602,7 +768,7 @@ fn grcg_mode_switch_tdw_to_rmw() {
 
     // Start in TDW mode.
     enable_grcg_tdw(&mut bus, [0xAA, 0x55, 0xF0, 0x0F]);
-    bus.write_byte(VRAM_B_BASE, 0xFF);
+    bus.write_byte(VRAM_B, 0xFF);
 
     // Verify TDW result.
     disable_grcg_mode(&mut bus);
@@ -616,7 +782,7 @@ fn grcg_mode_switch_tdw_to_rmw() {
     //   R: 0xF0 | (0x0F & 0x55) = 0xF0 | 0x05 = 0xF5
     //   G: 0xF0 | (0x0F & 0xF0) = 0xF0 | 0x00 = 0xF0
     //   E: 0xF0 | (0x0F & 0x0F) = 0xF0 | 0x0F = 0xFF
-    bus.write_byte(VRAM_B_BASE, 0xF0);
+    bus.write_byte(VRAM_B, 0xF0);
 
     disable_grcg_mode(&mut bus);
     assert_eq!(read_all_planes_byte(&bus, 0), [0xFA, 0xF5, 0xF0, 0xFF]);
@@ -641,7 +807,7 @@ fn grcg_tcr_selective_plane_compare() {
     // G: !(0xF0 ^ 0xF0) = 0xFF
     // E: !(0x0F ^ 0x0F) = 0xFF
     // Result = 0xFF & 0xFF & 0xFF = 0xFF (R skipped).
-    let result = bus.read_byte(VRAM_B_BASE);
+    let result = bus.read_byte(VRAM_B);
     assert_eq!(
         result, 0xFF,
         "TCR with R-plane disabled should be all match"
@@ -654,9 +820,9 @@ fn grcg_tdw_sequential_writes() {
     enable_grcg_tdw(&mut bus, [0x11, 0x22, 0x33, 0x44]);
 
     // Write to multiple consecutive offsets.
-    bus.write_byte(VRAM_B_BASE, 0xFF);
-    bus.write_byte(VRAM_B_BASE + 1, 0xFF);
-    bus.write_byte(VRAM_B_BASE + 2, 0xFF);
+    bus.write_byte(VRAM_B, 0xFF);
+    bus.write_byte(VRAM_B + 1, 0xFF);
+    bus.write_byte(VRAM_B + 2, 0xFF);
 
     disable_grcg_mode(&mut bus);
 
@@ -673,7 +839,7 @@ fn grcg_tdw_via_e_plane_address() {
     enable_grcg_tdw(&mut bus, [0xDE, 0xAD, 0xBE, 0xEF]);
 
     // Write via E-plane address - GRCG should still write all 4 planes at the offset.
-    bus.write_byte(VRAM_E_BASE, 0xFF);
+    bus.write_byte(VRAM_E, 0xFF);
 
     disable_grcg_mode(&mut bus);
 
@@ -689,7 +855,7 @@ fn grcg_tcr_via_e_plane_address() {
     enable_grcg_tdw(&mut bus, [0xAA, 0x55, 0xF0, 0x0F]);
 
     // TCR read via E-plane address - should compare all 4 planes at offset 0.
-    let result = bus.read_byte(VRAM_E_BASE);
+    let result = bus.read_byte(VRAM_E);
     assert_eq!(result, 0xFF, "TCR via E-plane address, all match");
 }
 
@@ -702,7 +868,7 @@ fn grcg_rmw_all_zero_preserves_vram() {
     enable_grcg_rmw(&mut bus, [0x55, 0xAA, 0x33, 0xCC]);
 
     // RMW write value=0x00: new = (0x00 & tile) | (0xFF & current) = current.
-    bus.write_byte(VRAM_B_BASE, 0x00);
+    bus.write_byte(VRAM_B, 0x00);
 
     disable_grcg_mode(&mut bus);
 
@@ -722,7 +888,7 @@ fn grcg_rmw_all_one_writes_tile() {
     enable_grcg_rmw(&mut bus, [0x55, 0xAA, 0x33, 0xCC]);
 
     // RMW write value=0xFF: new = (0xFF & tile) | (0x00 & current) = tile.
-    bus.write_byte(VRAM_B_BASE, 0xFF);
+    bus.write_byte(VRAM_B, 0xFF);
 
     disable_grcg_mode(&mut bus);
 
@@ -747,7 +913,7 @@ fn grcg_tcr_partial_plane_combinations() {
     bus.io_write_byte(0x7E, 0xF0); // G tile (matches)
     bus.io_write_byte(0x7E, 0xFF); // E tile (disabled)
 
-    let result = bus.read_byte(VRAM_B_BASE);
+    let result = bus.read_byte(VRAM_B);
     assert_eq!(result, 0xFF, "B+G match, R+E disabled -> all match");
 
     disable_grcg_mode(&mut bus);
@@ -759,7 +925,7 @@ fn grcg_tcr_partial_plane_combinations() {
     bus.io_write_byte(0x7E, 0xFF); // G tile (disabled)
     bus.io_write_byte(0x7E, 0x0F); // E tile (matches)
 
-    let result = bus.read_byte(VRAM_B_BASE);
+    let result = bus.read_byte(VRAM_B);
     assert_eq!(result, 0xFF, "R+E match, B+G disabled -> all match");
 
     disable_grcg_mode(&mut bus);
@@ -771,7 +937,7 @@ fn grcg_tcr_partial_plane_combinations() {
     bus.io_write_byte(0x7E, 0x00); // G tile (disabled)
     bus.io_write_byte(0x7E, 0x00); // E tile (disabled)
 
-    let result = bus.read_byte(VRAM_B_BASE);
+    let result = bus.read_byte(VRAM_B);
     assert_eq!(result, 0xFF, "B only match -> all match");
 }
 
@@ -793,7 +959,7 @@ fn grcg_mode_switch_resets_tile_index() {
     bus.io_write_byte(0x7E, 0xCC); // tile[2]
     bus.io_write_byte(0x7E, 0xDD); // tile[3]
 
-    bus.write_byte(VRAM_B_BASE, 0xFF);
+    bus.write_byte(VRAM_B, 0xFF);
 
     disable_grcg_mode(&mut bus);
 
@@ -816,7 +982,7 @@ fn grcg_tile_cycling_wraps_after_four() {
     bus.io_write_byte(0x7E, 0x44); // tile[3]
     bus.io_write_byte(0x7E, 0xFF); // tile[0] overwritten
 
-    bus.write_byte(VRAM_B_BASE, 0xFF);
+    bus.write_byte(VRAM_B, 0xFF);
 
     disable_grcg_mode(&mut bus);
 
@@ -833,15 +999,15 @@ fn grcg_tdw_word_various_offsets() {
     enable_grcg_tdw(&mut bus, [0x11, 0x22, 0x33, 0x44]);
 
     // Write at offset 0.
-    bus.write_word(VRAM_B_BASE, 0xFFFF);
+    bus.write_word(VRAM_B, 0xFFFF);
     // Write at offset 80 (next line).
-    bus.write_word(VRAM_B_BASE + 80, 0xFFFF);
+    bus.write_word(VRAM_B + 80, 0xFFFF);
     // Write at offset 160 (2 lines down).
-    bus.write_word(VRAM_B_BASE + 160, 0xFFFF);
+    bus.write_word(VRAM_B + 160, 0xFFFF);
 
     disable_grcg_mode(&mut bus);
 
-    let bases = [VRAM_B_BASE, VRAM_R_BASE, VRAM_G_BASE, VRAM_E_BASE];
+    let bases = [VRAM_B, VRAM_R, VRAM_G, VRAM_E];
     let tiles = [0x11u8, 0x22, 0x33, 0x44];
     for offset in [0u32, 80, 160] {
         for (i, &base) in bases.iter().enumerate() {
@@ -871,18 +1037,18 @@ fn grcg_e_plane_disabled_skips_write() {
 
     // TDW: all planes enabled, but graphics_extension is off -> E-plane skipped.
     enable_grcg_tdw(&mut bus, [0xFF, 0xFF, 0xFF, 0xFF]);
-    bus.write_byte(VRAM_B_BASE, 0xFF);
+    bus.write_byte(VRAM_B, 0xFF);
 
     disable_grcg_mode(&mut bus);
 
-    assert_eq!(read_plane_byte(&bus, VRAM_B_BASE, 0), 0xFF, "B written");
-    assert_eq!(read_plane_byte(&bus, VRAM_R_BASE, 0), 0xFF, "R written");
-    assert_eq!(read_plane_byte(&bus, VRAM_G_BASE, 0), 0xFF, "G written");
+    assert_eq!(read_plane_byte(&bus, VRAM_B, 0), 0xFF, "B written");
+    assert_eq!(read_plane_byte(&bus, VRAM_R, 0), 0xFF, "R written");
+    assert_eq!(read_plane_byte(&bus, VRAM_G, 0), 0xFF, "G written");
 
     // Re-enable extension to verify E-plane is unchanged.
     bus.set_graphics_extension_enabled(true);
     assert_eq!(
-        read_plane_byte(&bus, VRAM_E_BASE, 0),
+        read_plane_byte(&bus, VRAM_E, 0),
         0xAA,
         "E unchanged (extension was disabled during TDW)"
     );
@@ -892,17 +1058,17 @@ fn grcg_e_plane_disabled_skips_write() {
     bus.set_graphics_extension_enabled(false);
 
     enable_grcg_rmw(&mut bus, [0xFF, 0xFF, 0xFF, 0xFF]);
-    bus.write_byte(VRAM_B_BASE, 0xFF);
+    bus.write_byte(VRAM_B, 0xFF);
 
     disable_grcg_mode(&mut bus);
 
-    assert_eq!(read_plane_byte(&bus, VRAM_B_BASE, 0), 0xFF, "RMW B");
-    assert_eq!(read_plane_byte(&bus, VRAM_R_BASE, 0), 0xFF, "RMW R");
-    assert_eq!(read_plane_byte(&bus, VRAM_G_BASE, 0), 0xFF, "RMW G");
+    assert_eq!(read_plane_byte(&bus, VRAM_B, 0), 0xFF, "RMW B");
+    assert_eq!(read_plane_byte(&bus, VRAM_R, 0), 0xFF, "RMW R");
+    assert_eq!(read_plane_byte(&bus, VRAM_G, 0), 0xFF, "RMW G");
 
     bus.set_graphics_extension_enabled(true);
     assert_eq!(
-        read_plane_byte(&bus, VRAM_E_BASE, 0),
+        read_plane_byte(&bus, VRAM_E, 0),
         0xBB,
         "E unchanged (extension was disabled during RMW)"
     );

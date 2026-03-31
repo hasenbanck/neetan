@@ -3,8 +3,9 @@ use std::{
     process::Command,
 };
 
-use common::{Bus, MachineModel};
+use common::{Bus, MachineModel, PegcSnapshotUpload};
 use machine::{NoTracing, Pc9801Bus, Pc9801Vx};
+use spirv::ComposeShader;
 
 const VRAM_B: u32 = 0xA8000;
 const VRAM_R: u32 = 0xB0000;
@@ -1437,6 +1438,65 @@ fn check_quadrant(
     }
 }
 
+fn render_egc_snapshot(shader: &ComposeShader, bus: &mut Pc9801Bus) -> spirv::ComposeOutput {
+    bus.capture_vsync_snapshot();
+    let display = bus.vsync_snapshot();
+    let pegc = PegcSnapshotUpload::default();
+    shader
+        .execute(display, &[], &pegc)
+        .expect("shader execution failed")
+}
+
+fn get_egc_pixel(output: &spirv::ComposeOutput, x: u32, y: u32) -> [u8; 4] {
+    let offset = (y * output.width + x) as usize * 4;
+    [
+        output.framebuffer[offset],
+        output.framebuffer[offset + 1],
+        output.framebuffer[offset + 2],
+        output.framebuffer[offset + 3],
+    ]
+}
+
+fn expected_egc_palette_rgba(
+    snapshot: &common::DisplaySnapshotUpload,
+    palette_index: usize,
+) -> [u8; 4] {
+    let packed = snapshot.palette_rgba[palette_index];
+    let r = (packed & 0xFF) as u8;
+    let g = ((packed >> 8) & 0xFF) as u8;
+    let b = ((packed >> 16) & 0xFF) as u8;
+    [r, g, b, 255]
+}
+
+fn check_shader_quadrant(
+    output: &spirv::ComposeOutput,
+    snapshot: &common::DisplaySnapshotUpload,
+    lines: [u32; 2],
+    pixels: [u32; 2],
+    palette_index: usize,
+    label: &str,
+) {
+    let [start_line, end_line] = lines;
+    let [start_pixel, end_pixel] = pixels;
+    let hide_odd = (snapshot.display_flags & 0x04) != 0;
+    let expected = expected_egc_palette_rgba(snapshot, palette_index);
+    let black = expected_egc_palette_rgba(snapshot, 0);
+    for y in start_line..end_line {
+        let line_expected = if hide_odd && (y % 2) == 1 {
+            black
+        } else {
+            expected
+        };
+        for x in start_pixel..end_pixel {
+            let actual = get_egc_pixel(output, x, y);
+            assert_eq!(
+                actual, line_expected,
+                "{label} at ({x}, {y}): expected palette {palette_index} {line_expected:?}, got {actual:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn egc_firmware_all_patterns() {
     ensure_debug_egc_firmware_exists();
@@ -1497,6 +1557,16 @@ fn egc_firmware_all_patterns() {
         "P0 BR",
     );
 
+    let shader = ComposeShader::from_embedded().expect("failed to load compose shader");
+
+    // Shader verification: pattern 0 - FGC fill quadrants
+    let output = render_egc_snapshot(&shader, &mut machine.bus);
+    let snapshot = machine.bus.vsync_snapshot();
+    check_shader_quadrant(&output, snapshot, [0, 200], [0, 320], 1, "P0 TL");
+    check_shader_quadrant(&output, snapshot, [0, 200], [320, 640], 2, "P0 TR");
+    check_shader_quadrant(&output, snapshot, [200, 400], [0, 320], 4, "P0 BL");
+    check_shader_quadrant(&output, snapshot, [200, 400], [320, 640], 8, "P0 BR");
+
     // Pattern 1: BGC Fill
     // TL=3(magenta): B=FF,R=FF,G=00,E=00
     // TR=5(cyan):    B=FF,R=00,G=FF,E=00
@@ -1542,6 +1612,14 @@ fn egc_firmware_all_patterns() {
         0xFF,
         "P1 BR",
     );
+
+    // Shader verification: pattern 1 - BGC fill quadrants
+    let output = render_egc_snapshot(&shader, &mut machine.bus);
+    let snapshot = machine.bus.vsync_snapshot();
+    check_shader_quadrant(&output, snapshot, [0, 200], [0, 320], 3, "P1 TL");
+    check_shader_quadrant(&output, snapshot, [0, 200], [320, 640], 5, "P1 TR");
+    check_shader_quadrant(&output, snapshot, [200, 400], [0, 320], 6, "P1 BL");
+    check_shader_quadrant(&output, snapshot, [200, 400], [320, 640], 15, "P1 BR");
 
     // Pattern 2: CPU Broadcast + Access
     // TL: B only  -> B=FF,R=00,G=00,E=00
@@ -1589,6 +1667,14 @@ fn egc_firmware_all_patterns() {
         "P2 BR",
     );
 
+    // Shader verification: pattern 2 - CPU broadcast + access
+    let output = render_egc_snapshot(&shader, &mut machine.bus);
+    let snapshot = machine.bus.vsync_snapshot();
+    check_shader_quadrant(&output, snapshot, [0, 200], [0, 320], 1, "P2 TL");
+    check_shader_quadrant(&output, snapshot, [0, 200], [320, 640], 2, "P2 TR");
+    check_shader_quadrant(&output, snapshot, [200, 400], [0, 320], 5, "P2 BL");
+    check_shader_quadrant(&output, snapshot, [200, 400], [320, 640], 10, "P2 BR");
+
     // Pattern 3: ROP Block Copy
     // TL=9(bright blue):  B=FF,R=00,G=00,E=FF
     // TR=6(yellow):       B=00,R=FF,G=FF,E=00
@@ -1634,4 +1720,12 @@ fn egc_firmware_all_patterns() {
         0x00,
         "P3 BR",
     );
+
+    // Shader verification: pattern 3 - ROP block copy
+    let output = render_egc_snapshot(&shader, &mut machine.bus);
+    let snapshot = machine.bus.vsync_snapshot();
+    check_shader_quadrant(&output, snapshot, [0, 200], [0, 320], 9, "P3 TL");
+    check_shader_quadrant(&output, snapshot, [0, 200], [320, 640], 6, "P3 TR");
+    check_shader_quadrant(&output, snapshot, [200, 400], [0, 320], 12, "P3 BL");
+    check_shader_quadrant(&output, snapshot, [200, 400], [320, 640], 3, "P3 BR");
 }
