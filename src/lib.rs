@@ -971,18 +971,22 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
         }
     }
 
-    if let Some(ref sc55_rom_dir) = config.sc55_roms {
-        #[cfg(feature = "sc55")]
-        {
-            match bus.install_sc55(sc55_rom_dir) {
-                Ok(()) => info!("Loaded Nuked-SC55 sound module"),
-                Err(error) => warn!("SC-55 unavailable: {error}"),
+    if config.midi == config::MidiDevice::Sc55 {
+        if let Some(ref sc55_rom_dir) = config.sc55_roms {
+            #[cfg(feature = "sc55")]
+            {
+                match bus.install_sc55(sc55_rom_dir) {
+                    Ok(()) => info!("Loaded Nuked-SC55 sound module"),
+                    Err(error) => warn!("SC-55 unavailable: {error}"),
+                }
             }
-        }
-        #[cfg(not(feature = "sc55"))]
-        {
-            let _ = sc55_rom_dir;
-            warn!("SC-55 ROM path specified, but SC-55 support was not compiled in");
+            #[cfg(not(feature = "sc55"))]
+            {
+                let _ = sc55_rom_dir;
+                warn!("SC-55 ROM path specified, but SC-55 support was not compiled in");
+            }
+        } else {
+            warn!("MIDI device set to SC-55, but no SC-55 ROM directory specified (--sc55-roms)");
         }
     }
 
