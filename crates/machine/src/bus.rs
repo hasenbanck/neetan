@@ -115,6 +115,9 @@ const MOUSE_TIMER_DEFAULT_SETTING: u8 = 0x00;
 /// Mouse timer IRQ line on PC-98 (slave IR5 -> INT 15h).
 const MOUSE_TIMER_IRQ_LINE: u8 = 13;
 
+/// MPU timer IRQ line.
+const MPU_IRQ_LINE: u8 = 3;
+
 /// Default host local time function: returns advancing BCD time from the system clock.
 fn default_local_time() -> [u8; 6] {
     fn to_bcd(value: u8) -> u8 {
@@ -1470,6 +1473,38 @@ impl<T: Tracing> Pc9801Bus<T> {
         scheduler.schedule(EventKind::Sb16DspDma, fire_cycle);
     }
 
+    fn handle_mpu_timer(&mut self) {
+        let reschedule = self.mpu_pc98ii.tick();
+        if self.mpu_pc98ii.take_irq() {
+            self.pic.set_irq(MPU_IRQ_LINE);
+            self.tracer.trace_irq_raise(MPU_IRQ_LINE);
+        }
+        if reschedule {
+            let step_cycles = self.mpu_pc98ii.step_clock_cycles(self.clocks.cpu_clock_hz);
+            self.scheduler
+                .schedule(EventKind::MpuTimer, self.current_cycle + step_cycles);
+        }
+    }
+
+    fn sync_mpu_irq_and_timer(&mut self) {
+        if self.mpu_pc98ii.take_irq() {
+            self.pic.set_irq(MPU_IRQ_LINE);
+            self.tracer.trace_irq_raise(MPU_IRQ_LINE);
+        } else {
+            self.pic.clear_irq(MPU_IRQ_LINE);
+        }
+        if self.mpu_pc98ii.timer_active()
+            && self.scheduler.state.fire_cycles[EventKind::MpuTimer as usize].is_none()
+        {
+            let step_cycles = self.mpu_pc98ii.step_clock_cycles(self.clocks.cpu_clock_hz);
+            self.scheduler
+                .schedule(EventKind::MpuTimer, self.current_cycle + step_cycles);
+        }
+        if !self.mpu_pc98ii.timer_active() {
+            self.scheduler.cancel(EventKind::MpuTimer);
+        }
+    }
+
     fn handle_sb16_dma_transfer(&mut self, event_fire_cycle: u64) {
         let (channel, batch_size, dma_active, is_recording, dma_format) = {
             let Some(ref sb16) = self.sound_blaster_16 else {
@@ -1680,6 +1715,9 @@ impl<T: Tracing> Pc9801Bus<T> {
                 }
                 EventKind::Sb16DspDma => {
                     self.handle_sb16_dma_transfer(event.fire_cycle);
+                }
+                EventKind::MpuTimer => {
+                    self.handle_mpu_timer();
                 }
             }
         }
