@@ -501,15 +501,6 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.display_control.state.mode2 |= 0x0600;
     }
 
-    /// Advertises 5 MHz GDC capability without switching to 5 MHz.
-    ///
-    /// Sets PRXDUPD bit 5 so software knows it can switch to 5 MHz via
-    /// INT 18h or port 0x6A. The DIP switch and initial display mode
-    /// remain at 2.5 MHz.
-    pub fn set_gdc_5mhz_capable(&mut self) {
-        self.memory.state.ram[0x054D] |= 0x20;
-    }
-
     /// Returns the CPU clock frequency in Hz.
     pub fn cpu_clock_hz(&self) -> u32 {
         self.clocks.cpu_clock_hz
