@@ -201,6 +201,8 @@ impl<T: Tracing> Pc9801Bus<T> {
             rtc: Upd4990aRtc::new(),
             host_local_time_fn: default_local_time,
             mpu_pc98ii: MpuPc98ii::new(),
+            #[cfg(feature = "mt32")]
+            mt32: None,
             #[cfg(feature = "sc55")]
             sc55: None,
             mouse_ppi: I8255MousePpi::new(),

@@ -971,6 +971,25 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
         }
     }
 
+    if config.midi == config::MidiDevice::Mt32 {
+        if let Some(ref mt32_rom_dir) = config.mt32_roms {
+            #[cfg(feature = "mt32")]
+            {
+                match bus.install_mt32(mt32_rom_dir) {
+                    Ok(()) => info!("Loaded MT-32 sound module (munt)"),
+                    Err(error) => warn!("MT-32 unavailable: {error}"),
+                }
+            }
+            #[cfg(not(feature = "mt32"))]
+            {
+                let _ = mt32_rom_dir;
+                warn!("MT-32 ROM path specified, but MT-32 support was not compiled in");
+            }
+        } else {
+            warn!("MIDI device set to MT-32, but no MT-32 ROM directory specified (--mt32-roms)");
+        }
+    }
+
     if config.midi == config::MidiDevice::Sc55 {
         if let Some(ref sc55_rom_dir) = config.sc55_roms {
             #[cfg(feature = "sc55")]

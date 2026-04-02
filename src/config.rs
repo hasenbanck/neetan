@@ -48,7 +48,8 @@ Options:
       --font-rom <PATH>         Path to font ROM file
       --soundboard <TYPE>       Sound board type: none, 26k, 86, 86+26k, sb16, sb16+26k
       --adpcm-ram <on|off>      ADPCM RAM option for PC-9801-86 (default: on)
-      --midi <DEVICE>            MIDI device: none, sc55 (default: none)
+      --midi <DEVICE>           MIDI device: none, mt32, sc55 (default: none)
+      --mt32-roms <PATH>        Path to MT-32 ROM directory
       --sc55-roms <PATH>        Path to SC55 ROM directory
       --printer <PATH>          Output file for printer (must exist)
   -h, --help                    Print help
@@ -411,6 +412,7 @@ pub fn parse_args() -> crate::Result<Action> {
                 config.force_gdc_clock = Some(val.parse::<ForceGdcClock>().map_err(StringError)?);
             }
             "--printer" => config.printer = Some(PathBuf::from(value(&flag)?)),
+            "--mt32-roms" => config.mt32_roms = Some(PathBuf::from(value(&flag)?)),
             "--sc55-roms" => config.sc55_roms = Some(PathBuf::from(value(&flag)?)),
             "--midi" => {
                 let val = value(&flag)?;
@@ -470,6 +472,7 @@ pub struct EmulatorConfig {
     pub adpcm_ram: bool,
     pub force_gdc_clock: Option<ForceGdcClock>,
     pub printer: Option<PathBuf>,
+    pub mt32_roms: Option<PathBuf>,
     pub sc55_roms: Option<PathBuf>,
     pub midi: MidiDevice,
     pub key_map: KeyMap,
@@ -493,6 +496,7 @@ impl Default for EmulatorConfig {
             adpcm_ram: true,
             force_gdc_clock: None,
             printer: None,
+            mt32_roms: None,
             sc55_roms: None,
             midi: MidiDevice::default(),
             key_map: KeyMap::new(),
@@ -558,6 +562,7 @@ fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<
                 Err(_) => warn!("Invalid force-gdc-clock in config: {val}, expected 2.5 or 5"),
             },
             "printer" => config.printer = Some(PathBuf::from(val)),
+            "mt32-roms" => config.mt32_roms = Some(PathBuf::from(val)),
             "sc55-roms" => config.sc55_roms = Some(PathBuf::from(val)),
             "midi" => match val.parse::<MidiDevice>() {
                 Ok(device) => config.midi = device,
@@ -722,6 +727,8 @@ pub enum MidiDevice {
     /// No MIDI output.
     #[default]
     None,
+    /// Roland MT-32 (requires MT-32 ROMs).
+    Mt32,
     /// Roland SC-55 (requires SC-55 ROMs).
     Sc55,
 }
@@ -730,6 +737,7 @@ impl std::fmt::Display for MidiDevice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::None => f.write_str("none"),
+            Self::Mt32 => f.write_str("mt32"),
             Self::Sc55 => f.write_str("sc55"),
         }
     }
@@ -741,8 +749,11 @@ impl std::str::FromStr for MidiDevice {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
             "none" => Ok(Self::None),
+            "mt32" => Ok(Self::Mt32),
             "sc55" => Ok(Self::Sc55),
-            _ => Err(format!("unknown MIDI device '{s}', expected none or sc55")),
+            _ => Err(format!(
+                "unknown MIDI device '{s}', expected none, mt32 or sc55"
+            )),
         }
     }
 }
