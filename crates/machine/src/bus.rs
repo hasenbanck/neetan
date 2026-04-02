@@ -223,6 +223,9 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     host_local_time_fn: fn() -> [u8; 6],
     /// MPU-PC98II MIDI interface (C-Bus, default base 0xE0D0).
     mpu_pc98ii: device::mpu_pc98ii::MpuPc98ii,
+    /// MT-32 sound module (optional, requires munt).
+    #[cfg(feature = "mt32")]
+    mt32: Option<device::mt32::Mt32>,
     /// SC-55 sound module (optional, requires Nuked-SC55).
     #[cfg(feature = "sc55")]
     sc55: Option<device::sc55::Sc55>,
@@ -626,6 +629,16 @@ impl<T: Tracing> Pc9801Bus<T> {
     pub fn install_sound_blaster_16(&mut self) {
         let sample_rate = self.beeper.state.sample_rate;
         self.sound_blaster_16 = Some(SoundBlaster16::new(self.clocks.cpu_clock_hz, sample_rate));
+    }
+
+    /// Installs a Roland MT-32 sound module for MPU-PC98II MIDI output.
+    #[cfg(feature = "mt32")]
+    pub fn install_mt32(
+        &mut self,
+        rom_directory: &std::path::Path,
+    ) -> Result<(), device::mt32::MuntError> {
+        self.mt32 = Some(device::mt32::Mt32::new(rom_directory)?);
+        Ok(())
     }
 
     /// Installs a Roland SC-55 sound module for MPU-PC98II MIDI output.
@@ -1149,6 +1162,11 @@ impl<T: Tracing> Pc9801Bus<T> {
             sb16.generate_samples(self.current_cycle, self.clocks.cpu_clock_hz, volume, output);
         }
         self.process_soundboard_sb16_actions();
+
+        #[cfg(feature = "mt32")]
+        if let Some(ref mt32) = self.mt32 {
+            mt32.exchange(volume, output, |buf| self.mpu_pc98ii.flush_midi_into(buf));
+        }
 
         #[cfg(feature = "sc55")]
         if let Some(ref sc55) = self.sc55 {

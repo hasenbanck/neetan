@@ -30,6 +30,7 @@ We also support the following sound cards:
 * PC-9801-86 + PC-9801-26k combo
 * Sound Blaster 16
 * Sound Blaster 16 + PC-9801-26k combo
+* Roland MT-32 using the MPU-PC98II interface
 * Roland SC-55 using the MPU-PC98II interface
 
 The default for the CLI is the PC-9801VX machine with the PC-9801-86 + PC-9801-26k combo soundboards.
@@ -63,7 +64,8 @@ neetan <COMMAND>
 | `--bios-rom <PATH>`          | Path to BIOS ROM file                                                    | HLE BIOS   |
 | `--font-rom <PATH>`          | Path to font ROM file                                                    | Built-in   |
 | `--soundboard <TYPE>`        | Sound board: `none`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`           | `86+26k`   |
-| `--midi <DEVICE>`            | MIDI device: `none`, `sc55`                                              | `none`     |
+| `--midi <DEVICE>`            | MIDI device: `none`, `mt32`, `sc55`                                      | `none`     |
+| `--mt32-roms <PATH>`         | Path to MT-32 ROM directory (requires `mt32` feature)                    | -          |
 | `--sc55-roms <PATH>`         | Path to SC-55 ROM directory (requires `sc55` feature)                    | -          |
 | `--printer <PATH>`           | Output file for printer (must exist)                                     | -          |
 | `-h, --help`                 | Print help                                                               | -          |
@@ -115,8 +117,8 @@ fdd1 = /path/to/disk_b.d88
 fdd2 = /path/to/save_game.d88
 hdd1 = /path/to/harddrive.hdi
 cdrom = /path/to/game.cue
-midi = sc55
-sc55-roms = /path/to/sc55_roms
+midi = mt32
+mt32-roms = /path/to/mt32_roms
 ```
 
 Command-line arguments override values from the configuration file.
@@ -213,27 +215,46 @@ The first image in each list is automatically inserted at startup.
 
 Press **GUI + Alt + F9** (drive 1), **GUI + Alt + F10** (drive 2), or **GUI + Alt + F11** (CD-ROM) to open the image selector.
 
-## SC-55 sound module
+## MIDI sound modules
 
-neetan can emulate the Roland SC-55 sound module using a Rust port of the [Nuked-SC55](https://github.com/nukeykt/Nuked-SC55)
-for MIDI playback through the MPU-PC98II interface. This feature is enabled by default.
+neetan can emulate MIDI sound modules connected via the MPU-PC98II interface. Two modules are supported:
 
-### Why it is optional
+* Roland MT-32 - using a Rust port of [munt](https://github.com/munt/munt)
+* Roland SC-55 - using a Rust port of [Nuked-SC55](https://github.com/nukeykt/Nuked-SC55)
 
-The Nuked-SC55 code is licensed under the original MAME license, which
-prohibits commercial use and redistribution for sale. Distributions that
-cannot comply with this license (such as Linux distributions) can disable the
-feature at build time:
+Both features are optional, but enabled by default and require external ROM files to work.
+
+### Why they are optional
+
+The munt code is licensed under [LGPL 2.1](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html),
+and the Nuked-SC55 code is licensed under the original MAME license (non-commercial use only).
+See the [License](#license) section for details. Distributions that cannot comply with these
+licenses can disable one or both at build time:
 
 ```bash
-cargo build --release --no-default-features
+cargo build --release --no-default-features                       # neither
+cargo build --release --no-default-features --features mt32       # MT-32 only
+cargo build --release --no-default-features --features sc55       # SC-55 only
 ```
 
-When built without the `sc55` feature, the `--sc55-roms` option is still
-accepted but the emulator will print a warning and continue without SC-55
-audio.
+When built without a feature, the corresponding `--midi` option is still accepted but the
+emulator will print a warning and continue without audio for that module.
 
-### Required ROM files
+### MT-32 ROM files
+
+Place your MT-32 ROM files (`.rom` extension) into a single directory and point `--mt32-roms`
+at it. The emulator identifies ROMs by SHA1 hash, so filenames do not matter. You need one
+control ROM and one PCM ROM. Split ROM pairs (two halves) are also supported and merged
+automatically.
+
+| Model                            | Control ROM versions                  |
+|----------------------------------|---------------------------------------|
+| MT-32                            | v1.04, v1.05, v1.06, v1.07, BlueRidge |
+| MT-32 (new / "old" v2)           | v2.03, v2.04, v2.06, v2.07            |
+| CM-32L / LAPC-I                  | v1.00, v1.02                          |
+| CM-32LN / CM-500 / LAPC-N        | v1.00                                 |
+
+### SC-55 ROM files
 
 Place the ROM files for your device model into a single directory and point `--sc55-roms` at it.
 The emulator auto-detects the model from the filenames present.
@@ -251,22 +272,28 @@ The emulator auto-detects the model from the filenames present.
 
 ### Usage
 
-Set the MIDI device to `sc55` and provide the path to a directory containing SC-55 ROM files:
+Set the MIDI device and provide the path to the ROM directory:
 
 ```bash
+neetan --midi mt32 --mt32-roms /path/to/mt32_roms [other options...]
 neetan --midi sc55 --sc55-roms /path/to/sc55_roms [other options...]
 ```
 
 Or in a configuration file:
 
 ```ini
+midi = mt32
+mt32-roms = /path/to/mt32_roms
+```
+
+```ini
 midi = sc55
 sc55-roms = /path/to/sc55_roms
 ```
 
-The `sc55-roms` path can be set in the global configuration file so it only needs to be specified once.
-SC-55 emulation is only activated when both `--midi sc55` and `--sc55-roms` are set, so you can
-toggle it per-game without removing the ROM path from your global config.
+Both ROM paths can be set in the global configuration file so they only need to be specified once.
+MIDI emulation is only activated when both the `--midi` device and the corresponding ROM path are
+set, so you can keep ROM paths in your global config and toggle per-game by changing only `--midi`.
 
 ## FAQ
 
@@ -280,8 +307,8 @@ With these systems in place we are able to run th fast majority of PC-98 games a
 There are some BIOS extensions, mainly the sound API and LIO API that we currently haven't implemented, but outside
 some odd BASIC based games, they should not be used by games, which interface with the hardware I/O port directly.
 
-The only exception is the optional SC-55 support, which needs external ROM files to work correctly as described in the
-"SC-55 sound module" section.
+The only exceptions are the optional MT-32 and SC-55 MIDI modules, which need external ROM files to work correctly
+as described in the "MIDI sound modules" section.
 
 ### How can I use my mouse?
 
@@ -326,8 +353,26 @@ We ported the Roland SC-55 emulator from the incredible Nuked SC55 project to ou
 
 - [Nuked-SC55](https://github.com/nukeykt/Nuked-SC55)
 
+We ported the Roland MT-32 emulator from the outstanding munt project to our own Rust port:
+
+- [munt](https://github.com/munt/munt)
+
 ## License
 
-This project is licensed under [3-clause BSD](https://opensource.org/license/bsd-3-clause) license.
+This project is licensed under the [3-clause BSD](https://opensource.org/license/bsd-3-clause) license.
 
-Please read the "SC-55 sound module" section for the additional license requirement when activating the `sc55` feature.
+When optional features are enabled, the license terms of the resulting binary change:
+
+| Build configuration             | Binary license                |
+|---------------------------------|-------------------------------|
+| Default (no optional features)  | BSD 3-Clause                  |
+| `sc55` feature enabled          | BSD 3-Clause + non-commercial |
+| `mt32` feature enabled          | LGPL 2.1                      |
+| `sc55` + `mt32` enabled         | LGPL 2.1 + non-commercial     |
+
+The `sc55` feature links the Nuked-SC55 port, which is licensed under the original MAME license
+(non-commercial use only). The `mt32` feature links the munt port, which is licensed under
+[LGPL 2.1](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html).
+
+The source code of the BSD 3-Clause licensed components remains available under BSD 3-Clause
+regardless of the build configuration.

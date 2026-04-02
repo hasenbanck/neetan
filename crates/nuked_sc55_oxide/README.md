@@ -37,3 +37,10 @@ Special thanks to:
 Same as the original Nuked SC-55, this port can be distributed and used under the original MAME license (see LICENSE file).
 Non-commercial license was chosen to prevent making and selling SC-55 emulation boxes using (or around) this code,
 as well as preventing from using it in the commercial music production.
+
+## Trademark disclaimer
+
+Roland is a trademark of Roland Corp. All other brand and product names are
+trademarks or registered trademarks of their respective holder. Use of
+trademarks is for informational purposes only and does not imply endorsement by
+or affiliation with the holder.
