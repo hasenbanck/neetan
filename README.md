@@ -254,6 +254,8 @@ automatically.
 | CM-32L / LAPC-I                  | v1.00, v1.02                          |
 | CM-32LN / CM-500 / LAPC-N        | v1.00                                 |
 
+It seems that currently the control ROM version v1.04, v1.05, v1.06 and v1.07 of the MT-32 have the best compatibility.
+
 ### SC-55 ROM files
 
 Place the ROM files for your device model into a single directory and point `--sc55-roms` at it.
