@@ -883,7 +883,7 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
             info!("GDC clock forced to 5 MHz (400-line graphics mode)");
         }
         (true, None) => {
-            bus.set_gdc_5mhz_capable();
+            bus.set_gdc_clock_5mhz();
         }
         (false, Some(ForceGdcClock::Force5)) => {
             warn!("{model} does not support 5 MHz GDC clock, ignoring --force-gdc-clock 5");
