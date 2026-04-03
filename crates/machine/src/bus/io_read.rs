@@ -58,13 +58,16 @@ impl<T: Tracing> Pc9801Bus<T> {
             // RS-232C i8251 status register.
             0x32 => self.serial.read_status(),
 
-            // DIP switches and system ports.
-            // On PC-9821 (no physical DIP switches), reads SDIP front bank
-            // register 1 - always from the front bank regardless of the
-            // current bank selection.
+            // DIP switch 2 via 8255 PPI Port A.
+            // On PC-9821, synthesized from SDIP front bank registers:
+            //   bits {7,6,5,3,2,1,0} from register 1 (0x851E)
+            //   bit 4 (memsw init) from register 3 (0x871E) bit 5
+            // Ref: undoc98 io_sdip.txt
             0x31 => {
                 if self.machine_model.has_sdip() {
-                    self.sdip.read_front_bank(1)
+                    let reg1 = self.sdip.read_front_bank(1);
+                    let reg3 = self.sdip.read_front_bank(3);
+                    (reg1 & 0xEF) | ((reg3 & 0x20) >> 1)
                 } else {
                     self.system_ppi.read_dip_switch_2()
                 }

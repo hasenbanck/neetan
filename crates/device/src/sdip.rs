@@ -153,11 +153,51 @@ impl Sdip {
         self.state.ram[index] = value;
     }
 
+    /// Modifies a data bit in a front bank register and recomputes odd parity.
+    ///
+    /// Parity bit positions per register:
+    /// - Register 0: bit 0
+    /// - Register 1: bit 4
+    /// - Registers 2-4, 7-11: bit 7
+    /// - Registers 5-6: combined parity (not supported, will panic)
+    pub fn set_front_bank_bit(&mut self, register: usize, bit: u8, value: bool) {
+        debug_assert!(register < BANK_SIZE, "register out of range");
+        debug_assert!(bit < 8, "bit out of range");
+
+        let parity_bit = parity_bit_position(register);
+        debug_assert_ne!(bit, parity_bit, "cannot set the parity bit directly");
+
+        if value {
+            self.state.ram[register] |= 1 << bit;
+        } else {
+            self.state.ram[register] &= !(1 << bit);
+        }
+
+        // Recompute odd parity: total ones (data + parity) must be odd.
+        let data = self.state.ram[register] & !(1 << parity_bit);
+        if data.count_ones().is_multiple_of(2) {
+            self.state.ram[register] |= 1 << parity_bit;
+        } else {
+            self.state.ram[register] &= !(1 << parity_bit);
+        }
+    }
+
     /// Selects the SDIP bank from bit 6 of the written value.
     ///
     /// Bit 6 = 0 -> front bank, bit 6 = 1 -> back bank.
     /// Called on writes to port 0x00F6 (0xA0/0xE0) or port 0x8F1F (0x80/0xC0).
     pub fn select_bank_from_bit6(&mut self, value: u8) {
         self.state.bank = value & 0x40 != 0;
+    }
+}
+
+/// Returns the parity bit position for the given SDIP register index.
+fn parity_bit_position(register: usize) -> u8 {
+    match register {
+        0 => 0,
+        1 => 4,
+        2..=4 | 7..=11 => 7,
+        5 | 6 => panic!("registers 5-6 use combined parity across both bytes"),
+        _ => panic!("invalid SDIP register index"),
     }
 }
