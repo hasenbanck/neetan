@@ -340,7 +340,26 @@ impl<T: Tracing> Pc9801Bus<T> {
                     .unwrap_or(0);
                 self.ide.execute_format(drive_idx, pos)
             }
-            0x0E => self.ide.execute_mode_set(drive_idx),
+            0x0E => {
+                let mode_set_result = self.ide.execute_mode_set(drive_idx);
+                if mode_set_result == 0x00 && drive_idx <= 1 {
+                    let sector_size = self
+                        .ide
+                        .drive_geometry(drive_idx)
+                        .map(|g| g.sector_size)
+                        .unwrap_or(512);
+                    let flag_bit = 1u8 << drive_idx;
+                    let mode_is_half_height = function_code & 0x80 != 0;
+                    let mut mode_flags = self.read_byte_with_access_page(0x0481);
+                    if !mode_is_half_height && sector_size == 512 {
+                        mode_flags |= flag_bit;
+                    } else {
+                        mode_flags &= !flag_bit;
+                    }
+                    self.write_byte_with_access_page(0x0481, mode_flags);
+                }
+                mode_set_result
+            }
             0x01 => 0x00, // Verify: no-op
 
             // IDE-specific motor control extensions.

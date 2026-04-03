@@ -79,6 +79,7 @@ struct IdeDrive {
     buffer: Vec<u8>,
     buffer_position: usize,
     buffer_size: usize,
+    sector_size: usize,
     sectors_pending: u16,
     interrupt_pending: bool,
     block_size: u16,
@@ -103,6 +104,7 @@ impl IdeDrive {
             buffer: vec![0u8; IDE_SECTOR_SIZE],
             buffer_position: 0,
             buffer_size: 0,
+            sector_size: IDE_SECTOR_SIZE,
             sectors_pending: 0,
             interrupt_pending: false,
             block_size: 1,
@@ -225,6 +227,17 @@ impl Controller {
             &mut drive.cylinder_high,
         );
         self.channels[1].phase = IdePhase::Idle;
+    }
+
+    /// Sets the sector size for a specific drive on a channel.
+    /// Called when inserting a drive image with a non-standard sector size.
+    pub(super) fn set_drive_sector_size(
+        &mut self,
+        channel: usize,
+        drive: usize,
+        sector_size: usize,
+    ) {
+        self.channels[channel].drives[drive].sector_size = sector_size;
     }
 
     fn channel(&self) -> &IdeChannel {
@@ -831,9 +844,10 @@ impl Controller {
 
         let ch = self.channel_mut();
         let drive = ch.drive_mut();
-        drive.buffer[..IDE_SECTOR_SIZE].copy_from_slice(sector_data);
+        let sector_size = drive.sector_size;
+        drive.buffer[..sector_size].copy_from_slice(sector_data);
         drive.buffer_position = 0;
-        drive.buffer_size = IDE_SECTOR_SIZE;
+        drive.buffer_size = sector_size;
         drive.sectors_pending = count - 1;
         drive.block_size = if multiple {
             drive.multiple_count as u16
@@ -881,7 +895,8 @@ impl Controller {
 
         let ch = &mut self.channels[ch_idx];
         let drive = &mut ch.drives[sel];
-        drive.buffer[..IDE_SECTOR_SIZE].copy_from_slice(sector_data);
+        let sector_size = drive.sector_size;
+        drive.buffer[..sector_size].copy_from_slice(sector_data);
         drive.buffer_position = 0;
         drive.sectors_pending -= 1;
         drive.status = STATUS_DRDY | STATUS_DSC | STATUS_DRQ;
@@ -905,7 +920,7 @@ impl Controller {
 
         let drive = ch.drive_mut();
         drive.buffer_position = 0;
-        drive.buffer_size = IDE_SECTOR_SIZE;
+        drive.buffer_size = drive.sector_size;
         drive.sectors_pending = count - 1;
         drive.block_size = if multiple {
             drive.multiple_count as u16
@@ -988,7 +1003,11 @@ impl Controller {
         // Word 3: Number of heads.
         set_word(buf, 3, geometry.heads as u16);
         // Word 4: Bytes per track (unformatted).
-        set_word(buf, 4, geometry.sectors_per_track as u16 * 512);
+        set_word(
+            buf,
+            4,
+            geometry.sectors_per_track as u16 * geometry.sector_size,
+        );
         // Word 6: Sectors per track.
         set_word(buf, 6, geometry.sectors_per_track as u16);
 
