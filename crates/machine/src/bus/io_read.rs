@@ -749,6 +749,9 @@ impl<T: Tracing> Pc9801Bus<T> {
                 self.mpu_pc98ii.read_status()
             }
 
+            // C-Bus expansion card probing (no extension hardware present).
+            0xC0E0..=0xFCE2 => 0xFF,
+
             _ => {
                 self.tracer.trace_io_unhandled_read(port);
                 warn!("Unhandled I/O read: port={port:#06X}");

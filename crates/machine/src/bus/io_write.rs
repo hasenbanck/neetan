@@ -653,9 +653,9 @@ impl<T: Tracing> Pc9801Bus<T> {
                 self.cpu_mode_534 = value;
             }
 
-            // Display mode register (PC-9821).
+            // Text control register (PC-H98).
             // Ref: undoc98 `io_disp.txt` (port 0x00A7)
-            0x00A7 if self.machine_model.is_pc9821() => {}
+            0x00A7 => {}
 
             // Memory status register (read-only, writes ignored).
             // Ref: undoc98 `io_mem.txt` (port 0x063D)
@@ -833,6 +833,9 @@ impl<T: Tracing> Pc9801Bus<T> {
                 self.mpu_pc98ii.write_command(value);
                 self.sync_mpu_irq_and_timer();
             }
+
+            // C-Bus expansion card probing (no extension hardware present).
+            0xC0E0..=0xFCE2 => {}
 
             _ => {
                 self.tracer.trace_io_unhandled_write(port, value);
