@@ -874,21 +874,33 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
     let mut bus: machine::Pc9801Bus<Tracer> = machine::Pc9801Bus::new(model, sample_rate);
     bus.set_host_local_time_fn(host_local_time_bcd);
 
-    match (model.has_egc(), config.force_gdc_clock) {
-        (true, Some(ForceGdcClock::Force2_5)) => {
-            info!("GDC clock forced to 2.5 MHz (200-line compatibility mode)");
+    // GDC clock rate configuration logic
+    match (model.has_pegc(), model.has_egc(), config.force_gdc_clock) {
+        // PEGC machines (PC-9821): default to 5 MHz
+        (true, _, None) => {
+            bus.set_gdc_clock_5mhz();
         }
-        (true, Some(ForceGdcClock::Force5)) => {
+        (true, _, Some(ForceGdcClock::Force5)) => {
             bus.set_gdc_clock_5mhz();
             info!("GDC clock forced to 5 MHz (400-line graphics mode)");
         }
-        (true, None) => {
-            bus.set_gdc_clock_5mhz();
+        (true, _, Some(ForceGdcClock::Force2_5)) => {
+            info!("GDC clock forced to 2.5 MHz (200-line compatibility mode)");
         }
-        (false, Some(ForceGdcClock::Force5)) => {
+        // EGC-only machines (PC-9801VX/RA): default to 2.5 MHz
+        (false, true, Some(ForceGdcClock::Force5)) => {
+            bus.set_gdc_clock_5mhz();
+            info!("GDC clock forced to 5 MHz (400-line graphics mode)");
+        }
+        (false, true, Some(ForceGdcClock::Force2_5)) => {
+            info!("GDC clock forced to 2.5 MHz (200-line compatibility mode)");
+        }
+        (false, true, None) => {}
+        // Non-EGC machines (PC-9801VM): no 5 MHz support
+        (false, false, Some(ForceGdcClock::Force5)) => {
             warn!("{model} does not support 5 MHz GDC clock, ignoring --force-gdc-clock 5");
         }
-        _ => {}
+        (false, false, Some(ForceGdcClock::Force2_5)) | (false, false, None) => {}
     }
 
     if config.bios_rom.is_some() && model.is_pc9821() {
