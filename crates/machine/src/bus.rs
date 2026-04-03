@@ -401,6 +401,13 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
             MachineModel::PC9821AS | MachineModel::PC9821AP => {
                 self.ide.insert_drive(drive, image, path);
+                if self
+                    .ide
+                    .drive_geometry(drive)
+                    .is_some_and(|g| g.sector_size == 256)
+                {
+                    self.sdip.set_front_bank_bit(0, 6, false);
+                }
             }
         }
     }

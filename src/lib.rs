@@ -1102,9 +1102,13 @@ fn validate_hdd_for_machine(
         }
         MachineModel::PC9821AS | MachineModel::PC9821AP => {
             ensure!(
-                geometry.sector_size == 512,
+                geometry.sector_size == 512 || geometry.sasi_media_type().is_some(),
                 "{label} is not compatible with {model} (IDE): \
-                 image has {}-byte sectors, but IDE requires 512-byte sectors",
+                 geometry {}C/{}H/{}S with {}-byte sectors \
+                 is not a valid IDE or SASI-compatible drive type",
+                geometry.cylinders,
+                geometry.heads,
+                geometry.sectors_per_track,
                 geometry.sector_size,
             );
         }

@@ -6,11 +6,16 @@
 
 use crate::disk::HddImage;
 
-/// Executes a BIOS sense operation: returns the IDE media type.
+/// Executes a BIOS sense operation: returns the media type.
+/// For SASI-compatible images (256-byte sectors with standard SASI geometry),
+/// returns the SASI media type code. Otherwise returns 0x0F (IDE).
 pub(super) fn execute_sense(drive_idx: usize, drives: &[Option<HddImage>; 2]) -> u8 {
-    let Some(_drive) = &drives[drive_idx] else {
+    let Some(drive) = &drives[drive_idx] else {
         return 0x60;
     };
+    if let Some(sense_code) = drive.geometry.sasi_new_sense_type() {
+        return sense_code;
+    }
     0x0F
 }
 
@@ -62,10 +67,27 @@ mod tests {
         HddImage::from_raw(geometry, HddFormat::Hdi, data)
     }
 
+    fn make_sasi_compat_drive() -> HddImage {
+        let geometry = HddGeometry {
+            cylinders: 153,
+            heads: 4,
+            sectors_per_track: 33,
+            sector_size: 256,
+        };
+        let data = vec![0u8; geometry.total_bytes() as usize];
+        HddImage::from_raw(geometry, HddFormat::Thd, data)
+    }
+
     #[test]
     fn sense_returns_ide_type() {
         let drives: [Option<HddImage>; 2] = [Some(make_test_drive()), None];
         assert_eq!(execute_sense(0, &drives), 0x0F);
+    }
+
+    #[test]
+    fn sense_returns_sasi_type_for_sasi_compat_image() {
+        let drives: [Option<HddImage>; 2] = [Some(make_sasi_compat_drive()), None];
+        assert_eq!(execute_sense(0, &drives), 0x00);
     }
 
     #[test]

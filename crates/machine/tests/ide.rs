@@ -571,6 +571,25 @@ fn write_dword(bus: &mut Pc9801Bus<NoTracing>, addr: u32, value: u32) {
     bus.write_byte(addr + 3, (value >> 24) as u8);
 }
 
+/// Creates a standard 5 MB SASI-compatible test drive (153C/4H/33S, 256 bytes/sector).
+/// Each sector's first two bytes contain the LBA high/low for verification.
+fn make_sasi_compat_test_drive() -> HddImage {
+    let geometry = HddGeometry {
+        cylinders: 153,
+        heads: 4,
+        sectors_per_track: 33,
+        sector_size: 256,
+    };
+    let total = geometry.total_bytes() as usize;
+    let mut data = vec![0u8; total];
+    for lba in 0..geometry.total_sectors() {
+        let offset = lba as usize * 256;
+        data[offset] = (lba >> 8) as u8;
+        data[offset + 1] = lba as u8;
+    }
+    HddImage::from_raw(geometry, HddFormat::Thd, data)
+}
+
 fn setup_ide_page_tables(bus: &mut Pc9801Bus<NoTracing>) {
     let page_dir: u32 = 0x80000;
     let page_table: u32 = 0x81000;
@@ -673,4 +692,234 @@ fn ide_hle_write_with_paging() {
             "read-back mismatch at offset {i}"
         );
     }
+}
+
+#[test]
+fn ide_sasi_compat_read_single_sector_via_pio() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
+    bus.insert_hdd(0, make_sasi_compat_test_drive(), None);
+
+    // Select drive 0, LBA mode.
+    bus.io_write_byte(0x064C, 0xE0);
+    bus.io_write_byte(0x0644, 0x01);
+    // LBA 0.
+    bus.io_write_byte(0x0646, 0x00);
+    bus.io_write_byte(0x0648, 0x00);
+    bus.io_write_byte(0x064A, 0x00);
+
+    // Issue Read Sector command (0x20).
+    bus.io_write_byte(0x064E, 0x20);
+    bus.set_current_cycle(4096);
+
+    // Read 128 words (256 bytes) from data register.
+    let mut data = vec![0u16; 128];
+    for word in data.iter_mut() {
+        *word = bus.io_read_word(0x0640);
+    }
+
+    // First word should be LBA 0 marker: high=0x00, low=0x00.
+    assert_eq!(data[0], 0x0000, "sector 0 first word (LBA marker)");
+
+    // Status should indicate success (DRDY set, no ERR).
+    let status = bus.io_read_byte(0x064E);
+    assert_eq!(status & 0x01, 0x00, "no error expected");
+    assert_ne!(status & 0x40, 0x00, "DRDY should be set");
+}
+
+#[test]
+fn ide_sasi_compat_write_single_sector_via_pio() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
+    bus.insert_hdd(0, make_sasi_compat_test_drive(), None);
+
+    // Select drive 0, LBA mode, LBA 10.
+    bus.io_write_byte(0x064C, 0xE0);
+    bus.io_write_byte(0x0644, 0x01);
+    bus.io_write_byte(0x0646, 0x0A);
+    bus.io_write_byte(0x0648, 0x00);
+    bus.io_write_byte(0x064A, 0x00);
+
+    // Issue Write Sector command (0x30).
+    bus.io_write_byte(0x064E, 0x30);
+
+    // Write 128 words of 0xBBBB to data register.
+    for _ in 0..128 {
+        bus.io_write_word(0x0640, 0xBBBB);
+    }
+
+    bus.set_current_cycle(4096);
+
+    let status = bus.io_read_byte(0x064E);
+    assert_eq!(status & 0x01, 0x00, "write should succeed");
+
+    // Read the same sector back to verify.
+    bus.io_write_byte(0x064C, 0xE0);
+    bus.io_write_byte(0x0644, 0x01);
+    bus.io_write_byte(0x0646, 0x0A);
+    bus.io_write_byte(0x0648, 0x00);
+    bus.io_write_byte(0x064A, 0x00);
+    bus.io_write_byte(0x064E, 0x20);
+
+    bus.set_current_cycle(8192);
+
+    let mut data = vec![0u16; 128];
+    for word in data.iter_mut() {
+        *word = bus.io_read_word(0x0640);
+    }
+
+    for (i, &word) in data.iter().enumerate() {
+        assert_eq!(word, 0xBBBB, "read-back mismatch at word {i}");
+    }
+}
+
+#[test]
+fn ide_sasi_compat_identify_reports_256_byte_sectors() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
+    bus.insert_hdd(0, make_sasi_compat_test_drive(), None);
+
+    bus.io_write_byte(0x064C, 0xE0);
+    bus.io_write_byte(0x064E, 0xEC);
+    bus.set_current_cycle(4096);
+
+    // IDENTIFY is always 256 words (512 bytes) per ATA spec.
+    let mut data = vec![0u16; 256];
+    for word in data.iter_mut() {
+        *word = bus.io_read_word(0x0640);
+    }
+
+    assert_eq!(data[0], 0x0040, "word 0: general configuration");
+    assert_eq!(data[1], 153, "word 1: cylinders");
+    assert_eq!(data[3], 4, "word 3: heads");
+    assert_eq!(data[4], 33 * 256, "word 4: bytes per track (33 * 256)");
+    assert_eq!(data[6], 33, "word 6: sectors per track");
+}
+
+#[test]
+fn ide_sasi_compat_hle_sense_returns_sasi_media_type() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
+    bus.insert_hdd(0, make_sasi_compat_test_drive(), None);
+
+    // AH=0x04 (legacy sense), AL=0x80 (drive 0).
+    let frame = IdeTestFrame::new(&mut bus, 0x0480, 0, 0, 0, 0x0000, 0x2000);
+    bus.execute_ide_hle(frame.ss, frame.sp);
+
+    // 5 MB SASI type returns 0x00 (new sense code for type 0).
+    assert_eq!(
+        frame.result_ah(&mut bus),
+        0x00,
+        "SASI-compat drive should return SASI media type in AH"
+    );
+    assert!(!frame.result_cf(&mut bus), "CF should be clear on success");
+}
+
+#[test]
+fn ide_sasi_compat_hle_new_sense_returns_geometry() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
+    bus.insert_hdd(0, make_sasi_compat_test_drive(), None);
+
+    // AH=0x84 (new sense), AL=0x80 (drive 0).
+    let frame = IdeTestFrame::new(&mut bus, 0x8480, 0xFFFF, 0xFFFF, 0xFFFF, 0, 0);
+    bus.execute_ide_hle(frame.ss, frame.sp);
+
+    assert_eq!(
+        frame.result_ah(&mut bus),
+        0x00,
+        "new sense should return SASI media code 0x00 in AH"
+    );
+
+    // BX = sector size (256), CX = cylinders - 1, DX = DH:heads | DL:sectors.
+    assert_eq!(
+        frame.read_stack_word(&mut bus, 0x02),
+        0x0100,
+        "BX should be sector size (256)"
+    );
+    assert_eq!(
+        frame.read_stack_word(&mut bus, 0x04),
+        152,
+        "CX should be cylinders - 1"
+    );
+    assert_eq!(
+        frame.read_stack_word(&mut bus, 0x06),
+        0x0421,
+        "DX should encode DH=heads(4), DL=sectors(33)"
+    );
+
+    assert!(!frame.result_cf(&mut bus), "CF should be clear on success");
+}
+
+#[test]
+fn ide_sasi_compat_hle_read_copies_256_byte_sector() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
+    bus.insert_hdd(0, make_sasi_compat_test_drive(), None);
+
+    // Clear destination buffer at ES:BP = 0x2000:0x0000 = 0x20000.
+    for i in 0..256u32 {
+        bus.write_byte(0x20000 + i, 0x00);
+    }
+
+    // AH=0x06 (read), AL=0x80 (drive 0, CHS mode), BX=256 (1 sector).
+    // CHS(0, 0, 5) = LBA 5 for geometry 153C/4H/33S.
+    let frame = IdeTestFrame::new(&mut bus, 0x0680, 0x0100, 0x0000, 0x0005, 0x0000, 0x2000);
+    bus.execute_ide_hle(frame.ss, frame.sp);
+
+    // LBA 5 marker bytes: 0x00, 0x05.
+    assert_eq!(bus.read_byte(0x20000), 0x00, "sector 5 byte 0");
+    assert_eq!(bus.read_byte(0x20001), 0x05, "sector 5 byte 1");
+
+    assert_eq!(frame.result_ah(&mut bus), 0x00, "read should succeed");
+    assert!(!frame.result_cf(&mut bus), "CF should be clear on success");
+}
+
+#[test]
+fn ide_sasi_compat_hle_write_modifies_drive_image() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
+    bus.insert_hdd(0, make_sasi_compat_test_drive(), None);
+
+    // Fill source buffer at 0x20000 with 0xCC.
+    for i in 0..256u32 {
+        bus.write_byte(0x20000 + i, 0xCC);
+    }
+
+    // AH=0x05 (write), AL=0x80 (drive 0), BX=256 (1 sector), CX=10 (LBA 10).
+    let frame = IdeTestFrame::new(&mut bus, 0x0580, 0x0100, 0x000A, 0x0000, 0x0000, 0x2000);
+    bus.execute_ide_hle(frame.ss, frame.sp);
+
+    assert_eq!(frame.result_ah(&mut bus), 0x00, "write should succeed");
+
+    // Read the sector back via HLE read to verify.
+    for i in 0..256u32 {
+        bus.write_byte(0x30000 + i, 0x00);
+    }
+    let frame2 = IdeTestFrame::new(&mut bus, 0x0680, 0x0100, 0x000A, 0x0000, 0x0000, 0x3000);
+    bus.execute_ide_hle(frame2.ss, frame2.sp);
+
+    for i in 0..256u32 {
+        assert_eq!(
+            bus.read_byte(0x30000 + i),
+            0xCC,
+            "read-back mismatch at offset {i}"
+        );
+    }
+}
+
+#[test]
+fn ide_sasi_compat_sdip_updated_on_insertion() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
+
+    // Default SDIP register 0 (0x841E) = 0xF8, bit 6 = 1 (512-byte sectors).
+    let default_sdip = bus.io_read_byte(0x841E);
+    assert_ne!(
+        default_sdip & 0x40,
+        0x00,
+        "default should have bit 6 set (512B)"
+    );
+
+    bus.insert_hdd(0, make_sasi_compat_test_drive(), None);
+
+    // After inserting 256-byte sector image, bit 6 should be cleared.
+    let updated_sdip = bus.io_read_byte(0x841E);
+    assert_eq!(
+        updated_sdip & 0x40,
+        0x00,
+        "bit 6 should be cleared (256-byte sector mode)"
+    );
 }

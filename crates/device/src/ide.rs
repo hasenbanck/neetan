@@ -73,9 +73,12 @@ impl IdeController {
     /// Inserts a hard disk image into the specified drive (0-1) on channel 0.
     /// Installs the expansion ROM on the first insertion.
     pub fn insert_drive(&mut self, drive: usize, image: HddImage, path: Option<PathBuf>) {
+        let sector_size = image.geometry.sector_size as usize;
         self.drives[drive] = Some(image);
         self.drive_paths[drive] = path;
         self.drive_dirty[drive] = false;
+        self.lle_controller
+            .set_drive_sector_size(0, drive, sector_size);
         self.install_rom();
     }
 
@@ -172,14 +175,20 @@ impl IdeController {
         )
     }
 
-    /// Reads the boot sector (LBA 0, 512 bytes) from the specified HDD drive
-    /// into a local buffer and returns it.
+    /// Reads the boot sector from the specified HDD drive into a local buffer.
+    /// For 256-byte sector (SASI-compat) images, reads 1024 bytes (4 sectors).
+    /// For 512-byte sector images, reads 512 bytes (1 sector).
     pub fn read_boot_sector(&self, drive_idx: usize) -> Option<Vec<u8>> {
         let geometry = self.drive_geometry(drive_idx)?;
         let pos = crate::disk_hle::sector_position(0x80 | drive_idx as u8, 0, 0, &geometry);
-        let mut buf = vec![0u8; 0x0200];
+        let boot_size: usize = if geometry.sector_size == 256 {
+            0x0400
+        } else {
+            0x0200
+        };
+        let mut buf = vec![0u8; boot_size];
         let mut offset = 0usize;
-        let result = self.execute_read(drive_idx, 0x0200, pos, 0, |_addr, byte| {
+        let result = self.execute_read(drive_idx, boot_size as u32, pos, 0, |_addr, byte| {
             buf[offset] = byte;
             offset += 1;
         });
@@ -196,14 +205,28 @@ impl IdeController {
         buf_addr: u32,
         read_byte: impl Fn(u32) -> u8,
     ) -> u8 {
-        let status = crate::disk_hle::execute_write::<512>(
-            drive_idx,
-            xfer_size,
-            sector_pos,
-            buf_addr,
-            &mut self.drives,
-            read_byte,
-        );
+        let sector_size = self.drives[drive_idx]
+            .as_ref()
+            .map(|d| d.geometry.sector_size)
+            .unwrap_or(512);
+        let status = match sector_size {
+            256 => crate::disk_hle::execute_write::<256>(
+                drive_idx,
+                xfer_size,
+                sector_pos,
+                buf_addr,
+                &mut self.drives,
+                read_byte,
+            ),
+            _ => crate::disk_hle::execute_write::<512>(
+                drive_idx,
+                xfer_size,
+                sector_pos,
+                buf_addr,
+                &mut self.drives,
+                read_byte,
+            ),
+        };
         if status == 0x00 {
             self.drive_dirty[drive_idx] = true;
         }
