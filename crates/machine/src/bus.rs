@@ -495,6 +495,11 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// Equivalent to setting DIP switch 2-8 to ON on real hardware.
     pub fn set_gdc_clock_5mhz(&mut self) {
         self.system_ppi.state.dip_switch_2 &= !0x80;
+        if self.machine_model.has_sdip() {
+            // SDIP register 1 (0x851E) bit 7 = GDC clock.
+            // Clearing it selects 5 MHz; parity at bit 4 is recomputed.
+            self.sdip.set_front_bank_bit(1, 7, false);
+        }
         self.memory.state.ram[0x054C] &= !0x40;
         self.memory.state.ram[0x054D] |= 0x20;
         self.gdc_slave.state.lines_per_row = 1;

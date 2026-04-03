@@ -709,15 +709,10 @@ impl<T: Tracing> Pc9801Bus<T> {
         }
 
         // Memory switches at text VRAM (stride 4).
+        // MSW3 bits 0-2 encode conventional memory in 128 KB units above
+        // the base 128 KB: 0x04 = 4 * 128 KB + 128 KB = 640 KB.
         let year_bcd = (self.host_local_time_fn)()[0];
-        let msw3 = match self.machine_model {
-            MachineModel::PC9801VM => 0x02,
-            MachineModel::PC9801VX
-            | MachineModel::PC9801RA
-            | MachineModel::PC9821AS
-            | MachineModel::PC9821AP => 0x04,
-        };
-        let msw_values: [u8; 8] = [0x48, 0x05, msw3, 0x00, 0x01, 0x00, 0x00, year_bcd];
+        let msw_values: [u8; 8] = [0x48, 0x05, 0x04, 0x00, 0x01, 0x00, 0x00, year_bcd];
         let msw_offsets: [usize; 8] = [
             0x3FE2, 0x3FE6, 0x3FEA, 0x3FEE, 0x3FF2, 0x3FF6, 0x3FFA, 0x3FFE,
         ];

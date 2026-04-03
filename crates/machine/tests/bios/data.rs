@@ -140,7 +140,7 @@ fn system_config_vm() {
     assert_eq!(machine.bus.read_byte(BDA_BIOS_FLAG3), 0x00, "BIOS_FLAG3");
     assert_eq!(machine.bus.read_byte(BDA_DISK_EQUIPS), 0x00, "DISK_EQUIPS");
     assert_eq!(machine.bus.read_byte(BDA_BIOS_FLAG0), 0x03, "BIOS_FLAG0");
-    assert_eq!(machine.bus.read_byte(BDA_BIOS_FLAG1), 0x62, "BIOS_FLAG1");
+    assert_eq!(machine.bus.read_byte(BDA_BIOS_FLAG1), 0x64, "BIOS_FLAG1");
 }
 
 /// PC-9801VX (80286 @ 10 MHz, dual-bank BIOS ROM).

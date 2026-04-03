@@ -797,27 +797,37 @@ fn wab_relay_default_matches_np21w() {
 }
 
 #[test]
-fn port_31_reads_sdip_front_bank_regardless_of_bank_select() {
+fn port_31_synthesizes_dip_switch_2_from_sdip_on_pc9821() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
 
-    // Port 0x31 should always read SDIP front bank register 1.
-    // Default front bank register 1 = 0xE3 (GDC 2.5 MHz, HDD, 25 lines, 80 cols).
-    assert_eq!(bus.io_read_byte(0x31), 0xE3);
+    // Port 0x31 synthesizes DIP switch 2 from SDIP front bank registers:
+    //   bits {7,6,5,3,2,1,0} from register 1 (0x851E)
+    //   bit 4 (memsw init) from register 3 (0x871E) bit 5
+    //
+    // Defaults: SDIP[1]=0xE3, SDIP[3]=0x2C (bit 5 set).
+    // Result: (0xE3 & 0xEF) | ((0x2C & 0x20) >> 1) = 0xE3 | 0x10 = 0xF3.
+    assert_eq!(bus.io_read_byte(0x31), 0xF3);
 
-    // Write a known value to front bank SDIP port 0x851E (register 1).
+    // Write to SDIP register 1: verify port 0x31 uses bits from reg1 except bit 4.
     bus.io_write_byte(0x851E, 0x42);
+    // (0x42 & 0xEF) | ((0x2C & 0x20) >> 1) = 0x42 | 0x10 = 0x52
+    assert_eq!(bus.io_read_byte(0x31), 0x52);
+
+    // Clear register 3 bit 5 (memsw init = OFF): port 0x31 bit 4 should go low.
+    bus.io_write_byte(0x871E, 0x00);
+    // (0x42 & 0xEF) | ((0x00 & 0x20) >> 1) = 0x42 | 0x00 = 0x42
     assert_eq!(bus.io_read_byte(0x31), 0x42);
 
     // Switch to back bank via port 0x8F1F.
     bus.io_write_byte(0x8F1F, 0xC0);
 
-    // Port 0x31 must still return the front bank value.
+    // Port 0x31 must still return the front bank synthesis, not the back bank.
     assert_eq!(bus.io_read_byte(0x31), 0x42);
 
     // Write to back bank register 1 via SDIP port 0x851E.
     bus.io_write_byte(0x851E, 0x99);
 
-    // Port 0x31 must still return the front bank value, not the back bank.
+    // Port 0x31 must still reflect the front bank value.
     assert_eq!(bus.io_read_byte(0x31), 0x42);
 
     // Switch back to front bank and verify SDIP port 0x851E shows front value.
