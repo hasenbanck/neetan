@@ -74,11 +74,19 @@ const STEP_FRAMES: usize = 240;
 /// Bytes per stereo frame: 2 channels * 4 bytes per f32.
 const BYTES_PER_FRAME: i32 = 8;
 
+/// Number of stereo frames over which to fade in/out (250 ms at 48 kHz).
+const FADE_FRAMES: u32 = 12_000;
+
 /// Streams audio samples from the emulated machine to the host sound device.
 pub struct AudioEngine {
     stream: AudioStreamOwner,
     sample_buffer: Vec<f32>,
+    silence_buffer: Vec<f32>,
     volume: f32,
+    /// Remaining stereo frames to fade out (counts down to 0, then SDL3 pauses).
+    fade_out_remaining: u32,
+    /// Remaining stereo frames to fade in (counts down to 0).
+    fade_in_remaining: u32,
 }
 
 impl AudioEngine {
@@ -114,7 +122,10 @@ impl AudioEngine {
         Ok(Self {
             stream,
             sample_buffer: vec![0.0; STEP_FRAMES * 2],
+            silence_buffer: vec![0.0; TARGET_BUFFER_FRAMES * 2],
             volume,
+            fade_out_remaining: 0,
+            fade_in_remaining: 0,
         })
     }
 
@@ -145,21 +156,31 @@ impl AudioEngine {
         STEP_FRAMES as u32
     }
 
-    /// Pauses audio playback.
-    pub fn pause(&self) {
-        let _ = self.stream.pause();
+    /// Begins a fade-out. The SDL3 device is paused once the fade completes
+    /// inside [`push_samples`].
+    pub fn pause(&mut self) {
+        self.fade_out_remaining = FADE_FRAMES;
+        self.fade_in_remaining = 0;
     }
 
-    /// Resumes audio playback.
-    pub fn resume(&self) {
-        let _ = self.stream.resume();
+    /// Resumes audio playback with a fade-in to prevent pops.
+    pub fn resume(&mut self) {
+        if self.fade_out_remaining > 0 {
+            // Fade-out was still in progress; cancel it.
+            self.fade_out_remaining = 0;
+        } else {
+            // Device was actually paused; restart it.
+            let _ = self.stream.clear();
+            let _ = self.stream.put_data_f32(&self.silence_buffer);
+            let _ = self.stream.resume();
+        }
+        self.fade_in_remaining = FADE_FRAMES;
     }
 
     /// Discards all queued audio and re-fills the buffer with silence.
     pub fn reset_buffer(&mut self) {
         let _ = self.stream.clear();
-        let silence = vec![0.0f32; TARGET_BUFFER_FRAMES * 2];
-        let _ = self.stream.put_data_f32(&silence);
+        let _ = self.stream.put_data_f32(&self.silence_buffer);
     }
 
     /// Drains pending audio samples from the machine and pushes them to the audio stream.
@@ -172,8 +193,45 @@ impl AudioEngine {
                 .iter_mut()
                 .for_each(|sample| *sample = fast_tanh(*sample));
 
+            let frames = written / 2;
+            let was_fading_out = self.fade_out_remaining > 0;
+
+            // Apply fade-out ramp toward pause.
+            if was_fading_out {
+                for i in 0..frames {
+                    if self.fade_out_remaining > 0 {
+                        self.fade_out_remaining -= 1;
+                        let gain = self.fade_out_remaining as f32 / FADE_FRAMES as f32;
+                        self.sample_buffer[i * 2] *= gain;
+                        self.sample_buffer[i * 2 + 1] *= gain;
+                    } else {
+                        self.sample_buffer[i * 2] = 0.0;
+                        self.sample_buffer[i * 2 + 1] = 0.0;
+                    }
+                }
+            }
+
+            // Apply fade-in ramp after resume.
+            if self.fade_in_remaining > 0 {
+                for i in 0..frames {
+                    if self.fade_in_remaining > 0 {
+                        let gain = 1.0 - self.fade_in_remaining as f32 / FADE_FRAMES as f32;
+                        self.sample_buffer[i * 2] *= gain;
+                        self.sample_buffer[i * 2 + 1] *= gain;
+                        self.fade_in_remaining -= 1;
+                    }
+                }
+            }
+
             if let Err(error) = self.stream.put_data_f32(&self.sample_buffer[..written]) {
                 warn!("Audio stream put_data_f32 failed: {error}");
+            }
+
+            // Once the fade-out completes, pause the SDL3 device.
+            if was_fading_out && self.fade_out_remaining == 0 {
+                let _ = self.stream.clear();
+                let _ = self.stream.put_data_f32(&self.silence_buffer);
+                let _ = self.stream.pause();
             }
         } else {
             warn!("Empty audio generation");
