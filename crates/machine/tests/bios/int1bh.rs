@@ -2133,45 +2133,33 @@ fn int1bh_sasi_format_ra() {
 
 // 2DD (DA=0x70) is not supported on VM/VX/RA - returns error 0x40.
 
-const DA_FDD_2DD_UNSUPPORTED: u8 = 0x70;
+const DA_FDD_640KB_DRIVE0: u8 = 0x70;
 
 #[test]
-fn int1bh_fdd_2dd_sense_vm() {
+fn int1bh_fdd_640kb_sense_vm() {
     let disk = make_standard_2hd_disk(false);
-    let code = make_int1bh_simple(0x04, DA_FDD_2DD_UNSUPPORTED);
+    let code = make_int1bh_simple(0x04, DA_FDD_640KB_DRIVE0);
     let machine = boot_and_run_fdd_vm(&code, Some((0, disk)), INT1BH_BUDGET);
     let state = machine.save_state();
-    let ah = (read_ram_u16(&state.memory.ram, RESULT as usize) >> 8) as u8;
-    assert_eq!(
-        ah, 0x40,
-        "INT 1Bh with DA=0x70 (2DD) should return 0x40 (unsupported device type)"
-    );
+    assert_result_ah(&state.memory.ram, 0x01, "DA=0x70 (640KB) sense");
 }
 
 #[test]
-fn int1bh_fdd_2dd_sense_vx() {
+fn int1bh_fdd_640kb_sense_vx() {
     let disk = make_standard_2hd_disk(false);
-    let code = make_int1bh_simple(0x04, DA_FDD_2DD_UNSUPPORTED);
+    let code = make_int1bh_simple(0x04, DA_FDD_640KB_DRIVE0);
     let machine = boot_and_run_fdd_vx(&code, Some((0, disk)), INT1BH_BUDGET);
     let state = machine.save_state();
-    let ah = (read_ram_u16(&state.memory.ram, RESULT as usize) >> 8) as u8;
-    assert_eq!(
-        ah, 0x40,
-        "INT 1Bh with DA=0x70 (2DD) should return 0x40 (unsupported device type)"
-    );
+    assert_result_ah(&state.memory.ram, 0x01, "DA=0x70 (640KB) sense");
 }
 
 #[test]
-fn int1bh_fdd_2dd_sense_ra() {
+fn int1bh_fdd_640kb_sense_ra() {
     let disk = make_standard_2hd_disk(false);
-    let code = make_int1bh_simple(0x04, DA_FDD_2DD_UNSUPPORTED);
+    let code = make_int1bh_simple(0x04, DA_FDD_640KB_DRIVE0);
     let machine = boot_and_run_fdd_ra(&code, Some((0, disk)), INT1BH_BUDGET);
     let state = machine.save_state();
-    let ah = (read_ram_u16(&state.memory.ram, RESULT as usize) >> 8) as u8;
-    assert_eq!(
-        ah, 0x40,
-        "INT 1Bh with DA=0x70 (2DD) should return 0x40 (unsupported device type)"
-    );
+    assert_result_ah(&state.memory.ram, 0x01, "DA=0x70 (640KB) sense");
 }
 
 // ============================================================================

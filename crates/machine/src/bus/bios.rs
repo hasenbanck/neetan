@@ -1833,8 +1833,8 @@ impl<T: Tracing> Pc9801Bus<T> {
         match devtype {
             // SASI/IDE: DA high nibble 0x80 or 0x00.
             0x80 | 0x00 => self.int1bh_hdd(cpu, function),
-            // FDD: DA high nibble 0x90/0x10 (1MB/2HD) or 0x30/0xB0 (2DD).
-            0x90 | 0x10 | 0x30 | 0xB0 => self.int1bh_fdd(cpu, function),
+            // FDD: all known DA high nibbles for 1MB, 640KB, and 320KB FDCs.
+            0x90 | 0x10 | 0x30 | 0xB0 | 0x70 | 0xF0 | 0x50 => self.int1bh_fdd(cpu, function),
             _ => self.write_result_ah_cf(cpu, 0x40),
         }
     }
@@ -1886,10 +1886,8 @@ impl<T: Tracing> Pc9801Bus<T> {
                     if self.floppy.is_write_protected(drive) {
                         result |= 0x10;
                     }
-                    // 2HD (1MB) access: bit 0 = disk present.
-                    if cpu.al() & 0x80 != 0 {
-                        result |= 0x01;
-                    }
+                    // Bit 0 = disk present.
+                    result |= 0x01;
                     // Report dual-mode drive (1MB/640KB) for extended sense.
                     if (cpu.ax() & 0x8F40) == 0x8400 {
                         result |= 0x08;
@@ -2708,15 +2706,21 @@ impl<T: Tracing> Pc9801Bus<T> {
                 && let Some(data) = self.floppy.read_sector_data(drive, 0, 0, 0, 1, n)
             {
                 let boot_data: Vec<u8> = data.to_vec();
-                // Use 0x90 (1MB/2HD) or 0x30 (2DD) based on the disk's media type
-                // so boot sector code can determine the correct sector size.
-                let da_base = if let Some(disk) = self.floppy.drive(drive)
-                    && disk.media_type != D88MediaType::Disk2HD
-                {
-                    0x30
-                } else {
-                    0x90
-                };
+                let is_2hd = self
+                    .floppy
+                    .drive(drive)
+                    .is_some_and(|d| d.media_type == D88MediaType::Disk2HD);
+                // Use DA=0x90 (1MB/2HD) or DA=0x70 (640KB/2DD) based on
+                // the disk's media type, matching what the real BIOS sets.
+                let da_base: usize = if is_2hd { 0x90 } else { 0x70 };
+                if !is_2hd {
+                    // Move this drive from 1MB FDD (055Ch bits 0-3) to
+                    // 640KB FDD (055Dh bits 4-7) so the DOS device driver
+                    // uses DA=0x70 (640KB) instead of DA=0x90 (1MB).
+                    let mask = 1u8 << drive;
+                    self.memory.state.ram[0x055C] &= !mask;
+                    self.memory.state.ram[0x055D] |= mask << 4;
+                }
                 if self.try_boot_from_data(cpu, &boot_data, (da_base | drive) as u8) {
                     return;
                 }

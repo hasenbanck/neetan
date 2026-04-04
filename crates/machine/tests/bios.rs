@@ -1,4 +1,5 @@
 use common::MachineModel;
+
 macro_rules! boot_to_halt {
     ($machine:expr) => {{
         use common::Cpu as _;
@@ -100,6 +101,49 @@ fn build_2hd_d88(tracks: &TrackList<'_>, write_protected: bool) -> Vec<u8> {
     image
 }
 
+fn build_2dd_d88(tracks: &TrackList<'_>, write_protected: bool) -> Vec<u8> {
+    const HEADER_SIZE: usize = 0x2B0;
+    const SECTOR_HEADER_SIZE: usize = 16;
+
+    let mut image = vec![0u8; HEADER_SIZE];
+    image[..4].copy_from_slice(b"TEST");
+    if write_protected {
+        image[0x1A] = 0x10;
+    }
+    image[0x1B] = 0x10; // 2DD
+
+    for &(cylinder, head, sectors) in tracks {
+        let track_index = (cylinder as usize) * 2 + head as usize;
+        let track_offset = image.len() as u32;
+        let pointer_base = 0x20 + track_index * 4;
+        image[pointer_base..pointer_base + 4].copy_from_slice(&track_offset.to_le_bytes());
+
+        let num_sectors = sectors.len() as u16;
+        for &(record, data) in sectors {
+            let n: u8 = match data.len() {
+                128 => 0,
+                256 => 1,
+                512 => 2,
+                _ => 3,
+            };
+            let mut header = [0u8; SECTOR_HEADER_SIZE];
+            header[0] = cylinder;
+            header[1] = head;
+            header[2] = record;
+            header[3] = n;
+            header[4..6].copy_from_slice(&num_sectors.to_le_bytes());
+            let data_size = data.len() as u16;
+            header[0x0E..0x10].copy_from_slice(&data_size.to_le_bytes());
+            image.extend_from_slice(&header);
+            image.extend_from_slice(data);
+        }
+    }
+
+    let disk_size = image.len() as u32;
+    image[0x1C..0x20].copy_from_slice(&disk_size.to_le_bytes());
+    image
+}
+
 fn make_halt_boot_disk() -> FloppyImage {
     let mut boot_sector = vec![0u8; 1024];
     boot_sector[0] = 0xFA; // CLI
@@ -108,6 +152,16 @@ fn make_halt_boot_disk() -> FloppyImage {
     let tracks = &[(0, 0, sectors)];
     let d88 = build_2hd_d88(tracks, false);
     FloppyImage::from_d88_bytes(&d88).expect("halt boot disk")
+}
+
+fn make_halt_boot_disk_2dd() -> FloppyImage {
+    let mut boot_sector = vec![0u8; 512];
+    boot_sector[0] = 0xFA; // CLI
+    boot_sector[1] = 0xF4; // HLT
+    let sectors: &[(u8, &[u8])] = &[(1, &boot_sector)];
+    let tracks = &[(0, 0, sectors)];
+    let d88 = build_2dd_d88(tracks, false);
+    FloppyImage::from_d88_bytes(&d88).expect("halt boot disk 2dd")
 }
 
 fn make_halt_boot_hdd() -> HddImage {
@@ -247,9 +301,6 @@ fn create_machine_vm() -> Pc9801Vm {
         cpu::V30::new(),
         machine::Pc9801Bus::new(MachineModel::PC9801VM, 48000),
     );
-    // machine
-    //     .bus
-    //     .load_bios_rom(include_bytes!("PATH_TO_REAL_ROM"));
     machine.bus.load_font_rom(FONT_ROM_DATA);
     machine
 }
@@ -259,9 +310,6 @@ fn create_machine_vx() -> Pc9801Vx {
         cpu::I286::new(),
         machine::Pc9801Bus::new(MachineModel::PC9801VX, 48000),
     );
-    // machine
-    //     .bus
-    //     .load_bios_rom(include_bytes!("PATH_TO_REAL_ROM"));
     machine.bus.load_font_rom(FONT_ROM_DATA);
     machine
 }
@@ -271,9 +319,6 @@ fn create_machine_ra() -> Pc9801Ra {
         cpu::I386::new(),
         machine::Pc9801Bus::new(MachineModel::PC9801RA, 48000),
     );
-    // machine
-    //     .bus
-    //     .load_bios_rom(include_bytes!("PATH_TO_REAL_ROM"));
     machine.bus.load_font_rom(FONT_ROM_DATA);
     machine
 }
