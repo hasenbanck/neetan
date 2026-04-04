@@ -1345,3 +1345,81 @@ fn post_bios_state_pc9821as_ide() {
 
     report_failures(&f, "PC9821AS+IDE");
 }
+
+macro_rules! boot_2dd_to_halt {
+    ($machine:expr) => {{
+        use common::Cpu as _;
+        let disk = $crate::make_halt_boot_disk_2dd();
+        $machine.bus.insert_floppy(0, disk, None);
+
+        const MAX_CYCLES: u64 = 500_000_000;
+        const CHECK_INTERVAL: u64 = 1_000_000;
+
+        let mut total_cycles = 0u64;
+        loop {
+            total_cycles += $machine.run_for(CHECK_INTERVAL);
+            if $machine.cpu.halted() {
+                break;
+            }
+            assert!(
+                total_cycles < MAX_CYCLES,
+                "Machine did not halt within {} cycles",
+                MAX_CYCLES
+            );
+        }
+        total_cycles
+    }};
+}
+
+#[test]
+fn hle_bootstrap_2dd_sets_640kb_boot_device_vm() {
+    let mut machine = super::create_machine_vm();
+    boot_2dd_to_halt!(machine);
+    let state = machine.save_state();
+    // Boot device should be 0x70 (640KB FDC) for a 2DD disk.
+    assert_eq!(state.memory.ram[0x0584], 0x70, "2DD boot device");
+    // DISK_EQUIP: drive 0 should be in 640KB FDD (055Dh bit 4), not 1MB (055Ch bit 0).
+    assert_eq!(
+        state.memory.ram[0x055C] & 0x01,
+        0x00,
+        "Drive 0 should not be in 1MB DISK_EQUIP"
+    );
+    assert_ne!(
+        state.memory.ram[0x055D] & 0x10,
+        0x00,
+        "Drive 0 should be in 640KB DISK_EQUIP"
+    );
+}
+
+#[test]
+fn hle_bootstrap_2dd_sets_640kb_boot_device_vx() {
+    let mut machine = super::create_machine_vx();
+    boot_2dd_to_halt!(machine);
+    let state = machine.save_state();
+    assert_eq!(state.memory.ram[0x0584], 0x70, "2DD boot device");
+    assert_eq!(
+        state.memory.ram[0x055C] & 0x01,
+        0x00,
+        "Drive 0 should not be in 1MB DISK_EQUIP"
+    );
+    assert_ne!(
+        state.memory.ram[0x055D] & 0x10,
+        0x00,
+        "Drive 0 should be in 640KB DISK_EQUIP"
+    );
+}
+
+#[test]
+fn hle_bootstrap_2hd_keeps_1mb_boot_device_vx() {
+    let mut machine = super::create_machine_vx();
+    boot_to_halt!(machine);
+    let state = machine.save_state();
+    // 2HD disk (the default halt boot disk) should use DA=0x90 (1MB FDC).
+    assert_eq!(state.memory.ram[0x0584], 0x90, "2HD boot device");
+    // DISK_EQUIP: drive 0 should remain in 1MB FDD (055Ch bit 0).
+    assert_ne!(
+        state.memory.ram[0x055C] & 0x01,
+        0x00,
+        "Drive 0 should be in 1MB DISK_EQUIP"
+    );
+}
