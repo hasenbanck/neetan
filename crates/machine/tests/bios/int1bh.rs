@@ -2424,13 +2424,6 @@ fn assert_fdd_da_accepted(da: u8, label: &str) {
 }
 
 /// Verify rejected FDD device type codes return error 0x40.
-fn assert_fdd_da_rejected(da: u8, label: &str) {
-    let code = make_int1bh_simple(0x00, da);
-    let (machine, _) = boot_and_run_vm(&code, &[], INT1BH_BUDGET);
-    let state = machine.save_state();
-    assert_result_ah(&state.memory.ram, 0x40, label);
-}
-
 #[test]
 fn int1bh_fdd_da_type_90_accepted() {
     assert_fdd_da_accepted(DA_FDD_1MB_DRIVE0, "DA=0x90 (1MB 2HD)");
@@ -2442,13 +2435,13 @@ fn int1bh_fdd_da_type_10_accepted() {
 }
 
 #[test]
-fn int1bh_fdd_da_type_30_rejected() {
-    assert_fdd_da_rejected(DA_FDD_2DD_DRIVE0, "DA=0x30 (2DD)");
+fn int1bh_fdd_da_type_30_accepted() {
+    assert_fdd_da_accepted(DA_FDD_2DD_DRIVE0, "DA=0x30 (2DD)");
 }
 
 #[test]
-fn int1bh_fdd_da_type_b0_rejected() {
-    assert_fdd_da_rejected(DA_FDD_TYPE_B0_DRIVE0, "DA=0xB0");
+fn int1bh_fdd_da_type_b0_accepted() {
+    assert_fdd_da_accepted(DA_FDD_TYPE_B0_DRIVE0, "DA=0xB0");
 }
 
 /// Verify WRITE+READ with seek+MFM to a non-zero cylinder.

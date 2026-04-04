@@ -6,7 +6,7 @@
 //! restores AX/DX from the stack before dispatching to the handler.
 
 use common::{Cpu, MachineModel};
-use device::{i8253_pit::PIT_FLAG_I, upd7220_gdc::GdcScrollPartition};
+use device::{floppy::D88MediaType, i8253_pit::PIT_FLAG_I, upd7220_gdc::GdcScrollPartition};
 
 use super::Pc9801Bus;
 use crate::{memory::Pc9801Memory, trace::Tracing};
@@ -1833,8 +1833,8 @@ impl<T: Tracing> Pc9801Bus<T> {
         match devtype {
             // SASI/IDE: DA high nibble 0x80 or 0x00.
             0x80 | 0x00 => self.int1bh_hdd(cpu, function),
-            // FDD 1MB channel (2HD): DA high nibble 0x90 or 0x10.
-            0x90 | 0x10 => self.int1bh_fdd(cpu, function),
+            // FDD: DA high nibble 0x90/0x10 (1MB/2HD) or 0x30/0xB0 (2DD).
+            0x90 | 0x10 | 0x30 | 0xB0 => self.int1bh_fdd(cpu, function),
             _ => self.write_result_ah_cf(cpu, 0x40),
         }
     }
@@ -2701,14 +2701,23 @@ impl<T: Tracing> Pc9801Bus<T> {
         // Boot order: FDD -> CD-ROM (IDE only) -> SASI HDD -> IDE HDD.
 
         // 1. FDD 0-3: determine sector size (N) from the actual first sector on track 0
-        //    to handle both 2HD (N=3, 1024B) and 2DD (N=1, 256B) disks.
+        //    to handle both 2HD (N=3, 1024B) and 2DD (N=2, 512B) disks.
         for drive in 0..4usize {
             if self.floppy.has_drive(drive)
                 && let Some(n) = self.floppy.boot_sector_size_code(drive)
                 && let Some(data) = self.floppy.read_sector_data(drive, 0, 0, 0, 1, n)
             {
                 let boot_data: Vec<u8> = data.to_vec();
-                if self.try_boot_from_data(cpu, &boot_data, (0x90 | drive) as u8) {
+                // Use 0x90 (1MB/2HD) or 0x30 (2DD) based on the disk's media type
+                // so boot sector code can determine the correct sector size.
+                let da_base = if let Some(disk) = self.floppy.drive(drive)
+                    && disk.media_type != D88MediaType::Disk2HD
+                {
+                    0x30
+                } else {
+                    0x90
+                };
+                if self.try_boot_from_data(cpu, &boot_data, (da_base | drive) as u8) {
                     return;
                 }
             }
