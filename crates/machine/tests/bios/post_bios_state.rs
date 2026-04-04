@@ -390,7 +390,6 @@ fn post_bios_state_vm() {
     // === Beeper ===
     check_false!(f, state.beeper.buzzer_enabled, "Beeper disabled");
     check!(f, state.beeper.pit_reload, 1229, "Beeper PIT reload");
-    check!(f, state.beeper.sample_rate, 48000, "Beeper sample rate");
 
     // === Mouse PPI ===
     check!(f, state.mouse_ppi.mode, 0x93, "Mouse PPI mode");

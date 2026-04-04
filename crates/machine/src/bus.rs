@@ -596,7 +596,7 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// event kinds instead of `FmTimerA`/`FmTimerB` (for dual-board configurations
     /// where the 86 board uses the primary timer events).
     pub fn install_soundboard_26k(&mut self, alternate_timers: bool) {
-        let sample_rate = self.beeper.state.sample_rate;
+        let sample_rate = self.clocks.sample_rate;
         self.soundboard_26k = Some(Soundboard26k::new(
             self.clocks.cpu_clock_hz,
             sample_rate,
@@ -612,7 +612,7 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// When installed, the 86 board replaces the 26K for FM/SSG ports
     /// and adds extended register and PCM86 ports.
     pub fn install_soundboard_86(&mut self, rhythm_rom: Option<&[u8]>, adpcm_ram: bool) {
-        let sample_rate = self.beeper.state.sample_rate;
+        let sample_rate = self.clocks.sample_rate;
         self.soundboard_86 = Some(Soundboard86::new(
             self.clocks.cpu_clock_hz,
             sample_rate,
@@ -633,7 +633,7 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// The SB16 uses completely different I/O ports (base + 0x2000 range)
     /// and can coexist with the NEC 26K/86 boards.
     pub fn install_sound_blaster_16(&mut self) {
-        let sample_rate = self.beeper.state.sample_rate;
+        let sample_rate = self.clocks.sample_rate;
         self.sound_blaster_16 = Some(SoundBlaster16::new(self.clocks.cpu_clock_hz, sample_rate));
     }
 
@@ -1153,6 +1153,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             self.current_cycle,
             self.clocks.cpu_clock_hz,
             self.clocks.pit_clock_hz,
+            self.clocks.sample_rate,
             volume,
             output,
         );
@@ -1298,7 +1299,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             sb26k.load_state(
                 saved,
                 self.clocks.cpu_clock_hz,
-                state.beeper.sample_rate,
+                state.clocks.sample_rate,
                 state.current_cycle,
             );
         }
@@ -1306,7 +1307,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             sb86.load_state(
                 saved,
                 self.clocks.cpu_clock_hz,
-                state.beeper.sample_rate,
+                state.clocks.sample_rate,
                 state.current_cycle,
                 None,
             );
@@ -1315,7 +1316,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             sb16.load_state(
                 saved,
                 self.clocks.cpu_clock_hz,
-                state.beeper.sample_rate,
+                state.clocks.sample_rate,
                 state.current_cycle,
             );
         }
