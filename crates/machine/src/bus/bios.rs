@@ -2624,16 +2624,19 @@ impl<T: Tracing> Pc9801Bus<T> {
         let iret_base = iret_stack_base(cpu);
         self.write_mem_word(iret_base, 0x0000); // IP
         self.write_mem_word(iret_base + 2, 0x1FC0); // CS
+        self.write_mem_word(iret_base + 4, 0x0002); // FLAGS (reserved bit 1 set)
         true
     }
 
     fn hle_bootstrap(&mut self, cpu: &mut impl Cpu) {
         // The HLE dispatch uses IRET to transfer control to the boot sector.
         // We rewrite the IRET frame (6 bytes: IP, CS, FLAGS) at the current
-        // SP to redirect execution. SP=0x05FC places the frame at 0x05FC-0x0601,
-        // above F2HD_POINTER (0x05F8-0x05FB) which would be clobbered at 0x05FA.
-        // After IRET, SP becomes 0x0602.
-        cpu.set_sp(0x05FC);
+        // SP to redirect execution. SP is left at its current value (set to
+        // 0x7C00 by the ITF entry stub). After IRET, SP becomes SP+6.
+        //
+        // The stack must NOT be placed near 0x0600 because boot sectors
+        // commonly load program data to segment 0060:0000 (linear 0x0600),
+        // which would overwrite return addresses on the stack.
 
         // Initialize SASI drives before boot attempt (equivalent of INT 1Bh AH=03).
         for hdd in 0..2usize {
