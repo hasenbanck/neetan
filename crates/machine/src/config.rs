@@ -5,4 +5,6 @@ pub struct ClockConfig {
     pub cpu_clock_hz: u32,
     /// PIT clock frequency in Hz.
     pub pit_clock_hz: u32,
+    /// Audio output sample rate in Hz.
+    pub sample_rate: u32,
 }

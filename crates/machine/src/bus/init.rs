@@ -167,6 +167,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         let clocks = ClockConfig {
             cpu_clock_hz: machine_model.cpu_clock_hz(),
             pit_clock_hz: machine_model.pit_clock_hz(),
+            sample_rate,
         };
         let is_8mhz_lineage = machine_model.is_8mhz_pit_lineage();
 
@@ -197,7 +198,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             soundboard_26k: None,
             soundboard_86: None,
             sound_blaster_16: None,
-            beeper: Beeper::new(sample_rate),
+            beeper: Beeper::new(),
             rtc: Upd4990aRtc::new(),
             host_local_time_fn: default_local_time,
             mpu_pc98ii: MpuPc98ii::new(),

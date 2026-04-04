@@ -47,8 +47,6 @@ pub struct BeeperState {
     pub frame_start_cycle: u64,
     /// Fractional sample remainder carried across frames.
     pub sample_remainder: SampleRemainder,
-    /// Audio sample rate in Hz.
-    pub sample_rate: u32,
 }
 
 struct BuzzerTransition {
@@ -89,9 +87,15 @@ impl DerefMut for Beeper {
     }
 }
 
+impl Default for Beeper {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Beeper {
-    /// Creates a new beeper in the muted state with the given audio sample rate.
-    pub fn new(sample_rate: u32) -> Self {
+    /// Creates a new beeper in the muted state.
+    pub fn new() -> Self {
         Self {
             state: BeeperState {
                 buzzer_enabled: false,
@@ -99,7 +103,6 @@ impl Beeper {
                 pit_last_load_cycle: 0,
                 frame_start_cycle: 0,
                 sample_remainder: SampleRemainder::default(),
-                sample_rate,
             },
             pre_frame_buzzer: false,
             pre_frame_pit_reload: 0,
@@ -135,16 +138,15 @@ impl Beeper {
     ///
     /// Covers the interval `[frame_start_cycle, frame_end_cycle)`. After
     /// generation, advances `frame_start_cycle` and clears transition logs.
-    #[allow(clippy::needless_range_loop)]
     pub fn generate_samples(
         &mut self,
         frame_end_cycle: u64,
         cpu_clock_hz: u32,
         pit_clock_hz: u32,
+        sample_rate: u32,
         volume: f32,
         output: &mut [f32],
     ) -> usize {
-        let sample_rate = self.state.sample_rate;
         let frame_start = self.state.frame_start_cycle;
         let frame_cycles = frame_end_cycle.saturating_sub(frame_start);
         if frame_cycles == 0 || sample_rate == 0 {
