@@ -461,8 +461,9 @@ fn post_bios_state_vm() {
     // === Memory: Conventional RAM zeroed ===
     check_true!(
         f,
-        state.memory.ram[0x1000..0x1FC00].iter().all(|&b| b == 0),
-        "Conventional RAM zeroed"
+        state.memory.ram[0x1000..0x7C00].iter().all(|&b| b == 0)
+            && state.memory.ram[0x7C06..0x1FC00].iter().all(|&b| b == 0),
+        "Conventional RAM zeroed (excluding IRET frame at 0x7C00)"
     );
     check!(
         f,
@@ -765,8 +766,9 @@ fn post_bios_state_vx() {
     // === Memory: Conventional RAM zeroed ===
     check_true!(
         f,
-        state.memory.ram[0x1000..0x1FC00].iter().all(|&b| b == 0),
-        "Conventional RAM zeroed"
+        state.memory.ram[0x1000..0x7C00].iter().all(|&b| b == 0)
+            && state.memory.ram[0x7C06..0x1FC00].iter().all(|&b| b == 0),
+        "Conventional RAM zeroed (excluding IRET frame at 0x7C00)"
     );
     check!(
         f,
@@ -1036,8 +1038,9 @@ fn post_bios_state_ra() {
     // === Memory: Conventional RAM zeroed ===
     check_true!(
         f,
-        state.memory.ram[0x1000..0x1FC00].iter().all(|&b| b == 0),
-        "Conventional RAM zeroed"
+        state.memory.ram[0x1000..0x7C00].iter().all(|&b| b == 0)
+            && state.memory.ram[0x7C06..0x1FC00].iter().all(|&b| b == 0),
+        "Conventional RAM zeroed (excluding IRET frame at 0x7C00)"
     );
     check!(
         f,
