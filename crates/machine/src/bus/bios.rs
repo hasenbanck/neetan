@@ -2714,12 +2714,21 @@ impl<T: Tracing> Pc9801Bus<T> {
                 // the disk's media type, matching what the real BIOS sets.
                 let da_base: usize = if is_2hd { 0x90 } else { 0x70 };
                 if !is_2hd {
-                    // Move this drive from 1MB FDD (055Ch bits 0-3) to
-                    // 640KB FDD (055Dh bits 4-7) so the DOS device driver
-                    // uses DA=0x70 (640KB) instead of DA=0x90 (1MB).
-                    let mask = 1u8 << drive;
-                    self.memory.state.ram[0x055C] &= !mask;
-                    self.memory.state.ram[0x055D] |= mask << 4;
+                    // The dual-mode FDC switches to 640KB mode for 2DD
+                    // media. Move ALL equipped drives from the 1MB FDD
+                    // section (055Ch bits 0-3) to the 640KB FDD section
+                    // (055Dh bits 4-7) so the DOS device driver uses
+                    // DA=0x70 (640KB) instead of DA=0x90 (1MB).
+                    let equipped = self.floppy.fdc_1mb().state.drive_equipped & 0x0F;
+                    self.memory.state.ram[0x055C] &= !equipped;
+                    self.memory.state.ram[0x055D] |= equipped << 4;
+
+                    // DISK_EQUIP2 (0494h): the equipped drives remain
+                    // accessible on the 1MB interface as external units
+                    // 2-3 (DA/UA F2h-F3h). Bits 7-4 indicate units 3-0
+                    // connected. Internal drives 0,1 map to units 2,3.
+                    // Ref: undoc98 memsys.txt (0000:0494h DISK_EQUIP2)
+                    self.memory.state.ram[0x0494] = (equipped & 0x03) << 6;
                 }
                 if self.try_boot_from_data(cpu, &boot_data, (da_base | drive) as u8) {
                     return;
