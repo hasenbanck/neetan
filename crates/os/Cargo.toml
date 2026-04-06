@@ -1,0 +1,16 @@
+[package]
+name = "os"
+version = "0.1.0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+common = { workspace = true }
+
+[dev-dependencies]
+cpu = { workspace = true }
+device = { workspace = true }
+machine = { workspace = true }

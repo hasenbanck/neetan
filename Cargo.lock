@@ -173,6 +173,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "os"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "cpu",
+ "device",
+ "machine",
+]
+
+[[package]]
 name = "pkg-config"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"

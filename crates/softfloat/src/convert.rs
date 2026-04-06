@@ -198,7 +198,7 @@ impl Fp80 {
             return Fp80::from_bits(sign_bit | new_exp as u16, normalized_sig);
         }
 
-        let new_exp = biased_exp as u16 - 127 + 16383;
+        let new_exp = biased_exp as u16 + (16383 - 127);
         let significand = (1u64 << 63) | ((fraction as u64) << 40);
         Fp80::from_bits(sign_bit | new_exp, significand)
     }
