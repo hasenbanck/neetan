@@ -4,21 +4,21 @@ use common::{DisplaySnapshotUpload, JisChar, StackVec, cast_u32_slice_as_bytes_m
 
 const VISIBLE_ITEMS: usize = 19;
 const COLS: usize = 80;
-const FILENAME_MAX_COLS: usize = 72;
+const FILENAME_MAX_COLS: usize = 74;
 
 const ATTR_WHITE: u8 = (7 << 5) | 0x01;
 const ATTR_WHITE_REVERSE: u8 = (7 << 5) | 0x01 | 0x04;
 const ATTR_CYAN: u8 = (5 << 5) | 0x01;
 const ATTR_CYAN_REVERSE: u8 = (5 << 5) | 0x01 | 0x04;
 
-const BOX_HORIZONTAL: JisChar = JisChar::from_u16(0x2821);
-const BOX_VERTICAL: JisChar = JisChar::from_u16(0x2822);
-const BOX_TOP_LEFT: JisChar = JisChar::from_u16(0x2823);
-const BOX_TOP_RIGHT: JisChar = JisChar::from_u16(0x2824);
-const BOX_BOTTOM_RIGHT: JisChar = JisChar::from_u16(0x2825);
-const BOX_BOTTOM_LEFT: JisChar = JisChar::from_u16(0x2826);
-const BOX_T_LEFT: JisChar = JisChar::from_u16(0x2827);
-const BOX_T_RIGHT: JisChar = JisChar::from_u16(0x2829);
+const BOX_HORIZONTAL: JisChar = JisChar::from_u16(0x2B24);
+const BOX_VERTICAL: JisChar = JisChar::from_u16(0x2B26);
+const BOX_TOP_LEFT: JisChar = JisChar::from_u16(0x2B30);
+const BOX_TOP_RIGHT: JisChar = JisChar::from_u16(0x2B34);
+const BOX_BOTTOM_RIGHT: JisChar = JisChar::from_u16(0x2B3C);
+const BOX_BOTTOM_LEFT: JisChar = JisChar::from_u16(0x2B38);
+const BOX_T_LEFT: JisChar = JisChar::from_u16(0x2B40);
+const BOX_T_RIGHT: JisChar = JisChar::from_u16(0x2B48);
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum MediaType {
@@ -218,9 +218,25 @@ fn draw_ank_str(
     }
 }
 
-/// Draws a horizontal border line using full-width box-drawing characters.
+/// Writes a half-width JIS character (rows 0x29-0x2B) into a single VRAM column.
+fn write_halfwidth_cell(
+    snapshot: &mut DisplaySnapshotUpload,
+    row: usize,
+    col: usize,
+    jis: JisChar,
+    attr: u8,
+) {
+    let offset = (row * COLS + col) * 2;
+    let (even, odd) = jis.to_vram_bytes();
+    write_vram_byte(snapshot, offset, even);
+    write_vram_byte(snapshot, offset + 1, odd);
+    write_vram_byte(snapshot, 0x2000 + offset, attr);
+    write_vram_byte(snapshot, 0x2000 + offset + 1, attr);
+}
+
+/// Draws a horizontal border line using half-width box-drawing characters.
 ///
-/// Layout: left corner (cols 0-1) + 38 horizontal segments (cols 2-77) + right corner (cols 78-79).
+/// Layout: left corner (col 0) + 78 horizontal segments (cols 1-78) + right corner (col 79).
 fn draw_horizontal_line(
     snapshot: &mut DisplaySnapshotUpload,
     row: usize,
@@ -228,18 +244,17 @@ fn draw_horizontal_line(
     right: JisChar,
     attr: u8,
 ) {
-    write_fullwidth_cell(snapshot, row, 0, left, attr);
-    for i in 0..38 {
-        let col = 2 + i * 2;
-        write_fullwidth_cell(snapshot, row, col, BOX_HORIZONTAL, attr);
+    write_halfwidth_cell(snapshot, row, 0, left, attr);
+    for col in 1..79 {
+        write_halfwidth_cell(snapshot, row, col, BOX_HORIZONTAL, attr);
     }
-    write_fullwidth_cell(snapshot, row, 78, right, attr);
+    write_halfwidth_cell(snapshot, row, 79, right, attr);
 }
 
 /// Draws left and right vertical border characters for a content row.
 fn draw_vertical_borders(snapshot: &mut DisplaySnapshotUpload, row: usize, attr: u8) {
-    write_fullwidth_cell(snapshot, row, 0, BOX_VERTICAL, attr);
-    write_fullwidth_cell(snapshot, row, 78, BOX_VERTICAL, attr);
+    write_halfwidth_cell(snapshot, row, 0, BOX_VERTICAL, attr);
+    write_halfwidth_cell(snapshot, row, 79, BOX_VERTICAL, attr);
 }
 
 fn media_title(media_type: &MediaType) -> &'static str {
@@ -283,7 +298,7 @@ fn rebuild_snapshot(
     draw_horizontal_line(snapshot, 0, BOX_TOP_LEFT, BOX_TOP_RIGHT, attr);
 
     draw_vertical_borders(snapshot, 1, attr);
-    draw_jis_string(snapshot, 1, 3, title_jis, attr, 74);
+    draw_jis_string(snapshot, 1, 2, title_jis, attr, 76);
 
     draw_horizontal_line(snapshot, 2, BOX_T_LEFT, BOX_T_RIGHT, attr);
 
@@ -319,16 +334,16 @@ fn rebuild_snapshot(
             (false, false) => ATTR_WHITE,
         };
 
-        for col in 2..78 {
+        for col in 1..79 {
             write_ank_cell(snapshot, row, col, b' ', line_attr);
         }
 
         if is_cursor {
-            draw_ank_str(snapshot, row, 2, " >", line_attr);
+            draw_ank_str(snapshot, row, 1, " >", line_attr);
         }
 
         if display_index == 0 {
-            draw_ank_str(snapshot, row, 4, "<Empty>", line_attr);
+            draw_ank_str(snapshot, row, 3, "<Empty>", line_attr);
         } else {
             let entry = &entries[display_index - 1];
             let jis = &entry.jis_filename;
@@ -338,27 +353,27 @@ fn rebuild_snapshot(
                 draw_jis_string(
                     snapshot,
                     row,
-                    4,
+                    3,
                     &truncated,
                     line_attr,
                     FILENAME_MAX_COLS - 2,
                 );
-                let end_col = 4 + jis_display_width(&truncated);
+                let end_col = 3 + jis_display_width(&truncated);
                 draw_ank_str(snapshot, row, end_col, "..", line_attr);
             } else {
-                draw_jis_string(snapshot, row, 4, jis, line_attr, FILENAME_MAX_COLS);
+                draw_jis_string(snapshot, row, 3, jis, line_attr, FILENAME_MAX_COLS);
             }
         }
 
         if is_loaded {
-            draw_ank_str(snapshot, row, 68, "[loaded]", line_attr);
+            draw_ank_str(snapshot, row, 70, "[loaded]", line_attr);
         }
 
         if i == 0 && can_scroll_up {
-            write_ank_cell(snapshot, row, 77, b'^', line_attr);
+            write_ank_cell(snapshot, row, 78, b'^', line_attr);
         }
         if i == VISIBLE_ITEMS - 1 && can_scroll_down {
-            write_ank_cell(snapshot, row, 77, b'v', line_attr);
+            write_ank_cell(snapshot, row, 78, b'v', line_attr);
         }
     }
 
@@ -368,7 +383,7 @@ fn rebuild_snapshot(
     draw_ank_str(
         snapshot,
         23,
-        3,
+        2,
         "Up/Down:Move  Enter:Select/Eject  ESC:Cancel",
         attr,
     );

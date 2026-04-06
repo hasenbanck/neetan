@@ -68,7 +68,6 @@ fn main() {
     let ank_ctrl_font = load_patch_font(&args.patch_dir, "ank_8x16_ctrl.bit");
     ank_font.merge(&ank_ctrl_font);
 
-    let kanji_28_font = load_patch_font(&args.patch_dir, "kanji_keisen_28.bit");
     let kanji_29_font = load_patch_font(&args.patch_dir, "kanji_hankaku_29.bit");
     let kanji_2a_font = load_patch_font(&args.patch_dir, "kanji_hankaku_2a.bit");
     let kanji_2b_font = load_patch_font(&args.patch_dir, "kanji_hankaku_2b.bit");
@@ -86,7 +85,6 @@ fn main() {
     generate_kanji_16x16(
         &mut v98,
         &kanji_font,
-        &kanji_28_font,
         &kanji_29_font,
         &kanji_2a_font,
         &kanji_2b_font,
@@ -207,7 +205,6 @@ fn patch_fullwidth_row(v98: &mut [u8], code_row: u8, jis_row: u8, font: &BitmapF
 fn generate_kanji_16x16(
     v98: &mut [u8],
     kanji_font: &BitmapFont,
-    kanji_28_font: &BitmapFont,
     kanji_29_font: &BitmapFont,
     kanji_2a_font: &BitmapFont,
     kanji_2b_font: &BitmapFont,
@@ -227,7 +224,6 @@ fn generate_kanji_16x16(
         }
     }
 
-    patch_fullwidth_row(v98, 0x08, 0x28, kanji_28_font);
     patch_hankaku_row(v98, 0x0B, 0x2B, kanji_2b_font);
     patch_fullwidth_row(v98, 0x0C, 0x2C, kanji_2c_font);
     patch_hankaku_row(v98, 0x09, 0x29, kanji_29_font);
