@@ -8,7 +8,10 @@
 use common::{Cpu, MachineModel};
 use device::{floppy::D88MediaType, i8253_pit::PIT_FLAG_I, upd7220_gdc::GdcScrollPartition};
 
-use super::Pc9801Bus;
+use super::{
+    Pc9801Bus,
+    os_adapter::{OsConsoleIo, OsCpuAccess, OsDiskIo, OsMemoryAccess},
+};
 use crate::{memory::Pc9801Memory, trace::Tracing};
 
 const PIT_CLOCK_8MHZ_LINEAGE: u32 = 1_996_800;
@@ -91,6 +94,22 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x1B => self.hle_int1bh(cpu),
             0x1C => self.hle_int1ch(cpu),
             0x1F => self.hle_int1fh(cpu),
+            0x20..=0x2A | 0x2F | 0x33 | 0xDC => {
+                if let Some(mut neetan_os) = self.os.take() {
+                    let mut cpu_access = OsCpuAccess(cpu);
+                    let mut mem_access = OsMemoryAccess(&mut self.memory);
+                    let mut disk_io = OsDiskIo;
+                    let mut console_io = OsConsoleIo;
+                    neetan_os.dispatch(
+                        vector,
+                        &mut cpu_access,
+                        &mut mem_access,
+                        &mut disk_io,
+                        &mut console_io,
+                    );
+                    self.os = Some(neetan_os);
+                }
+            }
             0xD2 => {}
             0xF0 => {
                 if std::mem::take(&mut self.needs_full_reinit) {

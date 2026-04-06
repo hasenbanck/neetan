@@ -123,6 +123,23 @@ int_1ch_handler:    hle_stub 0x1C            ; Timer/Calendar
 int_1fh_handler:    hle_stub 0x1F            ; Extended
 int_d2h_handler:    hle_stub 0xD2            ; Sound BIOS
 
+; --- DOS interrupt handler stubs (routed to NeetanOs when active) ---
+
+int_20h_handler:    hle_stub 0x20            ; DOS: Terminate Program
+int_21h_handler:    hle_stub 0x21            ; DOS: Function Dispatch
+int_22h_handler:    hle_stub 0x22            ; DOS: Terminate Address
+int_23h_handler:    hle_stub 0x23            ; DOS: Ctrl-Break Handler
+int_24h_handler:    hle_stub 0x24            ; DOS: Critical Error Handler
+int_25h_handler:    hle_stub 0x25            ; DOS: Absolute Disk Read
+int_26h_handler:    hle_stub 0x26            ; DOS: Absolute Disk Write
+int_27h_handler:    hle_stub 0x27            ; DOS: Terminate and Stay Resident
+int_28h_handler:    hle_stub 0x28            ; DOS: Idle
+int_29h_handler:    hle_stub 0x29            ; DOS: Fast Console Output
+int_2ah_handler:    hle_stub 0x2A            ; DOS: Network / Critical Section
+int_2fh_handler:    hle_stub 0x2F            ; DOS: Multiplex
+int_33h_handler:    hle_stub 0x33            ; Mouse Driver
+int_dch_handler:    hle_stub 0xDC            ; NEC DOS Extension (IO.SYS)
+
 ; --- Special HLE entry points (pseudo-vectors) ---
 
 itf_entry:
@@ -170,6 +187,20 @@ vector_table:
     dw 0x1D, iret_stub       - BIOS_BASE_OFF   ; INT 1Dh — Unused
     dw 0x1F, int_1fh_handler - BIOS_BASE_OFF   ; INT 1Fh — Extended
     dw 0xD2, int_d2h_handler - BIOS_BASE_OFF   ; INT D2h — Sound BIOS
+    dw 0x20, int_20h_handler - BIOS_BASE_OFF   ; INT 20h - DOS: Terminate
+    dw 0x21, int_21h_handler - BIOS_BASE_OFF   ; INT 21h - DOS: System call
+    dw 0x22, int_22h_handler - BIOS_BASE_OFF   ; INT 22h - DOS: Terminate address
+    dw 0x23, int_23h_handler - BIOS_BASE_OFF   ; INT 23h - DOS: Ctrl-Break
+    dw 0x24, int_24h_handler - BIOS_BASE_OFF   ; INT 24h - DOS: Critical error
+    dw 0x25, int_25h_handler - BIOS_BASE_OFF   ; INT 25h - DOS: Abs disk read
+    dw 0x26, int_26h_handler - BIOS_BASE_OFF   ; INT 26h - DOS: Abs disk write
+    dw 0x27, int_27h_handler - BIOS_BASE_OFF   ; INT 27h - DOS: TSR
+    dw 0x28, int_28h_handler - BIOS_BASE_OFF   ; INT 28h - DOS: Idle
+    dw 0x29, int_29h_handler - BIOS_BASE_OFF   ; INT 29h - DOS: Fast console
+    dw 0x2A, int_2ah_handler - BIOS_BASE_OFF   ; INT 2Ah - DOS: Network
+    dw 0x2F, int_2fh_handler - BIOS_BASE_OFF   ; INT 2Fh - DOS: Multiplex
+    dw 0x33, int_33h_handler - BIOS_BASE_OFF   ; INT 33h - Mouse driver
+    dw 0xDC, int_dch_handler - BIOS_BASE_OFF   ; INT DCh - NEC DOS extension
     dw 0xFFFF                                  ; Sentinel
 
 

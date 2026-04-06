@@ -107,6 +107,10 @@ codegen-units = 1
 opt-level = 3
 codegen-units = 1
 
+[profile.dev.package.os]
+opt-level = 3
+codegen-units = 1
+
 [profile.dev.package.resampler]
 opt-level = 3
 codegen-units = 1

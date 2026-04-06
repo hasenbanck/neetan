@@ -10,6 +10,7 @@ mod hdd;
 mod init;
 mod io_read;
 mod io_write;
+mod os_adapter;
 
 use std::path::PathBuf;
 
@@ -327,9 +328,20 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     hle_cr0: u32,
     /// Cached CR3 from the CPU, set before HLE dispatch.
     hle_cr3: u32,
+    /// NEETAN OS HLE DOS instance. `None` when running with real DOS media.
+    os: Option<os::NeetanOs>,
 }
 
 impl<T: Tracing> Pc9801Bus<T> {
+    /// Enables the NEETAN OS HLE DOS subsystem.
+    ///
+    /// When enabled, DOS interrupt vectors (INT 20h-2Ah, 2Fh, 33h, DCh) are
+    /// routed to the built-in Rust implementation instead of being passed
+    /// through to a real DOS loaded from disk.
+    pub fn enable_neetan_os(&mut self) {
+        self.os = Some(os::NeetanOs::new());
+    }
+
     /// Loads BIOS ROM data (mapped at E8000-FFFFF, up to 96 KB).
     ///
     /// Clears the IVT and BDA entries that were populated for the embedded

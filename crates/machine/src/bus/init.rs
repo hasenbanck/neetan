@@ -251,6 +251,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             fdd_seek_cylinder: [0; 4],
             hle_cr0: 0,
             hle_cr3: 0,
+            os: None,
         };
 
         if machine_model.has_cg_ram() {

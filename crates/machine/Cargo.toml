@@ -15,6 +15,7 @@ sc55 = ["device/sc55"]
 common = { workspace = true }
 cpu = { workspace = true }
 device = { workspace = true }
+os = { workspace = true }
 
 [dev-dependencies]
 resampler = { workspace = true }
