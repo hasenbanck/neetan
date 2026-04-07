@@ -3,20 +3,8 @@
 use crate::{
     CpuAccess, DiskIo, MemoryAccess, NeetanOs,
     filesystem::{fat_dir, split_path},
-    tables,
+    set_iret_carry, tables,
 };
-
-/// Writes the carry flag into the IRET frame on the stack.
-fn set_iret_carry(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, carry: bool) {
-    let flags_addr = ((cpu.ss() as u32) << 4) + cpu.sp() as u32 + 4;
-    let mut flags = mem.read_word(flags_addr);
-    if carry {
-        flags |= 0x0001;
-    } else {
-        flags &= !0x0001;
-    }
-    mem.write_word(flags_addr, flags);
-}
 
 /// Writes a 32-bit value to emulated memory.
 fn write_dword(mem: &mut dyn MemoryAccess, addr: u32, value: u32) {

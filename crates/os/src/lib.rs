@@ -60,6 +60,8 @@ pub trait CpuAccess {
     fn set_es(&mut self, value: u16);
     /// Returns the SS segment register.
     fn ss(&self) -> u16;
+    /// Sets the SS segment register.
+    fn set_ss(&mut self, value: u16);
     /// Returns the SP register.
     fn sp(&self) -> u16;
     /// Sets the SP register.
@@ -186,6 +188,8 @@ pub struct NeetanOs {
     sft2_base: u32,
     /// Virtual Z: drive.
     virtual_drive: filesystem::virtual_drive::VirtualDrive,
+    /// Process stack for nested EXEC calls.
+    process_stack: Vec<process::ProcessContext>,
 }
 
 impl Default for NeetanOs {
@@ -216,6 +220,7 @@ impl NeetanOs {
             fat_volumes: (0..26).map(|_| None).collect(),
             sft2_base: 0,
             virtual_drive: filesystem::virtual_drive::VirtualDrive::new(),
+            process_stack: Vec::new(),
         }
     }
 
@@ -268,7 +273,10 @@ impl NeetanOs {
                 self.int26h(cpu, memory, disk);
                 true
             }
-            0x27 => false,
+            0x27 => {
+                self.int27h(cpu, memory);
+                true
+            }
             0x28 => {
                 self.int28h(cpu, memory);
                 true
@@ -740,6 +748,16 @@ impl NeetanOs {
         self.dta_segment = self.current_psp;
         self.dta_offset = 0x0080;
         self.dbcs_table_addr = tables::DBCS_TABLE_ADDR;
+
+        // Push root COMMAND.COM context (zeroed return addresses; terminating
+        // the root process is an error).
+        self.process_stack.push(process::ProcessContext {
+            psp_segment: self.current_psp,
+            return_ss: 0,
+            return_sp: 0,
+            saved_dta_seg: self.dta_segment,
+            saved_dta_off: self.dta_offset,
+        });
     }
 
     /// Allocates a second SFT block (chained from the first) for 15 additional handles.
@@ -1056,4 +1074,16 @@ impl NeetanOs {
             IOSYS_OFF_DAUA_TABLE as u16,
         );
     }
+}
+
+/// Writes the carry flag into the IRET frame on the stack.
+pub(crate) fn set_iret_carry(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, carry: bool) {
+    let flags_addr = ((cpu.ss() as u32) << 4) + cpu.sp() as u32 + 4;
+    let mut flags = mem.read_word(flags_addr);
+    if carry {
+        flags |= 0x0001;
+    } else {
+        flags &= !0x0001;
+    }
+    mem.write_word(flags_addr, flags);
 }

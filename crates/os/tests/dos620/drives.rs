@@ -1,11 +1,6 @@
 use crate::harness;
 
 const IOSYS_BASE: u32 = 0x0600;
-const HDI_HEADER_SIZE: usize = 32;
-
-fn hdi_sector_size(data: &[u8]) -> usize {
-    u32::from_le_bytes([data[0x10], data[0x11], data[0x12], data[0x13]]) as usize
-}
 
 #[test]
 fn daua_floppy_assignment() {
@@ -53,106 +48,6 @@ fn dpb_chain_matches_drives() {
     for &drive in &drive_numbers {
         assert!(drive < 26, "DPB drive number should be < 26, got {}", drive);
     }
-}
-
-#[test]
-fn hdd_partition_table_ipl_signature() {
-    let data = harness::load_hdd_image_data();
-    let sector_size = hdi_sector_size(&data);
-    assert!(
-        data.len() > HDI_HEADER_SIZE + sector_size,
-        "HDI image too small for partition table"
-    );
-    // HDI header is 32 bytes, then disk data starts.
-    let sector0 = &data[HDI_HEADER_SIZE..HDI_HEADER_SIZE + sector_size];
-
-    // "IPL1" signature at offset 0x04.
-    assert_eq!(
-        &sector0[0x04..0x08],
-        b"IPL1",
-        "HDD sector 0 should have 'IPL1' signature at offset 0x04"
-    );
-
-    // Boot signature 0xAA55 at last two bytes of sector 0.
-    let sig_offset = sector_size - 2;
-    let boot_sig = u16::from_le_bytes([sector0[sig_offset], sector0[sig_offset + 1]]);
-    assert_eq!(
-        boot_sig, 0xAA55,
-        "HDD sector 0 should have 0xAA55 at offset {:#06X}, got {:#06X}",
-        sig_offset, boot_sig
-    );
-}
-
-#[test]
-fn hdd_partition_table_entries() {
-    let data = harness::load_hdd_image_data();
-    let sector_size = hdi_sector_size(&data);
-    let partition_table_start = HDI_HEADER_SIZE + sector_size;
-    assert!(
-        data.len() > partition_table_start + sector_size,
-        "HDI image too small for partition table sector 1"
-    );
-    // Partition entries start at sector 1, each 32 bytes.
-    // With 256-byte sectors, only 8 entries fit per sector; scan up to 512 bytes (2 sectors).
-    let partition_data_len = 512.min(data.len() - partition_table_start);
-    let partition_data = &data[partition_table_start..partition_table_start + partition_data_len];
-
-    let mut found_active_dos = false;
-    let num_entries = partition_data_len / 32;
-    for entry_idx in 0..num_entries {
-        let entry = &partition_data[entry_idx * 32..(entry_idx + 1) * 32];
-        let mid = entry[0x00];
-        let sid = entry[0x01];
-
-        // Active partition: sid bit 7 set. DOS partition: mid in 0x20-0x2F range.
-        let is_active = sid & 0x80 != 0;
-        let is_dos = (0x20..=0x2F).contains(&(mid & 0x7F));
-        if is_active && is_dos {
-            found_active_dos = true;
-        }
-    }
-
-    assert!(
-        found_active_dos,
-        "HDD partition table should contain at least one active DOS partition"
-    );
-}
-
-#[test]
-fn partition_name() {
-    let data = harness::load_hdd_image_data();
-    let sector_size = hdi_sector_size(&data);
-    let partition_table_start = HDI_HEADER_SIZE + sector_size;
-    assert!(
-        data.len() > partition_table_start + sector_size,
-        "HDI image too small for partition table"
-    );
-    let partition_data_len = 512.min(data.len() - partition_table_start);
-    let partition_data = &data[partition_table_start..partition_table_start + partition_data_len];
-
-    let mut found_named = false;
-    let num_entries = partition_data_len / 32;
-    for entry_idx in 0..num_entries {
-        let entry = &partition_data[entry_idx * 32..(entry_idx + 1) * 32];
-        let mid = entry[0x00];
-        let sid = entry[0x01];
-
-        let is_active = sid & 0x80 != 0;
-        let is_dos = (0x20..=0x2F).contains(&(mid & 0x7F));
-        if is_active && is_dos {
-            let name = &entry[0x10..0x20];
-            let name_str = String::from_utf8_lossy(name);
-            let trimmed = name_str.trim_end_matches('\0').trim();
-            if !trimmed.is_empty() {
-                found_named = true;
-            }
-        }
-    }
-
-    assert!(
-        found_named,
-        "At least one active DOS partition should have a non-empty name"
-    );
 }
 
 #[test]

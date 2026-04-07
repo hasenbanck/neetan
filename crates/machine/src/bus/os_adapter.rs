@@ -65,7 +65,8 @@ impl<C: Cpu> os::CpuAccess for OsCpuAccess<'_, C> {
     }
 
     fn set_ds(&mut self, value: u16) {
-        self.0.set_ds(value);
+        self.0
+            .load_segment_real_mode(common::SegmentRegister::DS, value);
     }
 
     fn es(&self) -> u16 {
@@ -73,11 +74,17 @@ impl<C: Cpu> os::CpuAccess for OsCpuAccess<'_, C> {
     }
 
     fn set_es(&mut self, value: u16) {
-        self.0.set_es(value);
+        self.0
+            .load_segment_real_mode(common::SegmentRegister::ES, value);
     }
 
     fn ss(&self) -> u16 {
         self.0.ss()
+    }
+
+    fn set_ss(&mut self, value: u16) {
+        self.0
+            .load_segment_real_mode(common::SegmentRegister::SS, value);
     }
 
     fn sp(&self) -> u16 {

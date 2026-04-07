@@ -219,13 +219,4 @@ impl FatVolume {
         }
         Some(current)
     }
-
-    /// Returns the last cluster in the chain starting at `start`.
-    pub fn last_cluster(&self, start: u16) -> u16 {
-        let mut current = start;
-        while let Some(next) = self.next_cluster(current) {
-            current = next;
-        }
-        current
-    }
 }

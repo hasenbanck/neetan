@@ -1,22 +1,6 @@
 //! INT 21h function dispatcher (AH routing).
 
-use crate::{CpuAccess, DiskIo, MemoryAccess, NeetanOs, country, memory, tables};
-
-/// Writes the carry flag into the IRET frame on the stack.
-///
-/// The HLE stub ends with IRET which pops FLAGS from the stack, overwriting
-/// any direct CPU flag changes. To make CF visible to the caller, we must
-/// modify the FLAGS word in the IRET frame at SS:SP+4.
-fn set_iret_carry(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, carry: bool) {
-    let flags_addr = ((cpu.ss() as u32) << 4) + cpu.sp() as u32 + 4;
-    let mut flags = mem.read_word(flags_addr);
-    if carry {
-        flags |= 0x0001;
-    } else {
-        flags &= !0x0001;
-    }
-    mem.write_word(flags_addr, flags);
-}
+use crate::{CpuAccess, DiskIo, MemoryAccess, NeetanOs, country, memory, set_iret_carry, tables};
 
 impl NeetanOs {
     /// Dispatches an INT 21h call based on the AH register.
@@ -28,6 +12,7 @@ impl NeetanOs {
     ) {
         let ah = (cpu.ax() >> 8) as u8;
         match ah {
+            0x00 => self.terminate_process(cpu, memory, 0, 0),
             0x02 => self.int21h_02h_display_character(cpu, memory),
             0x06 => self.int21h_06h_direct_console_io(cpu, memory),
             0x07 => unimplemented!("INT 21h AH=07h: direct character input without echo"),
@@ -64,6 +49,9 @@ impl NeetanOs {
             0x48 => self.int21h_48h_allocate(cpu, memory),
             0x49 => self.int21h_49h_free(cpu, memory),
             0x4A => self.int21h_4ah_resize(cpu, memory),
+            0x31 => self.int21h_31h_tsr(cpu, memory),
+            0x4B => self.int21h_4bh_exec(cpu, memory, disk),
+            0x4C => self.int21h_4ch_terminate(cpu, memory),
             0x4D => self.int21h_4dh_get_return_code(cpu),
             0x4E => self.int21h_4eh_find_first(cpu, memory, disk),
             0x4F => self.int21h_4fh_find_next(cpu, memory, disk),
@@ -481,6 +469,21 @@ impl NeetanOs {
                 set_iret_carry(cpu, memory, true);
             }
         }
+    }
+
+    /// AH=31h: Terminate and Stay Resident.
+    /// AL = return code, DX = paragraphs to keep resident.
+    fn int21h_31h_tsr(&mut self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
+        let return_code = (cpu.ax() & 0xFF) as u8;
+        let keep_paragraphs = cpu.dx();
+        self.terminate_process_tsr(cpu, memory, return_code, keep_paragraphs);
+    }
+
+    /// AH=4Ch: Terminate process with return code.
+    /// AL = return code.
+    fn int21h_4ch_terminate(&mut self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
+        let return_code = (cpu.ax() & 0xFF) as u8;
+        self.terminate_process(cpu, memory, return_code, 0);
     }
 
     /// AH=4Dh: Get return code of child process.

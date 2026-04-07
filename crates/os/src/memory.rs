@@ -395,6 +395,68 @@ pub(crate) fn resize(
     }
 }
 
+/// Frees all MCB blocks owned by `owner_psp`.
+///
+/// Walks the chain, collects data segments, then frees each one.
+/// The existing `free()` coalesces adjacent free blocks automatically.
+pub(crate) fn free_process_blocks(
+    mem: &mut dyn MemoryAccess,
+    first_mcb_segment: u16,
+    owner_psp: u16,
+) {
+    let mut to_free = Vec::new();
+    let mut current = first_mcb_segment;
+    for _ in 0..MAX_CHAIN_WALK {
+        let block_type = read_mcb_type(mem, current);
+        if !is_valid_mcb_type(block_type) {
+            break;
+        }
+        if read_mcb_owner(mem, current) == owner_psp {
+            to_free.push(current + 1);
+        }
+        if block_type == MCB_TYPE_Z {
+            break;
+        }
+        current = current + read_mcb_size(mem, current) + 1;
+    }
+    for data_seg in to_free {
+        let _ = free(mem, first_mcb_segment, data_seg);
+    }
+}
+
+/// Frees all MCB blocks owned by `owner_psp` except the PSP's own block,
+/// which is resized to `keep_paragraphs` (for TSR termination).
+pub(crate) fn free_process_blocks_tsr(
+    mem: &mut dyn MemoryAccess,
+    first_mcb_segment: u16,
+    owner_psp: u16,
+    keep_paragraphs: u16,
+) {
+    let mut to_free = Vec::new();
+    let mut current = first_mcb_segment;
+    for _ in 0..MAX_CHAIN_WALK {
+        let block_type = read_mcb_type(mem, current);
+        if !is_valid_mcb_type(block_type) {
+            break;
+        }
+        if read_mcb_owner(mem, current) == owner_psp {
+            if current + 1 == owner_psp {
+                // PSP's own MCB: resize instead of freeing.
+                let _ = resize(mem, first_mcb_segment, owner_psp, keep_paragraphs);
+            } else {
+                to_free.push(current + 1);
+            }
+        }
+        if block_type == MCB_TYPE_Z {
+            break;
+        }
+        current = current + read_mcb_size(mem, current) + 1;
+    }
+    for data_seg in to_free {
+        let _ = free(mem, first_mcb_segment, data_seg);
+    }
+}
+
 /// Coalesces a free MCB with the next MCB if it is also free.
 fn coalesce_forward(mem: &mut dyn MemoryAccess, segment: u16) {
     let block_type = read_mcb_type(mem, segment);

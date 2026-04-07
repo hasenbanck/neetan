@@ -1,14 +1,6 @@
-#![allow(dead_code)]
-
-use std::{
-    path::{Path, PathBuf},
-    sync::Mutex,
-};
+use std::path::{Path, PathBuf};
 
 use common::{Bus, Cpu as _, MachineModel};
-
-/// Mutex to serialize tests that perform disk write operations.
-pub static DISK_WRITE_MUTEX: Mutex<()> = Mutex::new(());
 
 static FONT_ROM_DATA: &[u8] = include_bytes!("../../../../utils/font/font.rom");
 
@@ -141,6 +133,12 @@ It contains exactly one hundred bytes of known content!!";
 /// Known content for TESTFILE.TXT on the test floppy.
 pub const TEST_FILE_CONTENT: &[u8] = b"HELLO WORLD\r\n";
 
+/// Tiny .COM program for EXEC testing: terminates with exit code 0x42.
+/// MOV AH, 4Ch ; B4 4C
+/// MOV AL, 42h ; B0 42
+/// INT 21h     ; CD 21
+pub const TEST_COM_PROGRAM: &[u8] = &[0xB4, 0x4C, 0xB0, 0x42, 0xCD, 0x21];
+
 /// Known date for files on the test floppy: 1995-01-01.
 /// DOS date: ((15)<<9) | (1<<5) | 1 = 0x1E21
 pub const TEST_FILE_DATE: u16 = 0x1E21;
@@ -209,6 +207,12 @@ pub fn create_test_floppy() -> device::floppy::FloppyImage {
     // byte[5] = 0xFFF >> 4 = 0xFF
     disk_data[fat1_offset + 4] = 0xFF;
     disk_data[fat1_offset + 5] = 0xFF;
+    // Cluster 4: TEST.COM (end of chain = 0xFFF)
+    // FAT12 entry for cluster 4 (even cluster): byte offset = 4 * 3 / 2 = 6
+    // byte[6] = low 8 bits of cluster4 = 0xFF
+    // byte[7] = (high 4 of cluster4) | (low 4 of cluster5 << 4) = 0x0F
+    disk_data[fat1_offset + 6] = 0xFF;
+    disk_data[fat1_offset + 7] = 0x0F;
 
     // FAT2 (sectors 3-4) -- copy of FAT1
     let fat2_offset = 3 * sector_size;
@@ -241,6 +245,17 @@ pub fn create_test_floppy() -> device::floppy::FloppyImage {
         e[28..32].copy_from_slice(&(TEST_FILE_CONTENT.len() as u32).to_le_bytes());
     }
 
+    // Entry 2: TEST.COM (tiny .COM program that exits with code 0x42)
+    {
+        let e = &mut disk_data[root_offset + 64..root_offset + 96];
+        e[0..11].copy_from_slice(b"TEST    COM");
+        e[11] = 0x20; // archive
+        e[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        e[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        e[26..28].copy_from_slice(&4u16.to_le_bytes()); // start cluster
+        e[28..32].copy_from_slice(&(TEST_COM_PROGRAM.len() as u32).to_le_bytes());
+    }
+
     // Data area: cluster 2 = sector 11 -> COMMAND.COM content
     let cluster2_offset = 11 * sector_size;
     disk_data[cluster2_offset..cluster2_offset + TEST_COMMAND_COM.len()]
@@ -250,6 +265,11 @@ pub fn create_test_floppy() -> device::floppy::FloppyImage {
     let cluster3_offset = 12 * sector_size;
     disk_data[cluster3_offset..cluster3_offset + TEST_FILE_CONTENT.len()]
         .copy_from_slice(TEST_FILE_CONTENT);
+
+    // Data area: cluster 4 = sector 13 -> TEST.COM content
+    let cluster4_offset = 13 * sector_size;
+    disk_data[cluster4_offset..cluster4_offset + TEST_COM_PROGRAM.len()]
+        .copy_from_slice(TEST_COM_PROGRAM);
 
     // Build D88 tracks from flat sector data
     let mut tracks: Vec<Option<Vec<D88Sector>>> = Vec::with_capacity(total_tracks);
@@ -265,6 +285,127 @@ pub fn create_test_floppy() -> device::floppy::FloppyImage {
                 head,
                 record: (s + 1) as u8,
                 size_code: 3, // 1024 bytes = 128 << 3
+                sector_count: spt as u16,
+                mfm_flag: 0x40,
+                deleted: 0,
+                status: 0,
+                reserved: [0; 5],
+                data: disk_data[data_offset..data_offset + sector_size].to_vec(),
+            });
+        }
+        tracks.push(Some(sectors));
+    }
+
+    let d88 = D88Disk::from_tracks("TEST".to_string(), false, D88MediaType::Disk2HD, tracks);
+    device::floppy::FloppyImage::from_d88(d88)
+}
+
+/// Creates a test floppy with custom program data at cluster 4.
+/// `fcb_name` is the 11-byte FCB name (e.g. `b"TEST    COM"` or `b"TEST    EXE"`).
+pub fn create_test_floppy_with_program(
+    fcb_name: &[u8; 11],
+    program_data: &[u8],
+) -> device::floppy::FloppyImage {
+    use device::floppy::d88::{D88Disk, D88MediaType, D88Sector};
+
+    let cylinders = 77usize;
+    let heads = 2usize;
+    let spt = 8usize;
+    let sector_size = 1024usize;
+    let total_tracks = cylinders * heads;
+    let total_sectors = cylinders * heads * spt;
+    let mut disk_data = vec![0u8; total_sectors * sector_size];
+
+    // Copy the standard floppy layout from create_test_floppy but override
+    // cluster 4 (sector 13) with program_data and update the directory entry size.
+    // Reuse the same BPB, FAT, and root directory structure.
+
+    // Sector 0: Boot sector with BPB (identical to create_test_floppy)
+    {
+        let bpb = &mut disk_data[0..sector_size];
+        bpb[0] = 0xEB;
+        bpb[1] = 0x3C;
+        bpb[2] = 0x90;
+        bpb[3..11].copy_from_slice(b"NEETAN  ");
+        bpb[11..13].copy_from_slice(&1024u16.to_le_bytes());
+        bpb[13] = 1;
+        bpb[14..16].copy_from_slice(&1u16.to_le_bytes());
+        bpb[16] = 2;
+        bpb[17..19].copy_from_slice(&192u16.to_le_bytes());
+        bpb[19..21].copy_from_slice(&1232u16.to_le_bytes());
+        bpb[21] = 0xFE;
+        bpb[22..24].copy_from_slice(&2u16.to_le_bytes());
+        bpb[24..26].copy_from_slice(&8u16.to_le_bytes());
+        bpb[26..28].copy_from_slice(&2u16.to_le_bytes());
+    }
+
+    // FAT1 + FAT2
+    let fat1_offset = sector_size;
+    disk_data[fat1_offset] = 0xFE;
+    disk_data[fat1_offset + 1] = 0xFF;
+    disk_data[fat1_offset + 2] = 0xFF;
+    disk_data[fat1_offset + 3] = 0xFF;
+    disk_data[fat1_offset + 4] = 0xFF;
+    disk_data[fat1_offset + 5] = 0xFF;
+    disk_data[fat1_offset + 6] = 0xFF;
+    disk_data[fat1_offset + 7] = 0x0F;
+    let fat2_offset = 3 * sector_size;
+    let fat1_end = fat1_offset + 2 * sector_size;
+    let fat1_copy: Vec<u8> = disk_data[fat1_offset..fat1_end].to_vec();
+    disk_data[fat2_offset..fat2_offset + fat1_copy.len()].copy_from_slice(&fat1_copy);
+
+    // Root directory
+    let root_offset = 5 * sector_size;
+    {
+        let e = &mut disk_data[root_offset..root_offset + 32];
+        e[0..11].copy_from_slice(b"COMMAND COM");
+        e[11] = 0x20;
+        e[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        e[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        e[26..28].copy_from_slice(&2u16.to_le_bytes());
+        e[28..32].copy_from_slice(&(TEST_COMMAND_COM.len() as u32).to_le_bytes());
+    }
+    {
+        let e = &mut disk_data[root_offset + 32..root_offset + 64];
+        e[0..11].copy_from_slice(b"TESTFILETXT");
+        e[11] = 0x20;
+        e[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        e[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        e[26..28].copy_from_slice(&3u16.to_le_bytes());
+        e[28..32].copy_from_slice(&(TEST_FILE_CONTENT.len() as u32).to_le_bytes());
+    }
+    {
+        let e = &mut disk_data[root_offset + 64..root_offset + 96];
+        e[0..11].copy_from_slice(fcb_name);
+        e[11] = 0x20;
+        e[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        e[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        e[26..28].copy_from_slice(&4u16.to_le_bytes());
+        e[28..32].copy_from_slice(&(program_data.len() as u32).to_le_bytes());
+    }
+
+    let cluster2_offset = 11 * sector_size;
+    disk_data[cluster2_offset..cluster2_offset + TEST_COMMAND_COM.len()]
+        .copy_from_slice(TEST_COMMAND_COM);
+    let cluster3_offset = 12 * sector_size;
+    disk_data[cluster3_offset..cluster3_offset + TEST_FILE_CONTENT.len()]
+        .copy_from_slice(TEST_FILE_CONTENT);
+    let cluster4_offset = 13 * sector_size;
+    disk_data[cluster4_offset..cluster4_offset + program_data.len()].copy_from_slice(program_data);
+
+    let mut tracks: Vec<Option<Vec<D88Sector>>> = Vec::with_capacity(total_tracks);
+    for track_idx in 0..total_tracks {
+        let cylinder = (track_idx / heads) as u8;
+        let head = (track_idx % heads) as u8;
+        let mut sectors = Vec::with_capacity(spt);
+        for s in 0..spt {
+            let lba = track_idx * spt + s;
+            let data_offset = lba * sector_size;
+            sectors.push(D88Sector {
+                cylinder,
+                head,
+                record: (s + 1) as u8,
+                size_code: 3,
                 sector_count: spt as u16,
                 mfm_flag: 0x40,
                 deleted: 0,
@@ -342,20 +483,6 @@ pub fn inject_and_run_with_budget(machine: &mut machine::Pc9801Ra, code: &[u8], 
 
 /// Clears the InDOS flag so that DOS file I/O functions work correctly.
 /// After boot, COMMAND.COM sits inside an INT 21h call (reading input),
-/// leaving InDOS=1. When we hijack the CPU, this flag remains set.
-/// DOS file I/O checks InDOS for re-entrancy and may hang if it's nonzero.
-pub fn reset_indos(machine: &mut machine::Pc9801Ra) {
-    #[rustfmt::skip]
-    let code: &[u8] = &[
-        0xB4, 0x34,                         // MOV AH, 34h (get InDOS address)
-        0xCD, 0x21,                         // INT 21h -> ES:BX = InDOS
-        0x26, 0xC6, 0x07, 0x00,             // MOV BYTE ES:[BX], 00h
-        0xFA,                               // CLI
-        0xF4,                               // HLT
-    ];
-    inject_and_run(machine, code);
-}
-
 /// Runs code via the INT 28h DOS idle hook, which is safe for file I/O.
 ///
 /// After boot, COMMAND.COM is inside INT 21h/0Ah (reading keyboard input).
@@ -448,10 +575,6 @@ pub fn read_word(bus: &machine::Pc9801Bus, addr: u32) -> u16 {
     low | (high << 8)
 }
 
-pub fn read_dword(bus: &machine::Pc9801Bus, addr: u32) -> u32 {
-    read_word(bus, addr) as u32 | ((read_word(bus, addr + 2) as u32) << 16)
-}
-
 pub fn read_far_ptr(bus: &machine::Pc9801Bus, addr: u32) -> (u16, u16) {
     let offset = read_word(bus, addr);
     let segment = read_word(bus, addr + 2);
@@ -488,10 +611,6 @@ pub fn result_byte(bus: &machine::Pc9801Bus, offset: u32) -> u8 {
 
 pub fn result_word(bus: &machine::Pc9801Bus, offset: u32) -> u16 {
     read_word(bus, INJECT_RESULT_BASE + offset)
-}
-
-pub fn result_dword(bus: &machine::Pc9801Bus, offset: u32) -> u32 {
-    read_dword(bus, INJECT_RESULT_BASE + offset)
 }
 
 pub fn get_sysvars_address(machine: &mut machine::Pc9801Ra) -> u32 {
@@ -531,65 +650,6 @@ pub fn get_psp_segment(machine: &mut machine::Pc9801Ra) -> u16 {
 
 /// Creates free memory by splitting the last MCB (Z block) in the chain.
 /// COMMAND.COM owns all remaining memory after boot, so allocation tests
-/// need free memory created first. This walks the MCB chain, finds the Z block,
-/// shrinks it, and appends a new free Z block of `free_paragraphs` paragraphs.
-pub fn create_free_memory(machine: &mut machine::Pc9801Ra, free_paragraphs: u16) {
-    let sysvars = get_sysvars_address(machine);
-    let first_mcb_segment = read_word(&machine.bus, sysvars - 2);
-    let mut mcb_addr = far_to_linear(first_mcb_segment, 0);
-
-    // Walk to the last MCB (Z block).
-    for _ in 0..1000 {
-        let block_type = read_byte(&machine.bus, mcb_addr);
-        let size = read_word(&machine.bus, mcb_addr + 3);
-
-        if block_type == 0x5A {
-            // Found the Z block. Split it.
-            let current_segment = mcb_addr >> 4;
-            assert!(
-                size > free_paragraphs + 1,
-                "Z block too small to split: size={}, need={}",
-                size,
-                free_paragraphs + 1
-            );
-
-            let new_size = size - free_paragraphs - 1;
-            // Change Z to M and shrink.
-            machine.bus.write_byte(mcb_addr, 0x4D); // 'M'
-            machine
-                .bus
-                .write_byte(mcb_addr + 3, (new_size & 0xFF) as u8);
-            machine.bus.write_byte(mcb_addr + 4, (new_size >> 8) as u8);
-
-            // Create new free Z block after the shrunken block.
-            let new_mcb_segment = current_segment + new_size as u32 + 1;
-            let new_mcb_addr = new_mcb_segment << 4;
-            machine.bus.write_byte(new_mcb_addr, 0x5A); // 'Z'
-            machine.bus.write_byte(new_mcb_addr + 1, 0x00); // owner = free
-            machine.bus.write_byte(new_mcb_addr + 2, 0x00);
-            machine
-                .bus
-                .write_byte(new_mcb_addr + 3, (free_paragraphs & 0xFF) as u8);
-            machine
-                .bus
-                .write_byte(new_mcb_addr + 4, (free_paragraphs >> 8) as u8);
-            // Clear reserved and name fields.
-            for i in 5..16 {
-                machine.bus.write_byte(new_mcb_addr + i, 0x00);
-            }
-            return;
-        }
-
-        if block_type != 0x4D {
-            panic!("Invalid MCB type {:#04X} at {:#010X}", block_type, mcb_addr);
-        }
-
-        let next_segment = (mcb_addr >> 4) + size as u32 + 1;
-        mcb_addr = next_segment << 4;
-    }
-    panic!("Could not find Z block in MCB chain");
-}
-
 pub fn find_char_in_text_vram(bus: &machine::Pc9801Bus, char_code: u16) -> bool {
     let vram = bus.text_vram();
     for row in 0..25 {
@@ -845,15 +905,6 @@ pub fn boot_hle_with_ide_hdd(sector_size: u16) -> machine::Pc9821Ap {
     machine
 }
 
-/// Generic inject_and_run for any Machine with an I386-family CPU.
-/// Uses `load_state` to fully reset the CPU (including clearing halt state).
-pub fn inject_and_run_generic<const M: u8>(
-    machine: &mut machine::Machine<cpu::I386<M>>,
-    code: &[u8],
-) {
-    inject_and_run_generic_with_budget(machine, code, INJECT_BUDGET);
-}
-
 pub fn inject_and_run_generic_with_budget<const M: u8>(
     machine: &mut machine::Machine<cpu::I386<M>>,
     code: &[u8],
@@ -874,16 +925,4 @@ pub fn inject_and_run_generic_with_budget<const M: u8>(
     machine.cpu.load_state(&state);
 
     machine.run_for(budget);
-}
-
-/// Loads the raw HDD image data, skipping the HDI header (first 32 bytes).
-pub fn load_hdd_image_data() -> Vec<u8> {
-    let hdd_path = workspace_root().join(DOS_HDD_IMAGE_NAME);
-    std::fs::read(&hdd_path).unwrap_or_else(|error| {
-        panic!(
-            "DOS 6.20 HDD image ({}) required: {}",
-            hdd_path.display(),
-            error
-        )
-    })
 }

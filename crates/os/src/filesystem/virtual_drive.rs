@@ -9,7 +9,6 @@ use crate::filesystem::fat_dir;
 /// A virtual directory entry representing a built-in command.
 pub(crate) struct VirtualEntry {
     pub name: [u8; 11],
-    pub display_name: &'static [u8],
     pub attribute: u8,
     pub file_size: u32,
     pub time: u16,
@@ -53,7 +52,6 @@ impl VirtualDrive {
                 let name = fat_dir::name_to_fcb(&full_name);
                 VirtualEntry {
                     name,
-                    display_name: cmd,
                     attribute: attr,
                     file_size: 1,
                     time,
@@ -87,10 +85,5 @@ impl VirtualDrive {
             }
         }
         None
-    }
-
-    /// Returns the number of registered commands.
-    pub fn entry_count(&self) -> usize {
-        self.entries.len()
     }
 }

@@ -1240,14 +1240,13 @@ Test should use a floppy image that is purely created in-memory for the tests.
 
 - .COM loading: find largest free MCB, allocate, create child PSP, load at PSP:0100h
 - .EXE (MZ) loading: parse header, calculate size, allocate, create PSP, load, apply relocations
-- Z: drive shortcut: execute Rust `Command::execute()` directly for built-in commands
 - Process stack: push/pop ProcessContext on nested EXEC, save/restore INT 22h/23h/24h
 - Termination: INT 20h, INT 21h/4Ch, INT 21h/31h (TSR), INT 27h
 - Teardown: close JFT handles, free MCBs (or resize for TSR), pop parent context, set return code
 
 **Tests**: New integration tests for .COM/.EXE loading and termination
 
-- Add a test that validates thet the garbage collection of free MCBs on termination of a child process works.
+- Add a test that validates the garbage collection of free MCBs on termination of a child process works.
 
 **Milestone**: Programs can be loaded and executed. TSR programs stay resident.
 

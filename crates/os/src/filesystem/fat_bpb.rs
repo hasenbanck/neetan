@@ -9,11 +9,7 @@ pub(crate) struct Bpb {
     pub num_fats: u8,
     pub root_entry_count: u16,
     pub total_sectors_16: u16,
-    pub media_descriptor: u8,
     pub sectors_per_fat: u16,
-    pub sectors_per_track: u16,
-    pub num_heads: u16,
-    pub hidden_sectors: u32,
     pub total_sectors_32: u32,
 }
 
@@ -38,11 +34,7 @@ impl Bpb {
         let num_fats = sector[16];
         let root_entry_count = u16::from_le_bytes([sector[17], sector[18]]);
         let total_sectors_16 = u16::from_le_bytes([sector[19], sector[20]]);
-        let media_descriptor = sector[21];
         let sectors_per_fat = u16::from_le_bytes([sector[22], sector[23]]);
-        let sectors_per_track = u16::from_le_bytes([sector[24], sector[25]]);
-        let num_heads = u16::from_le_bytes([sector[26], sector[27]]);
-        let hidden_sectors = u32::from_le_bytes([sector[28], sector[29], sector[30], sector[31]]);
         let total_sectors_32 = u32::from_le_bytes([sector[32], sector[33], sector[34], sector[35]]);
 
         Some(Self {
@@ -52,11 +44,7 @@ impl Bpb {
             num_fats,
             root_entry_count,
             total_sectors_16,
-            media_descriptor,
             sectors_per_fat,
-            sectors_per_track,
-            num_heads,
-            hidden_sectors,
             total_sectors_32,
         })
     }

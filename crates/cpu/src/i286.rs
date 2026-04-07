@@ -1428,4 +1428,15 @@ impl common::Cpu for I286 {
     fn cpu_type(&self) -> common::CpuType {
         common::CpuType::I286
     }
+
+    fn load_segment_real_mode(&mut self, seg: common::SegmentRegister, selector: u16) {
+        let seg16 = match seg {
+            common::SegmentRegister::ES => SegReg16::ES,
+            common::SegmentRegister::CS => SegReg16::CS,
+            common::SegmentRegister::SS => SegReg16::SS,
+            common::SegmentRegister::DS => SegReg16::DS,
+        };
+        self.state.sregs[seg16 as usize] = selector;
+        self.set_real_segment_cache(seg16, selector);
+    }
 }

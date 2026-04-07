@@ -6,20 +6,12 @@ const PARTITION_ENTRY_SIZE: usize = 32;
 const MAX_PARTITIONS: usize = 16;
 
 /// A parsed PC-98 partition table entry.
-#[allow(dead_code)]
 pub(crate) struct Pc98PartitionEntry {
     pub mid: u8,
     pub sid: u8,
-    pub ipl_sector: u8,
-    pub ipl_head: u8,
-    pub ipl_cylinder: u16,
     pub data_start_sector: u8,
     pub data_start_head: u8,
     pub data_start_cylinder: u16,
-    pub end_sector: u8,
-    pub end_head: u8,
-    pub end_cylinder: u16,
-    pub name: [u8; 16],
 }
 
 /// Returns true if this is an active DOS partition.
@@ -46,16 +38,9 @@ fn parse_partition_table(sector_data: &[u8]) -> Vec<Pc98PartitionEntry> {
         entries.push(Pc98PartitionEntry {
             mid: d[0],
             sid: d[1],
-            ipl_sector: d[4],
-            ipl_head: d[5],
-            ipl_cylinder: u16::from_le_bytes([d[6], d[7]]),
             data_start_sector: d[8],
             data_start_head: d[9],
             data_start_cylinder: u16::from_le_bytes([d[10], d[11]]),
-            end_sector: d[12],
-            end_head: d[13],
-            end_cylinder: u16::from_le_bytes([d[14], d[15]]),
-            name,
         });
     }
     entries

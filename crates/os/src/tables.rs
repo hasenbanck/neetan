@@ -195,6 +195,8 @@ pub const PSP_OFF_ENV_SEG: u32 = 0x2C;
 pub const PSP_OFF_HANDLE_SIZE: u32 = 0x32;
 pub const PSP_OFF_HANDLE_PTR: u32 = 0x34;
 pub const PSP_OFF_INT21_STUB: u32 = 0x50;
+pub const PSP_OFF_FCB1: u32 = 0x5C;
+pub const PSP_OFF_FCB2: u32 = 0x6C;
 pub const PSP_OFF_CMD_TAIL_LEN: u32 = 0x80;
 pub const PSP_OFF_CMD_TAIL: u32 = 0x81;
 
