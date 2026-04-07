@@ -94,7 +94,9 @@ pub const CDS_ENTRIES: u32 = 26;
 pub const CDS_OFF_PATH: u32 = 0x00; // 67 bytes, null-terminated
 pub const CDS_OFF_FLAGS: u32 = 0x43;
 pub const CDS_OFF_DPB_PTR: u32 = 0x45;
+pub const CDS_OFF_BACKSLASH_OFFSET: u32 = 0x49;
 pub const CDS_FLAG_PHYSICAL: u16 = 0x4000;
+pub const CDS_FLAG_NETWORK: u16 = 0x8000;
 
 // DPB (Disk Parameter Block)
 pub const DPB_OFFSET: u16 = 0x0AB0;
@@ -120,20 +122,20 @@ pub const DPB_OFF_ACCESS_FLAG: u32 = 0x18;
 pub const DPB_OFF_NEXT_DPB: u32 = 0x19;
 
 // Disk buffer
-pub const DISK_BUFFER_OFFSET: u16 = 0x0AD4;
+pub const DISK_BUFFER_OFFSET: u16 = 0x0B20;
 pub const DISK_BUFFER_BASE: u32 = DOS_DATA_BASE + DISK_BUFFER_OFFSET as u32;
 
 // InDOS and critical error flags
-pub const INDOS_FLAG_OFFSET: u16 = 0x0CD8;
+pub const INDOS_FLAG_OFFSET: u16 = 0x0D30;
 pub const INDOS_FLAG_ADDR: u32 = DOS_DATA_BASE + INDOS_FLAG_OFFSET as u32;
 pub const CRITICAL_ERROR_FLAG_ADDR: u32 = INDOS_FLAG_ADDR + 1;
 
 // FCB-SFT
-pub const FCB_SFT_OFFSET: u16 = 0x0CE0;
+pub const FCB_SFT_OFFSET: u16 = 0x0D38;
 pub const FCB_SFT_BASE: u32 = DOS_DATA_BASE + FCB_SFT_OFFSET as u32;
 
 // First MCB (sentinel)
-pub const FIRST_MCB_OFFSET: u16 = 0x0CF0;
+pub const FIRST_MCB_OFFSET: u16 = 0x0D50;
 pub const FIRST_MCB_ADDR: u32 = DOS_DATA_BASE + FIRST_MCB_OFFSET as u32;
 pub const FIRST_MCB_SEGMENT: u16 = (FIRST_MCB_ADDR >> 4) as u16;
 
@@ -222,6 +224,9 @@ pub const IOSYS_OFF_TEXT_MODE: u32 = 0x05D8;
 pub const IOSYS_OFF_DAUA_PTR: u32 = 0x2820;
 pub const IOSYS_OFF_EXT_DAUA_TABLE: u32 = 0x2C86;
 pub const IOSYS_EXT_DAUA_TABLE_SIZE: u32 = 52;
+
+// BDA (BIOS Data Area) fields read during drive discovery.
+pub const BDA_DISK_EQUIP: u32 = 0x055C;
 
 /// Writes a far pointer (offset:segment, little-endian DWORD) at the given linear address.
 pub fn write_far_ptr(mem: &mut dyn MemoryAccess, addr: u32, segment: u16, offset: u16) {

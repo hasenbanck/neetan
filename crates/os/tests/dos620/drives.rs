@@ -8,21 +8,21 @@ fn hdi_sector_size(data: &[u8]) -> usize {
 }
 
 #[test]
-fn daua_hdd_assignment() {
-    let machine = harness::boot_dos620();
+fn daua_floppy_assignment() {
+    let machine = harness::boot_hle();
     // DA/UA table at 0060:006Ch, 16 bytes for A:-P:.
-    // When booting from HDD, the boot drive should have DA 0x80 (SASI/IDE HDD unit 0).
+    // HLE boots with 2 built-in 1MB FDD drives: A:=0x90, B:=0x91.
     let first_drive_daua = harness::read_byte(&machine.bus, IOSYS_BASE + 0x006C);
     assert_eq!(
-        first_drive_daua, 0x80,
-        "Boot drive A: DA/UA should be 0x80 (HDD unit 0), got {:#04X}",
+        first_drive_daua, 0x90,
+        "Boot drive A: DA/UA should be 0x90 (1MB FDD unit 0), got {:#04X}",
         first_drive_daua
     );
 }
 
 #[test]
 fn dpb_chain_matches_drives() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     let sysvars = harness::get_sysvars_address(&mut machine);
     let (seg, off) = harness::read_far_ptr(&machine.bus, sysvars);
     let mut dpb_addr = harness::far_to_linear(seg, off);
@@ -157,7 +157,7 @@ fn partition_name() {
 
 #[test]
 fn sysvars_max_sector_size() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     let sysvars = harness::get_sysvars_address(&mut machine);
     let max_sector = harness::read_word(&machine.bus, sysvars + 0x10);
     // HDD uses 512-byte sectors, so max should be at least 512.

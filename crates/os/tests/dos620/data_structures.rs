@@ -2,7 +2,7 @@ use crate::harness;
 
 #[test]
 fn cds_boot_drive_path() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     let sysvars = harness::get_sysvars_address(&mut machine);
 
     // CDS array pointer at SYSVARS+0x16.
@@ -44,7 +44,7 @@ fn cds_boot_drive_path() {
 
 #[test]
 fn cds_boot_drive_flags() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     let sysvars = harness::get_sysvars_address(&mut machine);
 
     let (cds_seg, cds_off) = harness::read_far_ptr(&machine.bus, sysvars + 0x16);
@@ -65,7 +65,7 @@ fn cds_boot_drive_flags() {
 
 #[test]
 fn dpb_first_entry_fields() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     let sysvars = harness::get_sysvars_address(&mut machine);
 
     // First DPB at SYSVARS+0x00.

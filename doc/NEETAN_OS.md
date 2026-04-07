@@ -805,8 +805,6 @@ All commands are compatible with MS-DOS 6.20 command-line options.
 | TIME          |         | time.rs      | Show or change the current time       |
 | FORMAT        |         | format.rs    | Format a floppy or hard disk          |
 | DISKCOPY      |         | diskcopy.rs  | Copy entire floppy disk contents      |
-| SEDIT         |         | sedit.rs     | Full-screen text editor               |
-| CUSTOM        |         | custom.rs    | CONFIG.SYS configuration wizard       |
 
 #### DIR
 
@@ -842,23 +840,6 @@ directory. For hard disks: writes FAT16 with appropriate cluster size. Supports:
 
 Copy the entire contents of one floppy disk to another. Reads source disk into memory,
 prompts for target disk, writes all tracks. Supports: `/V` (verify after copy).
-
-#### SEDIT
-
-Full-screen text editor for creating and editing text files. Features:
-- File open, save, save-as
-- Cursor movement (arrow keys, Home, End, PgUp, PgDn)
-- Insert and delete text
-- Search and replace
-- Status bar showing filename, line/column, modified flag
-- Menu bar (File, Edit, Search) navigable with keyboard
-
-#### CUSTOM
-
-Interactive CONFIG.SYS configuration tool. Presents a menu-driven interface to:
-- View current CONFIG.SYS settings
-- Modify FILES=, BUFFERS=, LASTDRIVE= values
-- Write the updated CONFIG.SYS to disk
 
 ## 7. Configuration
 
@@ -1024,8 +1005,6 @@ crates/os/src/
         time.rs            TIME
         format.rs          FORMAT
         diskcopy.rs        DISKCOPY
-        sedit.rs           SEDIT (screen editor)
-        custom.rs          CUSTOM (CONFIG.SYS wizard)
     config.rs              CONFIG.SYS and AUTOEXEC.BAT parsing
     country.rs             Country info, DBCS lead byte table, date/time formats
     tables.rs              DOS internal data structures (SYSVARS, SFT, CDS, DPB layout)

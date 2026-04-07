@@ -130,6 +130,16 @@ pub trait ConsoleIo {
     fn screen_size(&self) -> (u8, u8);
 }
 
+/// Information about a discovered drive for CDS/DPB/DAUA population.
+struct DriveInfo {
+    /// 0-based drive index (0=A, 1=B, ..., 25=Z).
+    drive_index: u8,
+    /// Device address (0x90=1MB FDD0, 0x80=HDD0, 0x00=virtual).
+    da_ua: u8,
+    /// True for the virtual Z: drive.
+    is_virtual: bool,
+}
+
 /// The NEETAN OS HLE DOS instance.
 ///
 /// Holds all DOS state: memory management, file handles, process info, etc.
@@ -177,6 +187,8 @@ impl NeetanOs {
     ) {
         self.write_dos_data_structures(memory);
         self.write_iosys_work_area(memory);
+        let drives = Self::discover_drives(memory);
+        self.write_drive_structures(memory, &drives);
         self.write_command_com_process(memory);
     }
 
@@ -244,7 +256,7 @@ impl NeetanOs {
         let (con_seg, con_off) = dos_data_far(DEV_CON_OFFSET);
         write_far_ptr(mem, SYSVARS_BASE + SYSVARS_OFF_CON_PTR, con_seg, con_off);
 
-        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_MAX_SECTOR, 512);
+        // MAX_SECTOR is set later by write_drive_structures().
 
         let (buf_seg, buf_off) = dos_data_far(DISK_BUFFER_OFFSET);
         write_far_ptr(mem, SYSVARS_BASE + SYSVARS_OFF_BUFFER_PTR, buf_seg, buf_off);
@@ -261,7 +273,7 @@ impl NeetanOs {
         );
 
         mem.write_word(SYSVARS_BASE + SYSVARS_OFF_PROT_FCBS, 0);
-        mem.write_byte(SYSVARS_BASE + SYSVARS_OFF_BLOCK_DEVS, 0);
+        // BLOCK_DEVS is set later by write_drive_structures().
         mem.write_byte(SYSVARS_BASE + SYSVARS_OFF_LASTDRIVE, 26);
 
         // JOIN drives = 0
@@ -281,11 +293,7 @@ impl NeetanOs {
         // SFT
         self.write_sft(mem);
 
-        // CDS (placeholder, populated properly in phase 10.4)
-        // All 26 entries zeroed (done by initial memset).
-
-        // DPB (placeholder entry for drive A:)
-        self.write_placeholder_dpb(mem);
+        // CDS and DPB are populated by write_drive_structures().
 
         // Disk buffer header + one buffer
         self.write_disk_buffer(mem);
@@ -415,34 +423,213 @@ impl NeetanOs {
         let _ = con_addr;
     }
 
-    /// Writes a placeholder DPB entry for drive A:.
-    fn write_placeholder_dpb(&self, mem: &mut dyn MemoryAccess) {
+    /// Reads the BDA DISK_EQUIP word to discover equipped drives and assigns
+    /// drive letters following the PC-98 floppy-first convention.
+    fn discover_drives(mem: &dyn MemoryAccess) -> Vec<DriveInfo> {
         use tables::*;
 
-        let dpb = DPB_BASE;
-        mem.write_byte(dpb + DPB_OFF_DRIVE_NUM, 0); // A:
-        mem.write_byte(dpb + DPB_OFF_UNIT_NUM, 0);
-        mem.write_word(dpb + DPB_OFF_BYTES_PER_SECTOR, 512);
-        mem.write_byte(dpb + DPB_OFF_CLUSTER_MASK, 1); // 2 sectors/cluster - 1
-        mem.write_byte(dpb + DPB_OFF_CLUSTER_SHIFT, 1);
-        mem.write_word(dpb + DPB_OFF_RESERVED_SECTORS, 1);
-        mem.write_byte(dpb + DPB_OFF_NUM_FATS, 2);
-        mem.write_word(dpb + DPB_OFF_ROOT_ENTRIES, 112);
-        mem.write_word(dpb + DPB_OFF_FIRST_DATA_SECTOR, 14);
-        mem.write_word(dpb + DPB_OFF_MAX_CLUSTER, 714);
-        mem.write_word(dpb + DPB_OFF_SECTORS_PER_FAT, 3);
-        mem.write_word(dpb + DPB_OFF_FIRST_ROOT_SECTOR, 7);
-        // Device header pointer -> NUL device (placeholder)
+        let disk_equip = mem.read_word(BDA_DISK_EQUIP);
+        let mut drives = Vec::new();
+        let mut next_index: u8 = 0;
+
+        // 1MB FDD units (bits 0-3 of disk_equip).
+        for unit in 0..4u8 {
+            if disk_equip & (1 << unit) != 0 {
+                drives.push(DriveInfo {
+                    drive_index: next_index,
+                    da_ua: 0x90 + unit,
+                    is_virtual: false,
+                });
+                next_index += 1;
+            }
+        }
+
+        // 640KB FDD units (bits 12-15 of disk_equip).
+        for unit in 0..4u8 {
+            if disk_equip & (1 << (12 + unit)) != 0 {
+                drives.push(DriveInfo {
+                    drive_index: next_index,
+                    da_ua: 0x70 + unit,
+                    is_virtual: false,
+                });
+                next_index += 1;
+            }
+        }
+
+        // HDD units (bits 8-11 of disk_equip).
+        for unit in 0..4u8 {
+            if disk_equip & (1 << (8 + unit)) != 0 {
+                drives.push(DriveInfo {
+                    drive_index: next_index,
+                    da_ua: 0x80 + unit,
+                    is_virtual: false,
+                });
+                next_index += 1;
+            }
+        }
+
+        // Z: virtual drive is always present.
+        drives.push(DriveInfo {
+            drive_index: 25,
+            da_ua: 0x00,
+            is_virtual: true,
+        });
+
+        drives
+    }
+
+    /// Populates CDS entries, DPB chain, DA/UA mapping tables, and SYSVARS
+    /// counters based on the discovered drives.
+    fn write_drive_structures(&self, mem: &mut dyn MemoryAccess, drives: &[DriveInfo]) {
+        use tables::*;
+
+        let mut max_sector_size: u16 = 512;
+
+        for (chain_index, drive) in drives.iter().enumerate() {
+            // DA/UA mapping table (16 bytes at 0060:006Ch, drives A:-P:).
+            if drive.drive_index < 16 {
+                mem.write_byte(
+                    IOSYS_BASE + IOSYS_OFF_DAUA_TABLE + drive.drive_index as u32,
+                    drive.da_ua,
+                );
+            }
+
+            // Extended DA/UA table (52 bytes at 0060:2C86h, 2 bytes per drive).
+            let ext_offset = IOSYS_BASE + IOSYS_OFF_EXT_DAUA_TABLE + (drive.drive_index as u32) * 2;
+            mem.write_byte(ext_offset, 0x00); // attribute
+            mem.write_byte(ext_offset + 1, drive.da_ua);
+
+            // DPB entry.
+            let dpb_addr = DPB_BASE + (chain_index as u32) * DPB_ENTRY_SIZE;
+            self.write_dpb_for_drive(mem, dpb_addr, drive);
+
+            // Track max sector size across all DPBs.
+            let bytes_per_sector = mem.read_word(dpb_addr + DPB_OFF_BYTES_PER_SECTOR);
+            if bytes_per_sector > max_sector_size {
+                max_sector_size = bytes_per_sector;
+            }
+
+            // Chain to next DPB or terminate.
+            if chain_index + 1 < drives.len() {
+                let next_addr = DPB_BASE + ((chain_index + 1) as u32) * DPB_ENTRY_SIZE;
+                let next_off = DPB_OFFSET + ((chain_index + 1) as u16) * (DPB_ENTRY_SIZE as u16);
+                write_far_ptr(mem, dpb_addr + DPB_OFF_NEXT_DPB, DOS_DATA_SEGMENT, next_off);
+                let _ = next_addr;
+            } else {
+                write_far_ptr(mem, dpb_addr + DPB_OFF_NEXT_DPB, 0xFFFF, 0xFFFF);
+            }
+
+            // CDS entry.
+            let cds_addr = CDS_BASE + (drive.drive_index as u32) * CDS_ENTRY_SIZE;
+            let drive_letter = b'A' + drive.drive_index;
+
+            // Path: "X:\"
+            mem.write_byte(cds_addr + CDS_OFF_PATH, drive_letter);
+            mem.write_byte(cds_addr + CDS_OFF_PATH + 1, b':');
+            mem.write_byte(cds_addr + CDS_OFF_PATH + 2, b'\\');
+
+            // Flags.
+            let flags = if drive.is_virtual {
+                CDS_FLAG_NETWORK
+            } else {
+                CDS_FLAG_PHYSICAL
+            };
+            mem.write_word(cds_addr + CDS_OFF_FLAGS, flags);
+
+            // DPB pointer.
+            let dpb_off = DPB_OFFSET + (chain_index as u16) * (DPB_ENTRY_SIZE as u16);
+            write_far_ptr(mem, cds_addr + CDS_OFF_DPB_PTR, DOS_DATA_SEGMENT, dpb_off);
+
+            // Backslash offset (points past "X:").
+            mem.write_word(cds_addr + CDS_OFF_BACKSLASH_OFFSET, 2);
+        }
+
+        // Update SYSVARS.
+        mem.write_byte(SYSVARS_BASE + SYSVARS_OFF_BLOCK_DEVS, drives.len() as u8);
+        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_MAX_SECTOR, max_sector_size);
+    }
+
+    /// Writes a single DPB entry with geometry appropriate for the drive type.
+    fn write_dpb_for_drive(&self, mem: &mut dyn MemoryAccess, dpb_addr: u32, drive: &DriveInfo) {
+        use tables::*;
+
+        mem.write_byte(dpb_addr + DPB_OFF_DRIVE_NUM, drive.drive_index);
+
+        // Determine unit number from DA/UA low nibble.
+        let unit_num = drive.da_ua & 0x0F;
+        mem.write_byte(dpb_addr + DPB_OFF_UNIT_NUM, unit_num);
+
+        if drive.is_virtual {
+            // Virtual Z: drive: minimal geometry.
+            mem.write_word(dpb_addr + DPB_OFF_BYTES_PER_SECTOR, 512);
+            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_MASK, 0); // 1 sector/cluster - 1
+            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_SHIFT, 0);
+            mem.write_word(dpb_addr + DPB_OFF_RESERVED_SECTORS, 1);
+            mem.write_byte(dpb_addr + DPB_OFF_NUM_FATS, 1);
+            mem.write_word(dpb_addr + DPB_OFF_ROOT_ENTRIES, 16);
+            mem.write_word(dpb_addr + DPB_OFF_FIRST_DATA_SECTOR, 3);
+            mem.write_word(dpb_addr + DPB_OFF_MAX_CLUSTER, 2);
+            mem.write_word(dpb_addr + DPB_OFF_SECTORS_PER_FAT, 1);
+            mem.write_word(dpb_addr + DPB_OFF_FIRST_ROOT_SECTOR, 2);
+            mem.write_byte(dpb_addr + DPB_OFF_MEDIA_DESC, 0xF8);
+            mem.write_byte(dpb_addr + DPB_OFF_ACCESS_FLAG, 0x00);
+        } else if drive.da_ua & 0xF0 == 0x70 {
+            // 640KB FDD (2DD): 512 bytes/sector.
+            mem.write_word(dpb_addr + DPB_OFF_BYTES_PER_SECTOR, 512);
+            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_MASK, 1); // 2 sectors/cluster - 1
+            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_SHIFT, 1);
+            mem.write_word(dpb_addr + DPB_OFF_RESERVED_SECTORS, 1);
+            mem.write_byte(dpb_addr + DPB_OFF_NUM_FATS, 2);
+            mem.write_word(dpb_addr + DPB_OFF_ROOT_ENTRIES, 112);
+            mem.write_word(dpb_addr + DPB_OFF_FIRST_DATA_SECTOR, 14);
+            mem.write_word(dpb_addr + DPB_OFF_MAX_CLUSTER, 1231);
+            mem.write_word(dpb_addr + DPB_OFF_SECTORS_PER_FAT, 3);
+            mem.write_word(dpb_addr + DPB_OFF_FIRST_ROOT_SECTOR, 7);
+            mem.write_byte(dpb_addr + DPB_OFF_MEDIA_DESC, 0xFE);
+            mem.write_byte(dpb_addr + DPB_OFF_ACCESS_FLAG, 0xFF);
+        } else if drive.da_ua & 0xF0 == 0x80 {
+            // HDD: 512 bytes/sector, default geometry.
+            mem.write_word(dpb_addr + DPB_OFF_BYTES_PER_SECTOR, 512);
+            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_MASK, 3); // 4 sectors/cluster - 1
+            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_SHIFT, 2);
+            mem.write_word(dpb_addr + DPB_OFF_RESERVED_SECTORS, 1);
+            mem.write_byte(dpb_addr + DPB_OFF_NUM_FATS, 2);
+            mem.write_word(dpb_addr + DPB_OFF_ROOT_ENTRIES, 512);
+            mem.write_word(dpb_addr + DPB_OFF_FIRST_DATA_SECTOR, 69);
+            mem.write_word(dpb_addr + DPB_OFF_MAX_CLUSTER, 4080);
+            mem.write_word(dpb_addr + DPB_OFF_SECTORS_PER_FAT, 8);
+            mem.write_word(dpb_addr + DPB_OFF_FIRST_ROOT_SECTOR, 17);
+            mem.write_byte(dpb_addr + DPB_OFF_MEDIA_DESC, 0xF8);
+            mem.write_byte(dpb_addr + DPB_OFF_ACCESS_FLAG, 0xFF);
+        } else if drive.da_ua & 0xF0 == 0x90 {
+            // 1MB FDD (2HD): 1024 bytes/sector, PC-98 standard.
+            mem.write_word(dpb_addr + DPB_OFF_BYTES_PER_SECTOR, 1024);
+            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_MASK, 0); // 1 sector/cluster - 1
+            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_SHIFT, 0);
+            mem.write_word(dpb_addr + DPB_OFF_RESERVED_SECTORS, 1);
+            mem.write_byte(dpb_addr + DPB_OFF_NUM_FATS, 2);
+            mem.write_word(dpb_addr + DPB_OFF_ROOT_ENTRIES, 192);
+            mem.write_word(dpb_addr + DPB_OFF_FIRST_DATA_SECTOR, 11);
+            mem.write_word(dpb_addr + DPB_OFF_MAX_CLUSTER, 1223);
+            mem.write_word(dpb_addr + DPB_OFF_SECTORS_PER_FAT, 2);
+            mem.write_word(dpb_addr + DPB_OFF_FIRST_ROOT_SECTOR, 5);
+            mem.write_byte(dpb_addr + DPB_OFF_MEDIA_DESC, 0xFE);
+            mem.write_byte(dpb_addr + DPB_OFF_ACCESS_FLAG, 0xFF);
+        } else {
+            panic!(
+                "Unknown device type DA/UA {:#04X} for drive {}",
+                drive.da_ua,
+                (b'A' + drive.drive_index) as char
+            );
+        }
+
+        // Device header pointer -> NUL device (placeholder).
         write_far_ptr(
             mem,
-            dpb + DPB_OFF_DEVICE_PTR,
+            dpb_addr + DPB_OFF_DEVICE_PTR,
             DOS_DATA_SEGMENT,
             DEV_NUL_OFFSET,
         );
-        mem.write_byte(dpb + DPB_OFF_MEDIA_DESC, 0xF8);
-        mem.write_byte(dpb + DPB_OFF_ACCESS_FLAG, 0xFF); // not yet accessed
-        // Next DPB = FFFF:FFFF (end of chain)
-        write_far_ptr(mem, dpb + DPB_OFF_NEXT_DPB, 0xFFFF, 0xFFFF);
     }
 
     /// Writes a minimal disk buffer header with one empty 512-byte buffer.
@@ -490,7 +677,7 @@ impl NeetanOs {
         // Bits: 0000_1001_0100_1100 = 0x094C
         mem.write_word(base + IOSYS_OFF_AUX_PROTOCOL, 0x094C);
 
-        // DA/UA mapping table: 16 bytes, all zeros (no drives assigned yet; phase 10.4)
+        // DA/UA mapping table: populated by write_drive_structures().
 
         // Kanji/graph mode
         mem.write_byte(base + IOSYS_OFF_KANJI_MODE, 0x01); // Shift-JIS kanji mode

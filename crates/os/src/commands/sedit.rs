@@ -1,1 +1,0 @@
-//! SEDIT (screen editor) command.
