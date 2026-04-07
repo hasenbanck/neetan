@@ -112,7 +112,7 @@ fn dpb_first_entry_fields() {
 
 #[test]
 fn sft_first_node_five_entries() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     let sysvars = harness::get_sysvars_address(&mut machine);
 
     // SFT chain at SYSVARS+0x04.
@@ -130,7 +130,7 @@ fn sft_first_node_five_entries() {
 
 #[test]
 fn sft_stdout_is_character_device() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     let sysvars = harness::get_sysvars_address(&mut machine);
 
     let (sft_seg, sft_off) = harness::read_far_ptr(&machine.bus, sysvars + 0x04);
@@ -158,7 +158,7 @@ fn sft_stdout_is_character_device() {
 
 #[test]
 fn indos_flag_is_zero_at_idle() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     // Get InDOS flag address via INT 21h/34h.
     #[rustfmt::skip]
     let code: &[u8] = &[
@@ -175,21 +175,25 @@ fn indos_flag_is_zero_at_idle() {
     let segment = harness::result_word(&machine.bus, 2);
     let indos_addr = harness::far_to_linear(segment, offset);
 
-    // After boot, COMMAND.COM sits inside an INT 21h call (reading keyboard input),
-    // so InDOS is 1. Our injected code calls INT 21h/34h which increments InDOS to 2
-    // then decrements back to 1 on return. The original COMMAND.COM increment is never
-    // unwound because we hijacked the CPU.
+    // TODO: Use the old assertion once the we have a prompt:
+    // // After boot, COMMAND.COM sits inside an INT 21h call (reading keyboard input),
+    // // so InDOS is 1. Our injected code calls INT 21h/34h which increments InDOS to 2
+    // // then decrements back to 1 on return. The original COMMAND.COM increment is never
+    // // unwound because we hijacked the CPU.
+
+    // With HLE boot, the CPU halts after setting up data structures.
+    // No COMMAND.COM is actively running, so InDOS should be 0.
     let indos_value = harness::read_byte(&machine.bus, indos_addr);
     assert_eq!(
-        indos_value, 1,
-        "InDOS flag should be 1 (COMMAND.COM was mid-INT 21h when hijacked), got {}",
+        indos_value, 0,
+        "InDOS flag should be 0 (HLE boot halts without active INT 21h), got {}",
         indos_value
     );
 }
 
 #[test]
 fn dbcs_table_at_fixed_address() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     // Get DBCS table pointer via INT 21h/63h.
     #[rustfmt::skip]
     let code: &[u8] = &[

@@ -36,10 +36,9 @@ fn xms_check() {
     harness::inject_and_run(&mut machine, code);
 
     let al = harness::result_byte(&machine.bus, 0);
-    // AL=80h means XMS is installed, anything else means not installed.
-    // Both outcomes are valid for DOS 6.20 depending on CONFIG.SYS.
-    // We just verify the call completed without hanging.
-    let _xms_present = al == 0x80;
+    // TODO: Once a XMS memory manager is provided, we must test for it's presence here.
+    // assert!(al, 0x80);
+    assert_eq!(al, 0x00);
 }
 
 #[test]
@@ -55,13 +54,10 @@ fn doskey_check() {
     ];
     harness::inject_and_run(&mut machine, code);
 
-    // TODO: DOSKEY is NOT started in the current DOS image.
     let al = harness::result_byte(&machine.bus, 0);
-    // AL=00h means not installed, AL=FFh means installed.
-    // On a plain DOS 6.20 boot, DOSKEY is likely not loaded.
     assert!(
-        al == 0x00 || al == 0xFF,
-        "DOSKEY check: AL should be 0x00 (not installed) or 0xFF (installed), got {:#04X}",
+        al == 0x00,
+        "DOSKEY check: AL should be 0x00 (not installed), got {:#04X}",
         al
     );
 }

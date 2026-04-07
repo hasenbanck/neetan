@@ -156,6 +156,24 @@ pub struct NeetanOs {
     version: (u8, u8),
     /// Segment of the current PSP (set during boot and EXEC).
     current_psp: u16,
+    /// Current default drive (0-based: 0=A, 1=B, ...).
+    current_drive: u8,
+    /// DTA (Disk Transfer Area) segment.
+    dta_segment: u16,
+    /// DTA (Disk Transfer Area) offset.
+    dta_offset: u16,
+    /// Ctrl-Break check state (false=off, true=on).
+    ctrl_break: bool,
+    /// Switch character (default 0x2F = '/').
+    switch_char: u8,
+    /// Memory allocation strategy (0=first fit, 1=best fit, 2=last fit).
+    allocation_strategy: u16,
+    /// Exit code from last terminated child process.
+    last_return_code: u8,
+    /// Termination type of last child (0=normal, 1=ctrl-C, 2=critical error, 3=TSR).
+    last_termination_type: u8,
+    /// Linear address of DBCS lead byte table in emulated RAM.
+    dbcs_table_addr: u32,
 }
 
 impl Default for NeetanOs {
@@ -173,6 +191,15 @@ impl NeetanOs {
             boot_drive: 1,
             version: (6, 20),
             current_psp: 0,
+            current_drive: 0,
+            dta_segment: 0,
+            dta_offset: 0x0080,
+            ctrl_break: false,
+            switch_char: 0x2F,
+            allocation_strategy: 0,
+            last_return_code: 0,
+            last_termination_type: 0,
+            dbcs_table_addr: 0,
         }
     }
 
@@ -206,11 +233,14 @@ impl NeetanOs {
         _console: &mut dyn ConsoleIo,
     ) -> bool {
         match vector {
+            0x20 => {
+                self.int20h(cpu, memory);
+                true
+            }
             0x21 => {
                 self.int21h(cpu, memory);
                 true
             }
-            0x20 => false,
             0x22 => false,
             0x23 => false,
             0x24 => false,
@@ -219,7 +249,7 @@ impl NeetanOs {
             0x27 => false,
             0x28 => false,
             0x29 => false,
-            0x2A => false,
+            0x2A => true, // Critical section stubs: no-op
             0x2F => false,
             0x33 => false,
             0xDC => false,
@@ -301,6 +331,14 @@ impl NeetanOs {
         // InDOS flag and critical error flag
         mem.write_byte(INDOS_FLAG_ADDR, 0x00);
         mem.write_byte(CRITICAL_ERROR_FLAG_ADDR, 0x00);
+
+        // DBCS lead byte table (Shift-JIS ranges)
+        mem.write_byte(DBCS_TABLE_ADDR, 0x81);
+        mem.write_byte(DBCS_TABLE_ADDR + 1, 0x9F);
+        mem.write_byte(DBCS_TABLE_ADDR + 2, 0xE0);
+        mem.write_byte(DBCS_TABLE_ADDR + 3, 0xFC);
+        mem.write_byte(DBCS_TABLE_ADDR + 4, 0x00);
+        mem.write_byte(DBCS_TABLE_ADDR + 5, 0x00);
 
         // FCB-SFT header (no entries)
         write_far_ptr(mem, FCB_SFT_BASE, 0xFFFF, 0xFFFF);
@@ -657,6 +695,10 @@ impl NeetanOs {
         );
         process::write_command_com_stub(mem, PSP_SEGMENT);
         self.current_psp = PSP_SEGMENT;
+        self.current_drive = self.boot_drive.saturating_sub(1);
+        self.dta_segment = PSP_SEGMENT;
+        self.dta_offset = 0x0080;
+        self.dbcs_table_addr = tables::DBCS_TABLE_ADDR;
     }
 
     /// Populates the IO.SYS work area at segment 0060h.

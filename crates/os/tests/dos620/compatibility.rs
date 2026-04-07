@@ -2,7 +2,7 @@ use crate::harness;
 
 #[test]
 fn dos_version_major_6() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x30,       // MOV AH, 30h
@@ -19,7 +19,7 @@ fn dos_version_major_6() {
 
 #[test]
 fn dos_version_minor_20() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x30,       // MOV AH, 30h
@@ -36,7 +36,7 @@ fn dos_version_minor_20() {
 
 #[test]
 fn true_version_6_20() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x33,       // MOV AH, 33h
@@ -84,7 +84,7 @@ fn no_windows_running() {
 
 #[test]
 fn country_code_japan() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     // INT 21h AH=38h, AL=00h (get current country). DS:DX points to 34-byte buffer.
     // Buffer is at result+0x10 (offset 0x10 within our result area).
     // BX returns country code on success.
@@ -111,7 +111,7 @@ fn country_code_japan() {
 
 #[test]
 fn date_format_ymd() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     let buffer_offset: u16 = harness::INJECT_RESULT_OFFSET + 0x10;
     #[rustfmt::skip]
     let code: Vec<u8> = vec![
@@ -136,7 +136,7 @@ fn date_format_ymd() {
 
 #[test]
 fn currency_yen() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     let buffer_offset: u16 = harness::INJECT_RESULT_OFFSET + 0x10;
     #[rustfmt::skip]
     let code: Vec<u8> = vec![
@@ -160,7 +160,7 @@ fn currency_yen() {
 
 #[test]
 fn time_format_24h() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     let buffer_offset: u16 = harness::INJECT_RESULT_OFFSET + 0x10;
     #[rustfmt::skip]
     let code: Vec<u8> = vec![
@@ -184,7 +184,7 @@ fn time_format_24h() {
 
 #[test]
 fn dbcs_table_shift_jis() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     // INT 21h AH=63h, AL=00h: Get DBCS lead byte table pointer.
     // Returns DS:SI pointing to the table.
     // NOTE: INT 21h AH=63h modifies DS, so we must use ES (which we control) to store results.
@@ -249,7 +249,7 @@ fn dbcs_table_shift_jis() {
 
 #[test]
 fn oem_byte_nec() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x30,                         // MOV AH, 30h
@@ -269,7 +269,7 @@ fn oem_byte_nec() {
 
 #[test]
 fn standard_file_handles() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     let psp_segment = harness::get_psp_segment(&mut machine);
     let psp_linear = harness::far_to_linear(psp_segment, 0);
 

@@ -2,7 +2,7 @@ use crate::harness;
 
 #[test]
 fn get_current_drive() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x19,                         // MOV AH, 19h
@@ -19,7 +19,7 @@ fn get_current_drive() {
 
 #[test]
 fn select_drive_returns_lastdrive() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x0E,                         // MOV AH, 0Eh
@@ -41,7 +41,7 @@ fn select_drive_returns_lastdrive() {
 
 #[test]
 fn get_set_interrupt_vector() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     // Set INT 60h to a known address, then read it back.
     // AH=25h: AL=vector, DS:DX=handler.
     // AH=35h: AL=vector, returns ES:BX.
@@ -86,7 +86,7 @@ fn get_set_interrupt_vector() {
 
 #[test]
 fn get_dta_address() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x2F,                         // MOV AH, 2Fh
@@ -111,7 +111,7 @@ fn get_dta_address() {
 
 #[test]
 fn get_indos_flag_address() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x34,                         // MOV AH, 34h
@@ -135,7 +135,7 @@ fn get_indos_flag_address() {
 
 #[test]
 fn get_current_directory() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     // AH=47h, DL=0 (current drive). DS:SI = 64-byte buffer.
     let buffer_offset: u16 = harness::INJECT_RESULT_OFFSET + 0x10;
     #[rustfmt::skip]
@@ -161,11 +161,8 @@ fn get_current_directory() {
 
 #[test]
 fn allocate_memory() {
-    let mut machine = harness::boot_dos620();
-    // COMMAND.COM owns all remaining memory after boot. Create a free block
-    // by splitting the last MCB so that AH=48h has memory to allocate from.
-    harness::create_free_memory(&mut machine, 0x100);
-
+    let mut machine = harness::boot_hle();
+    // HLE MCB chain already has a free Z block after boot.
     // AH=48h, BX=0x10 (allocate 16 paragraphs = 256 bytes).
     // On success: CF=0, AX=segment. On error: CF=1, BX=largest available.
     #[rustfmt::skip]
@@ -207,8 +204,7 @@ fn allocate_memory() {
 
 #[test]
 fn resize_memory() {
-    let mut machine = harness::boot_dos620();
-    harness::create_free_memory(&mut machine, 0x100);
+    let mut machine = harness::boot_hle();
 
     // Allocate 16 paragraphs, resize to 8, then free.
     #[rustfmt::skip]
@@ -245,8 +241,7 @@ fn resize_memory() {
 
 #[test]
 fn free_memory() {
-    let mut machine = harness::boot_dos620();
-    harness::create_free_memory(&mut machine, 0x100);
+    let mut machine = harness::boot_hle();
 
     // Allocate then free.
     #[rustfmt::skip]
@@ -276,7 +271,7 @@ fn free_memory() {
 
 #[test]
 fn get_psp_via_51h() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x51,                         // MOV AH, 51h
@@ -298,7 +293,7 @@ fn get_psp_via_51h() {
 
 #[test]
 fn get_psp_via_62h() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     // Call both AH=51h and AH=62h and verify they return the same value.
     #[rustfmt::skip]
     let code: &[u8] = &[
@@ -324,7 +319,7 @@ fn get_psp_via_62h() {
 
 #[test]
 fn get_sysvars_pointer() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x52,                         // MOV AH, 52h
@@ -348,7 +343,7 @@ fn get_sysvars_pointer() {
 
 #[test]
 fn get_memory_strategy() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x58,                         // MOV AH, 58h
@@ -370,7 +365,7 @@ fn get_memory_strategy() {
 
 #[test]
 fn set_and_get_dta() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         // Set DTA to DS:0200h (DS = INJECT_CODE_SEGMENT)
@@ -405,7 +400,7 @@ fn set_and_get_dta() {
 
 #[test]
 fn set_memory_strategy_round_trip() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         // Get current strategy
@@ -450,7 +445,7 @@ fn set_memory_strategy_round_trip() {
 
 #[test]
 fn get_set_ctrl_break() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         // Get current Ctrl-Break state
@@ -495,7 +490,7 @@ fn get_set_ctrl_break() {
 
 #[test]
 fn get_switch_character() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x37,                         // MOV AH, 37h
@@ -518,7 +513,7 @@ fn get_switch_character() {
 
 #[test]
 fn set_psp_round_trip() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         // Get current PSP
@@ -552,7 +547,7 @@ fn set_psp_round_trip() {
 
 #[test]
 fn get_return_code() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x4D,                         // MOV AH, 4Dh
@@ -573,9 +568,7 @@ fn get_return_code() {
 
 #[test]
 fn change_directory_to_root() {
-    let mut machine = harness::boot_dos620();
-    harness::reset_indos(&mut machine);
-    // TODO: Why DO WE USE BACKSLASHES HERE?! MS DOS ON PC-98 doesn't use those!
+    let mut machine = harness::boot_hle();
     let path = b"A:\\\0";
     harness::write_bytes(&mut machine.bus, harness::INJECT_CODE_BASE + 0x200, path);
 
@@ -595,9 +588,9 @@ fn change_directory_to_root() {
         0xBE, buffer_offset as u8, (buffer_offset >> 8) as u8,   // MOV SI, buffer_offset
         0xCD, 0x21,                                              // INT 21h
         0xFA,                                                    // CLI
-        0xEB, 0xFE,                                              // JMP $
+        0xF4,                                                    // HLT
     ];
-    harness::inject_and_run_with_budget(&mut machine, &code, harness::INJECT_BUDGET_DISK_IO);
+    harness::inject_and_run(&mut machine, &code);
 
     let flags = harness::result_word(&machine.bus, 0);
     let carry = flags & 0x0001;
@@ -710,7 +703,7 @@ fn get_allocation_info() {
 
 #[test]
 fn get_extended_country_info() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     let buffer_offset: u16 = harness::INJECT_RESULT_OFFSET + 0x10;
     #[rustfmt::skip]
     let code: Vec<u8> = vec![
@@ -757,4 +750,660 @@ fn get_extended_country_info() {
         "Extended country code should be 81 (Japan), got {}",
         country
     );
+}
+
+#[test]
+fn allocate_memory_insufficient() {
+    let mut machine = harness::boot_hle();
+    // Request 0xFFFF paragraphs (more than available).
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBB, 0xFF, 0xFF,                   // MOV BX, FFFFh
+        0xB4, 0x48,                         // MOV AH, 48h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (error code)
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (largest available)
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x04, 0x01,                   // MOV [0x0104], AX (flags)
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let flags = harness::result_word(&machine.bus, 4);
+    let carry = flags & 0x0001;
+    assert_eq!(
+        carry, 1,
+        "Allocation of 0xFFFF paragraphs should fail (CF=1), flags={:#06X}",
+        flags
+    );
+
+    let error_code = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        error_code, 8,
+        "Error code should be 8 (insufficient memory), got {}",
+        error_code
+    );
+
+    let largest = harness::result_word(&machine.bus, 2);
+    assert!(
+        largest > 0,
+        "Largest available block should be > 0, got {}",
+        largest
+    );
+}
+
+#[test]
+fn allocate_memory_exact_fit() {
+    let mut machine = harness::boot_hle();
+    // First query largest available block, then allocate exactly that much.
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Try to allocate 0xFFFF to get largest available in BX
+        0xBB, 0xFF, 0xFF,                   // MOV BX, FFFFh
+        0xB4, 0x48,                         // MOV AH, 48h
+        0xCD, 0x21,                         // INT 21h
+        0x89, 0x1E, 0x00, 0x01,             // MOV [0x0100], BX (largest available)
+        // Now allocate exactly that amount
+        0xB4, 0x48,                         // MOV AH, 48h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (segment)
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x04, 0x01,                   // MOV [0x0104], AX (flags)
+        // Free
+        0xA1, 0x02, 0x01,                   // MOV AX, [0x0102]
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xB4, 0x49,                         // MOV AH, 49h
+        0xCD, 0x21,                         // INT 21h
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let flags = harness::result_word(&machine.bus, 4);
+    let carry = flags & 0x0001;
+    assert_eq!(
+        carry, 0,
+        "Exact-fit allocation should succeed (CF=0), flags={:#06X}",
+        flags
+    );
+
+    let segment = harness::result_word(&machine.bus, 2);
+    let linear = harness::far_to_linear(segment, 0);
+    assert!(
+        linear > 0 && linear < 0xA0000,
+        "Exact-fit segment should be in conventional memory, got {:#06X}",
+        segment
+    );
+}
+
+#[test]
+fn allocate_multiple_blocks() {
+    let mut machine = harness::boot_hle();
+    // Allocate 3 blocks of 0x10, 0x20, 0x30 paragraphs.
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Block A: 0x10 paragraphs
+        0xBB, 0x10, 0x00,                   // MOV BX, 0010h
+        0xB4, 0x48,                         // MOV AH, 48h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (seg A)
+        // Block B: 0x20 paragraphs
+        0xBB, 0x20, 0x00,                   // MOV BX, 0020h
+        0xB4, 0x48,                         // MOV AH, 48h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (seg B)
+        // Block C: 0x30 paragraphs
+        0xBB, 0x30, 0x00,                   // MOV BX, 0030h
+        0xB4, 0x48,                         // MOV AH, 48h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x04, 0x01,                   // MOV [0x0104], AX (seg C)
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x06, 0x01,                   // MOV [0x0106], AX (flags)
+        // Free all three
+        0xA1, 0x00, 0x01,                   // MOV AX, [0x0100]
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xB4, 0x49, 0xCD, 0x21,             // AH=49h INT 21h
+        0xA1, 0x02, 0x01,                   // MOV AX, [0x0102]
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xB4, 0x49, 0xCD, 0x21,             // AH=49h INT 21h
+        0xA1, 0x04, 0x01,                   // MOV AX, [0x0104]
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xB4, 0x49, 0xCD, 0x21,             // AH=49h INT 21h
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let flags = harness::result_word(&machine.bus, 6);
+    let carry = flags & 0x0001;
+    assert_eq!(carry, 0, "Third allocation should succeed (CF=0)");
+
+    let seg_a = harness::result_word(&machine.bus, 0);
+    let seg_b = harness::result_word(&machine.bus, 2);
+    let seg_c = harness::result_word(&machine.bus, 4);
+
+    assert_ne!(seg_a, seg_b, "Segments A and B should differ");
+    assert_ne!(seg_b, seg_c, "Segments B and C should differ");
+    assert!(
+        seg_a < seg_b,
+        "Segment A ({:#06X}) should be < B ({:#06X})",
+        seg_a,
+        seg_b
+    );
+    assert!(
+        seg_b < seg_c,
+        "Segment B ({:#06X}) should be < C ({:#06X})",
+        seg_b,
+        seg_c
+    );
+}
+
+#[test]
+fn allocate_after_free_reuses_block() {
+    let mut machine = harness::boot_hle();
+    // Allocate, free, re-allocate same size. First-fit should return the same segment.
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Allocate 0x10
+        0xBB, 0x10, 0x00,                   // MOV BX, 0010h
+        0xB4, 0x48,                         // MOV AH, 48h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (seg1)
+        // Free
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xB4, 0x49,                         // MOV AH, 49h
+        0xCD, 0x21,                         // INT 21h
+        // Re-allocate 0x10
+        0xBB, 0x10, 0x00,                   // MOV BX, 0010h
+        0xB4, 0x48,                         // MOV AH, 48h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (seg2)
+        // Free
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xB4, 0x49,                         // MOV AH, 49h
+        0xCD, 0x21,                         // INT 21h
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let seg1 = harness::result_word(&machine.bus, 0);
+    let seg2 = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        seg1, seg2,
+        "Re-allocation should reuse the same block: seg1={:#06X} seg2={:#06X}",
+        seg1, seg2
+    );
+}
+
+#[test]
+fn free_invalid_segment() {
+    let mut machine = harness::boot_hle();
+    // Free a segment that was never allocated (0x0050).
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x50, 0x00,                   // MOV AX, 0050h
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xB4, 0x49,                         // MOV AH, 49h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (error code)
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (flags)
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let flags = harness::result_word(&machine.bus, 2);
+    let carry = flags & 0x0001;
+    assert_eq!(
+        carry, 1,
+        "Freeing invalid segment should fail (CF=1), flags={:#06X}",
+        flags
+    );
+
+    let error_code = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        error_code, 9,
+        "Error code should be 9 (invalid memory block), got {}",
+        error_code
+    );
+}
+
+#[test]
+fn free_already_free_block() {
+    let mut machine = harness::boot_hle();
+    // Allocate, free, then free again.
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Allocate 0x10
+        0xBB, 0x10, 0x00,                   // MOV BX, 0010h
+        0xB4, 0x48,                         // MOV AH, 48h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (segment)
+        // Free first time
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xB4, 0x49,                         // MOV AH, 49h
+        0xCD, 0x21,                         // INT 21h
+        // Free second time (same segment)
+        0xA1, 0x00, 0x01,                   // MOV AX, [0x0100]
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xB4, 0x49,                         // MOV AH, 49h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (error code)
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x04, 0x01,                   // MOV [0x0104], AX (flags)
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let flags = harness::result_word(&machine.bus, 4);
+    let carry = flags & 0x0001;
+    assert_eq!(
+        carry, 1,
+        "Double-free should fail (CF=1), flags={:#06X}",
+        flags
+    );
+
+    let error_code = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        error_code, 9,
+        "Double-free error should be 9 (invalid block), got {}",
+        error_code
+    );
+}
+
+#[test]
+fn resize_memory_grow() {
+    let mut machine = harness::boot_hle();
+    // Allocate a small block then grow it.
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Allocate 0x10
+        0xBB, 0x10, 0x00,                   // MOV BX, 0010h
+        0xB4, 0x48,                         // MOV AH, 48h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (segment)
+        // Resize to 0x20
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xBB, 0x20, 0x00,                   // MOV BX, 0020h
+        0xB4, 0x4A,                         // MOV AH, 4Ah
+        0xCD, 0x21,                         // INT 21h
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (flags)
+        // Free
+        0xB4, 0x49,                         // MOV AH, 49h
+        0xCD, 0x21,                         // INT 21h
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let flags = harness::result_word(&machine.bus, 2);
+    let carry = flags & 0x0001;
+    assert_eq!(
+        carry, 0,
+        "Memory grow (0x10 -> 0x20) should succeed (CF=0), flags={:#06X}",
+        flags
+    );
+}
+
+#[test]
+fn resize_memory_grow_fail() {
+    let mut machine = harness::boot_hle();
+    // Allocate two adjacent blocks, then try to grow the first past the second.
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Allocate block A: 0x10
+        0xBB, 0x10, 0x00,                   // MOV BX, 0010h
+        0xB4, 0x48,                         // MOV AH, 48h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (seg A)
+        // Allocate block B: 0x10
+        0xBB, 0x10, 0x00,                   // MOV BX, 0010h
+        0xB4, 0x48,                         // MOV AH, 48h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (seg B)
+        // Try to resize A to 0x30 (should fail, B is in the way)
+        0xA1, 0x00, 0x01,                   // MOV AX, [0x0100]
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xBB, 0x30, 0x00,                   // MOV BX, 0030h
+        0xB4, 0x4A,                         // MOV AH, 4Ah
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x04, 0x01,                   // MOV [0x0104], AX (error code)
+        0x89, 0x1E, 0x06, 0x01,             // MOV [0x0106], BX (max available)
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x08, 0x01,                   // MOV [0x0108], AX (flags)
+        // Clean up: free both blocks
+        0xA1, 0x00, 0x01,                   // MOV AX, [0x0100]
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xB4, 0x49, 0xCD, 0x21,             // free A
+        0xA1, 0x02, 0x01,                   // MOV AX, [0x0102]
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xB4, 0x49, 0xCD, 0x21,             // free B
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let flags = harness::result_word(&machine.bus, 8);
+    let carry = flags & 0x0001;
+    assert_eq!(
+        carry, 1,
+        "Growing A past B should fail (CF=1), flags={:#06X}",
+        flags
+    );
+
+    let error_code = harness::result_word(&machine.bus, 4);
+    assert_eq!(
+        error_code, 8,
+        "Error should be 8 (insufficient memory), got {}",
+        error_code
+    );
+
+    let max_available = harness::result_word(&machine.bus, 6);
+    assert_eq!(
+        max_available, 0x10,
+        "Max available should be current size (0x10), got {:#06X}",
+        max_available
+    );
+}
+
+#[test]
+fn resize_memory_to_same_size() {
+    let mut machine = harness::boot_hle();
+    // Allocate then resize to the same size (no-op).
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Allocate 0x10
+        0xBB, 0x10, 0x00,                   // MOV BX, 0010h
+        0xB4, 0x48,                         // MOV AH, 48h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (segment)
+        // Resize to 0x10 (same)
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xBB, 0x10, 0x00,                   // MOV BX, 0010h
+        0xB4, 0x4A,                         // MOV AH, 4Ah
+        0xCD, 0x21,                         // INT 21h
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (flags)
+        // Free
+        0xB4, 0x49,                         // MOV AH, 49h
+        0xCD, 0x21,                         // INT 21h
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let flags = harness::result_word(&machine.bus, 2);
+    let carry = flags & 0x0001;
+    assert_eq!(
+        carry, 0,
+        "Resize to same size should succeed (CF=0), flags={:#06X}",
+        flags
+    );
+}
+
+#[test]
+fn mcb_chain_intact_after_alloc_free() {
+    let mut machine = harness::boot_hle();
+    // Allocate a block, free it, then verify the MCB chain is well-formed.
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Allocate 0x10
+        0xBB, 0x10, 0x00,                   // MOV BX, 0010h
+        0xB4, 0x48,                         // MOV AH, 48h
+        0xCD, 0x21,                         // INT 21h
+        // Free
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xB4, 0x49,                         // MOV AH, 49h
+        0xCD, 0x21,                         // INT 21h
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    // Walk MCB chain and verify integrity
+    let sysvars = harness::get_sysvars_address(&mut machine);
+    let first_mcb_segment = harness::read_word(&machine.bus, sysvars - 2);
+    let mut mcb_addr = harness::far_to_linear(first_mcb_segment, 0);
+    let mut count = 0u32;
+
+    for _ in 0..1000 {
+        let block_type = harness::read_byte(&machine.bus, mcb_addr);
+        let size = harness::read_word(&machine.bus, mcb_addr + 3);
+
+        assert!(
+            block_type == 0x4D || block_type == 0x5A,
+            "MCB #{} at {:#010X} has invalid type {:#04X}",
+            count,
+            mcb_addr,
+            block_type
+        );
+
+        count += 1;
+
+        if block_type == 0x5A {
+            break;
+        }
+
+        let current_segment = mcb_addr >> 4;
+        let next_segment = current_segment + size as u32 + 1;
+        mcb_addr = next_segment << 4;
+    }
+
+    assert!(
+        count >= 3,
+        "MCB chain should have at least 3 entries, got {}",
+        count
+    );
+}
+
+#[test]
+fn free_coalesces_adjacent_blocks() {
+    let mut machine = harness::boot_hle();
+    // Allocate A, B, C. Free A, C, then B. After freeing B, the three
+    // freed blocks should coalesce into one (since A and C were already free).
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Allocate A: 0x10
+        0xBB, 0x10, 0x00,
+        0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x00, 0x01,                   // [0x0100] = seg A
+        // Allocate B: 0x10
+        0xBB, 0x10, 0x00,
+        0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x02, 0x01,                   // [0x0102] = seg B
+        // Allocate C: 0x10
+        0xBB, 0x10, 0x00,
+        0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x04, 0x01,                   // [0x0104] = seg C
+        // Count MCBs before freeing (store at [0x0106])
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let seg_a = harness::result_word(&machine.bus, 0);
+    let seg_b = harness::result_word(&machine.bus, 2);
+    let seg_c = harness::result_word(&machine.bus, 4);
+
+    // Free A
+    #[rustfmt::skip]
+    let free_a: Vec<u8> = vec![
+        0xB8, (seg_a & 0xFF) as u8, (seg_a >> 8) as u8,
+        0x8E, 0xC0,
+        0xB4, 0x49, 0xCD, 0x21,
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, &free_a);
+
+    // Free C
+    #[rustfmt::skip]
+    let free_c: Vec<u8> = vec![
+        0xB8, (seg_c & 0xFF) as u8, (seg_c >> 8) as u8,
+        0x8E, 0xC0,
+        0xB4, 0x49, 0xCD, 0x21,
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, &free_c);
+
+    // Count MCBs before freeing B
+    let sysvars = harness::get_sysvars_address(&mut machine);
+    let first_mcb = harness::read_word(&machine.bus, sysvars - 2);
+    let count_before = count_mcb_entries(&machine.bus, first_mcb);
+
+    // Free B (should coalesce A+B+C into one free block)
+    #[rustfmt::skip]
+    let free_b: Vec<u8> = vec![
+        0xB8, (seg_b & 0xFF) as u8, (seg_b >> 8) as u8,
+        0x8E, 0xC0,
+        0xB4, 0x49, 0xCD, 0x21,
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, &free_b);
+
+    let count_after = count_mcb_entries(&machine.bus, first_mcb);
+    assert!(
+        count_after < count_before,
+        "MCB chain should have fewer entries after coalescing: before={}, after={}",
+        count_before,
+        count_after
+    );
+}
+
+#[test]
+fn allocate_best_fit_strategy() {
+    let mut machine = harness::boot_hle();
+    // Allocate A(0x10), B(0x10), C(0x30), D(0x10). Free A (0x10 hole). Free C (0x30 hole).
+    // Set best-fit. Allocate 0x10. Should go into the A hole (smaller), not the C hole.
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Allocate A: 0x10
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x00, 0x01,                   // [0x0100] = seg A
+        // Allocate B: 0x10
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x02, 0x01,                   // [0x0102] = seg B
+        // Allocate C: 0x30
+        0xBB, 0x30, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x04, 0x01,                   // [0x0104] = seg C
+        // Allocate D: 0x10
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x06, 0x01,                   // [0x0106] = seg D
+        // Free A
+        0xA1, 0x00, 0x01, 0x8E, 0xC0, 0xB4, 0x49, 0xCD, 0x21,
+        // Free C
+        0xA1, 0x04, 0x01, 0x8E, 0xC0, 0xB4, 0x49, 0xCD, 0x21,
+        // Set strategy to best-fit (1)
+        0xB4, 0x58, 0xB0, 0x01,             // MOV AH, 58h; MOV AL, 01h
+        0xBB, 0x01, 0x00,                   // MOV BX, 0001h
+        0xCD, 0x21,                         // INT 21h
+        // Allocate 0x10 -- should go into the 0x10 hole (A's old spot)
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x08, 0x01,                   // [0x0108] = seg E (best-fit result)
+        // Restore strategy to first-fit (0)
+        0xB4, 0x58, 0xB0, 0x01,
+        0xBB, 0x00, 0x00,
+        0xCD, 0x21,
+        // Clean up: free E, B, D
+        0xA1, 0x08, 0x01, 0x8E, 0xC0, 0xB4, 0x49, 0xCD, 0x21,
+        0xA1, 0x02, 0x01, 0x8E, 0xC0, 0xB4, 0x49, 0xCD, 0x21,
+        0xA1, 0x06, 0x01, 0x8E, 0xC0, 0xB4, 0x49, 0xCD, 0x21,
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let seg_a = harness::result_word(&machine.bus, 0);
+    let seg_e = harness::result_word(&machine.bus, 8);
+
+    // Best-fit should have chosen A's old hole (0x10 paragraphs) over C's hole (0x30).
+    assert_eq!(
+        seg_e, seg_a,
+        "Best-fit should reuse the smaller hole (A's old segment {:#06X}), got {:#06X}",
+        seg_a, seg_e
+    );
+}
+
+#[test]
+fn allocate_last_fit_strategy() {
+    let mut machine = harness::boot_hle();
+    // Allocate A(0x10), B(0x10), C(0x10). Free A and B to create two equal holes
+    // separated by C. Set last-fit. Allocate 0x10. Should NOT pick A (first hole).
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Allocate A: 0x10
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x00, 0x01,                   // [0x0100] = seg A
+        // Allocate B: 0x10
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x02, 0x01,                   // [0x0102] = seg B
+        // Allocate C: 0x10 (separator so A and B don't coalesce when freed)
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x04, 0x01,                   // [0x0104] = seg C
+        // Free A
+        0xA1, 0x00, 0x01, 0x8E, 0xC0, 0xB4, 0x49, 0xCD, 0x21,
+        // Free B
+        0xA1, 0x02, 0x01, 0x8E, 0xC0, 0xB4, 0x49, 0xCD, 0x21,
+        // Set last-fit (2)
+        0xB4, 0x58, 0xB0, 0x01,
+        0xBB, 0x02, 0x00,
+        0xCD, 0x21,
+        // Allocate 0x10 -- last-fit should NOT pick A's hole (first in chain)
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x06, 0x01,                   // [0x0106] = seg D (last-fit result)
+        // Restore first-fit (0)
+        0xB4, 0x58, 0xB0, 0x01,
+        0xBB, 0x00, 0x00,
+        0xCD, 0x21,
+        // Clean up: free D, C
+        0xA1, 0x06, 0x01, 0x8E, 0xC0, 0xB4, 0x49, 0xCD, 0x21,
+        0xA1, 0x04, 0x01, 0x8E, 0xC0, 0xB4, 0x49, 0xCD, 0x21,
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let seg_a = harness::result_word(&machine.bus, 0);
+    let seg_d = harness::result_word(&machine.bus, 6);
+
+    assert_ne!(
+        seg_d, seg_a,
+        "Last-fit should NOT pick the first hole (A at {:#06X}), got {:#06X}",
+        seg_a, seg_d
+    );
+    assert!(
+        seg_d > seg_a,
+        "Last-fit result ({:#06X}) should be at a higher address than A ({:#06X})",
+        seg_d,
+        seg_a
+    );
+}
+
+fn count_mcb_entries(bus: &machine::Pc9801Bus, first_mcb_segment: u16) -> u32 {
+    let mut count = 0u32;
+    let mut mcb_addr = harness::far_to_linear(first_mcb_segment, 0);
+    for _ in 0..1000 {
+        let block_type = harness::read_byte(bus, mcb_addr);
+        if block_type != 0x4D && block_type != 0x5A {
+            break;
+        }
+        count += 1;
+        if block_type == 0x5A {
+            break;
+        }
+        let size = harness::read_word(bus, mcb_addr + 3);
+        let current_segment = mcb_addr >> 4;
+        mcb_addr = (current_segment + size as u32 + 1) << 4;
+    }
+    count
 }
