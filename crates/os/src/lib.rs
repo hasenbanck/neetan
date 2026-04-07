@@ -247,12 +247,24 @@ impl NeetanOs {
             0x25 => false,
             0x26 => false,
             0x27 => false,
-            0x28 => false,
-            0x29 => false,
+            0x28 => {
+                self.int28h(cpu, memory);
+                true
+            }
+            0x29 => {
+                self.int29h(cpu, memory);
+                true
+            }
             0x2A => true, // Critical section stubs: no-op
-            0x2F => false,
+            0x2F => {
+                self.int2fh(cpu, memory);
+                true
+            }
             0x33 => false,
-            0xDC => false,
+            0xDC => {
+                self.intdch(cpu, memory);
+                true
+            }
             _ => false,
         }
     }
@@ -707,8 +719,8 @@ impl NeetanOs {
 
         let base = IOSYS_BASE;
 
-        // MS-DOS product number (non-zero for NEC DOS)
-        mem.write_word(base + IOSYS_OFF_PRODUCT_NUMBER, 0x0001);
+        // MS-DOS product number (0x0100+ range for MS-DOS 5.0+, 0x0102 = NEC MS DOS 6.20)
+        mem.write_word(base + IOSYS_OFF_PRODUCT_NUMBER, 0x0102);
         mem.write_byte(base + IOSYS_OFF_INTERNAL_REVISION, 0x00);
 
         mem.write_byte(base + IOSYS_OFF_EMM_BANK_FLAG, 0x00);

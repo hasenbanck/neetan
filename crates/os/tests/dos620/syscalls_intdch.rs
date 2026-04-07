@@ -2,9 +2,9 @@ use crate::harness;
 
 #[test]
 fn system_identification() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     // INT DCh CL=12h: System identification.
-    // Call with AX=0000h. If supported, AX changes to product number.
+    // AX returns product number from 0060:0020h.
     // DX returns machine type (0003h = normal-mode PC-98).
     #[rustfmt::skip]
     let code: &[u8] = &[
@@ -18,22 +18,24 @@ fn system_identification() {
     ];
     harness::inject_and_run(&mut machine, code);
 
+    let expected_product = harness::read_word(&machine.bus, 0x0600 + 0x0020);
     let ax = harness::result_word(&machine.bus, 0);
-    // If AX changed from 0, the function is supported. Record the values.
-    // Product numbers for MS-DOS 5.0+ are in the 0x0100+ range.
-    // AX may remain 0 if INT DCh is not fully implemented yet.
-    // For now, just verify we got some result without crashing.
-    let _dx = harness::result_word(&machine.bus, 2);
-    assert!(
-        ax == 0x0000 || ax >= 0x0100,
-        "INT DCh CL=12h: AX should be 0 (unsupported) or >= 0x0100 (product number), got {:#06X}",
-        ax
+    let dx = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        ax, expected_product,
+        "INT DCh CL=12h: AX should be product number {:#06X}, got {:#06X}",
+        expected_product, ax
+    );
+    assert_eq!(
+        dx, 0x0003,
+        "INT DCh CL=12h: DX should be 0x0003 (normal-mode PC-98), got {:#06X}",
+        dx
     );
 }
 
 #[test]
 fn daua_mapping_buffer() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     // INT DCh CL=13h: Fill 96-byte DA/UA buffer at DS:DX.
     let buffer_offset: u16 = harness::INJECT_RESULT_OFFSET + 0x10;
     #[rustfmt::skip]
@@ -63,34 +65,53 @@ fn daua_mapping_buffer() {
 
 #[test]
 fn internal_revision() {
-    let machine = harness::boot_dos620();
-    // INT DCh CL=15h returns internal revision from 0060:0022h.
-    // We can just read the memory directly to establish the expected value.
-    let revision = harness::read_byte(&machine.bus, 0x0600 + 0x0022);
-    // The revision is an arbitrary internal number, just verify it's readable.
-    // This establishes the baseline value for our HLE implementation.
-    let _ = revision;
+    let mut machine = harness::boot_hle();
+    // INT DCh CL=15h: Returns internal revision from 0060:0022h in AL.
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB9, 0x15, 0x00,                   // MOV CX, 0015h (CL=15h)
+        0xCD, 0xDC,                         // INT DCh
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let expected = harness::read_byte(&machine.bus, 0x0600 + 0x0022);
+    let al = harness::result_byte(&machine.bus, 0);
+    assert_eq!(
+        al, expected,
+        "INT DCh CL=15h: AL should be revision {:#04X}, got {:#04X}",
+        expected, al
+    );
 }
 
 #[test]
 fn extended_memory_query() {
-    let machine = harness::boot_dos620();
-    // INT DCh CL=81h returns extended memory size from 0060:0031h.
-    // Read the memory directly to verify the field exists and is reasonable.
-    let ext_mem_128kb_units = harness::read_byte(&machine.bus, 0x0600 + 0x0031);
-    // PC-9801RA has extended memory. Value is in 128KB units.
-    // 0 means no extended memory, which is also valid.
-    assert!(
-        (ext_mem_128kb_units as u32) * 128 <= 16384,
-        "Extended memory should be <= 16384 KB (16 MB), got {} * 128 = {} KB",
-        ext_mem_128kb_units,
-        ext_mem_128kb_units as u32 * 128
+    let mut machine = harness::boot_hle();
+    // INT DCh CL=81h: Returns extended memory size from 0060:0031h in AL.
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB9, 0x81, 0x00,                   // MOV CX, 0081h (CL=81h)
+        0xCD, 0xDC,                         // INT DCh
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let expected = harness::read_byte(&machine.bus, 0x0600 + 0x0031);
+    let al = harness::result_byte(&machine.bus, 0);
+    assert_eq!(
+        al, expected,
+        "INT DCh CL=81h: AL should be ext mem {:#04X}, got {:#04X}",
+        expected, al
     );
 }
 
 #[test]
 fn noop_functions_00h_through_08h() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     // Call INT DCh with CL=00h through CL=08h. These are documented no-ops.
     // They should return without hanging or crashing.
     #[rustfmt::skip]
@@ -112,7 +133,7 @@ fn noop_functions_00h_through_08h() {
 
 #[test]
 fn disk_partition_info_80h() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB9, 0x80, 0x00,                   // MOV CX, 0080h (CL=80h)
@@ -126,8 +147,8 @@ fn disk_partition_info_80h() {
     ];
     harness::inject_and_run(&mut machine, code);
 
-    // Just verify the call completed without hanging. The return values
-    // depend on the specific implementation.
+    // Verify the call completed without hanging. The return values
+    // depend on the drive configuration.
     let _ax = harness::result_word(&machine.bus, 0);
     let _bx = harness::result_word(&machine.bus, 2);
 }

@@ -2,7 +2,7 @@ use crate::harness;
 
 #[test]
 fn windows_not_running() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB8, 0x00, 0x16,                   // MOV AX, 1600h
@@ -14,17 +14,16 @@ fn windows_not_running() {
     harness::inject_and_run(&mut machine, code);
 
     let al = harness::result_byte(&machine.bus, 0);
-    // NEC MS-DOS 6.20 returns AL=0x02 (multiplex handler modifies AL in the default chain).
-    assert!(
-        al == 0x00 || al == 0x01 || al == 0x02 || al == 0x80,
-        "INT 2Fh/1600h AL should indicate no Windows (0x00, 0x01, 0x02, or 0x80), got {:#04X}",
+    assert_eq!(
+        al, 0x00,
+        "INT 2Fh/1600h AL should be 0x00 (no Windows), got {:#04X}",
         al
     );
 }
 
 #[test]
 fn xms_check() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB8, 0x00, 0x43,                   // MOV AX, 4300h
@@ -38,12 +37,16 @@ fn xms_check() {
     let al = harness::result_byte(&machine.bus, 0);
     // TODO: Once a XMS memory manager is provided, we must test for it's presence here.
     // assert!(al, 0x80);
-    assert_eq!(al, 0x00);
+    assert_eq!(
+        al, 0x00,
+        "XMS check: AL should be 0x00 (not installed), got {:#04X}",
+        al
+    );
 }
 
 #[test]
 fn doskey_check() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB8, 0x00, 0x48,                   // MOV AX, 4800h
@@ -55,8 +58,8 @@ fn doskey_check() {
     harness::inject_and_run(&mut machine, code);
 
     let al = harness::result_byte(&machine.bus, 0);
-    assert!(
-        al == 0x00,
+    assert_eq!(
+        al, 0x00,
         "DOSKEY check: AL should be 0x00 (not installed), got {:#04X}",
         al
     );
@@ -64,23 +67,21 @@ fn doskey_check() {
 
 #[test]
 fn hma_query() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB8, 0x01, 0x4A,                   // MOV AX, 4A01h
         0xCD, 0x2F,                         // INT 2Fh
         0x89, 0x1E, 0x00, 0x01,             // MOV [0x0100], BX
-        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
     harness::inject_and_run(&mut machine, code);
 
-    // Just verify the call completed. BX may contain HMA free space or 0.
     let bx = harness::result_word(&machine.bus, 0);
-    assert!(
-        bx <= 0xFFF0,
-        "HMA free space should be <= 0xFFF0, got {:#06X}",
+    assert_eq!(
+        bx, 0x0000,
+        "HMA free space should be 0x0000 (no HMA), got {:#06X}",
         bx
     );
 }
