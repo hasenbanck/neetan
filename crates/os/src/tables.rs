@@ -1,1 +1,211 @@
 //! DOS internal data structures (SYSVARS, SFT, CDS, DPB layout).
+//!
+//! Constants define the memory layout for NEETAN OS boot data structures.
+//! The IO.SYS work area lives at segment 0060h (linear 0x0600).
+//! SYSVARS and DOS structures live at segment 0x0200 (linear 0x2000)
+//! to avoid field offset conflicts with the IO.SYS work area.
+
+use crate::MemoryAccess;
+
+pub const DOS_DATA_SEGMENT: u16 = 0x0200;
+pub const DOS_DATA_BASE: u32 = (DOS_DATA_SEGMENT as u32) << 4;
+
+// SYSVARS / List of Lists
+pub const SYSVARS_SEGMENT: u16 = DOS_DATA_SEGMENT;
+pub const SYSVARS_OFFSET: u16 = 0x0000;
+pub const SYSVARS_BASE: u32 = DOS_DATA_BASE;
+
+// SYSVARS field offsets (relative to SYSVARS_BASE)
+pub const SYSVARS_OFF_FIRST_MCB: u32 = 0x02; // at SYSVARS - 2 (written to SYSVARS_BASE - 2)
+pub const SYSVARS_OFF_DPB_PTR: u32 = 0x00;
+pub const SYSVARS_OFF_SFT_PTR: u32 = 0x04;
+pub const SYSVARS_OFF_CLOCK_PTR: u32 = 0x08;
+pub const SYSVARS_OFF_CON_PTR: u32 = 0x0C;
+pub const SYSVARS_OFF_MAX_SECTOR: u32 = 0x10;
+pub const SYSVARS_OFF_BUFFER_PTR: u32 = 0x12;
+pub const SYSVARS_OFF_CDS_PTR: u32 = 0x16;
+pub const SYSVARS_OFF_FCB_SFT_PTR: u32 = 0x1A;
+pub const SYSVARS_OFF_PROT_FCBS: u32 = 0x1E;
+pub const SYSVARS_OFF_BLOCK_DEVS: u32 = 0x20;
+pub const SYSVARS_OFF_LASTDRIVE: u32 = 0x21;
+pub const SYSVARS_OFF_NUL_HEADER: u32 = 0x22;
+pub const SYSVARS_OFF_JOIN_DRIVES: u32 = 0x34;
+pub const SYSVARS_OFF_SETVER_PTR: u32 = 0x37;
+pub const SYSVARS_OFF_BUFFERS: u32 = 0x3F;
+pub const SYSVARS_OFF_LOOKAHEAD: u32 = 0x41;
+pub const SYSVARS_OFF_BOOT_DRIVE: u32 = 0x43;
+pub const SYSVARS_OFF_386_FLAG: u32 = 0x44;
+pub const SYSVARS_OFF_EXT_MEM: u32 = 0x45;
+
+// Device headers -- offsets from DOS_DATA_BASE
+pub const DEV_NUL_OFFSET: u16 = 0x0022; // Embedded in SYSVARS
+pub const DEV_CON_OFFSET: u16 = 0x0048;
+pub const DEV_CLOCK_OFFSET: u16 = 0x005A;
+pub const DEV_AID_NEC_OFFSET: u16 = 0x006C;
+pub const DEV_MS_KANJI_OFFSET: u16 = 0x007E;
+
+// Device header structure (18 bytes each)
+pub const DEVHDR_SIZE: usize = 18;
+pub const DEVHDR_OFF_NEXT_PTR: u32 = 0x00;
+pub const DEVHDR_OFF_ATTRIBUTE: u32 = 0x04;
+pub const DEVHDR_OFF_STRATEGY: u32 = 0x06;
+pub const DEVHDR_OFF_INTERRUPT: u32 = 0x08;
+pub const DEVHDR_OFF_NAME: u32 = 0x0A;
+
+// Device attribute flags
+pub const DEVATTR_CHAR: u16 = 0x8000;
+pub const DEVATTR_IOCTL: u16 = 0x4000;
+pub const DEVATTR_SPECIAL: u16 = 0x0010;
+pub const DEVATTR_CLOCK: u16 = 0x0008;
+pub const DEVATTR_NUL: u16 = 0x0004;
+pub const DEVATTR_STDOUT: u16 = 0x0002;
+pub const DEVATTR_STDIN: u16 = 0x0001;
+
+// SFT (System File Table)
+pub const SFT_OFFSET: u16 = 0x0090;
+pub const SFT_BASE: u32 = DOS_DATA_BASE + SFT_OFFSET as u32;
+pub const SFT_HEADER_SIZE: u32 = 6; // DWORD next + WORD count
+pub const SFT_ENTRY_SIZE: u32 = 59;
+
+// SFT entry field offsets (within each 59-byte entry)
+pub const SFT_ENT_REF_COUNT: u32 = 0x00;
+pub const SFT_ENT_OPEN_MODE: u32 = 0x02;
+pub const SFT_ENT_FILE_ATTR: u32 = 0x04;
+pub const SFT_ENT_DEV_INFO: u32 = 0x05;
+pub const SFT_ENT_DEV_PTR: u32 = 0x07;
+pub const SFT_ENT_NAME: u32 = 0x20;
+
+// Device info word flags (SFT entry +0x05)
+pub const SFT_DEVINFO_CHAR: u16 = 0x0080;
+pub const SFT_DEVINFO_EOF: u16 = 0x0040;
+pub const SFT_DEVINFO_STDIN: u16 = 0x0001;
+pub const SFT_DEVINFO_STDOUT: u16 = 0x0002;
+pub const SFT_DEVINFO_NUL: u16 = 0x0004;
+pub const SFT_DEVINFO_CLOCK: u16 = 0x0008;
+pub const SFT_DEVINFO_SPECIAL: u16 = 0x0010;
+
+// CDS (Current Directory Structure)
+pub const CDS_OFFSET: u16 = 0x01C0;
+pub const CDS_BASE: u32 = DOS_DATA_BASE + CDS_OFFSET as u32;
+pub const CDS_ENTRY_SIZE: u32 = 0x58; // 88 bytes per entry
+pub const CDS_ENTRIES: u32 = 26;
+
+// CDS entry field offsets
+pub const CDS_OFF_PATH: u32 = 0x00; // 67 bytes, null-terminated
+pub const CDS_OFF_FLAGS: u32 = 0x43;
+pub const CDS_OFF_DPB_PTR: u32 = 0x45;
+pub const CDS_FLAG_PHYSICAL: u16 = 0x4000;
+
+// DPB (Disk Parameter Block)
+pub const DPB_OFFSET: u16 = 0x0AB0;
+pub const DPB_BASE: u32 = DOS_DATA_BASE + DPB_OFFSET as u32;
+pub const DPB_ENTRY_SIZE: u32 = 0x21; // 33 bytes per entry (DOS 4.0+)
+
+// DPB entry field offsets
+pub const DPB_OFF_DRIVE_NUM: u32 = 0x00;
+pub const DPB_OFF_UNIT_NUM: u32 = 0x01;
+pub const DPB_OFF_BYTES_PER_SECTOR: u32 = 0x02;
+pub const DPB_OFF_CLUSTER_MASK: u32 = 0x04;
+pub const DPB_OFF_CLUSTER_SHIFT: u32 = 0x05;
+pub const DPB_OFF_RESERVED_SECTORS: u32 = 0x06;
+pub const DPB_OFF_NUM_FATS: u32 = 0x08;
+pub const DPB_OFF_ROOT_ENTRIES: u32 = 0x09;
+pub const DPB_OFF_FIRST_DATA_SECTOR: u32 = 0x0B;
+pub const DPB_OFF_MAX_CLUSTER: u32 = 0x0D;
+pub const DPB_OFF_SECTORS_PER_FAT: u32 = 0x0F;
+pub const DPB_OFF_FIRST_ROOT_SECTOR: u32 = 0x11;
+pub const DPB_OFF_DEVICE_PTR: u32 = 0x13;
+pub const DPB_OFF_MEDIA_DESC: u32 = 0x17;
+pub const DPB_OFF_ACCESS_FLAG: u32 = 0x18;
+pub const DPB_OFF_NEXT_DPB: u32 = 0x19;
+
+// Disk buffer
+pub const DISK_BUFFER_OFFSET: u16 = 0x0AD4;
+pub const DISK_BUFFER_BASE: u32 = DOS_DATA_BASE + DISK_BUFFER_OFFSET as u32;
+
+// InDOS and critical error flags
+pub const INDOS_FLAG_OFFSET: u16 = 0x0CD8;
+pub const INDOS_FLAG_ADDR: u32 = DOS_DATA_BASE + INDOS_FLAG_OFFSET as u32;
+pub const CRITICAL_ERROR_FLAG_ADDR: u32 = INDOS_FLAG_ADDR + 1;
+
+// FCB-SFT
+pub const FCB_SFT_OFFSET: u16 = 0x0CE0;
+pub const FCB_SFT_BASE: u32 = DOS_DATA_BASE + FCB_SFT_OFFSET as u32;
+
+// First MCB (sentinel)
+pub const FIRST_MCB_OFFSET: u16 = 0x0CF0;
+pub const FIRST_MCB_ADDR: u32 = DOS_DATA_BASE + FIRST_MCB_OFFSET as u32;
+pub const FIRST_MCB_SEGMENT: u16 = (FIRST_MCB_ADDR >> 4) as u16;
+
+pub const IOSYS_SEGMENT: u16 = 0x0060;
+pub const IOSYS_BASE: u32 = (IOSYS_SEGMENT as u32) << 4;
+
+pub const IOSYS_OFF_PRODUCT_NUMBER: u32 = 0x0020;
+pub const IOSYS_OFF_INTERNAL_REVISION: u32 = 0x0022;
+pub const IOSYS_OFF_EMM_BANK_FLAG: u32 = 0x0030;
+pub const IOSYS_OFF_EXT_MEM_128K: u32 = 0x0031;
+pub const IOSYS_OFF_FD_DUPLICATE: u32 = 0x0038;
+pub const IOSYS_OFF_AUX_PROTOCOL: u32 = 0x0068;
+pub const IOSYS_OFF_DAUA_TABLE: u32 = 0x006C;
+pub const IOSYS_OFF_KANJI_MODE: u32 = 0x008A;
+pub const IOSYS_OFF_GRAPH_CHAR: u32 = 0x008B;
+pub const IOSYS_OFF_SHIFT_FN_CHAR: u32 = 0x008C;
+pub const IOSYS_OFF_STOP_REENTRY: u32 = 0x00A4;
+pub const IOSYS_OFF_INTDC_FLAG: u32 = 0x00B4;
+pub const IOSYS_OFF_SPECIAL_INPUT: u32 = 0x0106;
+pub const IOSYS_OFF_PRINTER_ECHO: u32 = 0x0107;
+pub const IOSYS_OFF_SOFTKEY_FLAGS: u32 = 0x010C;
+pub const IOSYS_OFF_CURSOR_Y: u32 = 0x0110;
+pub const IOSYS_OFF_FNKEY_DISPLAY: u32 = 0x0111;
+pub const IOSYS_OFF_SCROLL_LOWER: u32 = 0x0112;
+pub const IOSYS_OFF_SCREEN_LINES: u32 = 0x0113;
+pub const IOSYS_OFF_CLEAR_ATTR: u32 = 0x0114;
+pub const IOSYS_OFF_KANJI_HI_FLAG: u32 = 0x0115;
+pub const IOSYS_OFF_KANJI_HI_BYTE: u32 = 0x0116;
+pub const IOSYS_OFF_LINE_WRAP: u32 = 0x0117;
+pub const IOSYS_OFF_SCROLL_SPEED: u32 = 0x0118;
+pub const IOSYS_OFF_CLEAR_CHAR: u32 = 0x0119;
+pub const IOSYS_OFF_CURSOR_VISIBLE: u32 = 0x011B;
+pub const IOSYS_OFF_CURSOR_X: u32 = 0x011C;
+pub const IOSYS_OFF_DISPLAY_ATTR: u32 = 0x011D;
+pub const IOSYS_OFF_SCROLL_UPPER: u32 = 0x011E;
+pub const IOSYS_OFF_SCROLL_WAIT: u32 = 0x011F;
+pub const IOSYS_OFF_SAVED_CURSOR_Y: u32 = 0x0126;
+pub const IOSYS_OFF_SAVED_CURSOR_X: u32 = 0x0127;
+pub const IOSYS_OFF_SAVED_CURSOR_ATTR: u32 = 0x012B;
+pub const IOSYS_OFF_LAST_DRIVE_UNIT: u32 = 0x0136;
+pub const IOSYS_OFF_FD_DUPLICATE2: u32 = 0x013B;
+pub const IOSYS_OFF_EXT_ATTR_DISPLAY: u32 = 0x013C;
+pub const IOSYS_OFF_EXT_ATTR_CLEAR: u32 = 0x013E;
+pub const IOSYS_OFF_EXT_ATTR_MODE: u32 = 0x05D6;
+pub const IOSYS_OFF_TEXT_MODE: u32 = 0x05D8;
+pub const IOSYS_OFF_DAUA_PTR: u32 = 0x2820;
+pub const IOSYS_OFF_EXT_DAUA_TABLE: u32 = 0x2C86;
+pub const IOSYS_EXT_DAUA_TABLE_SIZE: u32 = 52;
+
+/// Writes a far pointer (offset:segment, little-endian DWORD) at the given linear address.
+pub fn write_far_ptr(mem: &mut dyn MemoryAccess, addr: u32, segment: u16, offset: u16) {
+    mem.write_word(addr, offset);
+    mem.write_word(addr + 2, segment);
+}
+
+/// Writes an 18-byte device header at the given linear address.
+pub fn write_device_header(
+    mem: &mut dyn MemoryAccess,
+    addr: u32,
+    next_segment: u16,
+    next_offset: u16,
+    attribute: u16,
+    name: &[u8; 8],
+) {
+    write_far_ptr(mem, addr + DEVHDR_OFF_NEXT_PTR, next_segment, next_offset);
+    mem.write_word(addr + DEVHDR_OFF_ATTRIBUTE, attribute);
+    mem.write_word(addr + DEVHDR_OFF_STRATEGY, 0x0000);
+    mem.write_word(addr + DEVHDR_OFF_INTERRUPT, 0x0000);
+    mem.write_block(addr + DEVHDR_OFF_NAME, name);
+}
+
+/// Converts a DOS_DATA_BASE-relative offset to a far pointer in DOS_DATA_SEGMENT.
+pub fn dos_data_far(offset: u16) -> (u16, u16) {
+    (DOS_DATA_SEGMENT, offset)
+}

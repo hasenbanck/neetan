@@ -19,7 +19,7 @@ mod memory;
 mod process;
 mod shell;
 mod state;
-mod tables;
+pub mod tables;
 
 /// CPU register access for the OS.
 ///
@@ -136,7 +136,14 @@ pub trait ConsoleIo {
 /// Created when no bootable media is found, then called via `dispatch()` on
 /// each DOS interrupt.
 pub struct NeetanOs {
-    // Fields will be populated in later implementation steps.
+    /// Linear address of SYSVARS (List of Lists) in emulated RAM.
+    sysvars_base: u32,
+    /// Linear address of the InDOS flag byte.
+    indos_addr: u32,
+    /// Boot drive number (1=A, 2=B, ...). Default is 1 (A:).
+    boot_drive: u8,
+    /// DOS version reported to programs: (major, minor) = (6, 20).
+    version: (u8, u8),
 }
 
 impl Default for NeetanOs {
@@ -148,7 +155,12 @@ impl Default for NeetanOs {
 impl NeetanOs {
     /// Creates a new NeetanOs instance.
     pub fn new() -> Self {
-        Self {}
+        Self {
+            sysvars_base: tables::SYSVARS_BASE,
+            indos_addr: tables::INDOS_FLAG_ADDR,
+            boot_drive: 1,
+            version: (6, 20),
+        }
     }
 
     /// Performs the DOS boot sequence: writes data structures into emulated RAM,
@@ -156,11 +168,12 @@ impl NeetanOs {
     pub fn boot(
         &mut self,
         _cpu: &mut dyn CpuAccess,
-        _memory: &mut dyn MemoryAccess,
+        memory: &mut dyn MemoryAccess,
         _disk: &mut dyn DiskIo,
         _console: &mut dyn ConsoleIo,
     ) {
-        unimplemented!("NeetanOs::boot()")
+        self.write_dos_data_structures(memory);
+        self.write_iosys_work_area(memory);
     }
 
     /// Dispatches a DOS/OS interrupt to the appropriate handler.
@@ -171,14 +184,17 @@ impl NeetanOs {
     pub fn dispatch(
         &mut self,
         vector: u8,
-        _cpu: &mut dyn CpuAccess,
-        _memory: &mut dyn MemoryAccess,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
         _disk: &mut dyn DiskIo,
         _console: &mut dyn ConsoleIo,
     ) -> bool {
         match vector {
+            0x21 => {
+                self.int21h(cpu, memory);
+                true
+            }
             0x20 => false,
-            0x21 => false,
             0x22 => false,
             0x23 => false,
             0x24 => false,
@@ -193,5 +209,333 @@ impl NeetanOs {
             0xDC => false,
             _ => false,
         }
+    }
+
+    /// Writes SYSVARS, device chain, SFT, CDS, DPB, buffers, MCB into emulated RAM.
+    fn write_dos_data_structures(&self, mem: &mut dyn MemoryAccess) {
+        use tables::*;
+
+        // Zero the DOS data area.
+        let zeros = vec![0u8; (FIRST_MCB_ADDR + 16 - DOS_DATA_BASE) as usize];
+        mem.write_block(DOS_DATA_BASE, &zeros);
+
+        // SYSVARS -2: first MCB segment
+        mem.write_word(SYSVARS_BASE - 2, FIRST_MCB_SEGMENT);
+
+        // SYSVARS fields
+        let (dpb_seg, dpb_off) = dos_data_far(DPB_OFFSET);
+        write_far_ptr(mem, SYSVARS_BASE + SYSVARS_OFF_DPB_PTR, dpb_seg, dpb_off);
+
+        let (sft_seg, sft_off) = dos_data_far(SFT_OFFSET);
+        write_far_ptr(mem, SYSVARS_BASE + SYSVARS_OFF_SFT_PTR, sft_seg, sft_off);
+
+        let (clock_seg, clock_off) = dos_data_far(DEV_CLOCK_OFFSET);
+        write_far_ptr(
+            mem,
+            SYSVARS_BASE + SYSVARS_OFF_CLOCK_PTR,
+            clock_seg,
+            clock_off,
+        );
+
+        let (con_seg, con_off) = dos_data_far(DEV_CON_OFFSET);
+        write_far_ptr(mem, SYSVARS_BASE + SYSVARS_OFF_CON_PTR, con_seg, con_off);
+
+        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_MAX_SECTOR, 512);
+
+        let (buf_seg, buf_off) = dos_data_far(DISK_BUFFER_OFFSET);
+        write_far_ptr(mem, SYSVARS_BASE + SYSVARS_OFF_BUFFER_PTR, buf_seg, buf_off);
+
+        let (cds_seg, cds_off) = dos_data_far(CDS_OFFSET);
+        write_far_ptr(mem, SYSVARS_BASE + SYSVARS_OFF_CDS_PTR, cds_seg, cds_off);
+
+        let (fcb_seg, fcb_off) = dos_data_far(FCB_SFT_OFFSET);
+        write_far_ptr(
+            mem,
+            SYSVARS_BASE + SYSVARS_OFF_FCB_SFT_PTR,
+            fcb_seg,
+            fcb_off,
+        );
+
+        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_PROT_FCBS, 0);
+        mem.write_byte(SYSVARS_BASE + SYSVARS_OFF_BLOCK_DEVS, 0);
+        mem.write_byte(SYSVARS_BASE + SYSVARS_OFF_LASTDRIVE, 26);
+
+        // JOIN drives = 0
+        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_JOIN_DRIVES, 0);
+        // SETVER list = NULL
+        write_far_ptr(mem, SYSVARS_BASE + SYSVARS_OFF_SETVER_PTR, 0, 0);
+        // BUFFERS
+        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_BUFFERS, 5);
+        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_LOOKAHEAD, 0);
+        mem.write_byte(SYSVARS_BASE + SYSVARS_OFF_BOOT_DRIVE, self.boot_drive);
+        mem.write_byte(SYSVARS_BASE + SYSVARS_OFF_386_FLAG, 0x01);
+        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_EXT_MEM, 0);
+
+        // Device chain
+        self.write_device_chain(mem);
+
+        // SFT
+        self.write_sft(mem);
+
+        // CDS (placeholder, populated properly in phase 10.4)
+        // All 26 entries zeroed (done by initial memset).
+
+        // DPB (placeholder entry for drive A:)
+        self.write_placeholder_dpb(mem);
+
+        // Disk buffer header + one buffer
+        self.write_disk_buffer(mem);
+
+        // InDOS flag and critical error flag
+        mem.write_byte(INDOS_FLAG_ADDR, 0x00);
+        mem.write_byte(CRITICAL_ERROR_FLAG_ADDR, 0x00);
+
+        // FCB-SFT header (no entries)
+        write_far_ptr(mem, FCB_SFT_BASE, 0xFFFF, 0xFFFF);
+        mem.write_word(FCB_SFT_BASE + 4, 0);
+
+        // Sentinel MCB
+        self.write_sentinel_mcb(mem);
+    }
+
+    /// Writes the device header chain: NUL -> CON -> $AID#NEC -> MS$KANJI.
+    /// CLOCK is separate (not in chain, only referenced by SYSVARS+0x08).
+    fn write_device_chain(&self, mem: &mut dyn MemoryAccess) {
+        use tables::*;
+
+        let base = DOS_DATA_BASE;
+
+        // NUL (embedded at SYSVARS+0x22) -> CON
+        write_device_header(
+            mem,
+            base + DEV_NUL_OFFSET as u32,
+            DOS_DATA_SEGMENT,
+            DEV_CON_OFFSET,
+            DEVATTR_CHAR | DEVATTR_NUL,
+            b"NUL     ",
+        );
+
+        // CON -> $AID#NEC
+        write_device_header(
+            mem,
+            base + DEV_CON_OFFSET as u32,
+            DOS_DATA_SEGMENT,
+            DEV_AID_NEC_OFFSET,
+            DEVATTR_CHAR | DEVATTR_STDIN | DEVATTR_STDOUT | DEVATTR_SPECIAL,
+            b"CON     ",
+        );
+
+        // CLOCK (not in chain)
+        write_device_header(
+            mem,
+            base + DEV_CLOCK_OFFSET as u32,
+            0xFFFF,
+            0xFFFF,
+            DEVATTR_CHAR | DEVATTR_CLOCK,
+            b"CLOCK   ",
+        );
+
+        // $AID#NEC -> MS$KANJI
+        write_device_header(
+            mem,
+            base + DEV_AID_NEC_OFFSET as u32,
+            DOS_DATA_SEGMENT,
+            DEV_MS_KANJI_OFFSET,
+            DEVATTR_CHAR,
+            b"$AID#NEC",
+        );
+
+        // MS$KANJI (end of chain)
+        write_device_header(
+            mem,
+            base + DEV_MS_KANJI_OFFSET as u32,
+            0xFFFF,
+            0xFFFF,
+            DEVATTR_CHAR,
+            b"MS$KANJI",
+        );
+    }
+
+    /// Writes the SFT header and 5 standard file entries.
+    fn write_sft(&self, mem: &mut dyn MemoryAccess) {
+        use tables::*;
+
+        // SFT header: next = FFFF:FFFF, count = 5
+        write_far_ptr(mem, SFT_BASE, 0xFFFF, 0xFFFF);
+        mem.write_word(SFT_BASE + 4, 5);
+
+        let entries_base = SFT_BASE + SFT_HEADER_SIZE;
+
+        // CON device pointer (far ptr)
+        let con_addr = DOS_DATA_BASE + DEV_CON_OFFSET as u32;
+        let con_seg = DOS_DATA_SEGMENT;
+        let con_off = DEV_CON_OFFSET;
+
+        // Standard handles: stdin(0), stdout(1), stderr(2) -> CON
+        for i in 0..3u32 {
+            let entry = entries_base + i * SFT_ENTRY_SIZE;
+            mem.write_word(entry + SFT_ENT_REF_COUNT, 1);
+            mem.write_word(entry + SFT_ENT_OPEN_MODE, 0x0002); // read/write
+            mem.write_byte(entry + SFT_ENT_FILE_ATTR, 0x00);
+            mem.write_word(
+                entry + SFT_ENT_DEV_INFO,
+                SFT_DEVINFO_CHAR | SFT_DEVINFO_SPECIAL | SFT_DEVINFO_STDIN | SFT_DEVINFO_STDOUT,
+            );
+            write_far_ptr(mem, entry + SFT_ENT_DEV_PTR, con_seg, con_off);
+            mem.write_block(entry + SFT_ENT_NAME, b"CON        ");
+        }
+
+        // Handle 3: AUX (stub)
+        {
+            let entry = entries_base + 3 * SFT_ENTRY_SIZE;
+            mem.write_word(entry + SFT_ENT_REF_COUNT, 1);
+            mem.write_word(entry + SFT_ENT_OPEN_MODE, 0x0002);
+            mem.write_byte(entry + SFT_ENT_FILE_ATTR, 0x00);
+            mem.write_word(entry + SFT_ENT_DEV_INFO, SFT_DEVINFO_CHAR);
+            // Point to NUL device as a safe fallback
+            let nul_off = DEV_NUL_OFFSET;
+            write_far_ptr(mem, entry + SFT_ENT_DEV_PTR, DOS_DATA_SEGMENT, nul_off);
+            mem.write_block(entry + SFT_ENT_NAME, b"AUX        ");
+        }
+
+        // Handle 4: PRN (stub)
+        {
+            let entry = entries_base + 4 * SFT_ENTRY_SIZE;
+            mem.write_word(entry + SFT_ENT_REF_COUNT, 1);
+            mem.write_word(entry + SFT_ENT_OPEN_MODE, 0x0002);
+            mem.write_byte(entry + SFT_ENT_FILE_ATTR, 0x00);
+            mem.write_word(entry + SFT_ENT_DEV_INFO, SFT_DEVINFO_CHAR);
+            let nul_off = DEV_NUL_OFFSET;
+            write_far_ptr(mem, entry + SFT_ENT_DEV_PTR, DOS_DATA_SEGMENT, nul_off);
+            mem.write_block(entry + SFT_ENT_NAME, b"PRN        ");
+        }
+
+        // Suppress unused variable warning.
+        let _ = con_addr;
+    }
+
+    /// Writes a placeholder DPB entry for drive A:.
+    fn write_placeholder_dpb(&self, mem: &mut dyn MemoryAccess) {
+        use tables::*;
+
+        let dpb = DPB_BASE;
+        mem.write_byte(dpb + DPB_OFF_DRIVE_NUM, 0); // A:
+        mem.write_byte(dpb + DPB_OFF_UNIT_NUM, 0);
+        mem.write_word(dpb + DPB_OFF_BYTES_PER_SECTOR, 512);
+        mem.write_byte(dpb + DPB_OFF_CLUSTER_MASK, 1); // 2 sectors/cluster - 1
+        mem.write_byte(dpb + DPB_OFF_CLUSTER_SHIFT, 1);
+        mem.write_word(dpb + DPB_OFF_RESERVED_SECTORS, 1);
+        mem.write_byte(dpb + DPB_OFF_NUM_FATS, 2);
+        mem.write_word(dpb + DPB_OFF_ROOT_ENTRIES, 112);
+        mem.write_word(dpb + DPB_OFF_FIRST_DATA_SECTOR, 14);
+        mem.write_word(dpb + DPB_OFF_MAX_CLUSTER, 714);
+        mem.write_word(dpb + DPB_OFF_SECTORS_PER_FAT, 3);
+        mem.write_word(dpb + DPB_OFF_FIRST_ROOT_SECTOR, 7);
+        // Device header pointer -> NUL device (placeholder)
+        write_far_ptr(
+            mem,
+            dpb + DPB_OFF_DEVICE_PTR,
+            DOS_DATA_SEGMENT,
+            DEV_NUL_OFFSET,
+        );
+        mem.write_byte(dpb + DPB_OFF_MEDIA_DESC, 0xF8);
+        mem.write_byte(dpb + DPB_OFF_ACCESS_FLAG, 0xFF); // not yet accessed
+        // Next DPB = FFFF:FFFF (end of chain)
+        write_far_ptr(mem, dpb + DPB_OFF_NEXT_DPB, 0xFFFF, 0xFFFF);
+    }
+
+    /// Writes a minimal disk buffer header with one empty 512-byte buffer.
+    fn write_disk_buffer(&self, mem: &mut dyn MemoryAccess) {
+        use tables::*;
+
+        // Buffer header: next = FFFF:FFFF, drive = 0xFF (none), rest = 0
+        write_far_ptr(mem, DISK_BUFFER_BASE, 0xFFFF, 0xFFFF);
+        mem.write_byte(DISK_BUFFER_BASE + 4, 0xFF); // drive
+        // Remaining header bytes and buffer data are already zero from memset.
+    }
+
+    /// Writes the sentinel MCB marking all memory from MCB+1 paragraph to 640KB as free.
+    fn write_sentinel_mcb(&self, mem: &mut dyn MemoryAccess) {
+        use tables::*;
+
+        // 'Z' = last block, owner = 0 (free)
+        mem.write_byte(FIRST_MCB_ADDR, 0x5A);
+        mem.write_word(FIRST_MCB_ADDR + 1, 0x0000);
+
+        // Size in paragraphs: from MCB+1 paragraph to segment 0x9FFF
+        // MCB segment = FIRST_MCB_SEGMENT, data starts at FIRST_MCB_SEGMENT + 1
+        // End of 640KB = 0xA000 (segment). Free paragraphs = 0xA000 - (FIRST_MCB_SEGMENT + 1)
+        let free_paragraphs = 0xA000u16 - (FIRST_MCB_SEGMENT + 1);
+        mem.write_word(FIRST_MCB_ADDR + 3, free_paragraphs);
+    }
+
+    /// Populates the IO.SYS work area at segment 0060h.
+    fn write_iosys_work_area(&self, mem: &mut dyn MemoryAccess) {
+        use tables::*;
+
+        let base = IOSYS_BASE;
+
+        // MS-DOS product number (non-zero for NEC DOS)
+        mem.write_word(base + IOSYS_OFF_PRODUCT_NUMBER, 0x0001);
+        mem.write_byte(base + IOSYS_OFF_INTERNAL_REVISION, 0x00);
+
+        mem.write_byte(base + IOSYS_OFF_EMM_BANK_FLAG, 0x00);
+        mem.write_byte(base + IOSYS_OFF_EXT_MEM_128K, 0x00);
+        mem.write_byte(base + IOSYS_OFF_FD_DUPLICATE, 0x00);
+
+        // RS-232C default: 9600 baud (1001), 8N1 (11=8bit, 0=no parity, 01=1stop)
+        // Bits: 0000_1001_0100_1100 = 0x094C
+        mem.write_word(base + IOSYS_OFF_AUX_PROTOCOL, 0x094C);
+
+        // DA/UA mapping table: 16 bytes, all zeros (no drives assigned yet; phase 10.4)
+
+        // Kanji/graph mode
+        mem.write_byte(base + IOSYS_OFF_KANJI_MODE, 0x01); // Shift-JIS kanji mode
+        mem.write_byte(base + IOSYS_OFF_GRAPH_CHAR, 0x20);
+        mem.write_byte(base + IOSYS_OFF_SHIFT_FN_CHAR, 0x20);
+
+        mem.write_byte(base + IOSYS_OFF_STOP_REENTRY, 0x00);
+        mem.write_byte(base + IOSYS_OFF_INTDC_FLAG, 0x00);
+        mem.write_byte(base + IOSYS_OFF_SPECIAL_INPUT, 0x00);
+        mem.write_byte(base + IOSYS_OFF_PRINTER_ECHO, 0x00);
+        mem.write_byte(base + IOSYS_OFF_SOFTKEY_FLAGS, 0x00);
+
+        // Display / cursor state
+        mem.write_byte(base + IOSYS_OFF_CURSOR_Y, 0x00);
+        mem.write_byte(base + IOSYS_OFF_FNKEY_DISPLAY, 0x01); // show function keys
+        mem.write_byte(base + IOSYS_OFF_SCROLL_LOWER, 24); // bottom row
+        mem.write_byte(base + IOSYS_OFF_SCREEN_LINES, 0x01); // 25-line mode
+        mem.write_byte(base + IOSYS_OFF_CLEAR_ATTR, 0xE1); // white-on-black
+        mem.write_byte(base + IOSYS_OFF_KANJI_HI_FLAG, 0x00);
+        mem.write_byte(base + IOSYS_OFF_KANJI_HI_BYTE, 0x00);
+        mem.write_byte(base + IOSYS_OFF_LINE_WRAP, 0x00); // wrap at column 80
+        mem.write_byte(base + IOSYS_OFF_SCROLL_SPEED, 0x00); // normal
+        mem.write_byte(base + IOSYS_OFF_CLEAR_CHAR, 0x20); // space
+        mem.write_byte(base + IOSYS_OFF_CURSOR_VISIBLE, 0x01); // shown
+        mem.write_byte(base + IOSYS_OFF_CURSOR_X, 0x00);
+        mem.write_byte(base + IOSYS_OFF_DISPLAY_ATTR, 0xE1); // white-on-black
+        mem.write_byte(base + IOSYS_OFF_SCROLL_UPPER, 0x00);
+        mem.write_word(base + IOSYS_OFF_SCROLL_WAIT, 0x0001); // normal speed
+
+        // Saved cursor
+        mem.write_byte(base + IOSYS_OFF_SAVED_CURSOR_Y, 0x00);
+        mem.write_byte(base + IOSYS_OFF_SAVED_CURSOR_X, 0x00);
+        mem.write_byte(base + IOSYS_OFF_SAVED_CURSOR_ATTR, 0xE1);
+
+        mem.write_byte(base + IOSYS_OFF_LAST_DRIVE_UNIT, 0x00);
+        mem.write_byte(base + IOSYS_OFF_FD_DUPLICATE2, 0x00);
+        mem.write_word(base + IOSYS_OFF_EXT_ATTR_DISPLAY, 0x0000);
+        mem.write_word(base + IOSYS_OFF_EXT_ATTR_CLEAR, 0x0000);
+
+        mem.write_word(base + IOSYS_OFF_EXT_ATTR_MODE, 0x0000); // PC mode
+        mem.write_word(base + IOSYS_OFF_TEXT_MODE, 0x0000); // 25-line gapped
+
+        // DA/UA pointer -> points to the DA/UA table itself
+        tables::write_far_ptr(
+            mem,
+            base + IOSYS_OFF_DAUA_PTR,
+            IOSYS_SEGMENT,
+            IOSYS_OFF_DAUA_TABLE as u16,
+        );
     }
 }

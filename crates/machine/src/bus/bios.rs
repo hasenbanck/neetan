@@ -2787,13 +2787,31 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
         }
 
-        // No bootable device: write message to text VRAM and halt.
-        let msg = b"NO SYSTEM MEDIA FOUND";
-        for (i, &ch) in msg.iter().enumerate() {
-            let addr = 0xA0000 + (i as u32) * 2;
-            self.memory.write_byte(addr, ch);
-            self.memory.write_byte(addr + 1, 0x00);
+        // No bootable device found: activate NEETAN OS HLE DOS.
+        let mut neetan_os = os::NeetanOs::new();
+        {
+            let mut cpu_access = OsCpuAccess(cpu);
+            let mut mem_access = OsMemoryAccess(&mut self.memory);
+            let mut disk_io = OsDiskIo;
+            let mut console_io = OsConsoleIo;
+            neetan_os.boot(
+                &mut cpu_access,
+                &mut mem_access,
+                &mut disk_io,
+                &mut console_io,
+            );
         }
+        self.os = Some(neetan_os);
+
+        // Write CLI+HLT at a safe location and redirect IRET there.
+        // In phase 10.3, this becomes the COMMAND.COM code stub.
+        let halt_addr: u32 = 0x1FC00;
+        self.memory.write_byte(halt_addr, 0xFA); // CLI
+        self.memory.write_byte(halt_addr + 1, 0xF4); // HLT
+        let iret_base = iret_stack_base(cpu);
+        self.write_mem_word(iret_base, 0x0000); // IP
+        self.write_mem_word(iret_base + 2, 0x1FC0); // CS
+        self.write_mem_word(iret_base + 4, 0x0002); // FLAGS (reserved bit 1 set)
     }
 }
 

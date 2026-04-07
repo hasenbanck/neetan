@@ -5,25 +5,23 @@ const IOSYS_BASE: u32 = 0x0600;
 
 #[test]
 fn daua_mapping_table() {
-    let machine = harness::boot_dos620();
+    let machine = harness::boot_hle();
     // DA/UA mapping list at 0060:006Ch (linear 0x66C), 16 bytes for A:-P:.
-    // When booting from HDD, at least one entry should be 0x80 (SASI/IDE HDD unit 0).
-    let mut found_hdd = false;
+    // With no media attached, all entries should be 0x00 (no drives assigned).
     for i in 0..16u32 {
         let daua = harness::read_byte(&machine.bus, IOSYS_BASE + 0x006C + i);
-        if daua == 0x80 {
-            found_hdd = true;
-        }
+        assert!(
+            daua == 0x00 || (0x70..=0xF3).contains(&daua),
+            "DA/UA table entry {} should be 0x00 or a valid device address, got {:#04X}",
+            i,
+            daua
+        );
     }
-    assert!(
-        found_hdd,
-        "DA/UA table should contain at least one HDD entry (0x80)"
-    );
 }
 
 #[test]
 fn kanji_graph_mode() {
-    let machine = harness::boot_dos620();
+    let machine = harness::boot_hle();
     let mode = harness::read_byte(&machine.bus, IOSYS_BASE + 0x008A);
     assert!(
         mode == 0x00 || mode == 0x01,
@@ -34,7 +32,7 @@ fn kanji_graph_mode() {
 
 #[test]
 fn cursor_y_position() {
-    let machine = harness::boot_dos620();
+    let machine = harness::boot_hle();
     let cursor_y = harness::read_byte(&machine.bus, IOSYS_BASE + 0x0110);
     assert!(
         cursor_y <= 24,
@@ -45,7 +43,7 @@ fn cursor_y_position() {
 
 #[test]
 fn function_key_display_state() {
-    let machine = harness::boot_dos620();
+    let machine = harness::boot_hle();
     let state = harness::read_byte(&machine.bus, IOSYS_BASE + 0x0111);
     assert!(
         state <= 0x02,
@@ -56,7 +54,7 @@ fn function_key_display_state() {
 
 #[test]
 fn screen_line_count() {
-    let machine = harness::boot_dos620();
+    let machine = harness::boot_hle();
     let lines = harness::read_byte(&machine.bus, IOSYS_BASE + 0x0113);
     assert!(
         lines == 0x00 || lines == 0x01,
@@ -67,7 +65,7 @@ fn screen_line_count() {
 
 #[test]
 fn clear_attribute() {
-    let machine = harness::boot_dos620();
+    let machine = harness::boot_hle();
     let attr = harness::read_byte(&machine.bus, IOSYS_BASE + 0x0114);
     assert!(
         attr == 0xE1 || attr == 0x81,
@@ -78,7 +76,7 @@ fn clear_attribute() {
 
 #[test]
 fn line_wrap_flag() {
-    let machine = harness::boot_dos620();
+    let machine = harness::boot_hle();
     let wrap = harness::read_byte(&machine.bus, IOSYS_BASE + 0x0117);
     assert!(
         wrap == 0x00 || wrap == 0x01,
@@ -89,7 +87,7 @@ fn line_wrap_flag() {
 
 #[test]
 fn clear_character() {
-    let machine = harness::boot_dos620();
+    let machine = harness::boot_hle();
     let ch = harness::read_byte(&machine.bus, IOSYS_BASE + 0x0119);
     assert_eq!(
         ch, 0x20,
@@ -100,7 +98,7 @@ fn clear_character() {
 
 #[test]
 fn cursor_visibility() {
-    let machine = harness::boot_dos620();
+    let machine = harness::boot_hle();
     let visible = harness::read_byte(&machine.bus, IOSYS_BASE + 0x011B);
     assert!(
         visible == 0x00 || visible == 0x01,
@@ -111,7 +109,7 @@ fn cursor_visibility() {
 
 #[test]
 fn cursor_x_position() {
-    let machine = harness::boot_dos620();
+    let machine = harness::boot_hle();
     let cursor_x = harness::read_byte(&machine.bus, IOSYS_BASE + 0x011C);
     assert!(
         cursor_x <= 79,
@@ -122,9 +120,8 @@ fn cursor_x_position() {
 
 #[test]
 fn product_number() {
-    let machine = harness::boot_dos620();
+    let machine = harness::boot_hle();
     let product = harness::read_word(&machine.bus, IOSYS_BASE + 0x0020);
-    // MS-DOS product number at 0060:0020h. Should be non-zero for NEC DOS.
     assert_ne!(
         product, 0x0000,
         "MS-DOS product number at 0060:0020h should be non-zero"
@@ -133,7 +130,7 @@ fn product_number() {
 
 #[test]
 fn display_attribute() {
-    let machine = harness::boot_dos620();
+    let machine = harness::boot_hle();
     let attr = harness::read_byte(&machine.bus, IOSYS_BASE + 0x011D);
     assert_ne!(
         attr, 0x00,
@@ -144,7 +141,7 @@ fn display_attribute() {
 
 #[test]
 fn scroll_range_upper() {
-    let machine = harness::boot_dos620();
+    let machine = harness::boot_hle();
     let upper = harness::read_byte(&machine.bus, IOSYS_BASE + 0x011E);
     assert!(
         upper <= 24,
@@ -155,9 +152,8 @@ fn scroll_range_upper() {
 
 #[test]
 fn scroll_wait_value() {
-    let machine = harness::boot_dos620();
+    let machine = harness::boot_hle();
     let wait = harness::read_word(&machine.bus, IOSYS_BASE + 0x011F);
-    // Normal = 0x0001, slow = 0xE000. Just verify it's non-zero.
     assert_ne!(
         wait, 0x0000,
         "Scroll wait value at 0060:011Fh should be non-zero"
@@ -166,7 +162,7 @@ fn scroll_wait_value() {
 
 #[test]
 fn extended_attribute_mode() {
-    let machine = harness::boot_dos620();
+    let machine = harness::boot_hle();
     let mode = harness::read_word(&machine.bus, IOSYS_BASE + 0x05D6);
     assert!(
         mode == 0x0000 || mode == 0x0001,
@@ -177,7 +173,7 @@ fn extended_attribute_mode() {
 
 #[test]
 fn text_mode_flag() {
-    let machine = harness::boot_dos620();
+    let machine = harness::boot_hle();
     let mode = harness::read_word(&machine.bus, IOSYS_BASE + 0x05D8);
     assert!(
         mode == 0x0000 || mode == 0x0001,

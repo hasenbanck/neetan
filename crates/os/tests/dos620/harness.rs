@@ -5,7 +5,7 @@ use std::{
     sync::Mutex,
 };
 
-use common::{Bus, MachineModel};
+use common::{Bus, Cpu as _, MachineModel};
 
 /// Mutex to serialize tests that perform disk write operations.
 pub static DISK_WRITE_MUTEX: Mutex<()> = Mutex::new(());
@@ -98,6 +98,39 @@ pub fn create_dos620_machine() -> machine::Pc9801Ra {
 pub fn boot_dos620() -> machine::Pc9801Ra {
     let mut machine = create_dos620_machine();
     boot_to_dos_prompt!(machine);
+    machine
+}
+
+const HLE_BOOT_MAX_CYCLES: u64 = 500_000_000;
+const HLE_BOOT_CHECK_INTERVAL: u64 = 1_000_000;
+
+/// Creates a machine with no disk images. The bootstrap will find no bootable
+/// media and activate NEETAN OS HLE DOS automatically.
+pub fn create_hle_machine() -> machine::Pc9801Ra {
+    let mut machine = machine::Pc9801Ra::new(
+        cpu::I386::new(),
+        machine::Pc9801Bus::new(MachineModel::PC9801RA, 48000),
+    );
+    machine.bus.load_font_rom(FONT_ROM_DATA);
+    machine
+}
+
+/// Boots a machine with NEETAN OS HLE DOS (no disk images).
+/// Returns the machine after the CPU has halted (boot structures populated).
+pub fn boot_hle() -> machine::Pc9801Ra {
+    let mut machine = create_hle_machine();
+    let mut total_cycles = 0u64;
+    loop {
+        total_cycles += machine.run_for(HLE_BOOT_CHECK_INTERVAL);
+        if machine.cpu.halted() {
+            break;
+        }
+        assert!(
+            total_cycles < HLE_BOOT_MAX_CYCLES,
+            "HLE OS did not halt within {} cycles",
+            HLE_BOOT_MAX_CYCLES
+        );
+    }
     machine
 }
 

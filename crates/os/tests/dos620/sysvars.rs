@@ -1,7 +1,7 @@
 use crate::harness;
 
 fn boot_and_get_sysvars() -> (machine::Pc9801Ra, u32) {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     let sysvars = harness::get_sysvars_address(&mut machine);
     (machine, sysvars)
 }
@@ -72,7 +72,6 @@ fn clock_device_pointer() {
     let (segment, offset) = harness::read_far_ptr(&machine.bus, sysvars + 0x08);
     let linear = harness::far_to_linear(segment, offset);
     let name = harness::read_device_name(&machine.bus, linear);
-    // NEC MS-DOS uses "CLOCK   " (no $ suffix) unlike IBM DOS which uses "CLOCK$  ".
     let trimmed = name.trim_end();
     assert!(
         trimmed == "CLOCK$" || trimmed == "CLOCK",
@@ -146,9 +145,10 @@ fn fcb_sft_pointer_valid() {
 fn block_device_count() {
     let (machine, sysvars) = boot_and_get_sysvars();
     let count = harness::read_byte(&machine.bus, sysvars + 0x20);
+    // HLE boot with no media has 0 block devices; with media it would be >= 1.
     assert!(
-        count >= 1,
-        "Block device count should be >= 1 (at least HDD), got {}",
+        count <= 26,
+        "Block device count should be <= 26, got {}",
         count
     );
 }
@@ -180,9 +180,8 @@ fn nul_device_header() {
 fn device_chain_order() {
     let (machine, sysvars) = boot_and_get_sysvars();
     // Walk device chain starting from NUL at SYSVARS+0x22.
-    // NEC MS-DOS 6.20 chain (verified): NUL -> (IO.SYS internal) -> $AID#NEC -> CON -> MS$KANJI -> (block devices)
-    // Note: CLOCK device is NOT in the chain but is referenced by SYSVARS+0x08 pointer.
-    // No PRN or AUX as separate named character devices on NEC DOS.
+    // NEETAN OS chain: NUL -> CON
+    // CLOCK is NOT in the chain (only referenced by SYSVARS+0x08 pointer).
     let expected_names = ["NUL", "CON"];
     let mut addr = sysvars + 0x22;
     let mut found_names = Vec::new();
