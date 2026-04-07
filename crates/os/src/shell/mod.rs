@@ -1,5 +1,4 @@
-//! Main shell loop, command parsing, I/O redirection.
+//! Shell state machine, command parsing, I/O redirection.
 
 pub mod batch;
-pub mod builtins;
 pub mod history;

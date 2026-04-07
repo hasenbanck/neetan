@@ -332,8 +332,11 @@ impl NeetanOs {
         // Resolve file path.
         let (drive_index, dir_cluster, fcb_name) = self.resolve_file_path(&path, mem, disk)?;
 
+        // Z: drive contains only COMMAND.COM for COMSPEC compatibility.
+        // All shell commands are built-in and resolved from the command registry,
+        // never through EXEC. Return file-not-found for Z: drive EXEC attempts.
         if drive_index == 25 {
-            unimplemented!("EXEC Z: drive shortcut deferred to step 10.10");
+            return Err(0x0002);
         }
 
         // Find the file on disk.

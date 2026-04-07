@@ -1,12 +1,12 @@
 //! Z: drive implementation.
 //!
-//! Read-only virtual filesystem listing built-in commands as .COM files.
-//! The actual command implementations are registered in step 10.10.
-//! The EXEC shortcut (bypassing .COM loading) is implemented in step 10.9.
+//! Read-only virtual filesystem containing only COMMAND.COM for COMSPEC
+//! compatibility. All shell commands are built-in and resolved from the
+//! in-memory command registry -- they do not exist as files on any drive.
 
 use crate::filesystem::fat_dir;
 
-/// A virtual directory entry representing a built-in command.
+/// A virtual directory entry on the Z: drive.
 pub(crate) struct VirtualEntry {
     pub name: [u8; 11],
     pub attribute: u8,
@@ -29,36 +29,14 @@ impl VirtualDrive {
         let time = 0x0000u16;
         let attr = fat_dir::ATTR_READ_ONLY | fat_dir::ATTR_ARCHIVE;
 
-        let commands: &[&[u8]] = &[
-            b"DIR",
-            b"COPY",
-            b"DEL",
-            b"MD",
-            b"RD",
-            b"TYPE",
-            b"MORE",
-            b"FORMAT",
-            b"DISKCOPY",
-            b"XCOPY",
-            b"DATE",
-            b"TIME",
-        ];
-
-        let entries = commands
-            .iter()
-            .map(|cmd| {
-                let mut full_name = cmd.to_vec();
-                full_name.extend_from_slice(b".COM");
-                let name = fat_dir::name_to_fcb(&full_name);
-                VirtualEntry {
-                    name,
-                    attribute: attr,
-                    file_size: 1,
-                    time,
-                    date,
-                }
-            })
-            .collect();
+        let name = fat_dir::name_to_fcb(b"COMMAND.COM");
+        let entries = vec![VirtualEntry {
+            name,
+            attribute: attr,
+            file_size: 1,
+            time,
+            date,
+        }];
 
         Self { entries }
     }

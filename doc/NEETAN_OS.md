@@ -81,17 +81,32 @@ loop:
     jmp  loop
 ```
 
-When INT 21h sees AH=FFh, the Rust shell handler takes over:
+Each INT 21h AH=FFh dispatch triggers a single step of the Rust shell state machine.
+The shell never blocks -- it performs one unit of work per dispatch and returns, allowing
+the CPU to continue executing between steps. This keeps the emulator responsive (audio,
+display, keyboard processing) even during long-running commands.
 
-1. Display the prompt (e.g., `A:¥>`)
-2. Read an input line with history support (up/down arrow keys)
-3. Parse the command line
-4. If the command is a shell built-in (CD, internal commands), execute it directly
-5. If the command is external, perform EXEC (INT 21h/4Bh) which creates a child process
-6. When the child terminates, control returns here for the next command
+The shell operates as a state machine with these phases:
+
+1. **ShowPrompt**: Write the prompt string (e.g., `A:¥>`) to the console.
+   Transition to ReadingInput.
+2. **ReadingInput**: Check if a keystroke is available. If not, return immediately
+   (the CPU runs its 3-instruction loop, the machine processes scheduled events,
+   and the next AH=FFh dispatch tries again). If a character is available, process
+   it (add to buffer, handle backspace, arrow keys for history, etc.). When Enter
+   is pressed, parse the command line and transition to ExecutingCommand or trigger
+   EXEC for external .COM/.EXE programs.
+3. **ExecutingCommand**: Call the running command's `step()` method. If the command
+   returns `Continue`, keep it active for the next dispatch. If it returns `Done`,
+   transition to ShowPrompt.
+4. **WaitingForChild**: An external .COM/.EXE was launched via EXEC. The shell is
+   dormant until the child process terminates and the CPU returns to the
+   COMMAND.COM loop. Then transition to ShowPrompt.
+5. **ExecutingBatch**: Process one line of a .BAT file per dispatch.
 
 This keeps the CPU executing real x86 code while all work happens in Rust, matching the
-BIOS HLE pattern.
+BIOS HLE pattern. The non-blocking design means even commands like COPY (megabytes of
+data) or FORMAT (entire disk) process one chunk per step without freezing the emulator.
 
 ## 2. Memory Layout
 
@@ -363,17 +378,19 @@ Device addresses map to drives:
 ### 3.2 Virtual Z: Drive
 
 The Z: drive is a read-only virtual filesystem that exists entirely in Rust. It contains
-the built-in OS commands as files (DIR.COM, COPY.COM, FORMAT.COM, etc.).
+only COMMAND.COM (for COMSPEC compatibility -- programs that read %COMSPEC% expect this
+file to exist).
 
 Implementation:
 - The CDS entry for Z: has the network/substituted flag set, indicating a virtual drive
-- FINDFIRST/FINDNEXT on Z: enumerates registered `Command` implementations as .COM files
-- File attributes report read-only, archive; file sizes are nominal (1 byte each)
+- FINDFIRST/FINDNEXT on Z: returns only the COMMAND.COM entry
+- File attributes report read-only, archive; file size is nominal (1 byte)
 - Date/time stamps report the build date of the emulator
-- EXEC (INT 21h/4Bh) targeting Z: files is intercepted entirely: no program is loaded into
-  emulated RAM; instead, the corresponding Rust `Command::execute()` runs directly
-- Read/write operations on Z: files return access denied (they exist only for DIR and EXEC)
+- Read/write operations on Z: files return access denied
 - The current directory on Z: is always the root
+
+All shell commands (DIR, COPY, CD, SET, etc.) are built-in and resolved from an
+in-memory command registry -- they do not exist as files on any drive.
 
 ### 3.3 FAT12/FAT16 Filesystem
 
@@ -592,11 +609,12 @@ The EXEC function (INT 21h AH=4Bh) supports two program formats:
    word at the specified offset
 7. Set CS:IP and SS:SP from header fields, adjusted by load segment
 
-#### Z: Drive Shortcut
+#### Z: Drive
 
-When EXEC targets a file on the Z: drive, loading is skipped entirely. The OS identifies
-the command by filename, creates a minimal process context, and executes the corresponding
-Rust `Command::execute()` directly.
+The Z: drive contains only COMMAND.COM for COMSPEC compatibility. All shell commands are
+built-in and dispatched directly by the shell's command registry -- they never go through
+EXEC. When EXEC targets a file on Z: that does not exist (e.g., a program trying to run
+a utility by name), it returns file-not-found.
 
 ### 4.2 Process Stack and EXEC
 
@@ -717,7 +735,43 @@ is reflected in 0060:0117h. The kanji/graph mode (ESC)0/ESC)3) is reflected in
 
 ### 5.2 Command Shell
 
-The COMMAND.COM equivalent provides:
+The shell is a state machine driven by INT 21h AH=FFh dispatches. Each dispatch performs
+one step of work and returns immediately -- the shell never blocks.
+
+#### Shell State Machine
+
+```rust
+pub(crate) enum ShellPhase {
+    ShowPrompt,
+    ReadingInput(LineEditor),
+    ExecutingCommand(Box<dyn RunningCommand>),
+    WaitingForChild,
+    ExecutingBatch(BatchState),
+}
+```
+
+- **ShowPrompt**: Writes the prompt string to the console. Transitions to ReadingInput.
+- **ReadingInput**: Checks `console.char_available()`. If no input, returns immediately
+  (non-blocking). If a keystroke is available, processes it: printable characters are
+  inserted into the buffer, backspace deletes, up/down arrows navigate history, Enter
+  submits the line. On Enter, the command name is looked up in the command registry.
+  If found, transitions to ExecutingCommand. If not found, searches PATH for .COM/.EXE
+  and triggers EXEC (transitions to WaitingForChild). If nothing is found, prints
+  "Bad command or file name" and transitions to ShowPrompt.
+- **ExecutingCommand**: Calls the running command's `step()`. If it returns `Continue`,
+  keeps the command active. If `Done(code)`, stores the exit code and transitions to
+  ShowPrompt.
+- **WaitingForChild**: An external .COM/.EXE is running. The shell is dormant. When the
+  child terminates and control returns to the COMMAND.COM loop, the next AH=FFh dispatch
+  detects this and transitions to ShowPrompt.
+- **ExecutingBatch**: Processes one line of a .BAT file per dispatch. Batch lines that
+  invoke commands use the same ExecutingCommand mechanism.
+
+When the shell needs to launch an external program, it returns an `Exec` action to the
+AH=FFh handler, which calls the existing EXEC infrastructure to rewrite the IRET frame
+and launch the child process.
+
+#### Shell Features
 
 - **Prompt display**: Shows the current drive and directory (e.g., `A:¥>`)
   configurable via the PROMPT environment variable using MS-DOS meta-characters
@@ -726,13 +780,17 @@ The COMMAND.COM equivalent provides:
   Insert (toggle overwrite), Delete
 - **Command parsing**: Splits input into command name and argument string; handles
   I/O redirection (>, >>, <) and pipes (|)
-- **Path search**: For external commands, searches the current directory first,
+- **Path search**: For unrecognized commands, searches the current directory first,
   then each directory in the PATH environment variable, trying .COM then .EXE extensions
 - **Batch file execution**: Executes .BAT files line by line with variable substitution
   (%0-%9, %VARIABLE%)
-- **Built-in commands**: CD, DIR, and other commands that operate on shell state directly
-  (changing the current directory cannot be an external command because it must modify the
-  shell's own CDS entry)
+
+#### Command Resolution Order
+
+1. Check registered commands by name and aliases (case-insensitive)
+2. Search current directory for .COM then .EXE
+3. Search each PATH directory for .COM then .EXE
+4. Print "Bad command or file name"
 
 ### 5.3 Command History
 
@@ -745,66 +803,99 @@ The shell maintains a ring buffer of the last 100 commands:
 - History is in-memory only, not persisted across emulator sessions
 - Duplicate consecutive commands are not stored
 
-### 5.4 Built-In Shell Commands
-
-These commands are part of the shell itself (not external .COM files on Z:) because they
-modify shell-internal state:
-
-- **CD (CHDIR)**: Change current directory
-- **SET**: Display or modify environment variables
-- **ECHO**: Display text or toggle echo state
-- **REM**: Comment (no operation)
-- **CLS**: Clear screen (via INT 18h AH=16h)
-- **VER**: Display OS version
-
 ## 6. Commands
 
 ### 6.1 Command Trait
 
-Each external command is implemented as a separate source file in `crates/os/src/commands/`.
-All commands implement the `Command` trait:
+All commands -- including those that modify shell state like CD, SET, and ECHO -- are
+implemented through a unified two-part trait system. Each command is a separate source
+file in `crates/os/src/commands/`.
+
+The `Command` trait is a stateless factory that creates running instances:
 
 ```rust
-pub trait Command {
-    /// The primary command name (e.g., "DIR").
+pub(crate) enum StepResult {
+    /// Command completed with the given exit code.
+    Done(u8),
+    /// Command yielded; call step() again on the next AH=FFh dispatch.
+    Continue,
+}
+
+pub(crate) trait Command {
+    /// The primary command name (e.g., "DIR", "CD", "CLS").
     fn name(&self) -> &'static str;
 
-    /// Alternative names (e.g., &["ERASE"] for the DEL command).
+    /// Alternative names (e.g., &["ERASE"] for DEL, &["CHDIR"] for CD).
     fn aliases(&self) -> &'static [&'static str] { &[] }
 
-    /// Execute the command with the given argument string.
-    /// Returns the process exit code (0 = success).
-    fn execute(
-        &self,
-        args: &str,
-        os: &mut OsState,
-        disk: &mut dyn DiskIo,
-        console: &mut dyn ConsoleIo,
-    ) -> u8;
+    /// Create a running instance of this command with the given arguments.
+    /// Arguments are raw bytes (Shift-JIS, as typed by the user).
+    fn start(&self, args: &[u8]) -> Box<dyn RunningCommand>;
 }
 ```
 
-Commands use the `OsState` for file operations and the `ConsoleIo` trait for display and
-keyboard input. They do not access CPU registers or emulated memory directly.
+The `RunningCommand` trait represents a command in progress with its own state:
+
+```rust
+pub(crate) trait RunningCommand {
+    /// Execute one step of the command.
+    ///
+    /// Called once per AH=FFh dispatch while this command is active.
+    /// Must return quickly -- never block.
+    /// Simple commands (CLS, VER) return Done on the first call.
+    /// Long commands (COPY, FORMAT) process one chunk and return Continue.
+    fn step(
+        &mut self,
+        state: &mut OsState,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+        console: &mut dyn ConsoleIo,
+    ) -> StepResult;
+}
+```
+
+Commands receive `OsState` for filesystem and drive operations, `MemoryAccess` for
+reading/writing DOS data structures (CDS paths, environment blocks), `DiskIo` for
+low-level disk access, and `ConsoleIo` for display and keyboard input. They do not
+receive `CpuAccess` -- commands never manipulate CPU registers directly.
+
+The `NeetanOs` struct is split so that `RunningCommand::step()` can borrow `OsState`
+mutably while the `Shell` holds the `Box<dyn RunningCommand>`:
+
+```rust
+pub struct NeetanOs {
+    state: OsState,                        // Fields commands need
+    shell: Shell,                          // Shell state + running command
+    console: Console,                      // Console output (VRAM, ESC parser)
+    process_stack: Vec<ProcessContext>,     // For nested EXEC
+}
+```
 
 ### 6.2 Command Reference
 
-All commands are compatible with MS-DOS 6.20 command-line options.
+All commands are compatible with MS-DOS 6.20 command-line options. All commands are
+registered in the shell's command registry at construction time.
 
-| Command       | Aliases | File         | Description                           |
-|---------------|---------|--------------|---------------------------------------|
-| DIR           |         | dir.rs       | List files and directories            |
-| COPY          |         | copy.rs      | Copy one or more files                |
-| XCOPY         |         | xcopy.rs     | Copy files with directory trees       |
-| DEL           | ERASE   | del.rs       | Delete one or more files              |
-| MD            | MKDIR   | md.rs        | Create a directory                    |
-| RD            | RMDIR   | rd.rs        | Remove a directory                    |
-| TYPE          |         | type_cmd.rs  | Display contents of a text file       |
-| MORE          |         | more.rs      | Paginated text file display           |
-| DATE          |         | date.rs      | Show or change the current date       |
-| TIME          |         | time.rs      | Show or change the current time       |
-| FORMAT        |         | format.rs    | Format a floppy or hard disk          |
-| DISKCOPY      |         | diskcopy.rs  | Copy entire floppy disk contents      |
+| Command  | Aliases | Description                           |
+|----------|---------|---------------------------------------|
+| CD       | CHDIR   | Change current directory              |
+| CLS      |         | Clear screen                          |
+| COPY     |         | Copy one or more files                |
+| DATE     |         | Show or change the current date       |
+| DEL      | ERASE   | Delete one or more files              |
+| DIR      |         | List files and directories            |
+| DISKCOPY |         | Copy entire floppy disk contents      |
+| ECHO     |         | Display text or toggle echo state     |
+| FORMAT   |         | Format a floppy or hard disk          |
+| MD       | MKDIR   | Create a directory                    |
+| MORE     |         | Paginated text file display           |
+| RD       | RMDIR   | Remove a directory                    |
+| REM      |         | Comment (no operation)                |
+| SET      |         | Display or modify environment vars    |
+| TIME     |         | Show or change the current time       |
+| TYPE     |         | Display contents of a text file       |
+| VER      |         | Display OS version                    |
+| XCOPY    |         | Copy files with directory trees       |
 
 #### DIR
 
@@ -962,7 +1053,7 @@ All hardware access goes through traits that the machine crate implements.
 
 ```
 crates/os/src/
-    lib.rs                 NeetanOs struct, top-level dispatch, boot sequence
+    lib.rs                 NeetanOs struct, OsState, top-level dispatch, boot sequence
     dos.rs                 INT 21h function dispatcher (AH routing)
     interrupt/
         int20.rs           INT 20h: Program Terminate
@@ -983,28 +1074,33 @@ crates/os/src/
         fat_dir.rs         Directory entry parsing, creation, 8.3 name handling
         fat_bpb.rs         BIOS Parameter Block parsing and validation
         fat_partition.rs   PC-98 HDD partition table parsing
-        virtual_drive.rs   Z: drive implementation
+        virtual_drive.rs   Z: drive implementation (COMMAND.COM only)
     console.rs             Console I/O trait and text VRAM interaction
     console_esc.rs         Native ESC sequence state machine and processing
     shell/
-        mod.rs             Main shell loop, command parsing, I/O redirection
+        mod.rs             Shell state machine, ShellPhase, LineEditor, command dispatch
         history.rs         100-entry ring buffer with up/down navigation
         batch.rs           Batch file (.BAT) interpreter
-        builtins.rs        Built-in shell commands (CD, SET, ECHO, CLS, VER, REM)
     commands/
-        mod.rs             Command trait definition and command registry
-        dir.rs             DIR
+        mod.rs             Command/RunningCommand/StepResult traits, command registry
+        cd.rs              CD / CHDIR
+        cls.rs             CLS
         copy.rs            COPY
-        xcopy.rs           XCOPY
-        del.rs             DEL / ERASE
-        md.rs              MD / MKDIR
-        rd.rs              RD / RMDIR
-        type_cmd.rs        TYPE
-        more.rs            MORE
         date.rs            DATE
-        time.rs            TIME
-        format.rs          FORMAT
+        del.rs             DEL / ERASE
+        dir.rs             DIR
         diskcopy.rs        DISKCOPY
+        echo.rs            ECHO
+        format.rs          FORMAT
+        md.rs              MD / MKDIR
+        more.rs            MORE
+        rd.rs              RD / RMDIR
+        rem.rs             REM
+        set.rs             SET
+        time.rs            TIME
+        type_cmd.rs        TYPE
+        ver.rs             VER
+        xcopy.rs           XCOPY
     config.rs              CONFIG.SYS and AUTOEXEC.BAT parsing
     country.rs             Country info, DBCS lead byte table, date/time formats
     tables.rs              DOS internal data structures (SYSVARS, SFT, CDS, DPB layout)
@@ -1018,24 +1114,48 @@ crates/os/src/
 ```rust
 /// Top-level OS instance, held as Option<NeetanOs> on Pc9801Bus.
 pub struct NeetanOs {
-    drives: [Option<Box<dyn Drive>>; 26],   // A-Z drive mapping
-    current_drive: u8,                      // Default drive index (0=A)
-    open_files: Vec<OpenFile>,              // System File Table entries
-    process_stack: Vec<ProcessContext>,     // For nested EXEC
-    dta_segment: u16,                       // Current DTA address
-    dta_offset: u16,
-    indos_flag: u8,                         // InDOS counter
-    error_info: ExtendedError,              // Last error (INT 21h/59h)
-    memory_strategy: u8,                    // Memory allocation strategy
-    shell: Shell,                           // Command interpreter state
-    commands: Vec<Box<dyn Command>>,        // Registered external commands
-    config: DosConfig,                      // FILES=, BUFFERS=, etc.
-    country: CountryInfo,                   // Country/codepage settings
-    ctrl_break_check: bool,                 // Extended Ctrl-C checking
-    switch_char: u8,                        // Switch character (/)
-    verify_flag: bool,                      // VERIFY ON/OFF
+    state: OsState,                         // Fields accessible to commands
+    shell: Shell,                           // Shell state machine + running command
+    console: Console,                       // Console output (VRAM, ESC parser)
+    process_stack: Vec<ProcessContext>,      // For nested EXEC
+}
+
+/// State accessible to commands during step() execution.
+/// Split from NeetanOs so RunningCommand::step() can borrow this mutably
+/// while Shell holds the Box<dyn RunningCommand>.
+pub(crate) struct OsState {
+    sysvars_base: u32,                      // Linear address of SYSVARS
+    indos_addr: u32,                        // Linear address of InDOS flag
+    boot_drive: u8,                         // Boot drive (1=A, 2=B, ...)
     version: (u8, u8),                      // (6, 20)
-    cdrom: Option<MscdexState>,             // MSCDEX state if CD-ROM present
+    current_psp: u16,                       // Current PSP segment
+    current_drive: u8,                      // Default drive (0=A)
+    dta_segment: u16,                       // DTA address
+    dta_offset: u16,
+    ctrl_break: bool,                       // Ctrl-Break check state
+    switch_char: u8,                        // Switch character (/)
+    allocation_strategy: u16,               // Memory allocation strategy
+    last_return_code: u8,                   // Last child exit code
+    last_termination_type: u8,              // Last termination type
+    dbcs_table_addr: u32,                   // DBCS lead byte table address
+    fat_volumes: Vec<Option<FatVolume>>,    // Mounted FAT volumes
+    sft2_base: u32,                         // Second SFT block address
+    virtual_drive: VirtualDrive,            // Z: drive (COMMAND.COM only)
+}
+
+/// Shell state machine driven by INT 21h AH=FFh dispatches.
+pub(crate) struct Shell {
+    phase: ShellPhase,                      // Current state machine phase
+    history: History,                       // Command history ring buffer
+    commands: Vec<Box<dyn Command>>,        // Registered command factories
+    echo_on: bool,                          // ECHO state for batch files
+    last_exit_code: u8,                     // Last command exit code
+}
+
+/// Result of a single step of command execution.
+pub(crate) enum StepResult {
+    Done(u8),                               // Completed with exit code
+    Continue,                               // Yield, call step() again
 }
 ```
 
@@ -1224,7 +1344,7 @@ the `crates/os/tests/dos620/` integration test suite.
 
 - FAT12/FAT16 driver: FAT table read/write, cluster chain traversal, allocation/deallocation
 - Directory operations: 8.3 name parsing, entry search with wildcards, create/delete entries
-- Virtual Z: drive: read-only filesystem listing built-in commands as .COM files
+- Virtual Z: drive: read-only filesystem with COMMAND.COM entry only
 - SFT entry management, handle-to-SFT mapping via PSP JFT
 - SJIS-aware path parsing (DBCS 0x5C handling)
 - INT 21h: AH=0Dh, 1Ch, 29h, 3Ch, 3Dh, 3Eh, 3Fh, 40h, 41h, 42h, 43h, 44h, 45h, 4Eh, 4Fh, 56h, 57h, 5Dh
@@ -1250,21 +1370,94 @@ Test should use a floppy image that is purely created in-memory for the tests.
 
 **Milestone**: Programs can be loaded and executed. TSR programs stay resident.
 
-### 10.10 Shell, Commands, and Configuration
+### 10.10 Command Framework and Shell Core
 
-- Shell main loop: display prompt, read line, parse command, dispatch, I/O redirection (>, >>, <), pipes
-- Command history: 100-entry ring buffer, up/down arrow navigation
-- Built-in commands: CD, SET, ECHO, REM, CLS, VER
-- Batch interpreter: .BAT processing, GOTO/labels, IF, CALL, variable substitution (%0-%9, %VAR%)
-- External commands via Command trait: DIR, COPY, DEL, MD, RD, TYPE, MORE, DATE, TIME, FORMAT, DISKCOPY
+- Extract `OsState` from `NeetanOs`, update all `self.field` to `self.state.field` across
+  dos.rs, lib.rs, file_io.rs, process.rs, and all other files that access NeetanOs fields
+- Define `StepResult`, `Command`, `RunningCommand` traits in `commands/mod.rs`
+- Define `ShellPhase`, `ShellAction`, `Shell`, `LineEditor` in `shell/mod.rs`
+- Add `shell: Shell` field to `NeetanOs`
+- Add `0xFF` arm to INT 21h dispatcher in `dos.rs`
+- Implement `Shell::step()` with ShowPrompt and ReadingInput phases (non-blocking
+  character-by-character input with backspace and Enter)
+- Implement prompt rendering (PROMPT env var: $P, $G, $D, $T, etc.)
+- Connect `ConsoleIo` in `os_adapter.rs` to keyboard buffer and text VRAM
+- Register all commands in `Shell::new()`
+- Simplify `VirtualDrive` to only COMMAND.COM
+- Implement simple single-step commands: CLS, VER, ECHO, REM, CD, SET
+- When booting, the OS name should be printed out in its own row: "Neetan OS".
+  This let's users instantly know they are in the built-in OS.
+
+**Tests**: Shell shows prompt, accepts input, executes CLS/VER/ECHO/CD/SET.
+
+**Milestone**: Boots to a working command prompt. Basic shell commands functional.
+
+### 10.11 Line Editing and Command History
+
+- Full line editing: cursor left/right, Home, End, Insert toggle, Delete
+- 100-entry history ring buffer with up/down arrow navigation
+- Duplicate consecutive command suppression
+
+**Tests**: `shell_history`, `shell_line_editing`
+
+**Milestone**: Shell has full line editing and command recall.
+
+### 10.12 File and Directory Commands
+
+- DIR: multi-step for /P (paged output, non-blocking keypress wait) and /S (recursive).
+  Supports /W, /B, /O, /A. Wildcards: * and ?.
+- TYPE: multi-step for large files (read and output one buffer per step)
+- MORE: multi-step with per-page pause
+- DEL (ERASE): single-step (or multi-step for wildcards with /P prompt)
+- MD (MKDIR), RD (RMDIR): single-step
+- COPY: multi-step state machine (open source, read chunk per step, write to dest, close).
+  Supports /V, /Y, concatenation with +.
+- XCOPY: multi-step with directory tree traversal state. Supports /S, /E, /P.
+- DATE, TIME: single-step
+
+**Tests**: `commands_dir`, `commands_copy`, `commands_file_ops`
+
+**Milestone**: All file and directory commands operational.
+
+### 10.13 Disk Commands
+
+- FORMAT: multi-step, one track per step. Supports /Q, /U, /V.
+- DISKCOPY: multi-step, read/write N tracks per step. Supports /V.
+
+**Tests**: `commands_format`, `commands_diskcopy`
+
+**Milestone**: Disk utilities operational. Emulator stays responsive during long operations.
+
+### 10.14 I/O Redirection, Pipes, and Batch Processing
+
+- Output redirection: > (overwrite), >> (append)
+- Input redirection: <
+- Pipes: | (via temp files)
+- Sequence: Commands separated by ASCII-20 (¶) are executed in sequence (chaining of commands)
+- Batch file (.BAT) interpreter: line-by-line execution via ExecutingBatch phase
+- GOTO and labels (:label)
+- IF EXIST / IF NOT EXIST / IF ERRORLEVEL
+- CALL (nested batch execution)
+- Variable substitution: %0-%9 parameters, %VARIABLE% environment
+- ECHO ON/OFF, PAUSE, REM in batch context
+
+**Tests**: `shell_redirection`, `shell_batch`
+
+**Milestone**: Full batch file processing and I/O redirection.
+
+### 10.15 Configuration and Bootstrap Completion
+
 - CONFIG.SYS parser: FILES=, BUFFERS=, LASTDRIVE=, COUNTRY=, BREAK=, SHELL=, DEVICE=
-- AUTOEXEC.BAT execution
-- MSCDEX: INT 2Fh AH=15h subfunctions (install check, drive letters, version, device request, auido tracks)
-- Bootstrap completion: boot() -> parse CONFIG.SYS -> create COMMAND.COM -> run AUTOEXEC.BAT -> prompt
+  (NECCD.SYS / NECCDD.SYS recognized for CD-ROM activation)
+- AUTOEXEC.BAT execution after CONFIG.SYS
+- MSCDEX finalization (if not complete from 10.6)
+- External program EXEC pathway from shell (ShellAction::Exec, WaitingForChild)
+- Full bootstrap sequence: boot() -> parse CONFIG.SYS -> create COMMAND.COM ->
+  run AUTOEXEC.BAT -> prompt
 
-**Tests**: `config`, all 142 tests pass against HLE OS
+**Tests**: `config`, all tests pass against HLE OS
 
-**Milestone**: Boots to a functional command prompt. Full DOS replacement operational.
+**Milestone**: Boots to a fully functional command prompt. Full DOS replacement operational.
 
 ---
 

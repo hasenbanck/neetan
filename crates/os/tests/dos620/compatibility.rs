@@ -61,7 +61,7 @@ fn true_version_6_20() {
 
 #[test]
 fn no_windows_running() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB8, 0x00, 0x16, // MOV AX, 1600h
@@ -73,11 +73,9 @@ fn no_windows_running() {
     harness::inject_and_run(&mut machine, code);
 
     let al = harness::result_byte(&machine.bus, 0);
-    // NEC MS-DOS 6.20 returns AL=0x02 (multiplex handler modifies AL in the default chain).
-    // Valid "no Windows" responses: 0x00, 0x01, 0x02, or 0x80.
-    assert!(
-        al == 0x00 || al == 0x01 || al == 0x02 || al == 0x80,
-        "INT 2Fh/1600h AL should indicate no Windows (0x00, 0x01, 0x02, or 0x80), got {:#04X}",
+    assert_eq!(
+        al, 0x00,
+        "INT 2Fh/1600h AL should be 0x00 (no Windows), got {:#04X}",
         al
     );
 }
