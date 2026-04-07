@@ -1,4 +1,4 @@
-//! PSP creation, EXEC, terminate, process stack.
+//! Program Segment Prefix (PSP) creation, EXEC, terminate, process stack.
 
 use crate::{MemoryAccess, tables::*};
 

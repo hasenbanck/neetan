@@ -512,6 +512,11 @@ impl D88Disk {
         image
     }
 
+    /// Returns the total number of track slots (cylinder * 2 + head).
+    pub fn track_slot_count(&self) -> usize {
+        self.tracks.len()
+    }
+
     /// Returns the number of sectors on the specified track.
     pub fn sector_count(&self, track_index: usize) -> usize {
         self.tracks

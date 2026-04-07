@@ -1247,6 +1247,8 @@ Test should use a floppy image that is purely created in-memory for the tests.
 
 **Tests**: New integration tests for .COM/.EXE loading and termination
 
+- Add a test that validates thet the garbage collection of free MCBs on termination of a child process works.
+
 **Milestone**: Programs can be loaded and executed. TSR programs stay resident.
 
 ### 10.10 Shell, Commands, and Configuration
@@ -1258,7 +1260,7 @@ Test should use a floppy image that is purely created in-memory for the tests.
 - External commands via Command trait: DIR, COPY, DEL, MD, RD, TYPE, MORE, DATE, TIME, FORMAT, DISKCOPY
 - CONFIG.SYS parser: FILES=, BUFFERS=, LASTDRIVE=, COUNTRY=, BREAK=, SHELL=, DEVICE=
 - AUTOEXEC.BAT execution
-- MSCDEX: INT 2Fh AH=15h subfunctions (install check, drive letters, version, device request)
+- MSCDEX: INT 2Fh AH=15h subfunctions (install check, drive letters, version, device request, auido tracks)
 - Bootstrap completion: boot() -> parse CONFIG.SYS -> create COMMAND.COM -> run AUTOEXEC.BAT -> prompt
 
 **Tests**: `config`, all 142 tests pass against HLE OS

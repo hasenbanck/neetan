@@ -5,6 +5,7 @@
 //! (`common::Cpu`, `Pc9801Memory`) to implement those traits.
 
 use common::Cpu;
+use device::{ide::IdeController, sasi::SasiController, upd765a_fdc::FloppyController};
 
 use crate::memory::Pc9801Memory;
 
@@ -137,23 +138,204 @@ impl os::MemoryAccess for OsMemoryAccess<'_> {
     }
 }
 
-pub(super) struct OsDiskIo;
+pub(super) struct OsDiskIo<'a> {
+    pub floppy: &'a mut FloppyController,
+    pub sasi: &'a mut SasiController,
+    pub ide: &'a mut IdeController,
+}
 
-impl os::DiskIo for OsDiskIo {
-    fn read_sectors(&mut self, _drive_da: u8, _lba: u32, _count: u32) -> Result<Vec<u8>, u8> {
-        unimplemented!("OsDiskIo::read_sectors()")
+/// Floppy geometry parameters derived from the device address.
+struct FloppyParams {
+    sectors_per_track: u8,
+    heads: u8,
+    size_code: u8,
+    sector_size: u16,
+}
+
+fn floppy_params(drive_da: u8) -> Option<FloppyParams> {
+    match drive_da & 0xF0 {
+        0x90 => Some(FloppyParams {
+            sectors_per_track: 8,
+            heads: 2,
+            size_code: 3,
+            sector_size: 1024,
+        }),
+        0x70 => Some(FloppyParams {
+            sectors_per_track: 8,
+            heads: 2,
+            size_code: 2,
+            sector_size: 512,
+        }),
+        _ => None,
+    }
+}
+
+/// Which HDD controller owns a given unit.
+enum HddSource {
+    Sasi,
+    Ide,
+}
+
+impl OsDiskIo<'_> {
+    /// Determines which HDD controller has the given unit.
+    /// Tries SASI first (PC-9801), then IDE (PC-9821).
+    fn hdd_source(&self, unit: usize) -> Option<HddSource> {
+        if self.sasi.sector_size_for_drive(unit).is_some() {
+            Some(HddSource::Sasi)
+        } else if self.ide.sector_size_for_drive(unit).is_some() {
+            Some(HddSource::Ide)
+        } else {
+            None
+        }
     }
 
-    fn write_sectors(&mut self, _drive_da: u8, _lba: u32, _data: &[u8]) -> Result<(), u8> {
-        unimplemented!("OsDiskIo::write_sectors()")
+    fn hdd_read_sector(&mut self, unit: usize, lba: u32) -> Option<Vec<u8>> {
+        match self.hdd_source(unit)? {
+            HddSource::Sasi => self.sasi.read_sector_raw(unit, lba),
+            HddSource::Ide => self.ide.read_sector_raw(unit, lba),
+        }
     }
 
-    fn sector_size(&self, _drive_da: u8) -> Option<u16> {
-        unimplemented!("OsDiskIo::sector_size()")
+    fn hdd_write_sector(&mut self, unit: usize, lba: u32, data: &[u8]) -> bool {
+        match self.hdd_source(unit) {
+            Some(HddSource::Sasi) => self.sasi.write_sector_raw(unit, lba, data),
+            Some(HddSource::Ide) => self.ide.write_sector_raw(unit, lba, data),
+            None => false,
+        }
     }
 
-    fn total_sectors(&self, _drive_da: u8) -> Option<u32> {
-        unimplemented!("OsDiskIo::total_sectors()")
+    fn hdd_sector_size(&self, unit: usize) -> Option<u16> {
+        match self.hdd_source(unit)? {
+            HddSource::Sasi => self.sasi.sector_size_for_drive(unit),
+            HddSource::Ide => self.ide.sector_size_for_drive(unit),
+        }
+    }
+
+    fn hdd_total_sectors(&self, unit: usize) -> Option<u32> {
+        match self.hdd_source(unit)? {
+            HddSource::Sasi => self.sasi.total_sectors_for_drive(unit),
+            HddSource::Ide => self.ide.total_sectors_for_drive(unit),
+        }
+    }
+
+    fn hdd_geometry(&self, unit: usize) -> Option<(u16, u8, u8)> {
+        let geom = match self.hdd_source(unit)? {
+            HddSource::Sasi => self.sasi.drive_geometry(unit)?,
+            HddSource::Ide => self.ide.drive_geometry(unit)?,
+        };
+        Some((geom.cylinders, geom.heads, geom.sectors_per_track))
+    }
+}
+
+impl os::DiskIo for OsDiskIo<'_> {
+    fn read_sectors(&mut self, drive_da: u8, lba: u32, count: u32) -> Result<Vec<u8>, u8> {
+        let dev_type = drive_da & 0xF0;
+        let unit = (drive_da & 0x0F) as usize;
+
+        if dev_type == 0x80 {
+            let sector_size = self.hdd_sector_size(unit).ok_or(0x02u8)? as usize;
+            let mut result = Vec::with_capacity(sector_size * count as usize);
+            for i in 0..count {
+                let data = self.hdd_read_sector(unit, lba + i).ok_or(0x10u8)?;
+                result.extend_from_slice(&data);
+            }
+            Ok(result)
+        } else if let Some(params) = floppy_params(drive_da) {
+            let mut result = Vec::with_capacity(params.sector_size as usize * count as usize);
+            for i in 0..count {
+                let data = self
+                    .floppy
+                    .read_sector_by_lba(
+                        unit,
+                        lba + i,
+                        params.sectors_per_track,
+                        params.heads,
+                        params.size_code,
+                    )
+                    .ok_or(0x10u8)?;
+                result.extend_from_slice(&data);
+            }
+            Ok(result)
+        } else {
+            Err(0x02)
+        }
+    }
+
+    fn write_sectors(&mut self, drive_da: u8, lba: u32, data: &[u8]) -> Result<(), u8> {
+        let dev_type = drive_da & 0xF0;
+        let unit = (drive_da & 0x0F) as usize;
+
+        if dev_type == 0x80 {
+            let sector_size = self.hdd_sector_size(unit).ok_or(0x02u8)? as usize;
+            let sector_count = data.len() / sector_size;
+            for i in 0..sector_count {
+                let offset = i * sector_size;
+                if !self.hdd_write_sector(unit, lba + i as u32, &data[offset..offset + sector_size])
+                {
+                    return Err(0x10);
+                }
+            }
+            Ok(())
+        } else if let Some(params) = floppy_params(drive_da) {
+            let sector_size = params.sector_size as usize;
+            let sector_count = data.len() / sector_size;
+            for i in 0..sector_count {
+                let offset = i * sector_size;
+                if !self.floppy.write_sector_by_lba(
+                    unit,
+                    lba + i as u32,
+                    params.sectors_per_track,
+                    params.heads,
+                    params.size_code,
+                    &data[offset..offset + sector_size],
+                ) {
+                    return Err(0x10);
+                }
+            }
+            Ok(())
+        } else {
+            Err(0x02)
+        }
+    }
+
+    fn sector_size(&self, drive_da: u8) -> Option<u16> {
+        let dev_type = drive_da & 0xF0;
+        let unit = (drive_da & 0x0F) as usize;
+
+        if dev_type == 0x80 {
+            self.hdd_sector_size(unit)
+        } else {
+            floppy_params(drive_da).map(|p| p.sector_size)
+        }
+    }
+
+    fn total_sectors(&self, drive_da: u8) -> Option<u32> {
+        let dev_type = drive_da & 0xF0;
+        let unit = (drive_da & 0x0F) as usize;
+
+        if dev_type == 0x80 {
+            self.hdd_total_sectors(unit)
+        } else if let Some(params) = floppy_params(drive_da) {
+            let track_slots = self.floppy.track_slot_count(unit)?;
+            Some(track_slots as u32 * params.sectors_per_track as u32 / params.heads as u32)
+        } else {
+            None
+        }
+    }
+
+    fn drive_geometry(&self, drive_da: u8) -> Option<(u16, u8, u8)> {
+        let dev_type = drive_da & 0xF0;
+        let unit = (drive_da & 0x0F) as usize;
+
+        if dev_type == 0x80 {
+            self.hdd_geometry(unit)
+        } else if let Some(params) = floppy_params(drive_da) {
+            let track_slots = self.floppy.track_slot_count(unit)?;
+            let cylinders = track_slots as u16 / params.heads as u16;
+            Some((cylinders, params.heads, params.sectors_per_track))
+        } else {
+            None
+        }
     }
 }
 

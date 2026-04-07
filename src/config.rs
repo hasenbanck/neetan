@@ -4,6 +4,9 @@ use common::{Context, MachineModel, StringError, bail, info, warn};
 
 use crate::keymap::{self, KeyMap};
 
+// TODO: We need a config option to set the boot device (fdd1, fdd2, hdd1, hdd2, os, auto)
+//       This is helpful if a user wants to use the OS but floppy images / hard didks contain a boot sector.
+
 fn next_value(flag: &str, args: &mut impl Iterator<Item = String>) -> crate::Result<String> {
     match args.next() {
         Some(val) => Ok(val),

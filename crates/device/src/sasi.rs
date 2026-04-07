@@ -234,6 +234,42 @@ impl SasiController {
         self.drives.get(drive)?.as_ref().map(|drive| drive.geometry)
     }
 
+    /// Reads a single sector by LBA, returning a copy of the data.
+    pub fn read_sector_raw(&self, drive: usize, lba: u32) -> Option<Vec<u8>> {
+        self.drives
+            .get(drive)?
+            .as_ref()?
+            .read_sector(lba)
+            .map(|data| data.to_vec())
+    }
+
+    /// Writes a single sector by LBA. Returns true on success.
+    pub fn write_sector_raw(&mut self, drive: usize, lba: u32, data: &[u8]) -> bool {
+        if let Some(Some(image)) = self.drives.get_mut(drive)
+            && image.write_sector(lba, data)
+        {
+            self.drive_dirty[drive] = true;
+            return true;
+        }
+        false
+    }
+
+    /// Returns the sector size for the given drive.
+    pub fn sector_size_for_drive(&self, drive: usize) -> Option<u16> {
+        self.drives
+            .get(drive)?
+            .as_ref()
+            .map(|image| image.geometry.sector_size)
+    }
+
+    /// Returns the total sector count for the given drive.
+    pub fn total_sectors_for_drive(&self, drive: usize) -> Option<u32> {
+        self.drives
+            .get(drive)?
+            .as_ref()
+            .map(|image| image.geometry.total_sectors())
+    }
+
     /// Reads a byte from the expansion ROM at the given offset.
     pub fn read_rom_byte(&self, offset: usize) -> u8 {
         self.rom.as_ref().map_or(0xFF, |rom| rom[offset])

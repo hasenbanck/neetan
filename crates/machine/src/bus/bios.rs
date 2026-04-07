@@ -98,7 +98,11 @@ impl<T: Tracing> Pc9801Bus<T> {
                 if let Some(mut neetan_os) = self.os.take() {
                     let mut cpu_access = OsCpuAccess(cpu);
                     let mut mem_access = OsMemoryAccess(&mut self.memory);
-                    let mut disk_io = OsDiskIo;
+                    let mut disk_io = OsDiskIo {
+                        floppy: &mut self.floppy,
+                        sasi: &mut self.sasi,
+                        ide: &mut self.ide,
+                    };
                     let mut console_io = OsConsoleIo;
                     neetan_os.dispatch(
                         vector,
@@ -2792,7 +2796,11 @@ impl<T: Tracing> Pc9801Bus<T> {
         {
             let mut cpu_access = OsCpuAccess(cpu);
             let mut mem_access = OsMemoryAccess(&mut self.memory);
-            let mut disk_io = OsDiskIo;
+            let mut disk_io = OsDiskIo {
+                floppy: &mut self.floppy,
+                sasi: &mut self.sasi,
+                ide: &mut self.ide,
+            };
             let mut console_io = OsConsoleIo;
             neetan_os.boot(
                 &mut cpu_access,

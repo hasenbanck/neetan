@@ -7,6 +7,8 @@
 //! The default handler is an IRET (no operation). The caller side -- generating
 //! INT 28h from the HLE idle loop with correct stack and InDOS state -- belongs
 //! to the console input implementation phase (step 10.7).
+//!
+//! TODO: Why is this empty? If we don't need it: remove. Did we handle this properly in step 10.7?
 
 use crate::{CpuAccess, MemoryAccess, NeetanOs};
 

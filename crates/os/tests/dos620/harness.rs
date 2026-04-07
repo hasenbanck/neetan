@@ -134,6 +134,183 @@ pub fn boot_hle() -> machine::Pc9801Ra {
     machine
 }
 
+/// Known content for COMMAND.COM on the test floppy (100 bytes).
+pub const TEST_COMMAND_COM: &[u8] = b"This is a fake COMMAND.COM for testing purposes. \
+It contains exactly one hundred bytes of known content!!";
+
+/// Known content for TESTFILE.TXT on the test floppy.
+pub const TEST_FILE_CONTENT: &[u8] = b"HELLO WORLD\r\n";
+
+/// Known date for files on the test floppy: 1995-01-01.
+/// DOS date: ((15)<<9) | (1<<5) | 1 = 0x1E21
+pub const TEST_FILE_DATE: u16 = 0x1E21;
+
+/// Known time for files on the test floppy: 12:00:00.
+/// DOS time: (12<<11) | (0<<5) | 0 = 0x6000
+pub const TEST_FILE_TIME: u16 = 0x6000;
+
+/// Creates a PC-98 2HD floppy (FAT12) with known test files as a D88 FloppyImage.
+pub fn create_test_floppy() -> device::floppy::FloppyImage {
+    use device::floppy::d88::{D88Disk, D88MediaType, D88Sector};
+
+    // PC-98 2HD: 77 cylinders, 2 heads, 8 sectors/track, 1024 bytes/sector
+    let cylinders = 77usize;
+    let heads = 2usize;
+    let spt = 8usize;
+    let sector_size = 1024usize;
+    let total_tracks = cylinders * heads;
+
+    // Build flat sector data first, then convert to D88 tracks
+    let total_sectors = cylinders * heads * spt;
+    let mut disk_data = vec![0u8; total_sectors * sector_size];
+
+    // Sector 0: Boot sector with BPB
+    {
+        let bpb = &mut disk_data[0..sector_size];
+        bpb[0] = 0xEB;
+        bpb[1] = 0x3C; // JMP short
+        bpb[2] = 0x90; // NOP
+        bpb[3..11].copy_from_slice(b"NEETAN  ");
+        // BPB fields at offset 11
+        bpb[11..13].copy_from_slice(&1024u16.to_le_bytes()); // bytes per sector
+        bpb[13] = 1; // sectors per cluster
+        bpb[14..16].copy_from_slice(&1u16.to_le_bytes()); // reserved sectors
+        bpb[16] = 2; // number of FATs
+        bpb[17..19].copy_from_slice(&192u16.to_le_bytes()); // root entry count
+        bpb[19..21].copy_from_slice(&1232u16.to_le_bytes()); // total sectors (16-bit)
+        bpb[21] = 0xFE; // media descriptor
+        bpb[22..24].copy_from_slice(&2u16.to_le_bytes()); // sectors per FAT
+        bpb[24..26].copy_from_slice(&8u16.to_le_bytes()); // sectors per track
+        bpb[26..28].copy_from_slice(&2u16.to_le_bytes()); // number of heads
+        // hidden sectors, total sectors 32 stay 0
+    }
+
+    // FAT layout:
+    // Sector 0: boot, Sectors 1-2: FAT1, Sectors 3-4: FAT2
+    // Sectors 5-10: Root directory (192 entries * 32 = 6144 = 6 sectors)
+    // Sector 11+: Data area (cluster 2 = sector 11)
+
+    // FAT1 (sectors 1-2)
+    let fat1_offset = sector_size;
+    disk_data[fat1_offset] = 0xFE; // media descriptor
+    disk_data[fat1_offset + 1] = 0xFF;
+    disk_data[fat1_offset + 2] = 0xFF;
+    // Cluster 2: COMMAND.COM (end of chain = 0xFFF for FAT12)
+    // FAT12 entry for cluster 2: bytes at offset 3 (cluster 2 = byte offset 3, even cluster)
+    // cluster 2 value = 0xFFF (end of chain)
+    // byte[3] = low 8 bits of cluster2 = 0xFF
+    // byte[4] = high 4 bits of cluster2 (low nibble) | low 4 bits of cluster3 (high nibble)
+    disk_data[fat1_offset + 3] = 0xFF;
+    disk_data[fat1_offset + 4] = 0x0F; // cluster2=0xFFF, cluster3=0x000
+    // Cluster 3: TESTFILE.TXT (end of chain = 0xFFF)
+    // cluster 3 value = 0xFFF
+    // byte[4] upper nibble already has cluster3 low nibble. cluster3 = 0xFFF
+    // For odd cluster (3): byte[4] = (byte[4] & 0x0F) | ((0xFFF & 0x00F) << 4) = 0x0F | 0xF0 = 0xFF
+    // byte[5] = 0xFFF >> 4 = 0xFF
+    disk_data[fat1_offset + 4] = 0xFF;
+    disk_data[fat1_offset + 5] = 0xFF;
+
+    // FAT2 (sectors 3-4) -- copy of FAT1
+    let fat2_offset = 3 * sector_size;
+    let fat1_end = fat1_offset + 2 * sector_size;
+    let fat1_copy: Vec<u8> = disk_data[fat1_offset..fat1_end].to_vec();
+    disk_data[fat2_offset..fat2_offset + fat1_copy.len()].copy_from_slice(&fat1_copy);
+
+    // Root directory (sectors 5-10)
+    let root_offset = 5 * sector_size;
+
+    // Entry 0: COMMAND.COM
+    {
+        let e = &mut disk_data[root_offset..root_offset + 32];
+        e[0..11].copy_from_slice(b"COMMAND COM");
+        e[11] = 0x20; // archive
+        e[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        e[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        e[26..28].copy_from_slice(&2u16.to_le_bytes()); // start cluster
+        e[28..32].copy_from_slice(&(TEST_COMMAND_COM.len() as u32).to_le_bytes());
+    }
+
+    // Entry 1: TESTFILE.TXT
+    {
+        let e = &mut disk_data[root_offset + 32..root_offset + 64];
+        e[0..11].copy_from_slice(b"TESTFILETXT");
+        e[11] = 0x20; // archive
+        e[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        e[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        e[26..28].copy_from_slice(&3u16.to_le_bytes()); // start cluster
+        e[28..32].copy_from_slice(&(TEST_FILE_CONTENT.len() as u32).to_le_bytes());
+    }
+
+    // Data area: cluster 2 = sector 11 -> COMMAND.COM content
+    let cluster2_offset = 11 * sector_size;
+    disk_data[cluster2_offset..cluster2_offset + TEST_COMMAND_COM.len()]
+        .copy_from_slice(TEST_COMMAND_COM);
+
+    // Data area: cluster 3 = sector 12 -> TESTFILE.TXT content
+    let cluster3_offset = 12 * sector_size;
+    disk_data[cluster3_offset..cluster3_offset + TEST_FILE_CONTENT.len()]
+        .copy_from_slice(TEST_FILE_CONTENT);
+
+    // Build D88 tracks from flat sector data
+    let mut tracks: Vec<Option<Vec<D88Sector>>> = Vec::with_capacity(total_tracks);
+    for track_idx in 0..total_tracks {
+        let cylinder = (track_idx / heads) as u8;
+        let head = (track_idx % heads) as u8;
+        let mut sectors = Vec::with_capacity(spt);
+        for s in 0..spt {
+            let lba = track_idx * spt + s;
+            let data_offset = lba * sector_size;
+            sectors.push(D88Sector {
+                cylinder,
+                head,
+                record: (s + 1) as u8,
+                size_code: 3, // 1024 bytes = 128 << 3
+                sector_count: spt as u16,
+                mfm_flag: 0x40,
+                deleted: 0,
+                status: 0,
+                reserved: [0; 5],
+                data: disk_data[data_offset..data_offset + sector_size].to_vec(),
+            });
+        }
+        tracks.push(Some(sectors));
+    }
+
+    let d88 = D88Disk::from_tracks("TEST".to_string(), false, D88MediaType::Disk2HD, tracks);
+    device::floppy::FloppyImage::from_d88(d88)
+}
+
+/// Boots an HLE machine, then inserts a test floppy as drive A:.
+/// The floppy is inserted after boot so the BIOS doesn't try to boot from it.
+/// BDA_DISK_EQUIP is set before boot so discover_drives() sees the FDD.
+pub fn boot_hle_with_floppy() -> machine::Pc9801Ra {
+    let mut machine = create_hle_machine();
+
+    // Set BDA DISK_EQUIP bit 0 (1MB FDD unit 0) before boot so HLE OS
+    // creates CDS/DPB entries for drive A:.
+    machine.bus.write_byte(0x055C, 0x01);
+
+    // Boot HLE OS (no floppy image yet, so BIOS falls through to HLE activation)
+    let mut total_cycles = 0u64;
+    loop {
+        total_cycles += machine.run_for(HLE_BOOT_CHECK_INTERVAL);
+        if machine.cpu.halted() {
+            break;
+        }
+        assert!(
+            total_cycles < HLE_BOOT_MAX_CYCLES,
+            "HLE OS did not halt within {} cycles",
+            HLE_BOOT_MAX_CYCLES
+        );
+    }
+
+    // Insert the test floppy after boot
+    let floppy = create_test_floppy();
+    machine.bus.insert_floppy(0, floppy, None);
+
+    machine
+}
+
 pub fn write_bytes(bus: &mut impl Bus, addr: u32, data: &[u8]) {
     for (i, &byte) in data.iter().enumerate() {
         bus.write_byte(addr + i as u32, byte);
@@ -457,6 +634,246 @@ pub fn find_string_in_text_vram(bus: &machine::Pc9801Bus, chars: &[u16]) -> bool
         }
     }
     false
+}
+
+/// Creates a minimal in-memory HDD image with a FAT16 partition.
+/// The image has a PC-98 partition table at sector 1 and a FAT16 volume at the partition offset.
+/// `sector_size`: 256 or 512 bytes.
+/// `test_files`: if true, populates COMMAND.COM and TESTFILE.TXT.
+pub fn create_test_hdd(sector_size: u16) -> device::disk::HddImage {
+    use device::disk::{HddFormat, HddGeometry, HddImage};
+
+    let cylinders: u16 = 20;
+    let heads: u8 = 8;
+    let sectors_per_track: u8 = 17;
+    let total_sectors = cylinders as u32 * heads as u32 * sectors_per_track as u32;
+    let ss = sector_size as usize;
+    let mut data = vec![0u8; total_sectors as usize * ss];
+
+    // Sector 0: IPL (boot code stub)
+    // Just put a JMP and "IPL1" signature
+    data[0] = 0xEB;
+    data[1] = 0x1E;
+    data[4..8].copy_from_slice(b"IPL1");
+
+    // Sector 1: PC-98 partition table
+    // One active DOS partition starting at cylinder 1
+    let part_offset = ss; // sector 1
+    let part = &mut data[part_offset..part_offset + 32];
+    part[0] = 0xA0; // mid: DOS (0x20) | bootable (0x80)
+    part[1] = 0x91; // sid: FAT16 <32MB (0x11) | active (0x80)
+    // IPL CHS: cylinder 1, head 0, sector 0
+    part[4] = 0; // IPL sector
+    part[5] = 0; // IPL head
+    part[6] = 1; // IPL cylinder low
+    part[7] = 0; // IPL cylinder high
+    // Data start CHS: cylinder 1, head 0, sector 0
+    part[8] = 0; // data sector
+    part[9] = 0; // data head
+    part[10] = 1; // data cylinder low
+    part[11] = 0; // data cylinder high
+    // End CHS: last cylinder, last head, last sector
+    part[12] = sectors_per_track - 1;
+    part[13] = heads - 1;
+    part[14] = (cylinders - 1) as u8;
+    part[15] = ((cylinders - 1) >> 8) as u8;
+    part[16..32].copy_from_slice(b"MS-DOS 6.20\x00\x00\x00\x00\x00");
+
+    // Partition starts at LBA = cylinder_1 * heads * spt
+    let partition_lba = heads as u32 * sectors_per_track as u32;
+    let partition_byte_offset = partition_lba as usize * ss;
+
+    // Sectors per cluster: choose based on sector size
+    let sectors_per_cluster: u8 = if sector_size == 256 { 8 } else { 4 };
+    let reserved_sectors: u16 = 1;
+    let num_fats: u8 = 2;
+    let root_entry_count: u16 = 512;
+    let root_dir_sectors = (root_entry_count as u32 * 32).div_ceil(sector_size as u32);
+    let partition_sectors = total_sectors - partition_lba;
+    let sectors_per_fat: u16 = 16;
+    let first_data_sector =
+        reserved_sectors as u32 + num_fats as u32 * sectors_per_fat as u32 + root_dir_sectors;
+
+    // Boot sector at partition offset
+    let bs = &mut data[partition_byte_offset..partition_byte_offset + ss];
+    bs[0] = 0xEB;
+    bs[1] = 0x3C;
+    bs[2] = 0x90;
+    bs[3..11].copy_from_slice(b"NEETAN  ");
+    bs[11..13].copy_from_slice(&sector_size.to_le_bytes());
+    bs[13] = sectors_per_cluster;
+    bs[14..16].copy_from_slice(&reserved_sectors.to_le_bytes());
+    bs[16] = num_fats;
+    bs[17..19].copy_from_slice(&root_entry_count.to_le_bytes());
+    // total_sectors_16: use if fits in u16
+    if partition_sectors <= 0xFFFF {
+        bs[19..21].copy_from_slice(&(partition_sectors as u16).to_le_bytes());
+    }
+    bs[21] = 0xF8; // media descriptor (HDD)
+    bs[22..24].copy_from_slice(&sectors_per_fat.to_le_bytes());
+    bs[24..26].copy_from_slice(&(sectors_per_track as u16).to_le_bytes());
+    bs[26..28].copy_from_slice(&(heads as u16).to_le_bytes());
+
+    // FAT1 at partition offset + reserved_sectors
+    let fat1_byte_offset = partition_byte_offset + reserved_sectors as usize * ss;
+    // Media descriptor in FAT: F8 FF FF FF (FAT16)
+    data[fat1_byte_offset] = 0xF8;
+    data[fat1_byte_offset + 1] = 0xFF;
+    data[fat1_byte_offset + 2] = 0xFF;
+    data[fat1_byte_offset + 3] = 0xFF;
+    // Cluster 2: COMMAND.COM -> end of chain (0xFFFF)
+    data[fat1_byte_offset + 4] = 0xFF;
+    data[fat1_byte_offset + 5] = 0xFF;
+    // Cluster 3: TESTFILE.TXT -> end of chain
+    data[fat1_byte_offset + 6] = 0xFF;
+    data[fat1_byte_offset + 7] = 0xFF;
+
+    // FAT2: copy of FAT1
+    let fat2_byte_offset = fat1_byte_offset + sectors_per_fat as usize * ss;
+    let fat1_data: Vec<u8> =
+        data[fat1_byte_offset..fat1_byte_offset + sectors_per_fat as usize * ss].to_vec();
+    data[fat2_byte_offset..fat2_byte_offset + fat1_data.len()].copy_from_slice(&fat1_data);
+
+    // Root directory
+    let root_byte_offset = partition_byte_offset
+        + (reserved_sectors as usize + num_fats as usize * sectors_per_fat as usize) * ss;
+
+    // Entry 0: COMMAND.COM
+    {
+        let e = &mut data[root_byte_offset..root_byte_offset + 32];
+        e[0..11].copy_from_slice(b"COMMAND COM");
+        e[11] = 0x20; // archive
+        e[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        e[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        e[26..28].copy_from_slice(&2u16.to_le_bytes()); // start cluster
+        e[28..32].copy_from_slice(&(TEST_COMMAND_COM.len() as u32).to_le_bytes());
+    }
+
+    // Entry 1: TESTFILE.TXT
+    {
+        let e = &mut data[root_byte_offset + 32..root_byte_offset + 64];
+        e[0..11].copy_from_slice(b"TESTFILETXT");
+        e[11] = 0x20; // archive
+        e[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        e[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        e[26..28].copy_from_slice(&3u16.to_le_bytes()); // start cluster
+        e[28..32].copy_from_slice(&(TEST_FILE_CONTENT.len() as u32).to_le_bytes());
+    }
+
+    // Data area: cluster 2 -> COMMAND.COM
+    let data_byte_offset = partition_byte_offset + first_data_sector as usize * ss;
+    data[data_byte_offset..data_byte_offset + TEST_COMMAND_COM.len()]
+        .copy_from_slice(TEST_COMMAND_COM);
+
+    // Data area: cluster 3 -> TESTFILE.TXT
+    let cluster3_offset = data_byte_offset + sectors_per_cluster as usize * ss;
+    data[cluster3_offset..cluster3_offset + TEST_FILE_CONTENT.len()]
+        .copy_from_slice(TEST_FILE_CONTENT);
+
+    let geometry = HddGeometry {
+        cylinders,
+        heads,
+        sectors_per_track,
+        sector_size,
+    };
+    HddImage::from_raw(geometry, HddFormat::Nhd, data)
+}
+
+/// Boots an HLE machine (PC-9801RA / SASI) with a test HDD as the first drive.
+pub fn boot_hle_with_sasi_hdd(sector_size: u16) -> machine::Pc9801Ra {
+    let mut machine = machine::Pc9801Ra::new(
+        cpu::I386::new(),
+        machine::Pc9801Bus::new(MachineModel::PC9801RA, 48000),
+    );
+    machine.bus.load_font_rom(FONT_ROM_DATA);
+
+    // Set BDA DISK_EQUIP bit 8 (HDD unit 0)
+    machine.bus.write_byte(0x055C, 0x00);
+    machine.bus.write_byte(0x055D, 0x01);
+
+    // Boot HLE (no disk yet, falls through to HLE activation)
+    let mut total_cycles = 0u64;
+    loop {
+        total_cycles += machine.run_for(HLE_BOOT_CHECK_INTERVAL);
+        if machine.cpu.halted() {
+            break;
+        }
+        assert!(
+            total_cycles < HLE_BOOT_MAX_CYCLES,
+            "HLE OS did not halt within {} cycles (SASI)",
+            HLE_BOOT_MAX_CYCLES
+        );
+    }
+
+    // Insert HDD after boot
+    let hdd = create_test_hdd(sector_size);
+    machine.bus.insert_hdd(0, hdd, None);
+
+    machine
+}
+
+/// Boots an HLE machine (PC-9821AP / IDE) with a test HDD as the first drive.
+pub fn boot_hle_with_ide_hdd(sector_size: u16) -> machine::Pc9821Ap {
+    let mut machine = machine::Pc9821Ap::new(
+        cpu::I386::<{ cpu::CPU_MODEL_486 }>::new(),
+        machine::Pc9801Bus::new(MachineModel::PC9821AP, 48000),
+    );
+    machine.bus.load_font_rom(FONT_ROM_DATA);
+
+    // Set BDA DISK_EQUIP bit 8 (HDD unit 0)
+    machine.bus.write_byte(0x055C, 0x00);
+    machine.bus.write_byte(0x055D, 0x01);
+
+    // Boot HLE
+    let mut total_cycles = 0u64;
+    loop {
+        total_cycles += machine.run_for(HLE_BOOT_CHECK_INTERVAL);
+        if machine.cpu.halted() {
+            break;
+        }
+        assert!(
+            total_cycles < HLE_BOOT_MAX_CYCLES,
+            "HLE OS did not halt within {} cycles (IDE)",
+            HLE_BOOT_MAX_CYCLES
+        );
+    }
+
+    // Insert HDD after boot
+    let hdd = create_test_hdd(sector_size);
+    machine.bus.insert_hdd(0, hdd, None);
+
+    machine
+}
+
+/// Generic inject_and_run for any Machine with an I386-family CPU.
+/// Uses `load_state` to fully reset the CPU (including clearing halt state).
+pub fn inject_and_run_generic<const M: u8>(
+    machine: &mut machine::Machine<cpu::I386<M>>,
+    code: &[u8],
+) {
+    inject_and_run_generic_with_budget(machine, code, INJECT_BUDGET);
+}
+
+pub fn inject_and_run_generic_with_budget<const M: u8>(
+    machine: &mut machine::Machine<cpu::I386<M>>,
+    code: &[u8],
+    budget: u64,
+) {
+    write_bytes(&mut machine.bus, INJECT_CODE_BASE, code);
+
+    let mut state = cpu::I386State {
+        ip: 0x0000,
+        ..Default::default()
+    };
+    state.set_cs(INJECT_CODE_SEGMENT);
+    state.set_ss(INJECT_CODE_SEGMENT);
+    state.set_ds(INJECT_CODE_SEGMENT);
+    state.set_es(INJECT_CODE_SEGMENT);
+    state.set_esp(0xFFFE);
+    state.set_eflags(state.eflags() | 0x0200);
+    machine.cpu.load_state(&state);
+
+    machine.run_for(budget);
 }
 
 /// Loads the raw HDD image data, skipping the HDI header (first 32 bytes).

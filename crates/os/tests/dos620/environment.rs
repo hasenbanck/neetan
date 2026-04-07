@@ -174,5 +174,5 @@ fn program_pathname_is_command_com() {
     panic!("Could not find double-null terminator in environment block");
 }
 
-// child_process_program_name: deferred to phase 10.9 (process management).
-// No child processes exist after HLE boot; this test requires EXEC (INT 21h/4Bh).
+// TODO: child_process_program_name(): deferred to phase 10.9 (process management).
+//       No child processes exist after HLE boot; this test requires EXEC (INT 21h/4Bh).

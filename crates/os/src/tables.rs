@@ -73,7 +73,22 @@ pub const SFT_ENT_OPEN_MODE: u32 = 0x02;
 pub const SFT_ENT_FILE_ATTR: u32 = 0x04;
 pub const SFT_ENT_DEV_INFO: u32 = 0x05;
 pub const SFT_ENT_DEV_PTR: u32 = 0x07;
+pub const SFT_ENT_START_CLUSTER: u32 = 0x0B;
+pub const SFT_ENT_FILE_TIME: u32 = 0x0D;
+pub const SFT_ENT_FILE_DATE: u32 = 0x0F;
+pub const SFT_ENT_FILE_SIZE: u32 = 0x11;
+pub const SFT_ENT_FILE_POS: u32 = 0x15;
+pub const SFT_ENT_REL_CLUSTER: u32 = 0x19;
+pub const SFT_ENT_CUR_CLUSTER: u32 = 0x1B;
+pub const SFT_ENT_DIR_SECTOR: u32 = 0x1D;
+pub const SFT_ENT_DIR_INDEX: u32 = 0x1F;
 pub const SFT_ENT_NAME: u32 = 0x20;
+pub const SFT_ENT_PSP_OWNER: u32 = 0x31;
+
+// SFT block counts
+pub const SFT_INITIAL_COUNT: u16 = 5;
+pub const SFT_EXTENDED_COUNT: u16 = 15;
+pub const SFT_TOTAL_COUNT: u16 = SFT_INITIAL_COUNT + SFT_EXTENDED_COUNT;
 
 // Device info word flags (SFT entry +0x05)
 pub const SFT_DEVINFO_CHAR: u16 = 0x0080;

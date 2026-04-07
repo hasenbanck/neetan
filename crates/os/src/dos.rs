@@ -1,6 +1,6 @@
 //! INT 21h function dispatcher (AH routing).
 
-use crate::{CpuAccess, MemoryAccess, NeetanOs, country, memory, tables};
+use crate::{CpuAccess, DiskIo, MemoryAccess, NeetanOs, country, memory, tables};
 
 /// Writes the carry flag into the IRET frame on the stack.
 ///
@@ -20,7 +20,12 @@ fn set_iret_carry(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, carry: bool) 
 
 impl NeetanOs {
     /// Dispatches an INT 21h call based on the AH register.
-    pub(crate) fn int21h(&mut self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
+    pub(crate) fn int21h(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) {
         let ah = (cpu.ax() >> 8) as u8;
         match ah {
             0x02 => self.int21h_02h_display_character(cpu, memory),
@@ -30,10 +35,13 @@ impl NeetanOs {
             0x09 => self.int21h_09h_display_string(cpu, memory),
             0x0A => unimplemented!("INT 21h AH=0Ah: buffered keyboard input"),
             0x0C => unimplemented!("INT 21h AH=0Ch: flush input buffer and invoke input"),
+            0x0D => self.int21h_0dh_disk_reset(disk),
             0x0E => self.int21h_0eh_select_drive(cpu, memory),
             0x19 => self.int21h_19h_get_current_drive(cpu),
             0x1A => self.int21h_1ah_set_dta(cpu),
+            0x1C => self.int21h_1ch_get_alloc_info(cpu, memory),
             0x25 => self.int21h_25h_set_interrupt_vector(cpu, memory),
+            0x29 => self.int21h_29h_parse_filename(cpu, memory),
             0x2F => self.int21h_2fh_get_dta(cpu),
             0x30 => self.int21h_30h_get_version(cpu),
             0x33 => self.int21h_33h_extended(cpu),
@@ -42,15 +50,30 @@ impl NeetanOs {
             0x37 => self.int21h_37h_switch_char(cpu),
             0x38 => self.int21h_38h_get_country_info(cpu, memory),
             0x3B => self.int21h_3bh_chdir(cpu, memory),
+            0x3C => self.int21h_3ch_create_file(cpu, memory, disk),
+            0x3D => self.int21h_3dh_open_file(cpu, memory, disk),
+            0x3E => self.int21h_3eh_close_handle(cpu, memory, disk),
+            0x3F => self.int21h_3fh_read(cpu, memory, disk),
+            0x40 => self.int21h_40h_write(cpu, memory, disk),
+            0x41 => self.int21h_41h_delete_file(cpu, memory, disk),
+            0x42 => self.int21h_42h_lseek(cpu, memory),
+            0x43 => self.int21h_43h_get_set_attributes(cpu, memory, disk),
+            0x44 => self.int21h_44h_ioctl(cpu, memory, disk),
+            0x45 => self.int21h_45h_dup_handle(cpu, memory),
             0x47 => self.int21h_47h_get_current_directory(cpu, memory),
             0x48 => self.int21h_48h_allocate(cpu, memory),
             0x49 => self.int21h_49h_free(cpu, memory),
             0x4A => self.int21h_4ah_resize(cpu, memory),
             0x4D => self.int21h_4dh_get_return_code(cpu),
+            0x4E => self.int21h_4eh_find_first(cpu, memory, disk),
+            0x4F => self.int21h_4fh_find_next(cpu, memory, disk),
             0x50 => self.int21h_50h_set_psp(cpu),
             0x51 => self.int21h_51h_get_psp(cpu),
             0x52 => self.int21h_52h_get_sysvars(cpu),
+            0x56 => self.int21h_56h_rename(cpu, memory, disk),
+            0x57 => self.int21h_57h_get_set_datetime(cpu, memory),
             0x58 => self.int21h_58h_allocation_strategy(cpu, memory),
+            0x5D => self.int21h_5dh_server_call(cpu, memory),
             0x62 => self.int21h_62h_get_psp(cpu),
             0x63 => self.int21h_63h_get_dbcs_table(cpu),
             0x65 => self.int21h_65h_get_extended_country_info(cpu, memory),

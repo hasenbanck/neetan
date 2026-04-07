@@ -1,6 +1,6 @@
 use crate::harness;
 
-/// Helper: open a file and return the handle. Runs via INT 28h for safe DOS re-entrancy.
+/// Helper: open a file and return the handle.
 fn open_file(machine: &mut machine::Pc9801Ra, filename: &[u8]) -> u16 {
     let path_addr = harness::INJECT_CODE_BASE + 0x200;
     harness::write_bytes(&mut machine.bus, path_addr, filename);
@@ -14,9 +14,10 @@ fn open_file(machine: &mut machine::Pc9801Ra, filename: &[u8]) -> u16 {
         0x9C,                               // PUSHF
         0x58,                               // POP AX
         0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (flags)
-        0xC3,                               // RET
+        0xFA,                               // CLI
+        0xF4,                               // HLT
     ];
-    harness::inject_and_run_via_int28(machine, code, harness::INJECT_BUDGET_DISK_IO);
+    harness::inject_and_run_with_budget(machine, code, harness::INJECT_BUDGET_DISK_IO);
 
     let flags = harness::result_word(&machine.bus, 2);
     assert_eq!(
@@ -28,7 +29,7 @@ fn open_file(machine: &mut machine::Pc9801Ra, filename: &[u8]) -> u16 {
     harness::result_word(&machine.bus, 0)
 }
 
-/// Helper: close a file handle. Runs via INT 28h for safe DOS re-entrancy.
+/// Helper: close a file handle.
 fn close_file(machine: &mut machine::Pc9801Ra, handle: u16) {
     let handle_lo = (handle & 0xFF) as u8;
     let handle_hi = (handle >> 8) as u8;
@@ -37,12 +38,13 @@ fn close_file(machine: &mut machine::Pc9801Ra, handle: u16) {
         0xBB, handle_lo, handle_hi,          // MOV BX, handle
         0xB4, 0x3E,                         // MOV AH, 3Eh (close)
         0xCD, 0x21,                         // INT 21h
-        0xC3,                               // RET
+        0xFA,                               // CLI
+        0xF4,                               // HLT
     ];
-    harness::inject_and_run_via_int28(machine, &code, harness::INJECT_BUDGET_DISK_IO);
+    harness::inject_and_run_with_budget(machine, &code, harness::INJECT_BUDGET_DISK_IO);
 }
 
-/// Helper: create a file and return the handle. Runs via INT 28h for safe DOS re-entrancy.
+/// Helper: create a file and return the handle.
 fn create_file(machine: &mut machine::Pc9801Ra, filename: &[u8]) -> u16 {
     let path_addr = harness::INJECT_CODE_BASE + 0x200;
     harness::write_bytes(&mut machine.bus, path_addr, filename);
@@ -56,9 +58,10 @@ fn create_file(machine: &mut machine::Pc9801Ra, filename: &[u8]) -> u16 {
         0x9C,                               // PUSHF
         0x58,                               // POP AX
         0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (flags)
-        0xC3,                               // RET
+        0xFA,                               // CLI
+        0xF4,                               // HLT
     ];
-    harness::inject_and_run_via_int28(machine, code, harness::INJECT_BUDGET_DISK_IO);
+    harness::inject_and_run_with_budget(machine, code, harness::INJECT_BUDGET_DISK_IO);
 
     let flags = harness::result_word(&machine.bus, 2);
     assert_eq!(
@@ -70,7 +73,7 @@ fn create_file(machine: &mut machine::Pc9801Ra, filename: &[u8]) -> u16 {
     harness::result_word(&machine.bus, 0)
 }
 
-/// Helper: delete a file. Runs via INT 28h for safe DOS re-entrancy.
+/// Helper: delete a file.
 fn delete_file(machine: &mut machine::Pc9801Ra, filename: &[u8]) {
     let path_addr = harness::INJECT_CODE_BASE + 0x200;
     harness::write_bytes(&mut machine.bus, path_addr, filename);
@@ -82,9 +85,10 @@ fn delete_file(machine: &mut machine::Pc9801Ra, filename: &[u8]) {
         0x9C,                               // PUSHF
         0x58,                               // POP AX
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (flags)
-        0xC3,                               // RET
+        0xFA,                               // CLI
+        0xF4,                               // HLT
     ];
-    harness::inject_and_run_via_int28(machine, code, harness::INJECT_BUDGET_DISK_IO);
+    harness::inject_and_run_with_budget(machine, code, harness::INJECT_BUDGET_DISK_IO);
 
     let flags = harness::result_word(&machine.bus, 0);
     assert_eq!(
@@ -97,7 +101,7 @@ fn delete_file(machine: &mut machine::Pc9801Ra, filename: &[u8]) {
 
 #[test]
 fn open_existing_file() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle_with_floppy();
 
     let handle = open_file(&mut machine, b"A:\\COMMAND.COM\0");
     assert!(
@@ -110,7 +114,7 @@ fn open_existing_file() {
 
 #[test]
 fn read_from_file() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle_with_floppy();
 
     let handle = open_file(&mut machine, b"A:\\COMMAND.COM\0");
 
@@ -128,9 +132,10 @@ fn read_from_file() {
         0x9C,                               // PUSHF
         0x58,                               // POP AX
         0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (flags)
-        0xC3,                               // RET
+        0xFA,                               // CLI
+        0xF4,                               // HLT
     ];
-    harness::inject_and_run_via_int28(&mut machine, &code, harness::INJECT_BUDGET_DISK_IO);
+    harness::inject_and_run_with_budget(&mut machine, &code, harness::INJECT_BUDGET_DISK_IO);
 
     let flags = harness::result_word(&machine.bus, 2);
     assert_eq!(
@@ -147,12 +152,20 @@ fn read_from_file() {
         bytes_read
     );
 
+    // Verify the content matches known COMMAND.COM test data
+    let read_back = harness::read_bytes(&machine.bus, harness::INJECT_CODE_BASE + 0x210, 2);
+    assert_eq!(
+        &read_back,
+        &harness::TEST_COMMAND_COM[..2],
+        "Read data should match first 2 bytes of COMMAND.COM"
+    );
+
     close_file(&mut machine, handle);
 }
 
 #[test]
 fn lseek_file_size() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle_with_floppy();
 
     let handle = open_file(&mut machine, b"A:\\COMMAND.COM\0");
     let handle_lo = (handle & 0xFF) as u8;
@@ -171,9 +184,10 @@ fn lseek_file_size() {
         0x9C,                               // PUSHF
         0x58,                               // POP AX
         0xA3, 0x04, 0x01,                   // MOV [0x0104], AX (flags)
-        0xC3,                               // RET
+        0xFA,                               // CLI
+        0xF4,                               // HLT
     ];
-    harness::inject_and_run_via_int28(&mut machine, &code, harness::INJECT_BUDGET_DISK_IO);
+    harness::inject_and_run_with_budget(&mut machine, &code, harness::INJECT_BUDGET_DISK_IO);
 
     let flags = harness::result_word(&machine.bus, 4);
     assert_eq!(
@@ -186,15 +200,10 @@ fn lseek_file_size() {
     let size_low = harness::result_word(&machine.bus, 0) as u32;
     let size_high = harness::result_word(&machine.bus, 2) as u32;
     let file_size = (size_high << 16) | size_low;
-    assert!(
-        file_size > 0,
-        "COMMAND.COM file size should be > 0, got {}",
-        file_size
-    );
-    assert!(
-        file_size < 100_000,
-        "COMMAND.COM file size should be < 100000, got {}",
-        file_size
+    assert_eq!(
+        file_size,
+        harness::TEST_COMMAND_COM.len() as u32,
+        "COMMAND.COM file size should match test data length"
     );
 
     close_file(&mut machine, handle);
@@ -202,8 +211,7 @@ fn lseek_file_size() {
 
 #[test]
 fn create_write_close_delete() {
-    let _lock = harness::DISK_WRITE_MUTEX.lock().unwrap();
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle_with_floppy();
 
     let filename = b"A:\\TEST.TMP\0";
     let handle = create_file(&mut machine, filename);
@@ -226,9 +234,10 @@ fn create_write_close_delete() {
         0x9C,                               // PUSHF
         0x58,                               // POP AX
         0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (flags)
-        0xC3,                               // RET
+        0xFA,                               // CLI
+        0xF4,                               // HLT
     ];
-    harness::inject_and_run_via_int28(&mut machine, &write_code, harness::INJECT_BUDGET_DISK_IO);
+    harness::inject_and_run_with_budget(&mut machine, &write_code, harness::INJECT_BUDGET_DISK_IO);
 
     let write_flags = harness::result_word(&machine.bus, 2);
     assert_eq!(
@@ -250,8 +259,7 @@ fn create_write_close_delete() {
 
 #[test]
 fn create_write_seek_read_verify() {
-    let _lock = harness::DISK_WRITE_MUTEX.lock().unwrap();
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle_with_floppy();
 
     let filename = b"A:\\TEST2.TMP\0";
     let handle = create_file(&mut machine, filename);
@@ -269,9 +277,10 @@ fn create_write_seek_read_verify() {
         0xBA, 0x10, 0x02,
         0xB4, 0x40,
         0xCD, 0x21,
-        0xC3,                               // RET
+        0xFA,                               // CLI
+        0xF4,                               // HLT
     ];
-    harness::inject_and_run_via_int28(&mut machine, &write_code, harness::INJECT_BUDGET_DISK_IO);
+    harness::inject_and_run_with_budget(&mut machine, &write_code, harness::INJECT_BUDGET_DISK_IO);
 
     // Seek to start.
     #[rustfmt::skip]
@@ -282,9 +291,10 @@ fn create_write_seek_read_verify() {
         0xB9, 0x00, 0x00,
         0xBA, 0x00, 0x00,
         0xCD, 0x21,
-        0xC3,                               // RET
+        0xFA,                               // CLI
+        0xF4,                               // HLT
     ];
-    harness::inject_and_run_via_int28(&mut machine, &seek_code, harness::INJECT_BUDGET_DISK_IO);
+    harness::inject_and_run_with_budget(&mut machine, &seek_code, harness::INJECT_BUDGET_DISK_IO);
 
     // Read 5 bytes.
     #[rustfmt::skip]
@@ -297,9 +307,10 @@ fn create_write_seek_read_verify() {
         0xA3, 0x00, 0x01,                   // bytes read
         0x9C, 0x58,
         0xA3, 0x02, 0x01,                   // flags
-        0xC3,                               // RET
+        0xFA,                               // CLI
+        0xF4,                               // HLT
     ];
-    harness::inject_and_run_via_int28(&mut machine, &read_code, harness::INJECT_BUDGET_DISK_IO);
+    harness::inject_and_run_with_budget(&mut machine, &read_code, harness::INJECT_BUDGET_DISK_IO);
 
     let read_flags = harness::result_word(&machine.bus, 2);
     assert_eq!(
@@ -328,7 +339,7 @@ fn create_write_seek_read_verify() {
 
 #[test]
 fn get_file_attributes() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle_with_floppy();
 
     let path_addr = harness::INJECT_CODE_BASE + 0x200;
     harness::write_bytes(&mut machine.bus, path_addr, b"A:\\COMMAND.COM\0");
@@ -343,9 +354,10 @@ fn get_file_attributes() {
         0x9C,                               // PUSHF
         0x58,                               // POP AX
         0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (flags)
-        0xC3,                               // RET
+        0xFA,                               // CLI
+        0xF4,                               // HLT
     ];
-    harness::inject_and_run_via_int28(&mut machine, code, harness::INJECT_BUDGET_DISK_IO);
+    harness::inject_and_run_with_budget(&mut machine, code, harness::INJECT_BUDGET_DISK_IO);
 
     let flags = harness::result_word(&machine.bus, 2);
     assert_eq!(
@@ -362,11 +374,16 @@ fn get_file_attributes() {
         "File attributes should use only bits 0-5, got {:#04X}",
         attributes
     );
+    assert!(
+        attributes & 0x20 != 0,
+        "COMMAND.COM should have archive attribute set, got {:#04X}",
+        attributes
+    );
 }
 
 #[test]
 fn get_file_datetime() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle_with_floppy();
 
     let handle = open_file(&mut machine, b"A:\\COMMAND.COM\0");
     let handle_lo = (handle & 0xFF) as u8;
@@ -383,9 +400,10 @@ fn get_file_datetime() {
         0x9C,                               // PUSHF
         0x58,                               // POP AX
         0xA3, 0x04, 0x01,                   // MOV [0x0104], AX (flags)
-        0xC3,                               // RET
+        0xFA,                               // CLI
+        0xF4,                               // HLT
     ];
-    harness::inject_and_run_via_int28(&mut machine, &code, harness::INJECT_BUDGET_DISK_IO);
+    harness::inject_and_run_with_budget(&mut machine, &code, harness::INJECT_BUDGET_DISK_IO);
 
     let flags = harness::result_word(&machine.bus, 4);
     assert_eq!(
@@ -395,24 +413,17 @@ fn get_file_datetime() {
         flags
     );
 
+    let time = harness::result_word(&machine.bus, 0);
     let date = harness::result_word(&machine.bus, 2);
-    let year = ((date >> 9) & 0x7F) as u32 + 1980;
-    let month = (date >> 5) & 0x0F;
-    let day = date & 0x1F;
-    assert!(
-        (1990..=2000).contains(&year),
-        "File year should be 1990-2000, got {}",
-        year
+    assert_eq!(
+        time,
+        harness::TEST_FILE_TIME,
+        "File time should match test floppy value"
     );
-    assert!(
-        (1..=12).contains(&month),
-        "File month should be 1-12, got {}",
-        month
-    );
-    assert!(
-        (1..=31).contains(&day),
-        "File day should be 1-31, got {}",
-        day
+    assert_eq!(
+        date,
+        harness::TEST_FILE_DATE,
+        "File date should match test floppy value"
     );
 
     close_file(&mut machine, handle);
@@ -420,7 +431,7 @@ fn get_file_datetime() {
 
 #[test]
 fn dup_file_handle() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle_with_floppy();
 
     let handle = open_file(&mut machine, b"A:\\COMMAND.COM\0");
     let handle_lo = (handle & 0xFF) as u8;
@@ -436,9 +447,10 @@ fn dup_file_handle() {
         0x9C,                               // PUSHF
         0x58,                               // POP AX
         0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (flags)
-        0xC3,                               // RET
+        0xFA,                               // CLI
+        0xF4,                               // HLT
     ];
-    harness::inject_and_run_via_int28(&mut machine, &dup_code, harness::INJECT_BUDGET_DISK_IO);
+    harness::inject_and_run_with_budget(&mut machine, &dup_code, harness::INJECT_BUDGET_DISK_IO);
 
     let flags = harness::result_word(&machine.bus, 2);
     assert_eq!(
@@ -466,9 +478,10 @@ fn dup_file_handle() {
         0xB4, 0x3F,
         0xCD, 0x21,
         0xA3, 0x00, 0x01,                   // bytes read
-        0xC3,                               // RET
+        0xFA,                               // CLI
+        0xF4,                               // HLT
     ];
-    harness::inject_and_run_via_int28(&mut machine, &read_code, harness::INJECT_BUDGET_DISK_IO);
+    harness::inject_and_run_with_budget(&mut machine, &read_code, harness::INJECT_BUDGET_DISK_IO);
 
     let bytes_read = harness::result_word(&machine.bus, 0);
     assert_eq!(
@@ -483,7 +496,7 @@ fn dup_file_handle() {
 
 #[test]
 fn ioctl_get_device_info_stdout() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle_with_floppy();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x44,                         // MOV AH, 44h
@@ -517,7 +530,7 @@ fn ioctl_get_device_info_stdout() {
 
 #[test]
 fn ioctl_get_device_info_file() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle_with_floppy();
 
     let handle = open_file(&mut machine, b"A:\\COMMAND.COM\0");
     let handle_lo = (handle & 0xFF) as u8;
@@ -533,9 +546,10 @@ fn ioctl_get_device_info_file() {
         0x9C,                               // PUSHF
         0x58,                               // POP AX
         0xA3, 0x02, 0x01,                   // MOV [0x0102], AX
-        0xC3,                               // RET
+        0xFA,                               // CLI
+        0xF4,                               // HLT
     ];
-    harness::inject_and_run_via_int28(&mut machine, &code, harness::INJECT_BUDGET_DISK_IO);
+    harness::inject_and_run_with_budget(&mut machine, &code, harness::INJECT_BUDGET_DISK_IO);
 
     let flags = harness::result_word(&machine.bus, 2);
     assert_eq!(
@@ -557,7 +571,7 @@ fn ioctl_get_device_info_file() {
 
 #[test]
 fn findfirst_root_directory() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle_with_floppy();
 
     let path_addr = harness::INJECT_CODE_BASE + 0x200;
     harness::write_bytes(&mut machine.bus, path_addr, b"A:\\*.*\0");
@@ -576,9 +590,10 @@ fn findfirst_root_directory() {
         0x9C,                               // PUSHF
         0x58,                               // POP AX
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (flags)
-        0xC3,                               // RET
+        0xFA,                               // CLI
+        0xF4,                               // HLT
     ];
-    harness::inject_and_run_via_int28(&mut machine, code, harness::INJECT_BUDGET_DISK_IO);
+    harness::inject_and_run_with_budget(&mut machine, code, harness::INJECT_BUDGET_DISK_IO);
 
     let flags = harness::result_word(&machine.bus, 0);
     assert_eq!(
@@ -602,12 +617,12 @@ fn findfirst_root_directory() {
 
 #[test]
 fn findnext_after_findfirst() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle_with_floppy();
 
     let path_addr = harness::INJECT_CODE_BASE + 0x200;
     harness::write_bytes(&mut machine.bus, path_addr, b"A:\\*.*\0");
 
-    // FINDFIRST + FINDNEXT in single injection (both use same DTA, no extra disk I/O between).
+    // FINDFIRST + FINDNEXT in single injection (both use same DTA).
     #[rustfmt::skip]
     let code: &[u8] = &[
         // Set DTA
@@ -628,9 +643,10 @@ fn findnext_after_findfirst() {
         0x9C,                               // PUSHF
         0x58,                               // POP AX
         0xA3, 0x02, 0x01,                   // findnext flags
-        0xC3,                               // RET
+        0xFA,                               // CLI
+        0xF4,                               // HLT
     ];
-    harness::inject_and_run_via_int28(&mut machine, code, harness::INJECT_BUDGET_DISK_IO);
+    harness::inject_and_run_with_budget(&mut machine, code, harness::INJECT_BUDGET_DISK_IO);
 
     let ff_flags = harness::result_word(&machine.bus, 0);
     assert_eq!(

@@ -6,7 +6,6 @@ pub mod int25;
 pub mod int26;
 pub mod int28;
 pub mod int29;
-pub mod int2a;
 pub mod int2f;
 pub mod int33;
 pub mod intdc;

@@ -1,0 +1,1076 @@
+//! INT 21h file I/O function implementations.
+
+use crate::{
+    CpuAccess, DiskIo, MemoryAccess, NeetanOs,
+    filesystem::{fat_dir, split_path},
+    tables,
+};
+
+/// Writes the carry flag into the IRET frame on the stack.
+fn set_iret_carry(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, carry: bool) {
+    let flags_addr = ((cpu.ss() as u32) << 4) + cpu.sp() as u32 + 4;
+    let mut flags = mem.read_word(flags_addr);
+    if carry {
+        flags |= 0x0001;
+    } else {
+        flags &= !0x0001;
+    }
+    mem.write_word(flags_addr, flags);
+}
+
+/// Writes a 32-bit value to emulated memory.
+fn write_dword(mem: &mut dyn MemoryAccess, addr: u32, value: u32) {
+    mem.write_word(addr, value as u16);
+    mem.write_word(addr + 2, (value >> 16) as u16);
+}
+
+/// Reads a 32-bit value from emulated memory.
+fn read_dword(mem: &dyn MemoryAccess, addr: u32) -> u32 {
+    mem.read_word(addr) as u32 | ((mem.read_word(addr + 2) as u32) << 16)
+}
+
+impl NeetanOs {
+    /// AH=0Dh: Disk reset -- flush all dirty FAT caches.
+    pub(crate) fn int21h_0dh_disk_reset(&mut self, disk: &mut dyn DiskIo) {
+        for vol in self.fat_volumes.iter_mut().flatten() {
+            let _ = vol.flush_fat(disk);
+        }
+    }
+
+    /// AH=1Ch: Get allocation information for specific drive.
+    pub(crate) fn int21h_1ch_get_alloc_info(
+        &self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        let dl = (cpu.dx() & 0xFF) as u8;
+        let drive_index = if dl == 0 { self.current_drive } else { dl - 1 };
+
+        // Read DPB for the drive
+        let dpb_ptr_addr = self.sysvars_base + tables::SYSVARS_OFF_DPB_PTR;
+        let mut dpb_off = memory.read_word(dpb_ptr_addr);
+        let mut dpb_seg = memory.read_word(dpb_ptr_addr + 2);
+        let mut found = false;
+
+        for _ in 0..26 {
+            if dpb_seg == 0xFFFF && dpb_off == 0xFFFF {
+                break;
+            }
+            let dpb_addr = ((dpb_seg as u32) << 4) + dpb_off as u32;
+            let dpb_drive = memory.read_byte(dpb_addr + tables::DPB_OFF_DRIVE_NUM);
+            if dpb_drive == drive_index {
+                let spc = memory.read_byte(dpb_addr + tables::DPB_OFF_CLUSTER_MASK) as u16 + 1;
+                let bps = memory.read_word(dpb_addr + tables::DPB_OFF_BYTES_PER_SECTOR);
+                let max_cluster = memory.read_word(dpb_addr + tables::DPB_OFF_MAX_CLUSTER);
+                let media = memory.read_byte(dpb_addr + tables::DPB_OFF_MEDIA_DESC);
+
+                cpu.set_ax((cpu.ax() & 0xFF00) | spc);
+                cpu.set_cx(bps);
+                cpu.set_dx(max_cluster);
+                cpu.set_bx(dpb_addr as u16); // DS:BX -> media byte (approximate)
+                // Write media byte at DS:BX for callers that read it
+                let ds_bx = ((cpu.ds() as u32) << 4) + cpu.bx() as u32;
+                memory.write_byte(ds_bx, media);
+                found = true;
+                break;
+            }
+            // Follow chain
+            let next_off = memory.read_word(dpb_addr + tables::DPB_OFF_NEXT_DPB);
+            let next_seg = memory.read_word(dpb_addr + tables::DPB_OFF_NEXT_DPB + 2);
+            dpb_off = next_off;
+            dpb_seg = next_seg;
+        }
+
+        if !found {
+            cpu.set_ax(0x00FF); // invalid drive
+        }
+    }
+
+    /// AH=29h: Parse filename into FCB.
+    pub(crate) fn int21h_29h_parse_filename(
+        &self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        let si_addr = ((cpu.ds() as u32) << 4) + cpu.si() as u32;
+        let di_addr = ((cpu.es() as u32) << 4) + cpu.di() as u32;
+        let al_flags = cpu.ax() as u8;
+
+        // Read filename from DS:SI
+        let path = Self::read_asciiz(memory, si_addr, 128);
+
+        let (drive_opt, components, _) = split_path(&path);
+
+        // Drive byte at FCB+0
+        if let Some(drive) = drive_opt {
+            memory.write_byte(di_addr, drive + 1);
+        } else if al_flags & 0x02 == 0 {
+            memory.write_byte(di_addr, 0); // default drive
+        }
+
+        // Filename at FCB+1 (8 bytes) and extension at FCB+9 (3 bytes)
+        let filename: &[u8] = components.last().copied().unwrap_or(b"");
+        let fcb = fat_dir::name_to_fcb(filename);
+        memory.write_block(di_addr + 1, &fcb);
+
+        // Advance SI past parsed portion
+        let mut advance = 0usize;
+        if drive_opt.is_some() {
+            advance = 2; // "X:"
+        }
+        if let Some(last) = components.last() {
+            // Find the last component in the original path
+            if let Some(pos) = path.windows(last.len()).position(|w| w == *last) {
+                advance = pos + last.len();
+            }
+        }
+        cpu.set_si(cpu.si().wrapping_add(advance as u16));
+
+        // Return AL: 0=no wildcards, 1=wildcards present, FF=invalid drive
+        let has_wildcards = fcb.contains(&b'?');
+        cpu.set_ax((cpu.ax() & 0xFF00) | if has_wildcards { 0x01 } else { 0x00 });
+    }
+
+    /// AH=3Ch: Create file.
+    pub(crate) fn int21h_3ch_create_file(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) {
+        let path_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let attr = cpu.cx() as u8;
+        let path = Self::read_asciiz(memory, path_addr, 128);
+
+        let result = (|| -> Result<u16, u16> {
+            let (drive_index, dir_cluster, fcb_name) =
+                self.resolve_file_path(&path, memory, disk)?;
+
+            if drive_index == 25 {
+                return Err(0x0005); // access denied (Z: is read-only)
+            }
+
+            let vol = self.fat_volumes[drive_index as usize]
+                .as_mut()
+                .ok_or(0x000Fu16)?;
+
+            // Check if file already exists -- truncate it
+            if let Some(existing) = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk)? {
+                if existing.start_cluster >= 2 {
+                    vol.free_chain(existing.start_cluster);
+                }
+                let mut updated = existing;
+                updated.file_size = 0;
+                updated.start_cluster = 0;
+                updated.attribute = attr & 0x27; // mask valid bits
+                // Set current time/date
+                let (time, date) = dos_timestamp_now();
+                updated.time = time;
+                updated.date = date;
+                fat_dir::update_entry(vol, &updated, disk)?;
+                vol.flush_fat(disk)?;
+
+                // Allocate handle
+                let (handle, sft_index) = self.allocate_handle(memory)?;
+                self.write_sft_for_file(
+                    memory,
+                    sft_index,
+                    &updated,
+                    drive_index,
+                    0x0002, // read/write
+                );
+                return Ok(handle as u16);
+            }
+
+            // Create new entry
+            let (time, date) = dos_timestamp_now();
+            let new_entry = fat_dir::DirEntry {
+                name: fcb_name,
+                attribute: attr & 0x27,
+                time,
+                date,
+                start_cluster: 0,
+                file_size: 0,
+                dir_sector: 0,
+                dir_offset: 0,
+            };
+            let created = fat_dir::create_entry(vol, dir_cluster, &new_entry, disk)?;
+            vol.flush_fat(disk)?;
+
+            let (handle, sft_index) = self.allocate_handle(memory)?;
+            self.write_sft_for_file(memory, sft_index, &created, drive_index, 0x0002);
+            Ok(handle as u16)
+        })();
+
+        match result {
+            Ok(handle) => {
+                cpu.set_ax(handle);
+                set_iret_carry(cpu, memory, false);
+            }
+            Err(error) => {
+                cpu.set_ax(error);
+                set_iret_carry(cpu, memory, true);
+            }
+        }
+    }
+
+    /// AH=3Dh: Open file.
+    pub(crate) fn int21h_3dh_open_file(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) {
+        let path_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let open_mode = cpu.ax() as u8 & 0x03;
+        let path = Self::read_asciiz(memory, path_addr, 128);
+
+        let result = (|| -> Result<u16, u16> {
+            let (drive_index, dir_cluster, fcb_name) =
+                self.resolve_file_path(&path, memory, disk)?;
+
+            if drive_index == 25 {
+                return Err(0x0005); // Z: is read-only, open not allowed
+            }
+
+            let vol = self.fat_volumes[drive_index as usize]
+                .as_ref()
+                .ok_or(0x000Fu16)?;
+
+            let entry = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk)?.ok_or(0x0002u16)?; // file not found
+
+            let (handle, sft_index) = self.allocate_handle(memory)?;
+            self.write_sft_for_file(memory, sft_index, &entry, drive_index, open_mode as u16);
+            Ok(handle as u16)
+        })();
+
+        match result {
+            Ok(handle) => {
+                cpu.set_ax(handle);
+                set_iret_carry(cpu, memory, false);
+            }
+            Err(error) => {
+                cpu.set_ax(error);
+                set_iret_carry(cpu, memory, true);
+            }
+        }
+    }
+
+    /// AH=3Eh: Close file handle.
+    pub(crate) fn int21h_3eh_close_handle(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) {
+        let handle = cpu.bx();
+
+        let result = (|| -> Result<(), u16> {
+            let sft_index = self.handle_to_sft_index(handle, memory)?;
+            let sft_addr = self.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
+
+            let dev_info = memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO);
+            let is_device = dev_info & tables::SFT_DEVINFO_CHAR != 0;
+
+            if !is_device {
+                // Flush file: update directory entry with current size/time
+                let drive_index = (dev_info & 0x003F) as u8;
+                if let Some(vol) = self
+                    .fat_volumes
+                    .get_mut(drive_index as usize)
+                    .and_then(|v| v.as_mut())
+                {
+                    let dir_sector_lo = memory.read_word(sft_addr + tables::SFT_ENT_DIR_SECTOR);
+                    let dir_sector = dir_sector_lo as u32;
+                    let dir_index = memory.read_byte(sft_addr + tables::SFT_ENT_DIR_INDEX);
+                    let file_size = read_dword(memory, sft_addr + tables::SFT_ENT_FILE_SIZE);
+                    let start_cluster = memory.read_word(sft_addr + tables::SFT_ENT_START_CLUSTER);
+                    let time = memory.read_word(sft_addr + tables::SFT_ENT_FILE_TIME);
+                    let date = memory.read_word(sft_addr + tables::SFT_ENT_FILE_DATE);
+
+                    let mut name = [0u8; 11];
+                    memory.read_block(sft_addr + tables::SFT_ENT_NAME, &mut name);
+
+                    let entry = fat_dir::DirEntry {
+                        name,
+                        attribute: memory.read_byte(sft_addr + tables::SFT_ENT_FILE_ATTR),
+                        time,
+                        date,
+                        start_cluster,
+                        file_size,
+                        dir_sector,
+                        dir_offset: dir_index as u16 * fat_dir::DIR_ENTRY_SIZE as u16,
+                    };
+                    let _ = fat_dir::update_entry(vol, &entry, disk);
+                    let _ = vol.flush_fat(disk);
+                }
+            }
+
+            self.free_handle(handle, memory);
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => set_iret_carry(cpu, memory, false),
+            Err(error) => {
+                cpu.set_ax(error);
+                set_iret_carry(cpu, memory, true);
+            }
+        }
+    }
+
+    /// AH=3Fh: Read from file or device.
+    pub(crate) fn int21h_3fh_read(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) {
+        let handle = cpu.bx();
+        let count = cpu.cx() as u32;
+        let buf_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+
+        let result = (|| -> Result<u16, u16> {
+            let sft_index = self.handle_to_sft_index(handle, memory)?;
+            let sft_addr = self.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
+
+            let dev_info = memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO);
+            if dev_info & tables::SFT_DEVINFO_CHAR != 0 {
+                // Device read: return 0 bytes for now
+                return Ok(0);
+            }
+
+            // File read
+            let drive_index = (dev_info & 0x003F) as u8;
+            let file_size = read_dword(memory, sft_addr + tables::SFT_ENT_FILE_SIZE);
+            let mut position = read_dword(memory, sft_addr + tables::SFT_ENT_FILE_POS);
+            let start_cluster = memory.read_word(sft_addr + tables::SFT_ENT_START_CLUSTER);
+
+            if position >= file_size || count == 0 || start_cluster < 2 {
+                return Ok(0);
+            }
+
+            let vol = self.fat_volumes[drive_index as usize]
+                .as_ref()
+                .ok_or(0x000Fu16)?;
+
+            let cluster_size = vol.bpb.cluster_size();
+            let bytes_to_read = count.min(file_size - position);
+            let mut bytes_read = 0u32;
+
+            while bytes_read < bytes_to_read {
+                let cluster_index = position / cluster_size;
+                let offset_in_cluster = position % cluster_size;
+
+                let cluster = vol
+                    .cluster_at_index(start_cluster, cluster_index)
+                    .ok_or(0x001Fu16)?;
+                let cluster_data = vol.read_cluster(cluster, disk)?;
+
+                let available = (cluster_size - offset_in_cluster).min(bytes_to_read - bytes_read);
+                let src_start = offset_in_cluster as usize;
+                let src_end = src_start + available as usize;
+                memory.write_block(buf_addr + bytes_read, &cluster_data[src_start..src_end]);
+
+                bytes_read += available;
+                position += available;
+            }
+
+            // Update SFT position
+            write_dword(memory, sft_addr + tables::SFT_ENT_FILE_POS, position);
+
+            Ok(bytes_read as u16)
+        })();
+
+        match result {
+            Ok(count) => {
+                cpu.set_ax(count);
+                set_iret_carry(cpu, memory, false);
+            }
+            Err(error) => {
+                cpu.set_ax(error);
+                set_iret_carry(cpu, memory, true);
+            }
+        }
+    }
+
+    /// AH=40h: Write to file or device.
+    pub(crate) fn int21h_40h_write(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) {
+        let handle = cpu.bx();
+        let count = cpu.cx() as u32;
+        let buf_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+
+        let result = (|| -> Result<u16, u16> {
+            let sft_index = self.handle_to_sft_index(handle, memory)?;
+            let sft_addr = self.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
+
+            let dev_info = memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO);
+            if dev_info & tables::SFT_DEVINFO_CHAR != 0 {
+                // Device write: send to console
+                for i in 0..count {
+                    let byte = memory.read_byte(buf_addr + i);
+                    self.console.process_byte(memory, byte);
+                }
+                return Ok(count as u16);
+            }
+
+            // File write
+            let drive_index = (dev_info & 0x003F) as u8;
+            let mut file_size = read_dword(memory, sft_addr + tables::SFT_ENT_FILE_SIZE);
+            let mut position = read_dword(memory, sft_addr + tables::SFT_ENT_FILE_POS);
+            let mut start_cluster = memory.read_word(sft_addr + tables::SFT_ENT_START_CLUSTER);
+
+            if count == 0 {
+                // Truncate at current position
+                if position < file_size {
+                    file_size = position;
+                    write_dword(memory, sft_addr + tables::SFT_ENT_FILE_SIZE, file_size);
+                }
+                return Ok(0);
+            }
+
+            let vol = self.fat_volumes[drive_index as usize]
+                .as_mut()
+                .ok_or(0x000Fu16)?;
+            let cluster_size = vol.bpb.cluster_size();
+
+            // Allocate first cluster if needed
+            if start_cluster < 2 {
+                let new_cluster = vol.allocate_cluster(0).ok_or(0x001Fu16)?;
+                start_cluster = new_cluster;
+                memory.write_word(sft_addr + tables::SFT_ENT_START_CLUSTER, start_cluster);
+                // Zero out the cluster
+                let zeros = vec![0u8; cluster_size as usize];
+                vol.write_cluster(new_cluster, &zeros, disk)?;
+            }
+
+            let mut bytes_written = 0u32;
+            while bytes_written < count {
+                let cluster_index = position / cluster_size;
+                let offset_in_cluster = position % cluster_size;
+
+                // Walk to the right cluster, allocating if needed
+                let cluster = ensure_cluster_at_index(vol, start_cluster, cluster_index, disk)?;
+
+                let mut cluster_data = vol.read_cluster(cluster, disk)?;
+                let available = (cluster_size - offset_in_cluster).min(count - bytes_written);
+
+                // Read data from guest memory
+                let dst_start = offset_in_cluster as usize;
+                let dst_end = dst_start + available as usize;
+                memory.read_block(
+                    buf_addr + bytes_written,
+                    &mut cluster_data[dst_start..dst_end],
+                );
+
+                vol.write_cluster(cluster, &cluster_data, disk)?;
+
+                bytes_written += available;
+                position += available;
+            }
+
+            if position > file_size {
+                file_size = position;
+            }
+            write_dword(memory, sft_addr + tables::SFT_ENT_FILE_SIZE, file_size);
+            write_dword(memory, sft_addr + tables::SFT_ENT_FILE_POS, position);
+
+            // Update time stamp
+            let (time, date) = dos_timestamp_now();
+            memory.write_word(sft_addr + tables::SFT_ENT_FILE_TIME, time);
+            memory.write_word(sft_addr + tables::SFT_ENT_FILE_DATE, date);
+
+            vol.flush_fat(disk)?;
+
+            Ok(bytes_written as u16)
+        })();
+
+        match result {
+            Ok(count) => {
+                cpu.set_ax(count);
+                set_iret_carry(cpu, memory, false);
+            }
+            Err(error) => {
+                cpu.set_ax(error);
+                set_iret_carry(cpu, memory, true);
+            }
+        }
+    }
+
+    /// AH=41h: Delete file.
+    pub(crate) fn int21h_41h_delete_file(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) {
+        let path_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let path = Self::read_asciiz(memory, path_addr, 128);
+
+        let result = (|| -> Result<(), u16> {
+            let (drive_index, dir_cluster, fcb_name) =
+                self.resolve_file_path(&path, memory, disk)?;
+
+            if drive_index == 25 {
+                return Err(0x0005);
+            }
+
+            let vol = self.fat_volumes[drive_index as usize]
+                .as_mut()
+                .ok_or(0x000Fu16)?;
+
+            let entry = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk)?.ok_or(0x0002u16)?;
+
+            if entry.attribute & (fat_dir::ATTR_DIRECTORY | fat_dir::ATTR_VOLUME_ID) != 0 {
+                return Err(0x0005); // access denied
+            }
+
+            if entry.start_cluster >= 2 {
+                vol.free_chain(entry.start_cluster);
+            }
+            fat_dir::delete_entry(vol, &entry, disk)?;
+            vol.flush_fat(disk)?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => set_iret_carry(cpu, memory, false),
+            Err(error) => {
+                cpu.set_ax(error);
+                set_iret_carry(cpu, memory, true);
+            }
+        }
+    }
+
+    /// AH=42h: Move file pointer (LSEEK).
+    pub(crate) fn int21h_42h_lseek(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        let handle = cpu.bx();
+        let origin = cpu.ax() as u8;
+        let offset = ((cpu.cx() as u32) << 16) | cpu.dx() as u32;
+
+        let result = (|| -> Result<u32, u16> {
+            let sft_index = self.handle_to_sft_index(handle, memory)?;
+            let sft_addr = self.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
+
+            let file_size = read_dword(memory, sft_addr + tables::SFT_ENT_FILE_SIZE);
+            let current_pos = read_dword(memory, sft_addr + tables::SFT_ENT_FILE_POS);
+
+            let new_pos = match origin {
+                0x00 => offset,                                             // from start
+                0x01 => (current_pos as i64 + offset as i32 as i64) as u32, // from current
+                0x02 => (file_size as i64 + offset as i32 as i64) as u32,   // from end
+                _ => return Err(0x0001),                                    // invalid function
+            };
+
+            write_dword(memory, sft_addr + tables::SFT_ENT_FILE_POS, new_pos);
+            Ok(new_pos)
+        })();
+
+        match result {
+            Ok(pos) => {
+                cpu.set_ax(pos as u16);
+                cpu.set_dx((pos >> 16) as u16);
+                set_iret_carry(cpu, memory, false);
+            }
+            Err(error) => {
+                cpu.set_ax(error);
+                set_iret_carry(cpu, memory, true);
+            }
+        }
+    }
+
+    /// AH=43h: Get/set file attributes.
+    pub(crate) fn int21h_43h_get_set_attributes(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) {
+        let path_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let al = cpu.ax() as u8;
+        let path = Self::read_asciiz(memory, path_addr, 128);
+
+        let result = (|| -> Result<u16, u16> {
+            let (drive_index, dir_cluster, fcb_name) =
+                self.resolve_file_path(&path, memory, disk)?;
+
+            if drive_index == 25 {
+                // Virtual Z: drive
+                if let Some(ventry) = self.virtual_drive.find_entry(&fcb_name) {
+                    return Ok(ventry.attribute as u16);
+                }
+                return Err(0x0002);
+            }
+
+            let vol = self.fat_volumes[drive_index as usize]
+                .as_mut()
+                .ok_or(0x000Fu16)?;
+
+            let entry = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk)?.ok_or(0x0002u16)?;
+
+            match al {
+                0x00 => Ok(entry.attribute as u16),
+                0x01 => {
+                    let new_attr = cpu.cx() as u8;
+                    let mut updated = entry;
+                    updated.attribute = new_attr & 0x27;
+                    fat_dir::update_entry(vol, &updated, disk)?;
+                    Ok(new_attr as u16)
+                }
+                _ => Err(0x0001),
+            }
+        })();
+
+        match result {
+            Ok(attr) => {
+                cpu.set_cx(attr);
+                set_iret_carry(cpu, memory, false);
+            }
+            Err(error) => {
+                cpu.set_ax(error);
+                set_iret_carry(cpu, memory, true);
+            }
+        }
+    }
+
+    /// AH=44h: IOCTL dispatch.
+    pub(crate) fn int21h_44h_ioctl(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        _disk: &mut dyn DiskIo,
+    ) {
+        let al = cpu.ax() as u8;
+        let handle = cpu.bx();
+
+        match al {
+            0x00 => {
+                // Get device information
+                let result = (|| -> Result<u16, u16> {
+                    let sft_index = self.handle_to_sft_index(handle, memory)?;
+                    let sft_addr = self.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
+                    let dev_info = memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO);
+                    Ok(dev_info)
+                })();
+                match result {
+                    Ok(info) => {
+                        cpu.set_dx(info);
+                        set_iret_carry(cpu, memory, false);
+                    }
+                    Err(e) => {
+                        cpu.set_ax(e);
+                        set_iret_carry(cpu, memory, true);
+                    }
+                }
+            }
+            0x01 => {
+                // Set device information
+                let result = (|| -> Result<(), u16> {
+                    let sft_index = self.handle_to_sft_index(handle, memory)?;
+                    let sft_addr = self.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
+                    let mut dev_info = memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO);
+                    dev_info = (dev_info & 0xFF00) | (cpu.dx() & 0x00FF);
+                    memory.write_word(sft_addr + tables::SFT_ENT_DEV_INFO, dev_info);
+                    Ok(())
+                })();
+                match result {
+                    Ok(()) => set_iret_carry(cpu, memory, false),
+                    Err(e) => {
+                        cpu.set_ax(e);
+                        set_iret_carry(cpu, memory, true);
+                    }
+                }
+            }
+            0x06 => {
+                // Get input status
+                cpu.set_ax((cpu.ax() & 0xFF00) | 0xFF);
+                set_iret_carry(cpu, memory, false);
+            }
+            0x07 => {
+                // Get output status
+                cpu.set_ax((cpu.ax() & 0xFF00) | 0xFF);
+                set_iret_carry(cpu, memory, false);
+            }
+            0x08 => {
+                // Is removable?
+                let drive = cpu.bx() as u8;
+                let da_ua = memory
+                    .read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DAUA_TABLE + drive as u32);
+                let removable = matches!(da_ua & 0xF0, 0x90 | 0x70);
+                cpu.set_ax((cpu.ax() & 0xFF00) | if removable { 0x00 } else { 0x01 });
+                set_iret_carry(cpu, memory, false);
+            }
+            _ => {
+                unimplemented!("INT 21h AH=44h AL={:#04X}: IOCTL subfunction", al);
+            }
+        }
+    }
+
+    /// AH=45h: Duplicate file handle (DUP).
+    pub(crate) fn int21h_45h_dup_handle(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        let handle = cpu.bx();
+
+        let result = (|| -> Result<u16, u16> {
+            let sft_index = self.handle_to_sft_index(handle, memory)?;
+            let sft_addr = self.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
+
+            // Find a free JFT slot
+            let psp_base = (self.current_psp as u32) << 4;
+            let mut new_handle = None;
+            for h in 0..20u16 {
+                let jft_entry = memory.read_byte(psp_base + tables::PSP_OFF_JFT + h as u32);
+                if jft_entry == 0xFF {
+                    new_handle = Some(h);
+                    break;
+                }
+            }
+            let new_h = new_handle.ok_or(0x0004u16)?;
+
+            // Point new handle to same SFT entry
+            memory.write_byte(psp_base + tables::PSP_OFF_JFT + new_h as u32, sft_index);
+            let ref_count = memory.read_word(sft_addr + tables::SFT_ENT_REF_COUNT);
+            memory.write_word(sft_addr + tables::SFT_ENT_REF_COUNT, ref_count + 1);
+
+            Ok(new_h)
+        })();
+
+        match result {
+            Ok(h) => {
+                cpu.set_ax(h);
+                set_iret_carry(cpu, memory, false);
+            }
+            Err(error) => {
+                cpu.set_ax(error);
+                set_iret_carry(cpu, memory, true);
+            }
+        }
+    }
+
+    /// AH=4Eh: Find first matching file (FINDFIRST).
+    pub(crate) fn int21h_4eh_find_first(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) {
+        let path_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let attr_mask = cpu.cx() as u8;
+        let path = Self::read_asciiz(memory, path_addr, 128);
+
+        let result = (|| -> Result<(), u16> {
+            let (drive_index, dir_cluster, pattern) =
+                self.resolve_file_path(&path, memory, disk)?;
+
+            let dta_addr = ((self.dta_segment as u32) << 4) + self.dta_offset as u32;
+
+            // Write search state to DTA
+            memory.write_byte(dta_addr, 0x80 | drive_index);
+            memory.write_block(dta_addr + 1, &pattern);
+            memory.write_byte(dta_addr + 0x0C, attr_mask);
+            memory.write_word(dta_addr + 0x0D, 0); // start index
+            memory.write_word(dta_addr + 0x0F, dir_cluster);
+
+            // Perform the search
+            self.do_find_next(memory, disk)
+        })();
+
+        match result {
+            Ok(()) => set_iret_carry(cpu, memory, false),
+            Err(error) => {
+                cpu.set_ax(error);
+                set_iret_carry(cpu, memory, true);
+            }
+        }
+    }
+
+    /// AH=4Fh: Find next matching file (FINDNEXT).
+    pub(crate) fn int21h_4fh_find_next(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) {
+        match self.do_find_next(memory, disk) {
+            Ok(()) => set_iret_carry(cpu, memory, false),
+            Err(error) => {
+                cpu.set_ax(error);
+                set_iret_carry(cpu, memory, true);
+            }
+        }
+    }
+
+    /// Shared implementation for FINDFIRST/FINDNEXT.
+    fn do_find_next(
+        &mut self,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) -> Result<(), u16> {
+        let dta_addr = ((self.dta_segment as u32) << 4) + self.dta_offset as u32;
+
+        let drive_byte = memory.read_byte(dta_addr);
+        let drive_index = drive_byte & 0x7F;
+        let mut pattern = [0u8; 11];
+        memory.read_block(dta_addr + 1, &mut pattern);
+        let attr_mask = memory.read_byte(dta_addr + 0x0C);
+        let start_index = memory.read_word(dta_addr + 0x0D);
+        let dir_cluster = memory.read_word(dta_addr + 0x0F);
+
+        if drive_index == 25 {
+            // Virtual Z: drive
+            if let Some((ventry, next_index)) =
+                self.virtual_drive
+                    .find_matching(&pattern, attr_mask, start_index)
+            {
+                memory.write_word(dta_addr + 0x0D, next_index);
+                write_find_result(
+                    memory,
+                    dta_addr,
+                    ventry.attribute,
+                    ventry.time,
+                    ventry.date,
+                    ventry.file_size,
+                    &ventry.name,
+                );
+                return Ok(());
+            }
+            return Err(0x0012); // no more files
+        }
+
+        let vol = self.fat_volumes[drive_index as usize]
+            .as_ref()
+            .ok_or(0x0012u16)?;
+
+        let result =
+            fat_dir::find_matching(vol, dir_cluster, &pattern, attr_mask, start_index, disk)?;
+
+        if let Some((entry, next_index)) = result {
+            memory.write_word(dta_addr + 0x0D, next_index);
+            write_find_result(
+                memory,
+                dta_addr,
+                entry.attribute,
+                entry.time,
+                entry.date,
+                entry.file_size,
+                &entry.name,
+            );
+            Ok(())
+        } else {
+            Err(0x0012) // no more files
+        }
+    }
+
+    /// AH=56h: Rename file.
+    pub(crate) fn int21h_56h_rename(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) {
+        let old_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let new_addr = ((cpu.es() as u32) << 4) + cpu.di() as u32;
+        let old_path = Self::read_asciiz(memory, old_addr, 128);
+        let new_path = Self::read_asciiz(memory, new_addr, 128);
+
+        let result = (|| -> Result<(), u16> {
+            let (drive_old, dir_old, fcb_old) = self.resolve_file_path(&old_path, memory, disk)?;
+            let (drive_new, dir_new, fcb_new) = self.resolve_file_path(&new_path, memory, disk)?;
+
+            if drive_old != drive_new {
+                return Err(0x0011); // not same device
+            }
+            if drive_old == 25 {
+                return Err(0x0005);
+            }
+
+            let vol = self.fat_volumes[drive_old as usize]
+                .as_mut()
+                .ok_or(0x000Fu16)?;
+
+            // Find old entry
+            let mut entry = fat_dir::find_entry(vol, dir_old, &fcb_old, disk)?.ok_or(0x0002u16)?;
+
+            // Check new name doesn't exist
+            if fat_dir::find_entry(vol, dir_new, &fcb_new, disk)?.is_some() {
+                return Err(0x0005); // access denied (file exists)
+            }
+
+            entry.name = fcb_new;
+            fat_dir::update_entry(vol, &entry, disk)?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => set_iret_carry(cpu, memory, false),
+            Err(error) => {
+                cpu.set_ax(error);
+                set_iret_carry(cpu, memory, true);
+            }
+        }
+    }
+
+    /// AH=57h: Get/set file date and time.
+    pub(crate) fn int21h_57h_get_set_datetime(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        let al = cpu.ax() as u8;
+        let handle = cpu.bx();
+
+        let result = (|| -> Result<(u16, u16), u16> {
+            let sft_index = self.handle_to_sft_index(handle, memory)?;
+            let sft_addr = self.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
+
+            match al {
+                0x00 => {
+                    let time = memory.read_word(sft_addr + tables::SFT_ENT_FILE_TIME);
+                    let date = memory.read_word(sft_addr + tables::SFT_ENT_FILE_DATE);
+                    Ok((time, date))
+                }
+                0x01 => {
+                    memory.write_word(sft_addr + tables::SFT_ENT_FILE_TIME, cpu.cx());
+                    memory.write_word(sft_addr + tables::SFT_ENT_FILE_DATE, cpu.dx());
+                    Ok((cpu.cx(), cpu.dx()))
+                }
+                _ => Err(0x0001),
+            }
+        })();
+
+        match result {
+            Ok((time, date)) => {
+                cpu.set_cx(time);
+                cpu.set_dx(date);
+                set_iret_carry(cpu, memory, false);
+            }
+            Err(error) => {
+                cpu.set_ax(error);
+                set_iret_carry(cpu, memory, true);
+            }
+        }
+    }
+
+    /// AH=5Dh: Server function call (minimal).
+    pub(crate) fn int21h_5dh_server_call(
+        &self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        // Minimal: just return success
+        set_iret_carry(cpu, memory, false);
+    }
+
+    /// Helper: populates an SFT entry for a newly opened/created file.
+    fn write_sft_for_file(
+        &self,
+        mem: &mut dyn MemoryAccess,
+        sft_index: u8,
+        entry: &fat_dir::DirEntry,
+        drive_index: u8,
+        open_mode: u16,
+    ) {
+        let sft_addr = match self.sft_entry_addr(sft_index) {
+            Some(a) => a,
+            None => return,
+        };
+
+        mem.write_word(sft_addr + tables::SFT_ENT_REF_COUNT, 1);
+        mem.write_word(sft_addr + tables::SFT_ENT_OPEN_MODE, open_mode);
+        mem.write_byte(sft_addr + tables::SFT_ENT_FILE_ATTR, entry.attribute);
+        // Device info: drive number in low bits, not a char device
+        mem.write_word(sft_addr + tables::SFT_ENT_DEV_INFO, drive_index as u16);
+        // DPB pointer (approximate: point to NUL device as placeholder)
+        tables::write_far_ptr(
+            mem,
+            sft_addr + tables::SFT_ENT_DEV_PTR,
+            tables::DOS_DATA_SEGMENT,
+            tables::DEV_NUL_OFFSET,
+        );
+        mem.write_word(
+            sft_addr + tables::SFT_ENT_START_CLUSTER,
+            entry.start_cluster,
+        );
+        mem.write_word(sft_addr + tables::SFT_ENT_FILE_TIME, entry.time);
+        mem.write_word(sft_addr + tables::SFT_ENT_FILE_DATE, entry.date);
+        write_dword(mem, sft_addr + tables::SFT_ENT_FILE_SIZE, entry.file_size);
+        write_dword(mem, sft_addr + tables::SFT_ENT_FILE_POS, 0);
+        mem.write_word(sft_addr + tables::SFT_ENT_REL_CLUSTER, 0);
+        mem.write_word(sft_addr + tables::SFT_ENT_CUR_CLUSTER, entry.start_cluster);
+        mem.write_word(
+            sft_addr + tables::SFT_ENT_DIR_SECTOR,
+            entry.dir_sector as u16,
+        );
+        mem.write_byte(
+            sft_addr + tables::SFT_ENT_DIR_INDEX,
+            (entry.dir_offset / fat_dir::DIR_ENTRY_SIZE as u16) as u8,
+        );
+        mem.write_block(sft_addr + tables::SFT_ENT_NAME, &entry.name);
+        mem.write_word(sft_addr + tables::SFT_ENT_PSP_OWNER, self.current_psp);
+    }
+}
+
+/// Writes the FINDFIRST/FINDNEXT result to the DTA at the standard offsets.
+fn write_find_result(
+    mem: &mut dyn MemoryAccess,
+    dta_addr: u32,
+    attribute: u8,
+    time: u16,
+    date: u16,
+    file_size: u32,
+    fcb_name: &[u8; 11],
+) {
+    mem.write_byte(dta_addr + 0x15, attribute);
+    mem.write_word(dta_addr + 0x16, time);
+    mem.write_word(dta_addr + 0x18, date);
+    write_dword(mem, dta_addr + 0x1A, file_size);
+    // Write display filename at +0x1E (up to 13 bytes, ASCIIZ)
+    let display = fat_dir::fcb_to_display_name(fcb_name);
+    let len = display.len().min(12);
+    mem.write_block(dta_addr + 0x1E, &display[..len]);
+    mem.write_byte(dta_addr + 0x1E + len as u32, 0x00);
+}
+
+/// Ensures a cluster exists at the given index in the chain, allocating as needed.
+fn ensure_cluster_at_index(
+    vol: &mut crate::filesystem::fat::FatVolume,
+    start: u16,
+    index: u32,
+    disk: &mut dyn DiskIo,
+) -> Result<u16, u16> {
+    let mut current = start;
+    for _ in 0..index {
+        match vol.next_cluster(current) {
+            Some(next) => current = next,
+            None => {
+                // Allocate new cluster
+                let new = vol.allocate_cluster(current).ok_or(0x001Fu16)?;
+                // Zero out new cluster
+                let cluster_size = vol.bpb.cluster_size();
+                let zeros = vec![0u8; cluster_size as usize];
+                vol.write_cluster(new, &zeros, disk)?;
+                current = new;
+            }
+        }
+    }
+    Ok(current)
+}
+
+/// Returns a DOS timestamp for "now" (fixed: 1995-01-01 12:00:00).
+fn dos_timestamp_now() -> (u16, u16) {
+    // DOS date: ((year-1980)<<9) | (month<<5) | day = (15<<9)|(1<<5)|1 = 0x1E21
+    // DOS time: (hour<<11) | (min<<5) | (sec/2) = (12<<11)|(0<<5)|0 = 0x6000
+    (0x6000, 0x1E21)
+}

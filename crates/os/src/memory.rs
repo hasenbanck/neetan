@@ -1,4 +1,4 @@
-//! MCB chain management (allocate, free, resize).
+//! Memory Control block (MCB) chain management (allocate, free, resize).
 
 use crate::{MemoryAccess, tables::*};
 

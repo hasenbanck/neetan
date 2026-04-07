@@ -12,6 +12,7 @@ mod console;
 mod console_esc;
 mod country;
 mod dos;
+mod file_io;
 mod filesystem;
 mod interrupt;
 mod ioctl;
@@ -102,6 +103,9 @@ pub trait DiskIo {
     fn sector_size(&self, drive_da: u8) -> Option<u16>;
     /// Get total sector count for a drive.
     fn total_sectors(&self, drive_da: u8) -> Option<u32>;
+    /// Get drive geometry (cylinders, heads, sectors_per_track).
+    /// Needed for HDD partition table CHS-to-LBA conversion.
+    fn drive_geometry(&self, drive_da: u8) -> Option<(u16, u8, u8)>;
 }
 
 /// Console I/O for commands and the shell.
@@ -176,6 +180,12 @@ pub struct NeetanOs {
     dbcs_table_addr: u32,
     /// Console output state (cursor tracking, ESC parser).
     console: console::Console,
+    /// Mounted FAT volumes, indexed by drive number (0=A..25=Z). Lazy-mounted.
+    fat_volumes: Vec<Option<filesystem::fat::FatVolume>>,
+    /// Base address of the second SFT block in emulated RAM.
+    sft2_base: u32,
+    /// Virtual Z: drive.
+    virtual_drive: filesystem::virtual_drive::VirtualDrive,
 }
 
 impl Default for NeetanOs {
@@ -203,6 +213,9 @@ impl NeetanOs {
             last_termination_type: 0,
             dbcs_table_addr: 0,
             console: console::Console::default(),
+            fat_volumes: (0..26).map(|_| None).collect(),
+            sft2_base: 0,
+            virtual_drive: filesystem::virtual_drive::VirtualDrive::new(),
         }
     }
 
@@ -219,7 +232,7 @@ impl NeetanOs {
         self.write_iosys_work_area(memory);
         let drives = Self::discover_drives(memory);
         self.write_drive_structures(memory, &drives);
-        self.write_command_com_process(memory);
+        self.write_initial_mcb_and_process(memory);
     }
 
     /// Dispatches a DOS/OS interrupt to the appropriate handler.
@@ -232,7 +245,7 @@ impl NeetanOs {
         vector: u8,
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
-        _disk: &mut dyn DiskIo,
+        disk: &mut dyn DiskIo,
         _console: &mut dyn ConsoleIo,
     ) -> bool {
         match vector {
@@ -241,14 +254,20 @@ impl NeetanOs {
                 true
             }
             0x21 => {
-                self.int21h(cpu, memory);
+                self.int21h(cpu, memory, disk);
                 true
             }
             0x22 => false,
             0x23 => false,
             0x24 => false,
-            0x25 => false,
-            0x26 => false,
+            0x25 => {
+                self.int25h(cpu, memory, disk);
+                true
+            }
+            0x26 => {
+                self.int26h(cpu, memory, disk);
+                true
+            }
             0x27 => false,
             0x28 => {
                 self.int28h(cpu, memory);
@@ -258,7 +277,11 @@ impl NeetanOs {
                 self.int29h(cpu, memory);
                 true
             }
-            0x2A => true, // Critical section stubs: no-op
+            0x2A => {
+                // INT 2Ah: Network / Critical Section.
+                // All subfunctions are no-ops (stubs for compatibility)
+                true
+            }
             0x2F => {
                 self.int2fh(cpu, memory);
                 true
@@ -695,25 +718,273 @@ impl NeetanOs {
         // Remaining header bytes and buffer data are already zero from memset.
     }
 
-    /// Creates the MCB chain, environment block, PSP, and COMMAND.COM code stub.
-    fn write_command_com_process(&mut self, mem: &mut dyn MemoryAccess) {
-        use tables::*;
-
+    /// Creates the MCB chain with SFT2 block, environment block, PSP, and COMMAND.COM.
+    fn write_initial_mcb_and_process(&mut self, mem: &mut dyn MemoryAccess) {
         memory::write_initial_mcb_chain(mem);
-        process::write_environment_block(mem, ENV_SEGMENT);
+        process::write_environment_block(mem, tables::ENV_SEGMENT);
+        // Write temporary PSP/COMMAND.COM (will be relocated by write_sft2_block)
         process::write_psp(
             mem,
-            PSP_SEGMENT,
-            PSP_SEGMENT,
+            tables::PSP_SEGMENT,
+            tables::PSP_SEGMENT,
+            tables::ENV_SEGMENT,
+            tables::MEMORY_TOP_SEGMENT,
+        );
+        process::write_command_com_stub(mem, tables::PSP_SEGMENT);
+        self.current_psp = tables::PSP_SEGMENT;
+
+        // Allocate SFT2 block (this relocates COMMAND.COM MCB and PSP)
+        self.write_sft2_block(mem);
+
+        self.current_drive = self.boot_drive.saturating_sub(1);
+        self.dta_segment = self.current_psp;
+        self.dta_offset = 0x0080;
+        self.dbcs_table_addr = tables::DBCS_TABLE_ADDR;
+    }
+
+    /// Allocates a second SFT block (chained from the first) for 15 additional handles.
+    fn write_sft2_block(&mut self, mem: &mut dyn MemoryAccess) {
+        use tables::*;
+
+        // Place SFT2 in an MCB-allocated block.
+        // Insert a new MCB for SFT2 between the environment MCB and COMMAND.COM MCB.
+        // SFT2 needs: header(6) + 15*59 = 891 bytes = 56 paragraphs.
+        let sft2_paragraphs: u16 = 56;
+
+        // Rewrite MCB chain to include SFT2 block.
+        // Current chain: ENV_MCB -> COMMAND_MCB -> FREE_MCB
+        // New chain: ENV_MCB -> SFT2_MCB -> COMMAND_MCB -> FREE_MCB
+        let sft2_mcb_segment = ENV_SEGMENT + ENV_BLOCK_PARAGRAPHS;
+        let sft2_data_segment = sft2_mcb_segment + 1;
+        let new_command_mcb_segment = sft2_data_segment + sft2_paragraphs;
+        let new_psp_segment = new_command_mcb_segment + 1;
+        let new_free_mcb_segment = new_psp_segment + COMMAND_BLOCK_PARAGRAPHS;
+
+        // Rewrite ENV MCB: type='M', point to SFT2 MCB
+        let env_mcb_addr = (FIRST_MCB_SEGMENT as u32) << 4;
+        mem.write_byte(env_mcb_addr, 0x4D); // 'M' (not last)
+
+        // Write SFT2 MCB
+        let sft2_mcb_addr = (sft2_mcb_segment as u32) << 4;
+        mem.write_byte(sft2_mcb_addr, 0x4D); // 'M'
+        mem.write_word(sft2_mcb_addr + 1, MCB_OWNER_DOS);
+        mem.write_word(sft2_mcb_addr + 3, sft2_paragraphs);
+        mem.write_block(sft2_mcb_addr + 8, b"FILES\x00\x00\x00");
+
+        // Write SFT2 header + entries
+        let sft2_base = (sft2_data_segment as u32) << 4;
+        self.sft2_base = sft2_base;
+        tables::write_far_ptr(mem, sft2_base, 0xFFFF, 0xFFFF);
+        mem.write_word(sft2_base + 4, SFT_EXTENDED_COUNT);
+        // Zero all entries
+        let zero_data = vec![0u8; (SFT_EXTENDED_COUNT as usize) * (SFT_ENTRY_SIZE as usize)];
+        mem.write_block(sft2_base + SFT_HEADER_SIZE, &zero_data);
+
+        // Update first SFT's next-ptr to point to SFT2
+        tables::write_far_ptr(mem, SFT_BASE, sft2_data_segment, 0x0000);
+
+        // Rewrite COMMAND.COM MCB at new location
+        let cmd_mcb_addr = (new_command_mcb_segment as u32) << 4;
+        mem.write_byte(cmd_mcb_addr, 0x4D); // 'M'
+        mem.write_word(cmd_mcb_addr + 1, new_psp_segment);
+        mem.write_word(cmd_mcb_addr + 3, COMMAND_BLOCK_PARAGRAPHS);
+        mem.write_block(cmd_mcb_addr + 8, b"COMMAND\x00");
+
+        // Rewrite PSP and command stub at new PSP segment
+        process::write_psp(
+            mem,
+            new_psp_segment,
+            new_psp_segment,
             ENV_SEGMENT,
             MEMORY_TOP_SEGMENT,
         );
-        process::write_command_com_stub(mem, PSP_SEGMENT);
-        self.current_psp = PSP_SEGMENT;
-        self.current_drive = self.boot_drive.saturating_sub(1);
-        self.dta_segment = PSP_SEGMENT;
-        self.dta_offset = 0x0080;
-        self.dbcs_table_addr = tables::DBCS_TABLE_ADDR;
+        process::write_command_com_stub(mem, new_psp_segment);
+        self.current_psp = new_psp_segment;
+
+        // Rewrite free MCB at new location
+        let free_mcb_addr = (new_free_mcb_segment as u32) << 4;
+        let free_size = MEMORY_TOP_SEGMENT - new_free_mcb_segment - 1;
+        mem.write_byte(free_mcb_addr, 0x5A); // 'Z' (last)
+        mem.write_word(free_mcb_addr + 1, MCB_OWNER_FREE);
+        mem.write_word(free_mcb_addr + 3, free_size);
+        for i in 5..16u32 {
+            mem.write_byte(free_mcb_addr + i, 0x00);
+        }
+
+        // Update SYSVARS first MCB pointer (it stays the same: FIRST_MCB_SEGMENT)
+    }
+
+    /// Returns the SFT entry base address for a given SFT index (0-based).
+    pub(crate) fn sft_entry_addr(&self, sft_index: u8) -> Option<u32> {
+        use tables::*;
+        if (sft_index as u16) < SFT_INITIAL_COUNT {
+            Some(SFT_BASE + SFT_HEADER_SIZE + sft_index as u32 * SFT_ENTRY_SIZE)
+        } else if (sft_index as u16) < SFT_TOTAL_COUNT {
+            let local = sft_index as u32 - SFT_INITIAL_COUNT as u32;
+            Some(self.sft2_base + SFT_HEADER_SIZE + local * SFT_ENTRY_SIZE)
+        } else {
+            None
+        }
+    }
+
+    /// Reads the PSP JFT to find the SFT index for a file handle.
+    pub(crate) fn handle_to_sft_index(
+        &self,
+        handle: u16,
+        mem: &dyn MemoryAccess,
+    ) -> Result<u8, u16> {
+        let psp_base = (self.current_psp as u32) << 4;
+        if handle >= 20 {
+            return Err(0x0006); // invalid handle
+        }
+        let jft_entry = mem.read_byte(psp_base + tables::PSP_OFF_JFT + handle as u32);
+        if jft_entry == 0xFF {
+            return Err(0x0006);
+        }
+        Ok(jft_entry)
+    }
+
+    /// Allocates a free JFT slot and a free SFT entry. Returns (handle, sft_index).
+    pub(crate) fn allocate_handle(&self, mem: &mut dyn MemoryAccess) -> Result<(u8, u8), u16> {
+        let psp_base = (self.current_psp as u32) << 4;
+
+        // Find free JFT slot
+        let mut free_handle = None;
+        for h in 0..20u8 {
+            let jft_entry = mem.read_byte(psp_base + tables::PSP_OFF_JFT + h as u32);
+            if jft_entry == 0xFF {
+                free_handle = Some(h);
+                break;
+            }
+        }
+        let handle = free_handle.ok_or(0x0004u16)?; // too many open files
+
+        // Find free SFT entry (skip first 5 device entries)
+        let mut free_sft = None;
+        for idx in tables::SFT_INITIAL_COUNT..tables::SFT_TOTAL_COUNT {
+            if let Some(addr) = self.sft_entry_addr(idx as u8) {
+                let ref_count = mem.read_word(addr + tables::SFT_ENT_REF_COUNT);
+                if ref_count == 0 {
+                    free_sft = Some(idx as u8);
+                    break;
+                }
+            }
+        }
+        let sft_index = free_sft.ok_or(0x0004u16)?;
+
+        // Link handle to SFT entry
+        mem.write_byte(psp_base + tables::PSP_OFF_JFT + handle as u32, sft_index);
+
+        Ok((handle, sft_index))
+    }
+
+    /// Frees a handle: sets JFT entry to 0xFF, decrements SFT ref_count.
+    pub(crate) fn free_handle(&self, handle: u16, mem: &mut dyn MemoryAccess) {
+        let psp_base = (self.current_psp as u32) << 4;
+        if handle >= 20 {
+            return;
+        }
+        let sft_index = mem.read_byte(psp_base + tables::PSP_OFF_JFT + handle as u32);
+        if sft_index == 0xFF {
+            return;
+        }
+        mem.write_byte(psp_base + tables::PSP_OFF_JFT + handle as u32, 0xFF);
+        if let Some(sft_addr) = self.sft_entry_addr(sft_index) {
+            let ref_count = mem.read_word(sft_addr + tables::SFT_ENT_REF_COUNT);
+            if ref_count > 0 {
+                mem.write_word(sft_addr + tables::SFT_ENT_REF_COUNT, ref_count - 1);
+            }
+        }
+    }
+
+    /// Ensures a FAT volume is mounted for the given drive. Lazy-mounts on first access.
+    pub(crate) fn ensure_volume_mounted(
+        &mut self,
+        drive_index: u8,
+        mem: &dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) -> Result<(), u16> {
+        if drive_index >= 26 || drive_index == 25 {
+            return Err(0x000F); // invalid drive (Z: is virtual)
+        }
+        if self.fat_volumes[drive_index as usize].is_some() {
+            return Ok(());
+        }
+
+        // Look up DA/UA from IO.SYS table
+        let da_ua =
+            mem.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DAUA_TABLE + drive_index as u32);
+        if da_ua == 0 {
+            return Err(0x000F); // no drive
+        }
+
+        let partition_offset = if da_ua & 0xF0 == 0x80 {
+            // HDD: need to read partition table
+            filesystem::fat_partition::find_partition_offset(da_ua, disk)?
+        } else {
+            0 // Floppy: no partition offset
+        };
+
+        let vol = filesystem::fat::FatVolume::mount(da_ua, partition_offset, disk)
+            .map_err(|_| 0x001Fu16)?;
+        self.fat_volumes[drive_index as usize] = Some(vol);
+        Ok(())
+    }
+
+    /// Reads an ASCIIZ string from emulated memory.
+    pub(crate) fn read_asciiz(mem: &dyn MemoryAccess, addr: u32, max_len: usize) -> Vec<u8> {
+        let mut result = Vec::new();
+        for i in 0..max_len as u32 {
+            let byte = mem.read_byte(addr + i);
+            if byte == 0 {
+                break;
+            }
+            result.push(byte);
+        }
+        result
+    }
+
+    /// Resolves a path to (drive_index, directory_cluster, fcb_name).
+    /// If the path has no explicit drive, uses current_drive.
+    pub(crate) fn resolve_file_path(
+        &mut self,
+        path: &[u8],
+        mem: &dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) -> Result<(u8, u16, [u8; 11]), u16> {
+        let (drive_opt, components, _is_absolute) = filesystem::split_path(path);
+        let drive_index = drive_opt.unwrap_or(self.current_drive);
+
+        if components.is_empty() {
+            return Err(0x0002); // file not found
+        }
+
+        // Ensure volume is mounted
+        if drive_index != 25 {
+            self.ensure_volume_mounted(drive_index, mem, disk)?;
+        }
+
+        // Walk directory components (all but last)
+        let mut dir_cluster: u16 = 0; // root
+        if components.len() > 1 {
+            let vol = self.fat_volumes[drive_index as usize]
+                .as_ref()
+                .ok_or(0x000Fu16)?;
+            for component in &components[..components.len() - 1] {
+                let fcb = filesystem::fat_dir::name_to_fcb(component);
+                let entry = filesystem::fat_dir::find_entry(vol, dir_cluster, &fcb, disk)?
+                    .ok_or(0x0003u16)?; // path not found
+                if entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY == 0 {
+                    return Err(0x0003);
+                }
+                dir_cluster = entry.start_cluster;
+            }
+        }
+
+        let filename = components.last().unwrap();
+        let fcb_name = filesystem::fat_dir::name_to_fcb(filename);
+
+        Ok((drive_index, dir_cluster, fcb_name))
     }
 
     /// Populates the IO.SYS work area at segment 0060h.

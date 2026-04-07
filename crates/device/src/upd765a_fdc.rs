@@ -1035,6 +1035,63 @@ impl FloppyController {
             .unwrap_or(0)
     }
 
+    /// Reads a single sector by LBA, given the floppy geometry parameters.
+    /// Returns a copy of the sector data.
+    pub fn read_sector_by_lba(
+        &self,
+        drive: usize,
+        lba: u32,
+        sectors_per_track: u8,
+        heads: u8,
+        size_code: u8,
+    ) -> Option<Vec<u8>> {
+        let spt = sectors_per_track as u32;
+        let h = heads as u32;
+        let track = lba / spt;
+        let cylinder = (track / h) as u8;
+        let head = (track % h) as u8;
+        let record = ((lba % spt) + 1) as u8;
+        let track_index = cylinder as usize * heads as usize + head as usize;
+        self.read_sector_data(drive, track_index, cylinder, head, record, size_code)
+            .map(|data| data.to_vec())
+    }
+
+    /// Writes a single sector by LBA, given the floppy geometry parameters.
+    /// Returns true on success.
+    pub fn write_sector_by_lba(
+        &mut self,
+        drive: usize,
+        lba: u32,
+        sectors_per_track: u8,
+        heads: u8,
+        size_code: u8,
+        data: &[u8],
+    ) -> bool {
+        let spt = sectors_per_track as u32;
+        let h = heads as u32;
+        let track = lba / spt;
+        let cylinder = (track / h) as u8;
+        let head = (track % h) as u8;
+        let record = ((lba % spt) + 1) as u8;
+        let track_index = cylinder as usize * heads as usize + head as usize;
+        self.write_sector_data(drive, track_index, cylinder, head, record, size_code, data)
+    }
+
+    /// Returns the sector size for the given drive (from track 0, sector 0).
+    pub fn sector_size_for_drive(&self, drive: usize) -> Option<u16> {
+        let size_code = self.drives[drive]
+            .as_ref()?
+            .sector_at_index(0, 0)?
+            .size_code;
+        Some(128u16 << size_code)
+    }
+
+    /// Returns the total number of track slots in the floppy image for a drive.
+    /// Each slot represents one side of one cylinder (track_index = cylinder * 2 + head).
+    pub fn track_slot_count(&self, drive: usize) -> Option<usize> {
+        Some(self.drives[drive].as_ref()?.track_slot_count())
+    }
+
     /// Sets all FDC state to match the PC-98 post-ITF boot state.
     pub fn initialize_boot_state(&mut self, pit_clock_hz: u32) {
         self.fdc_1mb.state.status = 0x80;

@@ -45,3 +45,6 @@ mod syscalls_int2fh;
 
 #[path = "dos620/syscalls_intdch.rs"]
 mod syscalls_intdch;
+
+#[path = "dos620/hdd_file_io.rs"]
+mod hdd_file_io;
