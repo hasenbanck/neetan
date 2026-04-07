@@ -1,12 +1,14 @@
 //! INT 29h: DOS Fast Console Output.
 //!
 //! Outputs the character in AL directly to the console, bypassing normal
-//! DOS I/O buffering. Actual display output is deferred to the console
-//! implementation phase (step 10.7).
+//! DOS I/O buffering.
 
 use crate::{CpuAccess, MemoryAccess, NeetanOs};
 
 impl NeetanOs {
-    /// INT 29h: Fast console output stub. Character is in AL.
-    pub(crate) fn int29h(&self, _cpu: &mut dyn CpuAccess, _memory: &mut dyn MemoryAccess) {}
+    /// INT 29h: Fast console output. Character is in AL.
+    pub(crate) fn int29h(&mut self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
+        let al = (cpu.ax() & 0xFF) as u8;
+        self.console.process_byte(memory, al);
+    }
 }

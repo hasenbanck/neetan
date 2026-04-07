@@ -1232,6 +1232,8 @@ the `crates/os/tests/dos620/` integration test suite.
 
 **Tests**: `syscalls_int21h_file_io`
 
+Test should use a floppy image that is purely created in-memory for the tests.
+
 **Milestone**: Full file I/O operational. Programs can open, read, write, and search files on FAT volumes.
 
 ### 10.9 Process Management (EXEC and Terminate)

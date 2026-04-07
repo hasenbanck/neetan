@@ -23,6 +23,13 @@ impl NeetanOs {
     pub(crate) fn int21h(&mut self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
         let ah = (cpu.ax() >> 8) as u8;
         match ah {
+            0x02 => self.int21h_02h_display_character(cpu, memory),
+            0x06 => self.int21h_06h_direct_console_io(cpu, memory),
+            0x07 => unimplemented!("INT 21h AH=07h: direct character input without echo"),
+            0x08 => unimplemented!("INT 21h AH=08h: character input without echo"),
+            0x09 => self.int21h_09h_display_string(cpu, memory),
+            0x0A => unimplemented!("INT 21h AH=0Ah: buffered keyboard input"),
+            0x0C => unimplemented!("INT 21h AH=0Ch: flush input buffer and invoke input"),
             0x0E => self.int21h_0eh_select_drive(cpu, memory),
             0x19 => self.int21h_19h_get_current_drive(cpu),
             0x1A => self.int21h_1ah_set_dta(cpu),
@@ -49,6 +56,55 @@ impl NeetanOs {
             0x65 => self.int21h_65h_get_extended_country_info(cpu, memory),
             _ => unimplemented!("INT 21h AH={:#04X}", ah),
         }
+    }
+
+    /// AH=02h: Display character.
+    /// DL = character to display.
+    /// Returns AL = last character output.
+    fn int21h_02h_display_character(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        let dl = (cpu.dx() & 0xFF) as u8;
+        self.console.process_byte(memory, dl);
+        cpu.set_ax((cpu.ax() & 0xFF00) | dl as u16);
+    }
+
+    /// AH=06h: Direct console I/O.
+    /// DL = character to output (if DL != FFh).
+    /// DL = FFh: input request (returns ZF=1 if no char, ZF=0 + AL=char if available).
+    fn int21h_06h_direct_console_io(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        let dl = (cpu.dx() & 0xFF) as u8;
+        if dl == 0xFF {
+            unimplemented!("INT 21h AH=06h DL=FFh: console input not yet implemented");
+        }
+        self.console.process_byte(memory, dl);
+        cpu.set_ax((cpu.ax() & 0xFF00) | dl as u16);
+    }
+
+    /// AH=09h: Display string.
+    /// DS:DX = pointer to '$'-terminated string.
+    /// Returns AL = 0x24 ('$').
+    fn int21h_09h_display_string(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        let mut addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        for _ in 0..0xFFFFu32 {
+            let byte = memory.read_byte(addr);
+            if byte == b'$' {
+                break;
+            }
+            self.console.process_byte(memory, byte);
+            addr += 1;
+        }
+        cpu.set_ax((cpu.ax() & 0xFF00) | 0x24);
     }
 
     /// AH=0Eh: Select default drive.

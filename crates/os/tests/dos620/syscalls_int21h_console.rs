@@ -2,7 +2,7 @@ use crate::harness;
 
 #[test]
 fn display_character_02h() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x02,                         // MOV AH, 02h
@@ -21,7 +21,7 @@ fn display_character_02h() {
 
 #[test]
 fn display_string_09h() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     // Place '$'-terminated string at 0x9000:0200.
     let string = b"TEST$";
     harness::write_bytes(&mut machine.bus, harness::INJECT_CODE_BASE + 0x200, string);
@@ -45,7 +45,7 @@ fn display_string_09h() {
 
 #[test]
 fn direct_console_output_06h() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     // Use a rare character to avoid false matches from the DOS prompt.
     #[rustfmt::skip]
     let code: &[u8] = &[
@@ -65,7 +65,7 @@ fn direct_console_output_06h() {
 
 #[test]
 fn fast_console_output_int29h() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     // Use a rare character to avoid false matches.
     #[rustfmt::skip]
     let code: &[u8] = &[

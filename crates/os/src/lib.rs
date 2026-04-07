@@ -174,6 +174,8 @@ pub struct NeetanOs {
     last_termination_type: u8,
     /// Linear address of DBCS lead byte table in emulated RAM.
     dbcs_table_addr: u32,
+    /// Console output state (cursor tracking, ESC parser).
+    console: console::Console,
 }
 
 impl Default for NeetanOs {
@@ -200,6 +202,7 @@ impl NeetanOs {
             last_return_code: 0,
             last_termination_type: 0,
             dbcs_table_addr: 0,
+            console: console::Console::default(),
         }
     }
 

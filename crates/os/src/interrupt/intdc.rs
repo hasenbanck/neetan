@@ -8,16 +8,120 @@ use crate::{CpuAccess, MemoryAccess, NeetanOs, tables};
 
 impl NeetanOs {
     /// Dispatches an INT DCh call based on the CL register.
-    pub(crate) fn intdch(&self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
+    pub(crate) fn intdch(&mut self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
         let cl = (cpu.cx() & 0xFF) as u8;
         match cl {
             0x00..=0x08 => {}
+            0x10 => self.intdch_10h_console(cpu, memory),
             0x12 => self.intdch_12h_system_identification(cpu, memory),
             0x13 => self.intdch_13h_daua_mapping_buffer(cpu, memory),
             0x15 => self.intdch_15h_internal_revision(cpu, memory),
             0x80 => self.intdch_80h_disk_partition_info(cpu, memory),
             0x81 => self.intdch_81h_extended_memory_query(cpu, memory),
             _ => unimplemented!("INT DCh CL={:#04X}", cl),
+        }
+    }
+
+    /// CL=10h: Console display subfunctions (dispatched by AH).
+    fn intdch_10h_console(&mut self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
+        let ah = (cpu.ax() >> 8) as u8;
+        match ah {
+            0x00 => {
+                // Single character output.
+                let dl = (cpu.dx() & 0xFF) as u8;
+                self.console.process_byte(memory, dl);
+            }
+            0x01 => {
+                // String display. DS:DX = string, BX = length.
+                let addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+                let length = cpu.bx() as u32;
+                for i in 0..length {
+                    let byte = memory.read_byte(addr + i);
+                    self.console.process_byte(memory, byte);
+                }
+            }
+            0x02 => {
+                // Set attribute.
+                let dl = (cpu.dx() & 0xFF) as u8;
+                self.console.set_attribute(memory, dl);
+            }
+            0x03 => {
+                // Cursor positioning. DH = row, DL = column.
+                let dh = (cpu.dx() >> 8) as u8;
+                let dl = (cpu.dx() & 0xFF) as u8;
+                self.console.set_cursor_position(memory, dh, dl);
+            }
+            0x04 => {
+                // Cursor up.
+                let dl = (cpu.dx() & 0xFF) as u8;
+                self.console.cursor_up(memory, dl.max(1));
+            }
+            0x05 => {
+                // Cursor down.
+                let dl = (cpu.dx() & 0xFF) as u8;
+                self.console.cursor_down(memory, dl.max(1));
+            }
+            0x06 => {
+                // Cursor right.
+                let dl = (cpu.dx() & 0xFF) as u8;
+                self.console.cursor_right(memory, dl.max(1));
+            }
+            0x07 => {
+                // Cursor left.
+                let dl = (cpu.dx() & 0xFF) as u8;
+                self.console.cursor_left(memory, dl.max(1));
+            }
+            0x08 => {
+                // Cursor home.
+                self.console.cursor_home(memory);
+            }
+            0x09 => {
+                // Cursor end.
+                self.console.cursor_end(memory);
+            }
+            0x0A => {
+                // Erase in display.
+                let dl = (cpu.dx() & 0xFF) as u8;
+                if dl == 2 {
+                    self.console.clear_screen(memory);
+                }
+            }
+            0x0B => {
+                // Erase in line.
+                let dl = (cpu.dx() & 0xFF) as u8;
+                match dl {
+                    0 => self.console.clear_line_from_cursor(memory),
+                    1 => self.console.clear_line_to_cursor(memory),
+                    2 => self.console.clear_line(memory),
+                    _ => {}
+                }
+            }
+            0x0C => {
+                // Insert lines (scroll down).
+                let dl = (cpu.dx() & 0xFF) as u8;
+                self.console.scroll_down(memory, dl.max(1));
+            }
+            0x0D => {
+                // Delete lines (scroll up).
+                let dl = (cpu.dx() & 0xFF) as u8;
+                self.console.scroll_up(memory, dl.max(1));
+            }
+            0x0E => {
+                // Kanji/graph mode switching.
+                let dl = (cpu.dx() & 0xFF) as u8;
+                match dl {
+                    0 => {
+                        memory.write_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_KANJI_MODE, 0x01);
+                        memory.write_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_GRAPH_CHAR, 0x20);
+                    }
+                    3 => {
+                        memory.write_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_KANJI_MODE, 0x00);
+                        memory.write_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_GRAPH_CHAR, 0x67);
+                    }
+                    _ => {}
+                }
+            }
+            _ => unimplemented!("INT DCh CL=10h AH={:#04X}", ah),
         }
     }
 
