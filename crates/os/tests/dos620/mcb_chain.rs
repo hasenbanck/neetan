@@ -1,7 +1,7 @@
 use crate::harness;
 
 fn boot_and_get_first_mcb() -> (machine::Pc9801Ra, u32) {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     let sysvars = harness::get_sysvars_address(&mut machine);
     let mcb_segment = harness::read_word(&machine.bus, sysvars - 2);
     let mcb_linear = harness::far_to_linear(mcb_segment, 0);

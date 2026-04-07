@@ -2804,7 +2804,8 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.os = Some(neetan_os);
 
         // Write CLI+HLT at a safe location and redirect IRET there.
-        // In phase 10.3, this becomes the COMMAND.COM code stub.
+        // COMMAND.COM structures exist in RAM but the shell loop is not
+        // active until phase 10.10.
         let halt_addr: u32 = 0x1FC00;
         self.memory.write_byte(halt_addr, 0xFA); // CLI
         self.memory.write_byte(halt_addr + 1, 0xF4); // HLT

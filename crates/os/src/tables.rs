@@ -137,6 +137,46 @@ pub const FIRST_MCB_OFFSET: u16 = 0x0CF0;
 pub const FIRST_MCB_ADDR: u32 = DOS_DATA_BASE + FIRST_MCB_OFFSET as u32;
 pub const FIRST_MCB_SEGMENT: u16 = (FIRST_MCB_ADDR >> 4) as u16;
 
+// MCB structure field offsets (within the 16-byte MCB header)
+pub const MCB_OFF_TYPE: u32 = 0x00;
+pub const MCB_OFF_OWNER: u32 = 0x01;
+pub const MCB_OFF_SIZE: u32 = 0x03;
+pub const MCB_OFF_NAME: u32 = 0x08;
+
+// MCB owner special values
+pub const MCB_OWNER_FREE: u16 = 0x0000;
+pub const MCB_OWNER_DOS: u16 = 0x0008;
+
+// MCB chain layout after boot:
+//   MCB[0] at FIRST_MCB_SEGMENT: env block (owner=DOS)
+//   MCB[1] at COMMAND_MCB_SEGMENT: COMMAND.COM PSP+code (owner=PSP_SEGMENT)
+//   MCB[2] at FREE_MCB_SEGMENT: free memory (owner=0)
+pub const ENV_BLOCK_PARAGRAPHS: u16 = 15;
+pub const ENV_SEGMENT: u16 = FIRST_MCB_SEGMENT + 1;
+pub const COMMAND_MCB_SEGMENT: u16 = ENV_SEGMENT + ENV_BLOCK_PARAGRAPHS;
+pub const COMMAND_BLOCK_PARAGRAPHS: u16 = 17;
+pub const PSP_SEGMENT: u16 = COMMAND_MCB_SEGMENT + 1;
+pub const FREE_MCB_SEGMENT: u16 = PSP_SEGMENT + COMMAND_BLOCK_PARAGRAPHS;
+
+// Top of conventional memory (640 KB boundary)
+pub const MEMORY_TOP_SEGMENT: u16 = 0xA000;
+
+// PSP field offsets (within the 256-byte PSP)
+pub const PSP_OFF_INT20: u32 = 0x00;
+pub const PSP_OFF_MEM_TOP: u32 = 0x02;
+pub const PSP_OFF_FAR_CALL: u32 = 0x05;
+pub const PSP_OFF_INT22_VEC: u32 = 0x0A;
+pub const PSP_OFF_INT23_VEC: u32 = 0x0E;
+pub const PSP_OFF_INT24_VEC: u32 = 0x12;
+pub const PSP_OFF_PARENT_PSP: u32 = 0x16;
+pub const PSP_OFF_JFT: u32 = 0x18;
+pub const PSP_OFF_ENV_SEG: u32 = 0x2C;
+pub const PSP_OFF_HANDLE_SIZE: u32 = 0x32;
+pub const PSP_OFF_HANDLE_PTR: u32 = 0x34;
+pub const PSP_OFF_INT21_STUB: u32 = 0x50;
+pub const PSP_OFF_CMD_TAIL_LEN: u32 = 0x80;
+pub const PSP_OFF_CMD_TAIL: u32 = 0x81;
+
 pub const IOSYS_SEGMENT: u16 = 0x0060;
 pub const IOSYS_BASE: u32 = (IOSYS_SEGMENT as u32) << 4;
 

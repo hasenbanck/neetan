@@ -1,7 +1,7 @@
 use crate::harness;
 
 fn boot_and_get_psp() -> (machine::Pc9801Ra, u32) {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     let psp_segment = harness::get_psp_segment(&mut machine);
     let psp_linear = harness::far_to_linear(psp_segment, 0);
     (machine, psp_linear)

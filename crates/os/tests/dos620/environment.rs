@@ -1,7 +1,7 @@
 use crate::harness;
 
 fn boot_and_get_environment() -> (machine::Pc9801Ra, u32) {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     let psp_segment = harness::get_psp_segment(&mut machine);
     let psp_linear = harness::far_to_linear(psp_segment, 0);
     let env_segment = harness::read_word(&machine.bus, psp_linear + 0x2C);
@@ -133,7 +133,7 @@ fn prompt_entry_if_present() {
 
 #[test]
 fn program_pathname_is_command_com() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     let psp_segment = harness::get_psp_segment(&mut machine);
     let psp_linear = harness::far_to_linear(psp_segment, 0);
     let env_segment = harness::read_word(&machine.bus, psp_linear + 0x2C);
@@ -151,18 +151,20 @@ fn program_pathname_is_command_com() {
                 let count_offset = offset + 2;
                 let count = harness::read_word(&machine.bus, env_addr + count_offset);
 
-                // On NEC MS-DOS 6.20, COMMAND.COM does NOT set up the standard
-                // WORD count (0x0001) + program pathname after the environment's
-                // double-null terminator. The count word is uninitialized MCB data
-                // (observed: 0xE188), not 0x0001. The data following it is leftover
-                // SJIS text from the MCB, not a pathname.
-                //
-                // Child processes launched via EXEC (INT 21h/4Bh) DO get a valid
-                // program name (verified by child_process_program_name test).
-                assert_ne!(
+                // NEETAN OS HLE sets the program name for all processes
+                // including the root COMMAND.COM, for maximum compatibility
+                // with programs that read it (spec section 2.6).
+                assert_eq!(
                     count, 0x0001,
-                    "NEC MS-DOS 6.20: COMMAND.COM environment should NOT have count=1 \
-                     (standard program name not set)"
+                    "NEETAN HLE: COMMAND.COM environment should have count=1"
+                );
+
+                let pathname = harness::read_string(&machine.bus, env_addr + count_offset + 2, 128);
+                let pathname_str = String::from_utf8_lossy(&pathname);
+                assert!(
+                    pathname_str.contains("COMMAND.COM"),
+                    "Program pathname should contain 'COMMAND.COM', got '{}'",
+                    pathname_str
                 );
                 return;
             }
@@ -171,3 +173,6 @@ fn program_pathname_is_command_com() {
     }
     panic!("Could not find double-null terminator in environment block");
 }
+
+// child_process_program_name: deferred to phase 10.9 (process management).
+// No child processes exist after HLE boot; this test requires EXEC (INT 21h/4Bh).

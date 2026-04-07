@@ -144,6 +144,8 @@ pub struct NeetanOs {
     boot_drive: u8,
     /// DOS version reported to programs: (major, minor) = (6, 20).
     version: (u8, u8),
+    /// Segment of the current PSP (set during boot and EXEC).
+    current_psp: u16,
 }
 
 impl Default for NeetanOs {
@@ -160,6 +162,7 @@ impl NeetanOs {
             indos_addr: tables::INDOS_FLAG_ADDR,
             boot_drive: 1,
             version: (6, 20),
+            current_psp: 0,
         }
     }
 
@@ -174,6 +177,7 @@ impl NeetanOs {
     ) {
         self.write_dos_data_structures(memory);
         self.write_iosys_work_area(memory);
+        self.write_command_com_process(memory);
     }
 
     /// Dispatches a DOS/OS interrupt to the appropriate handler.
@@ -293,9 +297,6 @@ impl NeetanOs {
         // FCB-SFT header (no entries)
         write_far_ptr(mem, FCB_SFT_BASE, 0xFFFF, 0xFFFF);
         mem.write_word(FCB_SFT_BASE + 4, 0);
-
-        // Sentinel MCB
-        self.write_sentinel_mcb(mem);
     }
 
     /// Writes the device header chain: NUL -> CON -> $AID#NEC -> MS$KANJI.
@@ -454,19 +455,21 @@ impl NeetanOs {
         // Remaining header bytes and buffer data are already zero from memset.
     }
 
-    /// Writes the sentinel MCB marking all memory from MCB+1 paragraph to 640KB as free.
-    fn write_sentinel_mcb(&self, mem: &mut dyn MemoryAccess) {
+    /// Creates the MCB chain, environment block, PSP, and COMMAND.COM code stub.
+    fn write_command_com_process(&mut self, mem: &mut dyn MemoryAccess) {
         use tables::*;
 
-        // 'Z' = last block, owner = 0 (free)
-        mem.write_byte(FIRST_MCB_ADDR, 0x5A);
-        mem.write_word(FIRST_MCB_ADDR + 1, 0x0000);
-
-        // Size in paragraphs: from MCB+1 paragraph to segment 0x9FFF
-        // MCB segment = FIRST_MCB_SEGMENT, data starts at FIRST_MCB_SEGMENT + 1
-        // End of 640KB = 0xA000 (segment). Free paragraphs = 0xA000 - (FIRST_MCB_SEGMENT + 1)
-        let free_paragraphs = 0xA000u16 - (FIRST_MCB_SEGMENT + 1);
-        mem.write_word(FIRST_MCB_ADDR + 3, free_paragraphs);
+        memory::write_initial_mcb_chain(mem);
+        process::write_environment_block(mem, ENV_SEGMENT);
+        process::write_psp(
+            mem,
+            PSP_SEGMENT,
+            PSP_SEGMENT,
+            ENV_SEGMENT,
+            MEMORY_TOP_SEGMENT,
+        );
+        process::write_command_com_stub(mem, PSP_SEGMENT);
+        self.current_psp = PSP_SEGMENT;
     }
 
     /// Populates the IO.SYS work area at segment 0060h.
