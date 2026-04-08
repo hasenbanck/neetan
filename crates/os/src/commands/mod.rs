@@ -23,3 +23,37 @@ pub mod time;
 pub mod type_cmd;
 pub mod ver;
 pub mod xcopy;
+
+use crate::{DiskIo, IoAccess, OsState};
+
+pub(crate) enum StepResult {
+    /// Command completed with the given exit code.
+    Done(u8),
+    /// Command yielded; call step() again on the next AH=FFh dispatch.
+    Continue,
+}
+
+pub(crate) trait Command {
+    /// The primary command name (e.g., "DIR", "CD", "CLS").
+    fn name(&self) -> &'static str;
+
+    /// Alternative names (e.g., &["ERASE"] for DEL, &["CHDIR"] for CD).
+    fn aliases(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Create a running instance of this command with the given arguments.
+    /// Arguments are raw bytes (Shift-JIS, as typed by the user).
+    fn start(&self, args: &[u8]) -> Box<dyn RunningCommand>;
+}
+
+pub(crate) trait RunningCommand {
+    /// Execute one step of the command.
+    ///
+    /// Called once per AH=FFh dispatch while this command is active.
+    /// Must return quickly -- never block.
+    /// Simple commands (CLS, VER) return Done on the first call.
+    /// Long commands (COPY, FORMAT) process one chunk and return Continue.
+    fn step(&mut self, state: &mut OsState, io: &mut IoAccess, disk: &mut dyn DiskIo)
+    -> StepResult;
+}

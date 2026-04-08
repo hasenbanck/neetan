@@ -1,7 +1,7 @@
 //! Program Segment Prefix (PSP) creation, EXEC, terminate, process stack.
 
 use crate::{
-    CpuAccess, DiskIo, MemoryAccess, NeetanOs,
+    CpuAccess, DiskIo, MemoryAccess, NeetanOs, OsState,
     filesystem::{fat::FatVolume, fat_dir},
     memory, set_iret_carry,
     tables::*,
@@ -159,11 +159,15 @@ pub(crate) fn write_environment_block(mem: &mut dyn MemoryAccess, env_segment: u
 
 /// Writes the COMMAND.COM code stub at PSP:0100h.
 ///
+/// INT 28h (DOS Idle) is called on each iteration so that TSR programs
+/// hooked to the idle interrupt get a chance to run.
+///
 /// ```text
 /// loop:
 ///     MOV AH, FFh     ; B4 FF
 ///     INT 21h          ; CD 21
-///     JMP SHORT loop   ; EB FA
+///     INT 28h          ; CD 28
+///     JMP SHORT loop   ; EB F8
 /// ```
 pub(crate) fn write_command_com_stub(mem: &mut dyn MemoryAccess, psp_segment: u16) {
     let base = (psp_segment as u32) << 4;
@@ -173,8 +177,10 @@ pub(crate) fn write_command_com_stub(mem: &mut dyn MemoryAccess, psp_segment: u1
     mem.write_byte(entry + 1, 0xFF); // FFh
     mem.write_byte(entry + 2, 0xCD); // INT
     mem.write_byte(entry + 3, 0x21); // 21h
-    mem.write_byte(entry + 4, 0xEB); // JMP SHORT
-    mem.write_byte(entry + 5, 0xFA); // -6 (back to MOV AH)
+    mem.write_byte(entry + 4, 0xCD); // INT
+    mem.write_byte(entry + 5, 0x28); // 28h
+    mem.write_byte(entry + 6, 0xEB); // JMP SHORT
+    mem.write_byte(entry + 7, 0xF8); // -8 (back to MOV AH)
 }
 
 /// Writes a child PSP with inherited handles, command tail, and FCBs.
@@ -311,7 +317,7 @@ impl NeetanOs {
     ) -> Result<(), u16> {
         // Parse parameters.
         let filename_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
-        let path = Self::read_asciiz(mem, filename_addr, 128);
+        let path = OsState::read_asciiz(mem, filename_addr, 128);
 
         let pb_addr = ((cpu.es() as u32) << 4) + cpu.bx() as u32;
         let env_seg = mem.read_word(pb_addr);
@@ -330,7 +336,8 @@ impl NeetanOs {
         };
 
         // Resolve file path.
-        let (drive_index, dir_cluster, fcb_name) = self.resolve_file_path(&path, mem, disk)?;
+        let (drive_index, dir_cluster, fcb_name) =
+            self.state.resolve_file_path(&path, mem, disk)?;
 
         // Z: drive contains only COMMAND.COM for COMSPEC compatibility.
         // All shell commands are built-in and resolved from the command registry,
@@ -340,8 +347,8 @@ impl NeetanOs {
         }
 
         // Find the file on disk.
-        self.ensure_volume_mounted(drive_index, mem, disk)?;
-        let vol = self.fat_volumes[drive_index as usize]
+        self.state.ensure_volume_mounted(drive_index, mem, disk)?;
+        let vol = self.state.fat_volumes[drive_index as usize]
             .as_ref()
             .ok_or(0x0003u16)?;
         let dir_entry = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk)?.ok_or(0x0002u16)?;
@@ -371,20 +378,22 @@ impl NeetanOs {
         file_data: &[u8],
         params: &ExecParams,
     ) -> Result<(), u16> {
-        let first_mcb = mem.read_word(self.sysvars_base - 2);
+        let first_mcb = mem.read_word(self.state.sysvars_base - 2);
 
         // Allocate largest available block for the .COM program.
-        let largest = match memory::allocate(mem, first_mcb, 0xFFFF, 0, self.allocation_strategy) {
-            Ok(_) => unreachable!(),
-            Err((_err, largest)) => largest,
-        };
+        let largest =
+            match memory::allocate(mem, first_mcb, 0xFFFF, 0, self.state.allocation_strategy) {
+                Ok(_) => unreachable!(),
+                Err((_err, largest)) => largest,
+            };
 
         if largest == 0 {
             return Err(0x0008);
         }
 
-        let child_psp = memory::allocate(mem, first_mcb, largest, 0, self.allocation_strategy)
-            .map_err(|(e, _)| e as u16)?;
+        let child_psp =
+            memory::allocate(mem, first_mcb, largest, 0, self.state.allocation_strategy)
+                .map_err(|(e, _)| e as u16)?;
 
         // Set MCB owner to the child PSP segment and name.
         let mcb_segment = child_psp - 1;
@@ -394,11 +403,11 @@ impl NeetanOs {
         write_child_psp(
             mem,
             child_psp,
-            self.current_psp,
+            self.state.current_psp,
             MEMORY_TOP_SEGMENT,
             params,
             SFT_BASE,
-            self.sft2_base,
+            self.state.sft2_base,
         );
 
         // Load .COM data at PSP:0100h.
@@ -464,23 +473,34 @@ impl NeetanOs {
         // Total = PSP (0x10 paragraphs) + image + extra
         let psp_paragraphs: u16 = 0x10;
 
-        let first_mcb = mem.read_word(self.sysvars_base - 2);
+        let first_mcb = mem.read_word(self.state.sysvars_base - 2);
 
         // Try with max_alloc first, fall back to min_alloc.
         let total_needed = psp_paragraphs
             .saturating_add(image_paragraphs)
             .saturating_add(max_alloc);
-        let child_psp =
-            match memory::allocate(mem, first_mcb, total_needed, 0, self.allocation_strategy) {
-                Ok(seg) => seg,
-                Err(_) => {
-                    let min_needed = psp_paragraphs
-                        .saturating_add(image_paragraphs)
-                        .saturating_add(min_alloc);
-                    memory::allocate(mem, first_mcb, min_needed, 0, self.allocation_strategy)
-                        .map_err(|(e, _)| e as u16)?
-                }
-            };
+        let child_psp = match memory::allocate(
+            mem,
+            first_mcb,
+            total_needed,
+            0,
+            self.state.allocation_strategy,
+        ) {
+            Ok(seg) => seg,
+            Err(_) => {
+                let min_needed = psp_paragraphs
+                    .saturating_add(image_paragraphs)
+                    .saturating_add(min_alloc);
+                memory::allocate(
+                    mem,
+                    first_mcb,
+                    min_needed,
+                    0,
+                    self.state.allocation_strategy,
+                )
+                .map_err(|(e, _)| e as u16)?
+            }
+        };
 
         // Set MCB owner to child PSP.
         let mcb_segment = child_psp - 1;
@@ -490,11 +510,11 @@ impl NeetanOs {
         write_child_psp(
             mem,
             child_psp,
-            self.current_psp,
+            self.state.current_psp,
             MEMORY_TOP_SEGMENT,
             params,
             SFT_BASE,
-            self.sft2_base,
+            self.state.sft2_base,
         );
 
         // Load EXE image after PSP (at child_psp + 0x10).
@@ -555,12 +575,12 @@ impl NeetanOs {
         let return_cs = mem.read_word(ss_base + sp + 2);
 
         // Push parent context.
-        self.process_stack.push(ProcessContext {
-            psp_segment: self.current_psp,
+        self.state.process_stack.push(ProcessContext {
+            psp_segment: self.state.current_psp,
             return_ss: cpu.ss(),
             return_sp: cpu.sp(),
-            saved_dta_seg: self.dta_segment,
-            saved_dta_off: self.dta_offset,
+            saved_dta_seg: self.state.dta_segment,
+            saved_dta_off: self.state.dta_offset,
         });
 
         // Set IVT INT 22h to parent's return address.
@@ -568,9 +588,9 @@ impl NeetanOs {
         mem.write_word(0x008A, return_cs);
 
         // Switch to child process.
-        self.current_psp = child_psp;
-        self.dta_segment = child_psp;
-        self.dta_offset = 0x0080;
+        self.state.current_psp = child_psp;
+        self.state.dta_segment = child_psp;
+        self.state.dta_offset = 0x0080;
 
         // Point CPU at child's IRET frame.
         cpu.set_ss(child_ss);
@@ -588,19 +608,19 @@ impl NeetanOs {
         return_code: u8,
         termination_type: u8,
     ) {
-        let child_psp_base = (self.current_psp as u32) << 4;
+        let child_psp_base = (self.state.current_psp as u32) << 4;
 
         // Close all JFT handles owned by the child.
         for handle in 0..20u16 {
             let sft_index = mem.read_byte(child_psp_base + PSP_OFF_JFT + handle as u32);
             if sft_index != 0xFF {
-                self.free_handle(handle, mem);
+                self.state.free_handle(handle, mem);
             }
         }
 
         // Free all MCBs owned by the child.
-        let first_mcb = mem.read_word(self.sysvars_base - 2);
-        memory::free_process_blocks(mem, first_mcb, self.current_psp);
+        let first_mcb = mem.read_word(self.state.sysvars_base - 2);
+        memory::free_process_blocks(mem, first_mcb, self.state.current_psp);
 
         // Restore IVT INT 22h/23h/24h from child PSP.
         let int22_off = mem.read_word(child_psp_base + PSP_OFF_INT22_VEC);
@@ -619,14 +639,18 @@ impl NeetanOs {
         mem.write_word(0x0092, int24_seg);
 
         // Pop parent context.
-        let parent = self.process_stack.pop().expect("process stack underflow");
-        self.current_psp = parent.psp_segment;
-        self.dta_segment = parent.saved_dta_seg;
-        self.dta_offset = parent.saved_dta_off;
+        let parent = self
+            .state
+            .process_stack
+            .pop()
+            .expect("process stack underflow");
+        self.state.current_psp = parent.psp_segment;
+        self.state.dta_segment = parent.saved_dta_seg;
+        self.state.dta_offset = parent.saved_dta_off;
 
         // Store return code.
-        self.last_return_code = return_code;
-        self.last_termination_type = termination_type;
+        self.state.last_return_code = return_code;
+        self.state.last_termination_type = termination_type;
 
         // Restore parent's IRET frame.
         cpu.set_ss(parent.return_ss);
@@ -642,19 +666,19 @@ impl NeetanOs {
         return_code: u8,
         keep_paragraphs: u16,
     ) {
-        let child_psp_base = (self.current_psp as u32) << 4;
+        let child_psp_base = (self.state.current_psp as u32) << 4;
 
         // Close all JFT handles owned by the child.
         for handle in 0..20u16 {
             let sft_index = mem.read_byte(child_psp_base + PSP_OFF_JFT + handle as u32);
             if sft_index != 0xFF {
-                self.free_handle(handle, mem);
+                self.state.free_handle(handle, mem);
             }
         }
 
         // Resize PSP's MCB and free other blocks.
-        let first_mcb = mem.read_word(self.sysvars_base - 2);
-        memory::free_process_blocks_tsr(mem, first_mcb, self.current_psp, keep_paragraphs);
+        let first_mcb = mem.read_word(self.state.sysvars_base - 2);
+        memory::free_process_blocks_tsr(mem, first_mcb, self.state.current_psp, keep_paragraphs);
 
         // Restore IVT INT 22h/23h/24h from child PSP.
         let int22_off = mem.read_word(child_psp_base + PSP_OFF_INT22_VEC);
@@ -673,14 +697,18 @@ impl NeetanOs {
         mem.write_word(0x0092, int24_seg);
 
         // Pop parent context.
-        let parent = self.process_stack.pop().expect("process stack underflow");
-        self.current_psp = parent.psp_segment;
-        self.dta_segment = parent.saved_dta_seg;
-        self.dta_offset = parent.saved_dta_off;
+        let parent = self
+            .state
+            .process_stack
+            .pop()
+            .expect("process stack underflow");
+        self.state.current_psp = parent.psp_segment;
+        self.state.dta_segment = parent.saved_dta_seg;
+        self.state.dta_offset = parent.saved_dta_off;
 
         // Store return code.
-        self.last_return_code = return_code;
-        self.last_termination_type = 3;
+        self.state.last_return_code = return_code;
+        self.state.last_termination_type = 3;
 
         // Restore parent's IRET frame.
         cpu.set_ss(parent.return_ss);

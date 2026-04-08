@@ -2,7 +2,7 @@ use crate::harness;
 
 #[test]
 fn default_files_count() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     let sysvars = harness::get_sysvars_address(&mut machine);
 
     // Walk the SFT chain from SYSVARS+0x04 and count total file entries.
@@ -35,7 +35,7 @@ fn default_files_count() {
 
 #[test]
 fn default_buffers() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     let sysvars = harness::get_sysvars_address(&mut machine);
     let buffers = harness::read_word(&machine.bus, sysvars + 0x3F);
     assert!(
@@ -47,7 +47,7 @@ fn default_buffers() {
 
 #[test]
 fn default_lastdrive() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     let sysvars = harness::get_sysvars_address(&mut machine);
     let lastdrive = harness::read_byte(&machine.bus, sysvars + 0x21);
     assert!(

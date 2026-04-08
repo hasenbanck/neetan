@@ -1,22 +1,6 @@
-use std::path::{Path, PathBuf};
-
-use common::{Bus, Cpu as _, MachineModel};
+use common::{Bus, MachineModel};
 
 static FONT_ROM_DATA: &[u8] = include_bytes!("../../../../utils/font/font.rom");
-
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
-}
-
-const DOS_HDD_IMAGE_NAME: &str = "roms/dos620.hdi";
-
-const MAX_BOOT_CYCLES: u64 = 5_000_000_000;
-const BOOT_CHECK_INTERVAL: u64 = 1_000_000;
 
 pub const INJECT_CODE_SEGMENT: u16 = 0x2000;
 pub const INJECT_CODE_BASE: u32 = (INJECT_CODE_SEGMENT as u32) << 4;
@@ -24,74 +8,6 @@ pub const INJECT_RESULT_OFFSET: u16 = 0x0100;
 pub const INJECT_RESULT_BASE: u32 = INJECT_CODE_BASE + INJECT_RESULT_OFFSET as u32;
 pub const INJECT_BUDGET: u64 = 50_000_000;
 pub const INJECT_BUDGET_DISK_IO: u64 = 500_000_000;
-
-macro_rules! boot_to_dos_prompt {
-    ($machine:expr) => {{
-        let mut total_cycles = 0u64;
-        loop {
-            total_cycles += $machine.run_for($crate::harness::BOOT_CHECK_INTERVAL);
-
-            if $crate::harness::dos_prompt_visible(&$machine.bus) {
-                break;
-            }
-
-            assert!(
-                total_cycles < $crate::harness::MAX_BOOT_CYCLES,
-                "DOS did not reach prompt within {} cycles",
-                $crate::harness::MAX_BOOT_CYCLES
-            );
-        }
-        total_cycles
-    }};
-}
-
-pub fn dos_prompt_visible(bus: &machine::Pc9801Bus) -> bool {
-    let vram = bus.text_vram();
-    // PC-98 text VRAM: 2 bytes per character (JIS code, little-endian), 80 columns.
-    // Character area: offset 0x0000-0x1FFF, attribute area: 0x2000-0x3FFF.
-    // Scan the bottom rows for '>' (0x003E).
-    for row in 15..25 {
-        for col in 0..80 {
-            let offset = (row * 80 + col) * 2;
-            if offset + 1 >= vram.len() {
-                break;
-            }
-            let code = u16::from_le_bytes([vram[offset], vram[offset + 1]]);
-            if code == 0x003E {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-pub fn create_dos620_machine() -> machine::Pc9801Ra {
-    let mut machine = machine::Pc9801Ra::new(
-        cpu::I386::new(),
-        machine::Pc9801Bus::new(MachineModel::PC9801RA, 48000),
-    );
-    machine.bus.load_font_rom(FONT_ROM_DATA);
-
-    let hdd_path = workspace_root().join(DOS_HDD_IMAGE_NAME);
-    let hdd_data = std::fs::read(&hdd_path).unwrap_or_else(|error| {
-        panic!(
-            "DOS 6.20 HDD image ({}) required for integration tests: {}",
-            hdd_path.display(),
-            error
-        )
-    });
-    let hdd = device::disk::load_hdd_image(&hdd_path, &hdd_data)
-        .expect("valid HDI format for DOS 6.20 image");
-    machine.bus.insert_hdd(0, hdd, None);
-
-    machine
-}
-
-pub fn boot_dos620() -> machine::Pc9801Ra {
-    let mut machine = create_dos620_machine();
-    boot_to_dos_prompt!(machine);
-    machine
-}
 
 const HLE_BOOT_MAX_CYCLES: u64 = 500_000_000;
 const HLE_BOOT_CHECK_INTERVAL: u64 = 1_000_000;
@@ -108,22 +24,40 @@ pub fn create_hle_machine() -> machine::Pc9801Ra {
 }
 
 /// Boots a machine with NEETAN OS HLE DOS (no disk images).
-/// Returns the machine after the CPU has halted (boot structures populated).
+/// Returns the machine after the shell prompt (`>`) is visible in text VRAM.
 pub fn boot_hle() -> machine::Pc9801Ra {
     let mut machine = create_hle_machine();
     let mut total_cycles = 0u64;
     loop {
         total_cycles += machine.run_for(HLE_BOOT_CHECK_INTERVAL);
-        if machine.cpu.halted() {
+        if hle_prompt_visible(&machine.bus) {
             break;
         }
         assert!(
             total_cycles < HLE_BOOT_MAX_CYCLES,
-            "HLE OS did not halt within {} cycles",
+            "HLE OS did not show prompt within {} cycles",
             HLE_BOOT_MAX_CYCLES
         );
     }
     machine
+}
+
+fn hle_prompt_visible(bus: &machine::Pc9801Bus) -> bool {
+    let vram = bus.text_vram();
+    // Scan all rows for '>' (0x003E) which indicates the prompt is displayed
+    for row in 0..25 {
+        for col in 0..80 {
+            let offset = (row * 80 + col) * 2;
+            if offset + 1 >= vram.len() {
+                break;
+            }
+            let code = u16::from_le_bytes([vram[offset], vram[offset + 1]]);
+            if code == 0x003E {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Known content for COMMAND.COM on the test floppy (100 bytes).
@@ -435,12 +369,12 @@ pub fn boot_hle_with_floppy() -> machine::Pc9801Ra {
     let mut total_cycles = 0u64;
     loop {
         total_cycles += machine.run_for(HLE_BOOT_CHECK_INTERVAL);
-        if machine.cpu.halted() {
+        if hle_prompt_visible(&machine.bus) {
             break;
         }
         assert!(
             total_cycles < HLE_BOOT_MAX_CYCLES,
-            "HLE OS did not halt within {} cycles",
+            "HLE OS did not show prompt within {} cycles",
             HLE_BOOT_MAX_CYCLES
         );
     }
@@ -481,14 +415,12 @@ pub fn inject_and_run_with_budget(machine: &mut machine::Pc9801Ra, code: &[u8], 
     machine.run_for(budget);
 }
 
-/// Clears the InDOS flag so that DOS file I/O functions work correctly.
-/// After boot, COMMAND.COM sits inside an INT 21h call (reading input),
-/// Runs code via the INT 28h DOS idle hook, which is safe for file I/O.
+/// Runs code via the INT 28h DOS idle hook.
 ///
-/// After boot, COMMAND.COM is inside INT 21h/0Ah (reading keyboard input).
-/// DOS calls INT 28h from this idle loop. Inside INT 28h, it is safe to call
-/// INT 21h functions with AH >= 0Ch (including all file I/O). This avoids the
-/// re-entrancy hang that occurs when directly hijacking the CPU for disk operations.
+/// COMMAND.COM's loop calls INT 28h on each iteration. This function hooks
+/// INT 28h to run the given test code once, then restores the original
+/// vector and IRETs. INT 21h functions with AH >= 0Ch (all file I/O) are
+/// safe to call from within an INT 28h handler.
 ///
 /// Layout at INJECT_CODE_BASE:
 ///   +0x0000: INT 28h hook stub (saves old vector, runs user code, restores, IRET)
@@ -507,17 +439,6 @@ pub fn inject_and_run_via_int28(machine: &mut machine::Pc9801Ra, code: &[u8], bu
     // Write user code at +0x0080.
     write_bytes(&mut machine.bus, base + 0x0080, code);
 
-    // Build INT 28h hook stub at +0x0000:
-    //   PUSH DS
-    //   PUSH ES
-    //   MOV AX, INJECT_CODE_SEGMENT
-    //   MOV DS, AX
-    //   MOV ES, AX
-    //   CALL 0x0080              (call user code)
-    //   POP ES
-    //   POP DS
-    //   Restore old INT 28h vector
-    //   IRET
     let old_off_lo = (old_int28_off & 0xFF) as u8;
     let old_off_hi = (old_int28_off >> 8) as u8;
     let old_seg_lo = (old_int28_seg & 0xFF) as u8;
@@ -556,7 +477,7 @@ pub fn inject_and_run_via_int28(machine: &mut machine::Pc9801Ra, code: &[u8], bu
     machine.bus.write_byte(0x00A2, seg_lo);
     machine.bus.write_byte(0x00A3, seg_hi);
 
-    // Resume the machine. DOS will call INT 28h from the idle loop,
+    // Resume the machine. COMMAND.COM's loop calls INT 28h on each iteration,
     // which runs our stub, which runs the user code, restores INT 28h, and IRETs.
     machine.run_for(budget);
 }
@@ -855,12 +776,12 @@ pub fn boot_hle_with_sasi_hdd(sector_size: u16) -> machine::Pc9801Ra {
     let mut total_cycles = 0u64;
     loop {
         total_cycles += machine.run_for(HLE_BOOT_CHECK_INTERVAL);
-        if machine.cpu.halted() {
+        if hle_prompt_visible(&machine.bus) {
             break;
         }
         assert!(
             total_cycles < HLE_BOOT_MAX_CYCLES,
-            "HLE OS did not halt within {} cycles (SASI)",
+            "HLE OS did not show prompt within {} cycles (SASI)",
             HLE_BOOT_MAX_CYCLES
         );
     }
@@ -888,12 +809,12 @@ pub fn boot_hle_with_ide_hdd(sector_size: u16) -> machine::Pc9821Ap {
     let mut total_cycles = 0u64;
     loop {
         total_cycles += machine.run_for(HLE_BOOT_CHECK_INTERVAL);
-        if machine.cpu.halted() {
+        if hle_prompt_visible(&machine.bus) {
             break;
         }
         assert!(
             total_cycles < HLE_BOOT_MAX_CYCLES,
-            "HLE OS did not halt within {} cycles (IDE)",
+            "HLE OS did not show prompt within {} cycles (IDE)",
             HLE_BOOT_MAX_CYCLES
         );
     }
@@ -925,4 +846,46 @@ pub fn inject_and_run_generic_with_budget<const M: u8>(
     machine.cpu.load_state(&state);
 
     machine.run_for(budget);
+}
+
+/// Injects ASCII characters into the PC-98 keyboard buffer.
+pub fn type_string(bus: &mut machine::Pc9801Bus, text: &[u8]) {
+    for &ch in text {
+        let count = bus.read_byte_direct(0x0528);
+        if count >= 0x10 {
+            panic!("keyboard buffer full while injecting text");
+        }
+        let tail = read_word(bus, 0x0526) as u32;
+        bus.write_byte(tail, ch);
+        bus.write_byte(tail + 1, 0x00);
+        let mut new_tail = tail + 2;
+        if new_tail >= 0x0522 {
+            new_tail = 0x0502;
+        }
+        write_word_raw(bus, 0x0526, new_tail as u16);
+        bus.write_byte(0x0528, count + 1);
+    }
+}
+
+fn write_word_raw(bus: &mut machine::Pc9801Bus, addr: u32, value: u16) {
+    bus.write_byte(addr, value as u8);
+    bus.write_byte(addr + 1, (value >> 8) as u8);
+}
+
+/// Runs the machine until the shell prompt (`>`) reappears in text VRAM.
+pub fn run_until_prompt(machine: &mut machine::Pc9801Ra) {
+    let max_cycles: u64 = 500_000_000;
+    let check_interval: u64 = 100_000;
+    let mut total_cycles = 0u64;
+    loop {
+        total_cycles += machine.run_for(check_interval);
+        if hle_prompt_visible(&machine.bus) {
+            break;
+        }
+        assert!(
+            total_cycles < max_cycles,
+            "shell did not return to prompt within {} cycles",
+            max_cycles
+        );
+    }
 }

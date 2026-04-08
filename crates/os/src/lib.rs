@@ -146,50 +146,71 @@ struct DriveInfo {
     is_virtual: bool,
 }
 
+/// State accessible to commands during step() execution.
+///
+/// Split from `NeetanOs` so `RunningCommand::step()` can borrow this mutably
+/// while `Shell` holds the `Box<dyn RunningCommand>`.
+pub(crate) struct OsState {
+    /// Linear address of SYSVARS (List of Lists) in emulated RAM.
+    pub(crate) sysvars_base: u32,
+    /// Linear address of the InDOS flag byte.
+    pub(crate) indos_addr: u32,
+    /// Boot drive number (1=A, 2=B, ...). Default is 1 (A:).
+    pub(crate) boot_drive: u8,
+    /// DOS version reported to programs: (major, minor) = (6, 20).
+    pub(crate) version: (u8, u8),
+    /// Segment of the current PSP (set during boot and EXEC).
+    pub(crate) current_psp: u16,
+    /// Current default drive (0-based: 0=A, 1=B, ...).
+    pub(crate) current_drive: u8,
+    /// DTA (Disk Transfer Area) segment.
+    pub(crate) dta_segment: u16,
+    /// DTA (Disk Transfer Area) offset.
+    pub(crate) dta_offset: u16,
+    /// Ctrl-Break check state (false=off, true=on).
+    pub(crate) ctrl_break: bool,
+    /// Switch character (default 0x2F = '/').
+    pub(crate) switch_char: u8,
+    /// Memory allocation strategy (0=first fit, 1=best fit, 2=last fit).
+    pub(crate) allocation_strategy: u16,
+    /// Exit code from last terminated child process.
+    pub(crate) last_return_code: u8,
+    /// Termination type of last child (0=normal, 1=ctrl-C, 2=critical error, 3=TSR).
+    pub(crate) last_termination_type: u8,
+    /// Linear address of DBCS lead byte table in emulated RAM.
+    pub(crate) dbcs_table_addr: u32,
+    /// Mounted FAT volumes, indexed by drive number (0=A..25=Z). Lazy-mounted.
+    pub(crate) fat_volumes: Vec<Option<filesystem::fat::FatVolume>>,
+    /// Base address of the second SFT block in emulated RAM.
+    pub(crate) sft2_base: u32,
+    /// Virtual Z: drive.
+    pub(crate) virtual_drive: filesystem::virtual_drive::VirtualDrive,
+    /// Process stack for nested EXEC calls.
+    pub(crate) process_stack: Vec<process::ProcessContext>,
+}
+
+/// Bundles `Console` + `MemoryAccess` for shell and command I/O.
+///
+/// Rust allows simultaneous mutable access to separate struct fields,
+/// so commands can call `io.console.process_byte(io.memory, ch)` without
+/// borrow conflicts.
+pub(crate) struct IoAccess<'a> {
+    pub console: &'a mut console::Console,
+    pub memory: &'a mut dyn MemoryAccess,
+}
+
 /// The NEETAN OS HLE DOS instance.
 ///
 /// Holds all DOS state: memory management, file handles, process info, etc.
 /// Created when no bootable media is found, then called via `dispatch()` on
 /// each DOS interrupt.
 pub struct NeetanOs {
-    /// Linear address of SYSVARS (List of Lists) in emulated RAM.
-    sysvars_base: u32,
-    /// Linear address of the InDOS flag byte.
-    indos_addr: u32,
-    /// Boot drive number (1=A, 2=B, ...). Default is 1 (A:).
-    boot_drive: u8,
-    /// DOS version reported to programs: (major, minor) = (6, 20).
-    version: (u8, u8),
-    /// Segment of the current PSP (set during boot and EXEC).
-    current_psp: u16,
-    /// Current default drive (0-based: 0=A, 1=B, ...).
-    current_drive: u8,
-    /// DTA (Disk Transfer Area) segment.
-    dta_segment: u16,
-    /// DTA (Disk Transfer Area) offset.
-    dta_offset: u16,
-    /// Ctrl-Break check state (false=off, true=on).
-    ctrl_break: bool,
-    /// Switch character (default 0x2F = '/').
-    switch_char: u8,
-    /// Memory allocation strategy (0=first fit, 1=best fit, 2=last fit).
-    allocation_strategy: u16,
-    /// Exit code from last terminated child process.
-    last_return_code: u8,
-    /// Termination type of last child (0=normal, 1=ctrl-C, 2=critical error, 3=TSR).
-    last_termination_type: u8,
-    /// Linear address of DBCS lead byte table in emulated RAM.
-    dbcs_table_addr: u32,
+    /// DOS state accessible to commands.
+    pub(crate) state: OsState,
     /// Console output state (cursor tracking, ESC parser).
-    console: console::Console,
-    /// Mounted FAT volumes, indexed by drive number (0=A..25=Z). Lazy-mounted.
-    fat_volumes: Vec<Option<filesystem::fat::FatVolume>>,
-    /// Base address of the second SFT block in emulated RAM.
-    sft2_base: u32,
-    /// Virtual Z: drive.
-    virtual_drive: filesystem::virtual_drive::VirtualDrive,
-    /// Process stack for nested EXEC calls.
-    process_stack: Vec<process::ProcessContext>,
+    pub(crate) console: console::Console,
+    /// Shell state machine, `None` before boot completes.
+    pub(crate) shell: Option<shell::Shell>,
 }
 
 impl Default for NeetanOs {
@@ -202,26 +223,34 @@ impl NeetanOs {
     /// Creates a new NeetanOs instance.
     pub fn new() -> Self {
         Self {
-            sysvars_base: tables::SYSVARS_BASE,
-            indos_addr: tables::INDOS_FLAG_ADDR,
-            boot_drive: 1,
-            version: (6, 20),
-            current_psp: 0,
-            current_drive: 0,
-            dta_segment: 0,
-            dta_offset: 0x0080,
-            ctrl_break: false,
-            switch_char: 0x2F,
-            allocation_strategy: 0,
-            last_return_code: 0,
-            last_termination_type: 0,
-            dbcs_table_addr: 0,
+            state: OsState {
+                sysvars_base: tables::SYSVARS_BASE,
+                indos_addr: tables::INDOS_FLAG_ADDR,
+                boot_drive: 1,
+                version: (6, 20),
+                current_psp: 0,
+                current_drive: 0,
+                dta_segment: 0,
+                dta_offset: 0x0080,
+                ctrl_break: false,
+                switch_char: 0x2F,
+                allocation_strategy: 0,
+                last_return_code: 0,
+                last_termination_type: 0,
+                dbcs_table_addr: 0,
+                fat_volumes: (0..26).map(|_| None).collect(),
+                sft2_base: 0,
+                virtual_drive: filesystem::virtual_drive::VirtualDrive::new(),
+                process_stack: Vec::new(),
+            },
             console: console::Console::default(),
-            fat_volumes: (0..26).map(|_| None).collect(),
-            sft2_base: 0,
-            virtual_drive: filesystem::virtual_drive::VirtualDrive::new(),
-            process_stack: Vec::new(),
+            shell: None,
         }
+    }
+
+    /// Returns the COMMAND.COM PSP segment.
+    pub fn command_com_psp(&self) -> u16 {
+        self.state.current_psp
     }
 
     /// Performs the DOS boot sequence: writes data structures into emulated RAM,
@@ -238,6 +267,27 @@ impl NeetanOs {
         let drives = Self::discover_drives(memory);
         self.write_drive_structures(memory, &drives);
         self.write_initial_mcb_and_process(memory);
+        self.shell = Some(shell::Shell::new());
+    }
+
+    /// INT 21h AH=FFh: Shell prompt/command cycle step.
+    ///
+    /// Takes the shell out of `self.shell`, creates an `IoAccess` from
+    /// `self.console` + the `memory` parameter, and calls `shell.step()`.
+    /// This cleanly splits borrows between `self.state`, `self.console`,
+    /// and `self.shell`.
+    pub(crate) fn int21h_ffh_shell_step(
+        &mut self,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) {
+        let mut shell = self.shell.take().expect("shell not initialized");
+        let mut io = IoAccess {
+            console: &mut self.console,
+            memory,
+        };
+        shell.step(&mut self.state, &mut io, disk);
+        self.shell = Some(shell);
     }
 
     /// Dispatches a DOS/OS interrupt to the appropriate handler.
@@ -359,7 +409,7 @@ impl NeetanOs {
         // BUFFERS
         mem.write_word(SYSVARS_BASE + SYSVARS_OFF_BUFFERS, 5);
         mem.write_word(SYSVARS_BASE + SYSVARS_OFF_LOOKAHEAD, 0);
-        mem.write_byte(SYSVARS_BASE + SYSVARS_OFF_BOOT_DRIVE, self.boot_drive);
+        mem.write_byte(SYSVARS_BASE + SYSVARS_OFF_BOOT_DRIVE, self.state.boot_drive);
         mem.write_byte(SYSVARS_BASE + SYSVARS_OFF_386_FLAG, 0x01);
         mem.write_word(SYSVARS_BASE + SYSVARS_OFF_EXT_MEM, 0);
 
@@ -739,24 +789,24 @@ impl NeetanOs {
             tables::MEMORY_TOP_SEGMENT,
         );
         process::write_command_com_stub(mem, tables::PSP_SEGMENT);
-        self.current_psp = tables::PSP_SEGMENT;
+        self.state.current_psp = tables::PSP_SEGMENT;
 
         // Allocate SFT2 block (this relocates COMMAND.COM MCB and PSP)
         self.write_sft2_block(mem);
 
-        self.current_drive = self.boot_drive.saturating_sub(1);
-        self.dta_segment = self.current_psp;
-        self.dta_offset = 0x0080;
-        self.dbcs_table_addr = tables::DBCS_TABLE_ADDR;
+        self.state.current_drive = self.state.boot_drive.saturating_sub(1);
+        self.state.dta_segment = self.state.current_psp;
+        self.state.dta_offset = 0x0080;
+        self.state.dbcs_table_addr = tables::DBCS_TABLE_ADDR;
 
         // Push root COMMAND.COM context (zeroed return addresses; terminating
         // the root process is an error).
-        self.process_stack.push(process::ProcessContext {
-            psp_segment: self.current_psp,
+        self.state.process_stack.push(process::ProcessContext {
+            psp_segment: self.state.current_psp,
             return_ss: 0,
             return_sp: 0,
-            saved_dta_seg: self.dta_segment,
-            saved_dta_off: self.dta_offset,
+            saved_dta_seg: self.state.dta_segment,
+            saved_dta_off: self.state.dta_offset,
         });
     }
 
@@ -791,7 +841,7 @@ impl NeetanOs {
 
         // Write SFT2 header + entries
         let sft2_base = (sft2_data_segment as u32) << 4;
-        self.sft2_base = sft2_base;
+        self.state.sft2_base = sft2_base;
         tables::write_far_ptr(mem, sft2_base, 0xFFFF, 0xFFFF);
         mem.write_word(sft2_base + 4, SFT_EXTENDED_COUNT);
         // Zero all entries
@@ -817,7 +867,7 @@ impl NeetanOs {
             MEMORY_TOP_SEGMENT,
         );
         process::write_command_com_stub(mem, new_psp_segment);
-        self.current_psp = new_psp_segment;
+        self.state.current_psp = new_psp_segment;
 
         // Rewrite free MCB at new location
         let free_mcb_addr = (new_free_mcb_segment as u32) << 4;
@@ -832,6 +882,78 @@ impl NeetanOs {
         // Update SYSVARS first MCB pointer (it stays the same: FIRST_MCB_SEGMENT)
     }
 
+    /// Populates the IO.SYS work area at segment 0060h.
+    fn write_iosys_work_area(&self, mem: &mut dyn MemoryAccess) {
+        use tables::*;
+
+        let base = IOSYS_BASE;
+
+        // MS-DOS product number (0x0100+ range for MS-DOS 5.0+, 0x0102 = NEC MS DOS 6.20)
+        mem.write_word(base + IOSYS_OFF_PRODUCT_NUMBER, 0x0102);
+        mem.write_byte(base + IOSYS_OFF_INTERNAL_REVISION, 0x00);
+
+        mem.write_byte(base + IOSYS_OFF_EMM_BANK_FLAG, 0x00);
+        mem.write_byte(base + IOSYS_OFF_EXT_MEM_128K, 0x00);
+        mem.write_byte(base + IOSYS_OFF_FD_DUPLICATE, 0x00);
+
+        // RS-232C default: 9600 baud (1001), 8N1 (11=8bit, 0=no parity, 01=1stop)
+        // Bits: 0000_1001_0100_1100 = 0x094C
+        mem.write_word(base + IOSYS_OFF_AUX_PROTOCOL, 0x094C);
+
+        // DA/UA mapping table: populated by write_drive_structures().
+
+        // Kanji/graph mode
+        mem.write_byte(base + IOSYS_OFF_KANJI_MODE, 0x01); // Shift-JIS kanji mode
+        mem.write_byte(base + IOSYS_OFF_GRAPH_CHAR, 0x20);
+        mem.write_byte(base + IOSYS_OFF_SHIFT_FN_CHAR, 0x20);
+
+        mem.write_byte(base + IOSYS_OFF_STOP_REENTRY, 0x00);
+        mem.write_byte(base + IOSYS_OFF_INTDC_FLAG, 0x00);
+        mem.write_byte(base + IOSYS_OFF_SPECIAL_INPUT, 0x00);
+        mem.write_byte(base + IOSYS_OFF_PRINTER_ECHO, 0x00);
+        mem.write_byte(base + IOSYS_OFF_SOFTKEY_FLAGS, 0x00);
+
+        // Display / cursor state
+        mem.write_byte(base + IOSYS_OFF_CURSOR_Y, 0x00);
+        mem.write_byte(base + IOSYS_OFF_FNKEY_DISPLAY, 0x01); // show function keys
+        mem.write_byte(base + IOSYS_OFF_SCROLL_LOWER, 24); // bottom row
+        mem.write_byte(base + IOSYS_OFF_SCREEN_LINES, 0x01); // 25-line mode
+        mem.write_byte(base + IOSYS_OFF_CLEAR_ATTR, 0xE1); // white-on-black
+        mem.write_byte(base + IOSYS_OFF_KANJI_HI_FLAG, 0x00);
+        mem.write_byte(base + IOSYS_OFF_KANJI_HI_BYTE, 0x00);
+        mem.write_byte(base + IOSYS_OFF_LINE_WRAP, 0x00); // wrap at column 80
+        mem.write_byte(base + IOSYS_OFF_SCROLL_SPEED, 0x00); // normal
+        mem.write_byte(base + IOSYS_OFF_CLEAR_CHAR, 0x20); // space
+        mem.write_byte(base + IOSYS_OFF_CURSOR_VISIBLE, 0x01); // shown
+        mem.write_byte(base + IOSYS_OFF_CURSOR_X, 0x00);
+        mem.write_byte(base + IOSYS_OFF_DISPLAY_ATTR, 0xE1); // white-on-black
+        mem.write_byte(base + IOSYS_OFF_SCROLL_UPPER, 0x00);
+        mem.write_word(base + IOSYS_OFF_SCROLL_WAIT, 0x0001); // normal speed
+
+        // Saved cursor
+        mem.write_byte(base + IOSYS_OFF_SAVED_CURSOR_Y, 0x00);
+        mem.write_byte(base + IOSYS_OFF_SAVED_CURSOR_X, 0x00);
+        mem.write_byte(base + IOSYS_OFF_SAVED_CURSOR_ATTR, 0xE1);
+
+        mem.write_byte(base + IOSYS_OFF_LAST_DRIVE_UNIT, 0x00);
+        mem.write_byte(base + IOSYS_OFF_FD_DUPLICATE2, 0x00);
+        mem.write_word(base + IOSYS_OFF_EXT_ATTR_DISPLAY, 0x0000);
+        mem.write_word(base + IOSYS_OFF_EXT_ATTR_CLEAR, 0x0000);
+
+        mem.write_word(base + IOSYS_OFF_EXT_ATTR_MODE, 0x0000); // PC mode
+        mem.write_word(base + IOSYS_OFF_TEXT_MODE, 0x0000); // 25-line gapped
+
+        // DA/UA pointer -> points to the DA/UA table itself
+        tables::write_far_ptr(
+            mem,
+            base + IOSYS_OFF_DAUA_PTR,
+            IOSYS_SEGMENT,
+            IOSYS_OFF_DAUA_TABLE as u16,
+        );
+    }
+}
+
+impl OsState {
     /// Returns the SFT entry base address for a given SFT index (0-based).
     pub(crate) fn sft_entry_addr(&self, sft_index: u8) -> Option<u32> {
         use tables::*;
@@ -1005,74 +1127,90 @@ impl NeetanOs {
         Ok((drive_index, dir_cluster, fcb_name))
     }
 
-    /// Populates the IO.SYS work area at segment 0060h.
-    fn write_iosys_work_area(&self, mem: &mut dyn MemoryAccess) {
-        use tables::*;
+    /// Changes the current directory for a drive.
+    /// `path_bytes` is a raw path like `\DIR`, `C:\DIR`, or `SUBDIR`.
+    pub(crate) fn change_directory(
+        &mut self,
+        memory: &mut dyn MemoryAccess,
+        path_bytes: &[u8],
+    ) -> Result<(), u16> {
+        if path_bytes.is_empty() {
+            return Err(0x0003); // path not found
+        }
 
-        let base = IOSYS_BASE;
+        // Parse drive letter
+        let (drive_index, path_start) = if path_bytes.len() >= 2 && path_bytes[1] == b':' {
+            let letter = path_bytes[0].to_ascii_uppercase();
+            if !letter.is_ascii_uppercase() {
+                return Err(0x0003);
+            }
+            (letter - b'A', 2)
+        } else {
+            (self.current_drive, 0)
+        };
 
-        // MS-DOS product number (0x0100+ range for MS-DOS 5.0+, 0x0102 = NEC MS DOS 6.20)
-        mem.write_word(base + IOSYS_OFF_PRODUCT_NUMBER, 0x0102);
-        mem.write_byte(base + IOSYS_OFF_INTERNAL_REVISION, 0x00);
+        // Validate drive has a CDS entry
+        let cds_addr = tables::CDS_BASE + (drive_index as u32) * tables::CDS_ENTRY_SIZE;
+        let cds_flags = memory.read_word(cds_addr + tables::CDS_OFF_FLAGS);
+        if cds_flags == 0 {
+            return Err(0x000F); // invalid drive
+        }
 
-        mem.write_byte(base + IOSYS_OFF_EMM_BANK_FLAG, 0x00);
-        mem.write_byte(base + IOSYS_OFF_EXT_MEM_128K, 0x00);
-        mem.write_byte(base + IOSYS_OFF_FD_DUPLICATE, 0x00);
+        // Build new path
+        let remaining = &path_bytes[path_start..];
+        let mut new_path = Vec::with_capacity(67);
+        new_path.push(b'A' + drive_index);
+        new_path.push(b':');
 
-        // RS-232C default: 9600 baud (1001), 8N1 (11=8bit, 0=no parity, 01=1stop)
-        // Bits: 0000_1001_0100_1100 = 0x094C
-        mem.write_word(base + IOSYS_OFF_AUX_PROTOCOL, 0x094C);
+        if remaining.is_empty() || remaining[0] == b'\\' {
+            if remaining.is_empty() {
+                new_path.push(b'\\');
+            } else {
+                new_path.extend_from_slice(remaining);
+            }
+        } else {
+            // Relative path: read current path from CDS
+            let mut current = Vec::new();
+            for i in 0..67u32 {
+                let byte = memory.read_byte(cds_addr + tables::CDS_OFF_PATH + i);
+                if byte == 0 {
+                    break;
+                }
+                current.push(byte);
+            }
+            if current.len() > 2 {
+                new_path.extend_from_slice(&current[2..]);
+            } else {
+                new_path.push(b'\\');
+            }
+            if new_path.last() != Some(&b'\\') {
+                new_path.push(b'\\');
+            }
+            new_path.extend_from_slice(remaining);
+        }
 
-        // DA/UA mapping table: populated by write_drive_structures().
+        let normalized = dos::normalize_path(&new_path);
 
-        // Kanji/graph mode
-        mem.write_byte(base + IOSYS_OFF_KANJI_MODE, 0x01); // Shift-JIS kanji mode
-        mem.write_byte(base + IOSYS_OFF_GRAPH_CHAR, 0x20);
-        mem.write_byte(base + IOSYS_OFF_SHIFT_FN_CHAR, 0x20);
+        let final_path = if normalized.len() > 3 && normalized.last() == Some(&b'\\') {
+            &normalized[..normalized.len() - 1]
+        } else {
+            &normalized
+        };
 
-        mem.write_byte(base + IOSYS_OFF_STOP_REENTRY, 0x00);
-        mem.write_byte(base + IOSYS_OFF_INTDC_FLAG, 0x00);
-        mem.write_byte(base + IOSYS_OFF_SPECIAL_INPUT, 0x00);
-        mem.write_byte(base + IOSYS_OFF_PRINTER_ECHO, 0x00);
-        mem.write_byte(base + IOSYS_OFF_SOFTKEY_FLAGS, 0x00);
+        if final_path.len() > 67 {
+            return Err(0x0003);
+        }
 
-        // Display / cursor state
-        mem.write_byte(base + IOSYS_OFF_CURSOR_Y, 0x00);
-        mem.write_byte(base + IOSYS_OFF_FNKEY_DISPLAY, 0x01); // show function keys
-        mem.write_byte(base + IOSYS_OFF_SCROLL_LOWER, 24); // bottom row
-        mem.write_byte(base + IOSYS_OFF_SCREEN_LINES, 0x01); // 25-line mode
-        mem.write_byte(base + IOSYS_OFF_CLEAR_ATTR, 0xE1); // white-on-black
-        mem.write_byte(base + IOSYS_OFF_KANJI_HI_FLAG, 0x00);
-        mem.write_byte(base + IOSYS_OFF_KANJI_HI_BYTE, 0x00);
-        mem.write_byte(base + IOSYS_OFF_LINE_WRAP, 0x00); // wrap at column 80
-        mem.write_byte(base + IOSYS_OFF_SCROLL_SPEED, 0x00); // normal
-        mem.write_byte(base + IOSYS_OFF_CLEAR_CHAR, 0x20); // space
-        mem.write_byte(base + IOSYS_OFF_CURSOR_VISIBLE, 0x01); // shown
-        mem.write_byte(base + IOSYS_OFF_CURSOR_X, 0x00);
-        mem.write_byte(base + IOSYS_OFF_DISPLAY_ATTR, 0xE1); // white-on-black
-        mem.write_byte(base + IOSYS_OFF_SCROLL_UPPER, 0x00);
-        mem.write_word(base + IOSYS_OFF_SCROLL_WAIT, 0x0001); // normal speed
+        // Write path to CDS entry
+        for i in 0..67u32 {
+            if (i as usize) < final_path.len() {
+                memory.write_byte(cds_addr + tables::CDS_OFF_PATH + i, final_path[i as usize]);
+            } else {
+                memory.write_byte(cds_addr + tables::CDS_OFF_PATH + i, 0x00);
+            }
+        }
 
-        // Saved cursor
-        mem.write_byte(base + IOSYS_OFF_SAVED_CURSOR_Y, 0x00);
-        mem.write_byte(base + IOSYS_OFF_SAVED_CURSOR_X, 0x00);
-        mem.write_byte(base + IOSYS_OFF_SAVED_CURSOR_ATTR, 0xE1);
-
-        mem.write_byte(base + IOSYS_OFF_LAST_DRIVE_UNIT, 0x00);
-        mem.write_byte(base + IOSYS_OFF_FD_DUPLICATE2, 0x00);
-        mem.write_word(base + IOSYS_OFF_EXT_ATTR_DISPLAY, 0x0000);
-        mem.write_word(base + IOSYS_OFF_EXT_ATTR_CLEAR, 0x0000);
-
-        mem.write_word(base + IOSYS_OFF_EXT_ATTR_MODE, 0x0000); // PC mode
-        mem.write_word(base + IOSYS_OFF_TEXT_MODE, 0x0000); // 25-line gapped
-
-        // DA/UA pointer -> points to the DA/UA table itself
-        tables::write_far_ptr(
-            mem,
-            base + IOSYS_OFF_DAUA_PTR,
-            IOSYS_SEGMENT,
-            IOSYS_OFF_DAUA_TABLE as u16,
-        );
+        Ok(())
     }
 }
 

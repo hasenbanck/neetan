@@ -4,6 +4,8 @@
 //! interrupt with no IBM PC equivalent. NEETAN OS provides this handler since
 //! it replaces IO.SYS.
 
+use common::warn;
+
 use crate::{CpuAccess, MemoryAccess, NeetanOs, tables};
 
 impl NeetanOs {
@@ -18,7 +20,7 @@ impl NeetanOs {
             0x15 => self.intdch_15h_internal_revision(cpu, memory),
             0x80 => self.intdch_80h_disk_partition_info(cpu, memory),
             0x81 => self.intdch_81h_extended_memory_query(cpu, memory),
-            _ => unimplemented!("INT DCh CL={:#04X}", cl),
+            _ => warn!("INT DCh CL={cl:#04X} is unimplemented"),
         }
     }
 
@@ -121,7 +123,7 @@ impl NeetanOs {
                     _ => {}
                 }
             }
-            _ => unimplemented!("INT DCh CL=10h AH={:#04X}", ah),
+            _ => warn!("INT DCh CL=10h AH={ah:#04X} is unimplemented"),
         }
     }
 

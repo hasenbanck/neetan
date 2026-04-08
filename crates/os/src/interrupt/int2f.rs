@@ -3,6 +3,8 @@
 //! Dispatched by AH register. Provides installation checks for resident
 //! services (Windows, XMS, DOSKEY, HMA).
 
+use common::warn;
+
 use crate::{CpuAccess, MemoryAccess, NeetanOs};
 
 impl NeetanOs {
@@ -14,7 +16,7 @@ impl NeetanOs {
             0x43 => self.int2fh_43h_xms_check(cpu),
             0x48 => self.int2fh_48h_doskey_check(cpu),
             0x4A => self.int2fh_4ah_hma_query(cpu),
-            _ => unimplemented!("INT 2Fh AH={:#04X}", ah),
+            _ => warn!("INT 2Fh AH={ah:#04X} in unimplemented"),
         }
     }
 

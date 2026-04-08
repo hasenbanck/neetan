@@ -610,7 +610,7 @@ fn change_directory_to_root() {
 
 #[test]
 fn parse_filename_into_fcb() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle();
     // Place filename at 0x9000:0200, FCB buffer at 0x9000:0220.
     let filename = b" TEST.TXT\0";
     harness::write_bytes(
@@ -663,7 +663,7 @@ fn parse_filename_into_fcb() {
 
 #[test]
 fn get_allocation_info() {
-    let mut machine = harness::boot_dos620();
+    let mut machine = harness::boot_hle_with_floppy();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x1C,                         // MOV AH, 1Ch

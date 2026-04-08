@@ -2809,18 +2809,14 @@ impl<T: Tracing> Pc9801Bus<T> {
                 &mut console_io,
             );
         }
+        // Redirect IRET to COMMAND.COM's entry point (PSP:0100h).
+        // The stub at PSP:0100h is: MOV AH,FFh / INT 21h / JMP SHORT loop
+        let psp_segment = neetan_os.command_com_psp();
         self.os = Some(neetan_os);
-
-        // Write CLI+HLT at a safe location and redirect IRET there.
-        // COMMAND.COM structures exist in RAM but the shell loop is not
-        // active until phase 10.10.
-        let halt_addr: u32 = 0x1FC00;
-        self.memory.write_byte(halt_addr, 0xFA); // CLI
-        self.memory.write_byte(halt_addr + 1, 0xF4); // HLT
         let iret_base = iret_stack_base(cpu);
-        self.write_mem_word(iret_base, 0x0000); // IP
-        self.write_mem_word(iret_base + 2, 0x1FC0); // CS
-        self.write_mem_word(iret_base + 4, 0x0002); // FLAGS (reserved bit 1 set)
+        self.write_mem_word(iret_base, 0x0100); // IP = entry point
+        self.write_mem_word(iret_base + 2, psp_segment); // CS = PSP segment
+        self.write_mem_word(iret_base + 4, 0x0202); // FLAGS (IF set)
     }
 }
 

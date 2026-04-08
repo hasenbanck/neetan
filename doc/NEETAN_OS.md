@@ -78,13 +78,16 @@ The COMMAND.COM process has a tiny x86 code loop placed at PSP:0100h:
 loop:
     mov  ah, 0FFh       ; Reserved function: shell prompt/command cycle
     int  21h
+    int  28h            ; DOS idle interrupt (lets TSR programs run)
     jmp  loop
 ```
 
 Each INT 21h AH=FFh dispatch triggers a single step of the Rust shell state machine.
 The shell never blocks -- it performs one unit of work per dispatch and returns, allowing
-the CPU to continue executing between steps. This keeps the emulator responsive (audio,
-display, keyboard processing) even during long-running commands.
+the CPU to continue executing between steps. INT 28h fires on every iteration so that
+programs hooked to the DOS idle interrupt can perform background work. This keeps the
+emulator responsive (audio, display, keyboard processing) even during long-running
+commands.
 
 The shell operates as a state machine with these phases:
 
@@ -847,17 +850,30 @@ pub(crate) trait RunningCommand {
     fn step(
         &mut self,
         state: &mut OsState,
-        memory: &mut dyn MemoryAccess,
+        io: &mut IoAccess,
         disk: &mut dyn DiskIo,
-        console: &mut dyn ConsoleIo,
     ) -> StepResult;
 }
 ```
 
-Commands receive `OsState` for filesystem and drive operations, `MemoryAccess` for
-reading/writing DOS data structures (CDS paths, environment blocks), `DiskIo` for
-low-level disk access, and `ConsoleIo` for display and keyboard input. They do not
+The `IoAccess` struct bundles `Console` and `MemoryAccess` into a single reference,
+using Rust's field-level borrow splitting to avoid double-borrow conflicts:
+
+```rust
+pub(crate) struct IoAccess<'a> {
+    pub console: &'a mut Console,
+    pub memory: &'a mut dyn MemoryAccess,
+}
+```
+
+Commands access `io.console.process_byte(io.memory, ch)` for display output and
+`io.memory.read_byte(addr)` for raw memory access. They also receive `OsState` for
+filesystem and drive operations, and `DiskIo` for low-level disk access. They do not
 receive `CpuAccess` -- commands never manipulate CPU registers directly.
+
+The `ConsoleIo` trait remains for the external dispatch interface (implemented by
+`OsConsoleIo` in the machine crate's `os_adapter.rs`), but the shell and commands
+use `IoAccess` internally for borrow splitting.
 
 The `NeetanOs` struct is split so that `RunningCommand::step()` can borrow `OsState`
 mutably while the `Shell` holds the `Box<dyn RunningCommand>`:
@@ -865,9 +881,8 @@ mutably while the `Shell` holds the `Box<dyn RunningCommand>`:
 ```rust
 pub struct NeetanOs {
     state: OsState,                        // Fields commands need
-    shell: Shell,                          // Shell state + running command
+    shell: Option<Shell>,                  // Shell state machine (None before boot)
     console: Console,                      // Console output (VRAM, ESC parser)
-    process_stack: Vec<ProcessContext>,     // For nested EXEC
 }
 ```
 
@@ -1115,9 +1130,15 @@ crates/os/src/
 /// Top-level OS instance, held as Option<NeetanOs> on Pc9801Bus.
 pub struct NeetanOs {
     state: OsState,                         // Fields accessible to commands
-    shell: Shell,                           // Shell state machine + running command
+    shell: Option<Shell>,                   // Shell state machine (None before boot)
     console: Console,                       // Console output (VRAM, ESC parser)
-    process_stack: Vec<ProcessContext>,      // For nested EXEC
+}
+
+/// Bundles Console + MemoryAccess for shell and command I/O.
+/// Uses Rust's field-level borrow splitting to avoid double-borrow conflicts.
+pub(crate) struct IoAccess<'a> {
+    pub console: &'a mut Console,
+    pub memory: &'a mut dyn MemoryAccess,
 }
 
 /// State accessible to commands during step() execution.
@@ -1141,6 +1162,7 @@ pub(crate) struct OsState {
     fat_volumes: Vec<Option<FatVolume>>,    // Mounted FAT volumes
     sft2_base: u32,                         // Second SFT block address
     virtual_drive: VirtualDrive,            // Z: drive (COMMAND.COM only)
+    process_stack: Vec<ProcessContext>,      // For nested EXEC
 }
 
 /// Shell state machine driven by INT 21h AH=FFh dispatches.
@@ -1178,6 +1200,10 @@ impl NeetanOs {
     ) -> bool;
 }
 ```
+
+For INT 21h AH=FFh (shell step), the dispatch creates an `IoAccess` from
+`self.console` + `memory` internally and calls `Shell::step()` with it.
+The external `ConsoleIo` parameter is unused for this path.
 
 The trait objects (`CpuAccess`, `MemoryAccess`, `DiskIo`, `ConsoleIo`) are defined in the
 OS crate and implemented by the machine crate. This keeps the dependency graph clean:
@@ -1254,6 +1280,11 @@ pub trait ConsoleIo {
 }
 ```
 
+The `ConsoleIo` trait is implemented by `OsConsoleIo` in the machine crate's
+`os_adapter.rs` for the external dispatch interface. Internally, the shell and
+commands use `IoAccess { console, memory }` instead, which bundles a `&mut Console`
+reference with `&mut dyn MemoryAccess` for Rust-safe field-level borrow splitting.
+
 ## 10. Implementation Roadmap
 
 Ten phases, each building on the previous. Every phase is independently testable against
@@ -1289,7 +1320,7 @@ the `crates/os/tests/dos620/` integration test suite.
 - Initial chain: sentinel MCB, environment block, COMMAND.COM block, free Z-block
 - PSP creation: 256-byte structure with handle table, INT 20h instruction, far call stub, saved vectors
 - Environment block: COMSPEC, PATH, PROMPT strings; no WORD count + pathname for COMMAND.COM (section 2.6)
-- COMMAND.COM code stub at PSP:0100h (MOV AH,FFh / INT 21h / JMP loop)
+- COMMAND.COM code stub at PSP:0100h (MOV AH,FFh / INT 21h / INT 28h / JMP loop)
 
 **Tests**: `mcb_chain`, `psp`, `environment`
 
@@ -1375,18 +1406,21 @@ Test should use a floppy image that is purely created in-memory for the tests.
 - Extract `OsState` from `NeetanOs`, update all `self.field` to `self.state.field` across
   dos.rs, lib.rs, file_io.rs, process.rs, and all other files that access NeetanOs fields
 - Define `StepResult`, `Command`, `RunningCommand` traits in `commands/mod.rs`
-- Define `ShellPhase`, `ShellAction`, `Shell`, `LineEditor` in `shell/mod.rs`
-- Add `shell: Shell` field to `NeetanOs`
+- Define `ShellPhase`, `Shell`, `LineEditor` in `shell/mod.rs`
+- Define `IoAccess` struct bundling `&mut Console` + `&mut dyn MemoryAccess` for
+  borrow splitting (replaces separate `memory` + `console` parameters in `RunningCommand::step()`)
+- Add `shell: Option<Shell>` field to `NeetanOs`
 - Add `0xFF` arm to INT 21h dispatcher in `dos.rs`
 - Implement `Shell::step()` with ShowPrompt and ReadingInput phases (non-blocking
   character-by-character input with backspace and Enter)
 - Implement prompt rendering (PROMPT env var: $P, $G, $D, $T, etc.)
-- Connect `ConsoleIo` in `os_adapter.rs` to keyboard buffer and text VRAM
+- Shell reads keyboard buffer directly via `IoAccess.memory` (BDA 0x0502-0x0528)
+  and writes to text VRAM via `IoAccess.console` (existing `Console::process_byte()`)
 - Register all commands in `Shell::new()`
 - Simplify `VirtualDrive` to only COMMAND.COM
 - Implement simple single-step commands: CLS, VER, ECHO, REM, CD, SET
 - When booting, the OS name should be printed out in its own row: "Neetan OS".
-  This let's users instantly know they are in the built-in OS.
+  This lets users instantly know they are in the built-in OS.
 
 **Tests**: Shell shows prompt, accepts input, executes CLS/VER/ECHO/CD/SET.
 

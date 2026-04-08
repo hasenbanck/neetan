@@ -51,3 +51,6 @@ mod hdd_file_io;
 
 #[path = "dos620/process_management.rs"]
 mod process_management;
+
+#[path = "dos620/shell.rs"]
+mod shell;

@@ -4,11 +4,7 @@
 //! SS:SP is on the DOS I/O stack, InDOS=1, and handlers may safely call
 //! INT 21h with AH >= 0Ch. TSRs hook this vector to perform background work.
 //!
-//! The default handler is an IRET (no operation). The caller side -- generating
-//! INT 28h from the HLE idle loop with correct stack and InDOS state -- belongs
-//! to the console input implementation phase (step 10.7).
-//!
-//! TODO: Why is this empty? If we don't need it: remove. Did we handle this properly in step 10.7?
+//! The default handler is an IRET (no operation).
 
 use crate::{CpuAccess, MemoryAccess, NeetanOs};
 
