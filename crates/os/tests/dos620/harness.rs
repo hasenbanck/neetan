@@ -908,6 +908,87 @@ pub fn boot_hle_with_ide_hdd(sector_size: u16) -> machine::Pc9821Ap {
     machine
 }
 
+/// Creates an empty (all-zeros) HDD image suitable for testing FORMAT.
+pub fn create_empty_hdd(sector_size: u16) -> device::disk::HddImage {
+    use device::disk::{HddFormat, HddGeometry, HddImage};
+
+    let cylinders: u16 = 20;
+    let heads: u8 = 8;
+    let sectors_per_track: u8 = 17;
+    let total_sectors = cylinders as u32 * heads as u32 * sectors_per_track as u32;
+    let data = vec![0u8; total_sectors as usize * sector_size as usize];
+
+    let geometry = HddGeometry {
+        cylinders,
+        heads,
+        sectors_per_track,
+        sector_size,
+    };
+    HddImage::from_raw(geometry, HddFormat::Nhd, data)
+}
+
+/// Boots an HLE machine (PC-9801RA / SASI) with an empty HDD for format testing.
+pub fn boot_hle_with_empty_sasi_hdd() -> machine::Pc9801Ra {
+    let mut machine = machine::Pc9801Ra::new(
+        cpu::I386::new(),
+        machine::Pc9801Bus::new(MachineModel::PC9801RA, 48000),
+    );
+    machine.bus.load_font_rom(FONT_ROM_DATA);
+
+    // Set BDA DISK_EQUIP bit 8 (HDD unit 0)
+    machine.bus.write_byte(0x055C, 0x00);
+    machine.bus.write_byte(0x055D, 0x01);
+
+    let hdd = create_empty_hdd(256);
+    machine.bus.insert_hdd(0, hdd, None);
+
+    let mut total_cycles = 0u64;
+    loop {
+        total_cycles += machine.run_for(HLE_BOOT_CHECK_INTERVAL);
+        if hle_prompt_visible(&machine.bus) {
+            break;
+        }
+        assert!(
+            total_cycles < HLE_BOOT_MAX_CYCLES,
+            "HLE OS did not show prompt within {} cycles (empty SASI)",
+            HLE_BOOT_MAX_CYCLES
+        );
+    }
+
+    machine
+}
+
+/// Boots an HLE machine (PC-9821AP / IDE) with an empty HDD for format testing.
+pub fn boot_hle_with_empty_ide_hdd() -> machine::Pc9821Ap {
+    let mut machine = machine::Pc9821Ap::new(
+        cpu::I386::<{ cpu::CPU_MODEL_486 }>::new(),
+        machine::Pc9801Bus::new(MachineModel::PC9821AP, 48000),
+    );
+    machine.bus.load_font_rom(FONT_ROM_DATA);
+
+    // Set BDA DISK_EQUIP bit 8 (HDD unit 0)
+    machine.bus.write_byte(0x055C, 0x00);
+    machine.bus.write_byte(0x055D, 0x01);
+
+    let hdd = create_empty_hdd(512);
+    machine.bus.insert_hdd(0, hdd, None);
+
+    let mut total_cycles = 0u64;
+    loop {
+        total_cycles += machine.run_for(HLE_BOOT_CHECK_INTERVAL);
+        if hle_prompt_visible(&machine.bus) {
+            break;
+        }
+        assert!(
+            total_cycles < HLE_BOOT_MAX_CYCLES,
+            "HLE OS did not show prompt within {} cycles (empty IDE)",
+            HLE_BOOT_MAX_CYCLES
+        );
+    }
+
+    machine
+}
+
 /// Creates a minimal CD-ROM disc image with one data track and one audio track.
 /// Uses raw (2352-byte) sectors throughout, as is standard for single-file BIN images.
 pub fn create_test_cdimage() -> device::cdrom::CdImage {
@@ -1048,6 +1129,32 @@ pub fn type_string_long(machine: &mut machine::Pc9801Ra, text: &[u8]) {
 
 /// Runs the machine until the shell prompt (`>`) reappears in text VRAM.
 pub fn run_until_prompt(machine: &mut machine::Pc9801Ra) {
+    let max_cycles: u64 = 500_000_000;
+    let check_interval: u64 = 100_000;
+    let mut total_cycles = 0u64;
+    loop {
+        total_cycles += machine.run_for(check_interval);
+        if hle_prompt_visible(&machine.bus) {
+            break;
+        }
+        assert!(
+            total_cycles < max_cycles,
+            "shell did not return to prompt within {max_cycles} cycles"
+        );
+    }
+}
+
+/// Types a long string for PC-9821AP machines.
+pub fn type_string_long_ap(machine: &mut machine::Pc9821Ap, text: &[u8]) {
+    let chunk_size = 12;
+    for chunk in text.chunks(chunk_size) {
+        type_string(&mut machine.bus, chunk);
+        machine.run_for(5_000_000);
+    }
+}
+
+/// Runs the PC-9821AP machine until the shell prompt reappears.
+pub fn run_until_prompt_ap(machine: &mut machine::Pc9821Ap) {
     let max_cycles: u64 = 500_000_000;
     let check_interval: u64 = 100_000;
     let mut total_cycles = 0u64;

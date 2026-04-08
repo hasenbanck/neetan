@@ -30,6 +30,8 @@ struct FormatState {
     total_sectors: u32,
     total_tracks: u32,
     current_track: u32,
+    partition_offset: u32,
+    is_hdd: bool,
     quick: bool,
     verify: bool,
 }
@@ -68,12 +70,63 @@ fn floppy_bpb_params(da_type: u8) -> BpbParams {
     }
 }
 
+fn hdd_bpb_params(sector_size: u16, partition_sectors: u32) -> BpbParams {
+    let bytes_per_sector = sector_size;
+    let reserved_sectors: u16 = 1;
+    let num_fats: u8 = 2;
+    let root_entry_count: u16 = 512;
+
+    let volume_bytes = partition_sectors as u64 * sector_size as u64;
+    let sectors_per_cluster: u8 = if sector_size == 256 {
+        // SASI 256-byte sectors: target 2 KB clusters
+        if volume_bytes <= 64 * 1024 * 1024 {
+            8
+        } else if volume_bytes <= 128 * 1024 * 1024 {
+            16
+        } else if volume_bytes <= 256 * 1024 * 1024 {
+            32
+        } else {
+            64
+        }
+    } else {
+        // IDE 512-byte sectors: target 2 KB clusters for small volumes
+        if volume_bytes <= 64 * 1024 * 1024 {
+            4
+        } else if volume_bytes <= 128 * 1024 * 1024 {
+            8
+        } else if volume_bytes <= 256 * 1024 * 1024 {
+            16
+        } else {
+            32
+        }
+    };
+
+    let root_dir_sectors = (root_entry_count as u32 * 32).div_ceil(bytes_per_sector as u32);
+    let overhead = reserved_sectors as u32 + root_dir_sectors;
+    let usable = partition_sectors.saturating_sub(overhead);
+    // Upper-bound estimate: assume FAT takes zero sectors, compute max clusters,
+    // then derive sectors_per_fat from that.
+    let max_clusters = usable / sectors_per_cluster as u32;
+    let sectors_per_fat = ((max_clusters + 2) as u64 * 2).div_ceil(bytes_per_sector as u64) as u16;
+
+    BpbParams {
+        bytes_per_sector,
+        sectors_per_cluster,
+        reserved_sectors,
+        num_fats,
+        root_entry_count,
+        media_descriptor: 0xF8,
+        sectors_per_fat,
+    }
+}
+
 const KB_BUF_COUNT: u32 = 0x0528;
 
 enum FormatPhase {
     Init,
     Confirm(FormatState),
     FormatTrack(FormatState),
+    WritePartitionTable(FormatState),
     WriteBootSector(FormatState),
     WriteFat(FormatState),
     WriteRootDir(FormatState),
@@ -121,7 +174,9 @@ impl RunningCommand for RunningFormat {
 
                 match key.to_ascii_uppercase() {
                     b'Y' => {
-                        if format_state.quick {
+                        if format_state.is_hdd {
+                            self.phase = FormatPhase::WritePartitionTable(format_state);
+                        } else if format_state.quick {
                             self.phase = FormatPhase::WriteBootSector(format_state);
                         } else {
                             self.phase = FormatPhase::FormatTrack(format_state);
@@ -157,51 +212,160 @@ impl RunningCommand for RunningFormat {
                 self.phase = FormatPhase::FormatTrack(format_state);
                 StepResult::Continue
             }
-            FormatPhase::WriteBootSector(format_state) => {
-                let da_type = format_state.da_ua & 0xF0;
-                let bpb = floppy_bpb_params(da_type);
+            FormatPhase::WritePartitionTable(format_state) => {
+                let ss = format_state.sector_size as usize;
 
-                let mut boot = vec![0u8; format_state.sector_size as usize];
-                boot[0] = 0xEB;
-                boot[1] = 0x3C;
-                boot[2] = 0x90;
-                boot[3..11].copy_from_slice(b"NEETAN  ");
-                boot[11..13].copy_from_slice(&bpb.bytes_per_sector.to_le_bytes());
-                boot[13] = bpb.sectors_per_cluster;
-                boot[14..16].copy_from_slice(&bpb.reserved_sectors.to_le_bytes());
-                boot[16] = bpb.num_fats;
-                boot[17..19].copy_from_slice(&bpb.root_entry_count.to_le_bytes());
-                let total_16 = format_state.total_sectors.min(0xFFFF) as u16;
-                boot[19..21].copy_from_slice(&total_16.to_le_bytes());
-                boot[21] = bpb.media_descriptor;
-                boot[22..24].copy_from_slice(&bpb.sectors_per_fat.to_le_bytes());
-                boot[24..26]
-                    .copy_from_slice(&(format_state.sectors_per_track as u16).to_le_bytes());
-                boot[26..28].copy_from_slice(&(format_state.heads as u16).to_le_bytes());
-
-                if disk.write_sectors(format_state.da_ua, 0, &boot).is_err() {
+                // Sector 0: IPL (clear to zeros)
+                let ipl = vec![0u8; ss];
+                if disk.write_sectors(format_state.da_ua, 0, &ipl).is_err() {
                     io.print_msg(b"Write error\r\n");
                     return StepResult::Done(1);
+                }
+
+                // Sector 1: PC-98 partition table
+                let mut part_sector = vec![0u8; ss];
+
+                // One partition entry (32 bytes)
+                // MID: 0x21 = DOS type (0x20) | subtype 0x01 (FAT16), not bootable (bit 7 clear)
+                part_sector[0] = 0x21;
+                // SID: 0x81 = active (bit 7) | system ID 0x01
+                part_sector[1] = 0x81;
+                // Offsets 2-3: reserved (IPL CHS, unused for our purposes)
+                // Offsets 4-7: IPL CHS (cylinder 0, head 0, sector 0)
+
+                // Data start CHS: cylinder 0, head 1, sector 0 (first track after IPL/partition table)
+                part_sector[8] = 0; // start sector
+                part_sector[9] = 1; // start head
+                part_sector[10] = 0; // start cylinder low
+                part_sector[11] = 0; // start cylinder high
+
+                // Data end CHS
+                let last_sector = format_state.total_sectors - 1;
+                let end_cylinder = last_sector
+                    / (format_state.heads as u32 * format_state.sectors_per_track as u32);
+                let remainder = last_sector
+                    % (format_state.heads as u32 * format_state.sectors_per_track as u32);
+                let end_head = remainder / format_state.sectors_per_track as u32;
+                let end_sector = remainder % format_state.sectors_per_track as u32;
+                part_sector[12] = end_sector as u8;
+                part_sector[13] = end_head as u8;
+                part_sector[14] = end_cylinder as u8;
+                part_sector[15] = (end_cylinder >> 8) as u8;
+
+                // Partition name (16 bytes, space-padded)
+                part_sector[16..32].copy_from_slice(b"NEETAN          ");
+
+                if disk
+                    .write_sectors(format_state.da_ua, 1, &part_sector)
+                    .is_err()
+                {
+                    io.print_msg(b"Write error\r\n");
+                    return StepResult::Done(1);
+                }
+
+                self.phase = FormatPhase::WriteBootSector(format_state);
+                StepResult::Continue
+            }
+            FormatPhase::WriteBootSector(format_state) => {
+                if format_state.is_hdd {
+                    let partition_sectors =
+                        format_state.total_sectors - format_state.partition_offset;
+                    let bpb = hdd_bpb_params(format_state.sector_size, partition_sectors);
+
+                    let ss = format_state.sector_size as usize;
+                    let mut boot = vec![0u8; ss];
+                    boot[0] = 0xEB;
+                    boot[1] = 0x3C;
+                    boot[2] = 0x90;
+                    boot[3..11].copy_from_slice(b"NEETAN  ");
+                    boot[11..13].copy_from_slice(&bpb.bytes_per_sector.to_le_bytes());
+                    boot[13] = bpb.sectors_per_cluster;
+                    boot[14..16].copy_from_slice(&bpb.reserved_sectors.to_le_bytes());
+                    boot[16] = bpb.num_fats;
+                    boot[17..19].copy_from_slice(&bpb.root_entry_count.to_le_bytes());
+                    if partition_sectors <= 0xFFFF {
+                        boot[19..21].copy_from_slice(&(partition_sectors as u16).to_le_bytes());
+                    } else {
+                        boot[19..21].copy_from_slice(&0u16.to_le_bytes());
+                        boot[32..36].copy_from_slice(&partition_sectors.to_le_bytes());
+                    }
+                    boot[21] = bpb.media_descriptor;
+                    boot[22..24].copy_from_slice(&bpb.sectors_per_fat.to_le_bytes());
+                    boot[24..26]
+                        .copy_from_slice(&(format_state.sectors_per_track as u16).to_le_bytes());
+                    boot[26..28].copy_from_slice(&(format_state.heads as u16).to_le_bytes());
+                    boot[28..32].copy_from_slice(&format_state.partition_offset.to_le_bytes());
+
+                    if disk
+                        .write_sectors(format_state.da_ua, format_state.partition_offset, &boot)
+                        .is_err()
+                    {
+                        io.print_msg(b"Write error\r\n");
+                        return StepResult::Done(1);
+                    }
+                } else {
+                    let da_type = format_state.da_ua & 0xF0;
+                    let bpb = floppy_bpb_params(da_type);
+
+                    let mut boot = vec![0u8; format_state.sector_size as usize];
+                    boot[0] = 0xEB;
+                    boot[1] = 0x3C;
+                    boot[2] = 0x90;
+                    boot[3..11].copy_from_slice(b"NEETAN  ");
+                    boot[11..13].copy_from_slice(&bpb.bytes_per_sector.to_le_bytes());
+                    boot[13] = bpb.sectors_per_cluster;
+                    boot[14..16].copy_from_slice(&bpb.reserved_sectors.to_le_bytes());
+                    boot[16] = bpb.num_fats;
+                    boot[17..19].copy_from_slice(&bpb.root_entry_count.to_le_bytes());
+                    let total_16 = format_state.total_sectors.min(0xFFFF) as u16;
+                    boot[19..21].copy_from_slice(&total_16.to_le_bytes());
+                    boot[21] = bpb.media_descriptor;
+                    boot[22..24].copy_from_slice(&bpb.sectors_per_fat.to_le_bytes());
+                    boot[24..26]
+                        .copy_from_slice(&(format_state.sectors_per_track as u16).to_le_bytes());
+                    boot[26..28].copy_from_slice(&(format_state.heads as u16).to_le_bytes());
+
+                    if disk.write_sectors(format_state.da_ua, 0, &boot).is_err() {
+                        io.print_msg(b"Write error\r\n");
+                        return StepResult::Done(1);
+                    }
                 }
 
                 self.phase = FormatPhase::WriteFat(format_state);
                 StepResult::Continue
             }
             FormatPhase::WriteFat(format_state) => {
-                let da_type = format_state.da_ua & 0xF0;
-                let bpb = floppy_bpb_params(da_type);
+                let (bpb, fat_base) = if format_state.is_hdd {
+                    let partition_sectors =
+                        format_state.total_sectors - format_state.partition_offset;
+                    let bpb = hdd_bpb_params(format_state.sector_size, partition_sectors);
+                    let fat_base = format_state.partition_offset + bpb.reserved_sectors as u32;
+                    (bpb, fat_base)
+                } else {
+                    let da_type = format_state.da_ua & 0xF0;
+                    let bpb = floppy_bpb_params(da_type);
+                    let fat_base = bpb.reserved_sectors as u32;
+                    (bpb, fat_base)
+                };
 
                 let fat_size = bpb.sectors_per_fat as usize * format_state.sector_size as usize;
                 let mut fat_data = vec![0u8; fat_size];
-                // FAT12 reserved entries: media descriptor + 0xFF fill
-                fat_data[0] = bpb.media_descriptor;
-                fat_data[1] = 0xFF;
-                fat_data[2] = 0xFF;
 
-                // Write both FAT copies
+                if format_state.is_hdd {
+                    // FAT16 reserved entries: 0xFFF8, 0xFFFF
+                    fat_data[0] = bpb.media_descriptor;
+                    fat_data[1] = 0xFF;
+                    fat_data[2] = 0xFF;
+                    fat_data[3] = 0xFF;
+                } else {
+                    // FAT12 reserved entries
+                    fat_data[0] = bpb.media_descriptor;
+                    fat_data[1] = 0xFF;
+                    fat_data[2] = 0xFF;
+                }
+
                 for fat_idx in 0..bpb.num_fats as u32 {
-                    let fat_lba =
-                        bpb.reserved_sectors as u32 + fat_idx * bpb.sectors_per_fat as u32;
+                    let fat_lba = fat_base + fat_idx * bpb.sectors_per_fat as u32;
                     if disk
                         .write_sectors(format_state.da_ua, fat_lba, &fat_data)
                         .is_err()
@@ -215,25 +379,36 @@ impl RunningCommand for RunningFormat {
                 StepResult::Continue
             }
             FormatPhase::WriteRootDir(mut format_state) => {
-                let da_type = format_state.da_ua & 0xF0;
-                let bpb = floppy_bpb_params(da_type);
+                let (bpb, root_base) = if format_state.is_hdd {
+                    let partition_sectors =
+                        format_state.total_sectors - format_state.partition_offset;
+                    let bpb = hdd_bpb_params(format_state.sector_size, partition_sectors);
+                    let root_base = format_state.partition_offset
+                        + bpb.reserved_sectors as u32
+                        + bpb.num_fats as u32 * bpb.sectors_per_fat as u32;
+                    (bpb, root_base)
+                } else {
+                    let da_type = format_state.da_ua & 0xF0;
+                    let bpb = floppy_bpb_params(da_type);
+                    let root_base = bpb.reserved_sectors as u32
+                        + bpb.num_fats as u32 * bpb.sectors_per_fat as u32;
+                    (bpb, root_base)
+                };
 
                 let root_dir_sectors =
                     (bpb.root_entry_count as u32 * 32).div_ceil(format_state.sector_size as u32);
-                let root_lba =
-                    bpb.reserved_sectors as u32 + bpb.num_fats as u32 * bpb.sectors_per_fat as u32;
                 let root_size = root_dir_sectors as usize * format_state.sector_size as usize;
                 let root_data = vec![0u8; root_size];
 
                 if disk
-                    .write_sectors(format_state.da_ua, root_lba, &root_data)
+                    .write_sectors(format_state.da_ua, root_base, &root_data)
                     .is_err()
                 {
                     io.print_msg(b"Write error\r\n");
                     return StepResult::Done(1);
                 }
 
-                if format_state.verify {
+                if !format_state.is_hdd && format_state.verify {
                     format_state.current_track = 0;
                     self.phase = FormatPhase::VerifyTrack(format_state);
                 } else {
@@ -265,18 +440,28 @@ impl RunningCommand for RunningFormat {
                 StepResult::Continue
             }
             FormatPhase::Summary(format_state) => {
-                let da_type = format_state.da_ua & 0xF0;
-                let bpb = floppy_bpb_params(da_type);
+                let bpb = if format_state.is_hdd {
+                    let partition_sectors =
+                        format_state.total_sectors - format_state.partition_offset;
+                    hdd_bpb_params(format_state.sector_size, partition_sectors)
+                } else {
+                    let da_type = format_state.da_ua & 0xF0;
+                    floppy_bpb_params(da_type)
+                };
 
-                let total_bytes =
-                    format_state.total_sectors as u64 * format_state.sector_size as u64;
+                let volume_sectors = if format_state.is_hdd {
+                    format_state.total_sectors - format_state.partition_offset
+                } else {
+                    format_state.total_sectors
+                };
+                let total_bytes = volume_sectors as u64 * format_state.sector_size as u64;
 
                 let root_dir_sectors =
                     (bpb.root_entry_count as u32 * 32).div_ceil(format_state.sector_size as u32);
                 let system_sectors = bpb.reserved_sectors as u32
                     + bpb.num_fats as u32 * bpb.sectors_per_fat as u32
                     + root_dir_sectors;
-                let data_sectors = format_state.total_sectors.saturating_sub(system_sectors);
+                let data_sectors = volume_sectors.saturating_sub(system_sectors);
                 let available_bytes = data_sectors as u64 * format_state.sector_size as u64;
 
                 io.print_msg(b"Format complete.\r\n\r\n");
@@ -306,7 +491,6 @@ fn init_format(
     }
 
     let mut quick = false;
-    let mut unconditional = false;
     let mut verify = false;
     let mut drive_token: Option<&[u8]> = None;
 
@@ -317,7 +501,6 @@ fn init_format(
         if part.len() >= 2 && part[0] == b'/' {
             match part[1].to_ascii_uppercase() {
                 b'Q' => quick = true,
-                b'U' => unconditional = true,
                 b'V' => verify = true,
                 _ => {}
             }
@@ -341,9 +524,11 @@ fn init_format(
     }
 
     let da_type = da_ua & 0xF0;
-    if da_type != 0x90 && da_type != 0x70 {
+    if da_type != 0x90 && da_type != 0x70 && da_type != 0x80 {
         return Err(b"Invalid drive specification\r\n");
     }
+
+    let is_hdd = da_type == 0x80;
 
     let (cylinders, heads, sectors_per_track) = disk
         .drive_geometry(da_ua)
@@ -352,11 +537,15 @@ fn init_format(
         .sector_size(da_ua)
         .ok_or(&b"Invalid drive specification\r\n"[..])?;
 
+    let total_sectors = cylinders as u32 * heads as u32 * sectors_per_track as u32;
     let total_tracks = cylinders as u32 * heads as u32;
-    let total_sectors = total_tracks * sectors_per_track as u32;
 
-    // Suppress "unconditional" unused warning -- /U is accepted but full format is the default
-    let _ = unconditional;
+    let partition_offset = if is_hdd {
+        // Partition starts after the first track (IPL at sector 0, partition table at sector 1)
+        sectors_per_track as u32
+    } else {
+        0
+    };
 
     Ok(FormatState {
         drive_index,
@@ -367,6 +556,8 @@ fn init_format(
         total_sectors,
         total_tracks,
         current_track: 0,
+        partition_offset,
+        is_hdd,
         quick,
         verify,
     })
