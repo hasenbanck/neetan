@@ -155,7 +155,7 @@ pub(crate) struct OsState {
     pub(crate) sysvars_base: u32,
     /// Linear address of the InDOS flag byte.
     pub(crate) indos_addr: u32,
-    /// Boot drive number (1=A, 2=B, ...). Default is 1 (A:).
+    /// Boot drive number (1=A, 2=B, ...). Default is 26 (Z:).
     pub(crate) boot_drive: u8,
     /// DOS version reported to programs: (major, minor) = (6, 20).
     pub(crate) version: (u8, u8),
@@ -199,6 +199,15 @@ pub(crate) struct IoAccess<'a> {
     pub memory: &'a mut dyn MemoryAccess,
 }
 
+impl IoAccess<'_> {
+    /// Prints the given message to the console.
+    pub(crate) fn print_msg(&mut self, msg: &[u8]) {
+        for &byte in msg {
+            self.console.process_byte(self.memory, byte);
+        }
+    }
+}
+
 /// The NEETAN OS HLE DOS instance.
 ///
 /// Holds all DOS state: memory management, file handles, process info, etc.
@@ -226,7 +235,7 @@ impl NeetanOs {
             state: OsState {
                 sysvars_base: tables::SYSVARS_BASE,
                 indos_addr: tables::INDOS_FLAG_ADDR,
-                boot_drive: 1,
+                boot_drive: 26,
                 version: (6, 20),
                 current_psp: 0,
                 current_drive: 0,
@@ -1125,6 +1134,92 @@ impl OsState {
         let fcb_name = filesystem::fat_dir::name_to_fcb(filename);
 
         Ok((drive_index, dir_cluster, fcb_name))
+    }
+
+    /// Resolves a path to a directory, returning `(drive_index, dir_cluster)`.
+    /// Walks all path components (unlike `resolve_file_path` which splits off the last).
+    /// An empty path or just a drive letter returns the current directory for that drive.
+    pub(crate) fn resolve_dir_path(
+        &mut self,
+        path: &[u8],
+        mem: &dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) -> Result<(u8, u16), u16> {
+        let (drive_opt, components, is_absolute) = filesystem::split_path(path);
+        let drive_index = drive_opt.unwrap_or(self.current_drive);
+
+        if drive_index == 25 {
+            return Err(0x000F); // Z: is virtual
+        }
+        self.ensure_volume_mounted(drive_index, mem, disk)?;
+
+        let vol = self.fat_volumes[drive_index as usize]
+            .as_ref()
+            .ok_or(0x000Fu16)?;
+
+        // Determine starting cluster
+        let start_cluster = if is_absolute || components.is_empty() {
+            if components.is_empty() && !is_absolute {
+                // No path given - resolve current directory from CDS
+                self.current_dir_cluster(drive_index, mem, disk)?
+            } else {
+                0u16 // root
+            }
+        } else {
+            // Relative path - start from current directory
+            self.current_dir_cluster(drive_index, mem, disk)?
+        };
+
+        // Walk each component
+        let mut dir_cluster = start_cluster;
+        for component in &components {
+            let fcb = filesystem::fat_dir::name_to_fcb(component);
+            let entry =
+                filesystem::fat_dir::find_entry(vol, dir_cluster, &fcb, disk)?.ok_or(0x0003u16)?;
+            if entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY == 0 {
+                return Err(0x0003); // path not found (not a directory)
+            }
+            dir_cluster = entry.start_cluster;
+        }
+
+        Ok((drive_index, dir_cluster))
+    }
+
+    /// Returns the cluster number of the current directory for a drive by
+    /// reading the CDS path and walking from root.
+    fn current_dir_cluster(
+        &self,
+        drive_index: u8,
+        mem: &dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) -> Result<u16, u16> {
+        let cds_addr = tables::CDS_BASE + (drive_index as u32) * tables::CDS_ENTRY_SIZE;
+        let mut cds_path = Vec::new();
+        for i in 0..67u32 {
+            let byte = mem.read_byte(cds_addr + tables::CDS_OFF_PATH + i);
+            if byte == 0 {
+                break;
+            }
+            cds_path.push(byte);
+        }
+
+        // CDS path is like "A:\" or "A:\DIR\SUB" - skip drive and root backslash
+        let (_, components, _) = filesystem::split_path(&cds_path);
+        let vol = self.fat_volumes[drive_index as usize]
+            .as_ref()
+            .ok_or(0x000Fu16)?;
+
+        let mut dir_cluster = 0u16; // start at root
+        for component in &components {
+            let fcb = filesystem::fat_dir::name_to_fcb(component);
+            if let Some(entry) = filesystem::fat_dir::find_entry(vol, dir_cluster, &fcb, disk)?
+                && entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY != 0
+            {
+                dir_cluster = entry.start_cluster;
+            }
+        }
+
+        Ok(dir_cluster)
     }
 
     /// Changes the current directory for a drive.

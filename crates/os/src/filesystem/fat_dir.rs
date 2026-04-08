@@ -32,7 +32,7 @@ impl DirEntry {
         let mut buf = [0u8; 32];
         buf[0..11].copy_from_slice(&self.name);
         buf[11] = self.attribute;
-        // bytes 12-21: reserved/NT, creation time, etc. -- leave as zero
+        // bytes 12-21: reserved/NT, creation time, etc. - leave as zero
         let time_bytes = self.time.to_le_bytes();
         buf[22] = time_bytes[0];
         buf[23] = time_bytes[1];

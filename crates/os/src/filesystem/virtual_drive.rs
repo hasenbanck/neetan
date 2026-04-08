@@ -2,7 +2,7 @@
 //!
 //! Read-only virtual filesystem containing only COMMAND.COM for COMSPEC
 //! compatibility. All shell commands are built-in and resolved from the
-//! in-memory command registry -- they do not exist as files on any drive.
+//! in-memory command registry - they do not exist as files on any drive.
 
 use crate::filesystem::fat_dir;
 

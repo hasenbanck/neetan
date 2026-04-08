@@ -37,7 +37,7 @@ pub const SYSVARS_OFF_BOOT_DRIVE: u32 = 0x43;
 pub const SYSVARS_OFF_386_FLAG: u32 = 0x44;
 pub const SYSVARS_OFF_EXT_MEM: u32 = 0x45;
 
-// Device headers -- offsets from DOS_DATA_BASE
+// Device headers - offsets from DOS_DATA_BASE
 pub const DEV_NUL_OFFSET: u16 = 0x0022; // Embedded in SYSVARS
 pub const DEV_CON_OFFSET: u16 = 0x0048;
 pub const DEV_CLOCK_OFFSET: u16 = 0x005A;

@@ -1873,7 +1873,7 @@ mod tests {
         fill_row(&mut memory, 0, b'A');
         // Position cursor at end of last row.
         console.set_cursor(&mut memory, 24, 79);
-        // Write a character -- should trigger wrap + scroll.
+        // Write a character - should trigger wrap + scroll.
         console.process_byte(&mut memory, b'Z');
         assert_cursor(&console, &memory, 24, 0);
         // Row 0 should have been scrolled away (was 'A', now has what was row 1).

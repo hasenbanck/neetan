@@ -60,6 +60,7 @@ pub(crate) struct Shell {
     echo_on: bool,
     last_exit_code: u8,
     boot_banner_shown: bool,
+    pending_drive_change: Option<u8>,
 }
 
 impl Shell {
@@ -80,6 +81,7 @@ impl Shell {
             Box::new(commands::md::Md),
             Box::new(commands::more::More),
             Box::new(commands::rd::Rd),
+            Box::new(commands::ren::Ren),
             Box::new(commands::time::Time),
             Box::new(commands::type_cmd::TypeCmd),
             Box::new(commands::xcopy::Xcopy),
@@ -92,6 +94,7 @@ impl Shell {
             echo_on: true,
             last_exit_code: 0,
             boot_banner_shown: false,
+            pending_drive_change: None,
         }
     }
 
@@ -102,10 +105,11 @@ impl Shell {
                 if !self.boot_banner_shown {
                     let (major, minor) = state.version;
                     let msg = format!("Neetan OS Version {}.{}\r\n\r\n", major, minor);
-                    for &byte in msg.as_bytes() {
-                        io.console.process_byte(io.memory, byte);
-                    }
+                    io.print_msg(msg.as_bytes());
                     self.boot_banner_shown = true;
+                }
+                if let Some(drive) = self.pending_drive_change.take() {
+                    state.current_drive = drive;
                 }
                 render_prompt(state, io);
                 let prompt_col = io.console.cursor_col(io.memory);
@@ -125,7 +129,7 @@ impl Shell {
                                 self.history.push(line.clone());
                             }
                             self.history.reset_position();
-                            self.dispatch_command(state, &line)
+                            self.dispatch_command(io, &line)
                         }
                         0x08 => {
                             if editor.cursor > 0 {
@@ -239,7 +243,7 @@ impl Shell {
         };
     }
 
-    fn dispatch_command(&mut self, _state: &mut OsState, line: &[u8]) -> ShellPhase {
+    fn dispatch_command(&mut self, _io: &mut IoAccess, line: &[u8]) -> ShellPhase {
         let trimmed = line.trim_ascii();
         if trimmed.is_empty() {
             return ShellPhase::ShowPrompt;
@@ -274,25 +278,30 @@ impl Shell {
             return ShellPhase::ExecutingCommand(running);
         }
 
+        // Handle drive change: single letter followed by colon (e.g. "A:")
+        if cmd_upper.len() == 2 && cmd_upper[1] == b':' && cmd_upper[0].is_ascii_uppercase() {
+            self.pending_drive_change = Some(cmd_upper[0] - b'A');
+            return ShellPhase::ShowPrompt;
+        }
+
         // Look up in command registry
         if let Some(cmd) = self.find_command(&cmd_upper) {
             let running = cmd.start(args);
             return ShellPhase::ExecutingCommand(running);
         }
 
-        // Command not found -- print error
+        _io.print_msg(b"Bad command or file name\r\n");
+
         ShellPhase::ShowPrompt
     }
 
     fn find_command(&self, name: &[u8]) -> Option<&dyn Command> {
         for cmd in &self.commands {
-            let cmd_name: Vec<u8> = cmd.name().bytes().collect();
-            if cmd_name == name {
+            if cmd.name().as_bytes() == name {
                 return Some(cmd.as_ref());
             }
             for alias in cmd.aliases() {
-                let alias_bytes: Vec<u8> = alias.bytes().collect();
-                if alias_bytes == name {
+                if alias.as_bytes() == name {
                     return Some(cmd.as_ref());
                 }
             }

@@ -44,7 +44,7 @@ impl RunningCommand for RunningSet {
             let value = &args[eq_pos + 1..];
             set_env_var(state, io, var_name, value);
         } else {
-            // SET VAR (no =) -- print matching vars
+            // SET VAR (no =) - print matching vars
             dump_matching_vars(state, io, args);
         }
 

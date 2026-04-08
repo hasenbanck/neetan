@@ -20,7 +20,7 @@ fn read_dword(mem: &dyn MemoryAccess, addr: u32) -> u32 {
 }
 
 impl NeetanOs {
-    /// AH=0Dh: Disk reset -- flush all dirty FAT caches.
+    /// AH=0Dh: Disk reset - flush all dirty FAT caches.
     pub(crate) fn int21h_0dh_disk_reset(&mut self, disk: &mut dyn DiskIo) {
         for vol in self.state.fat_volumes.iter_mut().flatten() {
             let _ = vol.flush_fat(disk);
@@ -161,7 +161,7 @@ impl NeetanOs {
                 .as_mut()
                 .ok_or(0x000Fu16)?;
 
-            // Check if file already exists -- truncate it
+            // Check if file already exists - truncate it
             if let Some(existing) = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk)? {
                 if existing.start_cluster >= 2 {
                     vol.free_chain(existing.start_cluster);

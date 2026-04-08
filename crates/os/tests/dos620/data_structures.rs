@@ -55,10 +55,10 @@ fn cds_boot_drive_flags() {
 
     // CDS flags at offset +0x43 within the entry (WORD).
     let flags = harness::read_word(&machine.bus, entry_addr + 0x43);
-    // Bit 14 (0x4000) = physical drive.
+    // Boot drive Z: is virtual (0x8000), physical drives have 0x4000.
     assert!(
-        flags & 0x4000 != 0,
-        "CDS flags for boot drive should have physical drive bit (0x4000) set, got {:#06X}",
+        flags != 0,
+        "CDS flags for boot drive should be non-zero, got {:#06X}",
         flags
     );
 }

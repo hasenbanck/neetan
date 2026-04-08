@@ -8,17 +8,17 @@ const COUNTRY_INFO_SIZE: u32 = 34;
 /// Writes the 34-byte country info buffer (Japan, code 81) to the given linear address.
 ///
 /// Layout:
-///   +0x00: date format (WORD) -- 2 = YY/MM/DD
-///   +0x02: currency symbol (5 bytes ASCIIZ) -- 0x5C (yen on PC-98)
-///   +0x07: thousands separator (2 bytes) -- ","
-///   +0x09: decimal separator (2 bytes) -- "."
-///   +0x0B: date separator (2 bytes) -- "/"
-///   +0x0D: time separator (2 bytes) -- ":"
-///   +0x0F: currency format (BYTE) -- 0 (symbol before value)
-///   +0x10: decimal places (BYTE) -- 0 (no decimals for yen)
-///   +0x11: time format (BYTE) -- 1 (24-hour)
-///   +0x12: case map call (DWORD far pointer) -- FFFF:FFFF (null)
-///   +0x16: data list separator (2 bytes) -- ","
+///   +0x00: date format (WORD) - 2 = YY/MM/DD
+///   +0x02: currency symbol (5 bytes ASCIIZ) - 0x5C (yen on PC-98)
+///   +0x07: thousands separator (2 bytes) - ","
+///   +0x09: decimal separator (2 bytes) - "."
+///   +0x0B: date separator (2 bytes) - "/"
+///   +0x0D: time separator (2 bytes) - ":"
+///   +0x0F: currency format (BYTE) - 0 (symbol before value)
+///   +0x10: decimal places (BYTE) - 0 (no decimals for yen)
+///   +0x11: time format (BYTE) - 1 (24-hour)
+///   +0x12: case map call (DWORD far pointer) - FFFF:FFFF (null)
+///   +0x16: data list separator (2 bytes) - ","
 ///   +0x18: reserved (10 bytes of zeros)
 pub fn write_country_info(mem: &mut dyn MemoryAccess, addr: u32) {
     // Date format: YY/MM/DD
@@ -63,7 +63,7 @@ pub fn write_country_info(mem: &mut dyn MemoryAccess, addr: u32) {
 ///
 /// Format:
 ///   +0x00: info ID byte (01h)
-///   +0x01: size (WORD) -- total size including header
+///   +0x01: size (WORD) - total size including header
 ///   +0x03: country code (WORD)
 ///   +0x05: code page (WORD)
 ///   +0x07: 34-byte country info
@@ -91,7 +91,7 @@ pub fn write_extended_country_info(mem: &mut dyn MemoryAccess, addr: u32, max_by
 ///
 /// Format:
 ///   +0x00: info ID byte (07h)
-///   +0x01: size (WORD) -- size of following data
+///   +0x01: size (WORD) - size of following data
 ///   +0x03: DBCS lead byte ranges (81-9F, E0-FC, 00,00)
 ///
 /// Returns the number of bytes written.

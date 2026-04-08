@@ -1,6 +1,10 @@
 //! DEL / ERASE command.
 
-use crate::commands::{Command, RunningCommand};
+use crate::{
+    DiskIo, IoAccess, OsState,
+    commands::{Command, RunningCommand, StepResult},
+    filesystem::fat_dir,
+};
 
 pub(crate) struct Del;
 
@@ -13,7 +17,248 @@ impl Command for Del {
         &["ERASE"]
     }
 
-    fn start(&self, _args: &[u8]) -> Box<dyn RunningCommand> {
-        unimplemented!("DEL command")
+    fn start(&self, args: &[u8]) -> Box<dyn RunningCommand> {
+        Box::new(RunningDel {
+            args: args.to_vec(),
+            phase: DelPhase::Init,
+        })
     }
+}
+
+struct DelState {
+    drive_index: u8,
+    dir_cluster: u16,
+    fcb_pattern: [u8; 11],
+    start_index: u16,
+    prompt: bool,
+    deleted_any: bool,
+}
+
+enum DelPhase {
+    Init,
+    ConfirmAll(DelState),
+    DeleteNext(DelState),
+    PromptFile(DelState, fat_dir::DirEntry),
+    Flush(DelState),
+}
+
+struct RunningDel {
+    args: Vec<u8>,
+    phase: DelPhase,
+}
+
+const KB_BUF_COUNT: u32 = 0x0528;
+
+impl RunningCommand for RunningDel {
+    fn step(
+        &mut self,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        let phase = std::mem::replace(&mut self.phase, DelPhase::Init);
+        match phase {
+            DelPhase::Init => {
+                let args = self.args.trim_ascii().to_vec();
+                if args.is_empty() {
+                    io.print_msg(b"Required parameter missing\r\n");
+                    return StepResult::Done(1);
+                }
+
+                let (path, has_prompt) = parse_switches(&args);
+                let path = path.to_vec();
+
+                let (drive_index, dir_cluster, fcb_pattern) =
+                    match state.resolve_file_path(&path, io.memory, disk) {
+                        Ok(r) => r,
+                        Err(_) => {
+                            io.print_msg(b"File not found\r\n");
+                            return StepResult::Done(1);
+                        }
+                    };
+
+                if drive_index == 25 {
+                    io.print_msg(b"Access denied\r\n");
+                    return StepResult::Done(1);
+                }
+
+                let del_state = DelState {
+                    drive_index,
+                    dir_cluster,
+                    fcb_pattern,
+                    start_index: 0,
+                    prompt: has_prompt,
+                    deleted_any: false,
+                };
+
+                // Check if all-wildcard pattern -> confirm
+                let filename_part = path
+                    .iter()
+                    .rposition(|&b| b == b'\\')
+                    .map(|p| &path[p + 1..])
+                    .unwrap_or(&path);
+                let is_all_wildcard = filename_part == b"*.*" || filename_part == b"*";
+
+                if is_all_wildcard && !has_prompt {
+                    io.print_msg(b"All files in directory will be deleted!\r\nAre you sure (Y/N)?");
+                    self.phase = DelPhase::ConfirmAll(del_state);
+                } else {
+                    self.phase = DelPhase::DeleteNext(del_state);
+                }
+                StepResult::Continue
+            }
+            DelPhase::ConfirmAll(del_state) => {
+                if io.memory.read_byte(KB_BUF_COUNT) == 0 {
+                    self.phase = DelPhase::ConfirmAll(del_state);
+                    return StepResult::Continue;
+                }
+                let key = consume_key(io);
+                io.console.process_byte(io.memory, b'\r');
+                io.console.process_byte(io.memory, b'\n');
+                if key == b'Y' || key == b'y' {
+                    self.phase = DelPhase::DeleteNext(del_state);
+                    StepResult::Continue
+                } else {
+                    StepResult::Done(0)
+                }
+            }
+            DelPhase::DeleteNext(mut del_state) => {
+                let vol = match state.fat_volumes[del_state.drive_index as usize].as_ref() {
+                    Some(v) => v,
+                    None => return StepResult::Done(1),
+                };
+
+                let result = fat_dir::find_matching(
+                    vol,
+                    del_state.dir_cluster,
+                    &del_state.fcb_pattern,
+                    0,
+                    del_state.start_index,
+                    disk,
+                );
+
+                match result {
+                    Ok(Some((entry, next_index))) => {
+                        del_state.start_index = next_index;
+
+                        // Skip directories, volume labels, read-only
+                        if entry.attribute
+                            & (fat_dir::ATTR_DIRECTORY
+                                | fat_dir::ATTR_VOLUME_ID
+                                | fat_dir::ATTR_READ_ONLY)
+                            != 0
+                        {
+                            self.phase = DelPhase::DeleteNext(del_state);
+                            return StepResult::Continue;
+                        }
+
+                        if del_state.prompt {
+                            // /P: show filename and ask
+                            let display = fat_dir::fcb_to_display_name(&entry.name);
+                            for &b in &display {
+                                io.console.process_byte(io.memory, b);
+                            }
+                            io.print_msg(b", Delete (Y/N)?");
+                            self.phase = DelPhase::PromptFile(del_state, entry);
+                        } else {
+                            // No prompt: delete immediately
+                            let vol =
+                                match state.fat_volumes[del_state.drive_index as usize].as_mut() {
+                                    Some(v) => v,
+                                    None => return StepResult::Done(1),
+                                };
+                            if entry.start_cluster >= 2 {
+                                vol.free_chain(entry.start_cluster);
+                            }
+                            let _ = fat_dir::delete_entry(vol, &entry, disk);
+                            del_state.deleted_any = true;
+                            self.phase = DelPhase::DeleteNext(del_state);
+                        }
+                        StepResult::Continue
+                    }
+                    Ok(None) => {
+                        if !del_state.deleted_any {
+                            io.print_msg(b"File not found\r\n");
+                            return StepResult::Done(1);
+                        }
+                        self.phase = DelPhase::Flush(del_state);
+                        StepResult::Continue
+                    }
+                    Err(_) => {
+                        io.print_msg(b"File not found\r\n");
+                        StepResult::Done(1)
+                    }
+                }
+            }
+            DelPhase::PromptFile(mut del_state, entry) => {
+                if io.memory.read_byte(KB_BUF_COUNT) == 0 {
+                    self.phase = DelPhase::PromptFile(del_state, entry);
+                    return StepResult::Continue;
+                }
+                let key = consume_key(io);
+                io.console.process_byte(io.memory, b'\r');
+                io.console.process_byte(io.memory, b'\n');
+
+                if key == b'Y' || key == b'y' {
+                    let vol = match state.fat_volumes[del_state.drive_index as usize].as_mut() {
+                        Some(v) => v,
+                        None => return StepResult::Done(1),
+                    };
+                    if entry.start_cluster >= 2 {
+                        vol.free_chain(entry.start_cluster);
+                    }
+                    let _ = fat_dir::delete_entry(vol, &entry, disk);
+                    del_state.deleted_any = true;
+                }
+
+                self.phase = DelPhase::DeleteNext(del_state);
+                StepResult::Continue
+            }
+            DelPhase::Flush(del_state) => {
+                let vol = match state.fat_volumes[del_state.drive_index as usize].as_mut() {
+                    Some(v) => v,
+                    None => return StepResult::Done(1),
+                };
+                let _ = vol.flush_fat(disk);
+                StepResult::Done(0)
+            }
+        }
+    }
+}
+
+fn parse_switches(args: &[u8]) -> (&[u8], bool) {
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == b'/' && i + 1 < args.len() && args[i + 1].eq_ignore_ascii_case(&b'P') {
+            let before = &args[..i];
+            let after = if i + 2 < args.len() {
+                &args[i + 2..]
+            } else {
+                &[]
+            };
+            let trimmed = if !before.is_empty() {
+                before.trim_ascii()
+            } else {
+                after.trim_ascii()
+            };
+            return (trimmed, true);
+        }
+        i += 1;
+    }
+    (args, false)
+}
+
+fn consume_key(io: &mut IoAccess) -> u8 {
+    let head = io.memory.read_word(0x0524) as u32;
+    let ch = io.memory.read_byte(head);
+    let mut new_head = head + 2;
+    if new_head >= 0x0522 {
+        new_head = 0x0502;
+    }
+    io.memory.write_word(0x0524, new_head as u16);
+    let count = io.memory.read_byte(KB_BUF_COUNT);
+    if count > 0 {
+        io.memory.write_byte(KB_BUF_COUNT, count - 1);
+    }
+    ch
 }

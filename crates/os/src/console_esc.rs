@@ -190,7 +190,7 @@ impl Console {
     fn esc_dispatch_csi(&mut self, memory: &mut dyn MemoryAccess, final_byte: u8) {
         match final_byte {
             b'H' | b'f' => {
-                // ESC[row;colH -- set cursor position (1-based).
+                // ESC[row;colH - set cursor position (1-based).
                 let row = self.esc_parser.param(0, 1).saturating_sub(1) as u8;
                 let col = self.esc_parser.param(1, 1).saturating_sub(1) as u8;
                 self.set_cursor_position(memory, row, col);

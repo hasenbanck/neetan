@@ -899,6 +899,17 @@ fn write_word_raw(bus: &mut machine::Pc9801Bus, addr: u32, value: u16) {
     bus.write_byte(addr + 1, (value >> 8) as u8);
 }
 
+/// Types a long string into the keyboard buffer, running the machine between
+/// chunks to drain the 16-entry buffer. Use this for command strings longer
+/// than ~14 characters.
+pub fn type_string_long(machine: &mut machine::Pc9801Ra, text: &[u8]) {
+    let chunk_size = 12;
+    for chunk in text.chunks(chunk_size) {
+        type_string(&mut machine.bus, chunk);
+        machine.run_for(5_000_000);
+    }
+}
+
 /// Runs the machine until the shell prompt (`>`) reappears in text VRAM.
 pub fn run_until_prompt(machine: &mut machine::Pc9801Ra) {
     let max_cycles: u64 = 500_000_000;

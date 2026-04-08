@@ -54,3 +54,12 @@ mod process_management;
 
 #[path = "dos620/shell.rs"]
 mod shell;
+
+#[path = "dos620/commands_dir.rs"]
+mod commands_dir;
+
+#[path = "dos620/commands_copy.rs"]
+mod commands_copy;
+
+#[path = "dos620/commands_file_ops.rs"]
+mod commands_file_ops;
