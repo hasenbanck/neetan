@@ -1482,7 +1482,6 @@ Test should use a floppy image that is purely created in-memory for the tests.
 ### 10.15 Configuration and Bootstrap Completion
 
 - CONFIG.SYS parser: FILES=, BUFFERS=, LASTDRIVE=, COUNTRY=, BREAK=, SHELL=, DEVICE=
-  (NECCD.SYS / NECCDD.SYS recognized for CD-ROM activation)
 - AUTOEXEC.BAT execution after CONFIG.SYS
 - MSCDEX finalization (if not complete from 10.6)
 - External program EXEC pathway from shell (ShellAction::Exec, WaitingForChild)

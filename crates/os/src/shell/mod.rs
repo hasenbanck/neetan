@@ -14,19 +14,33 @@ use crate::{
 const KB_BUF_START: u32 = 0x0502;
 const KB_BUF_END: u32 = 0x0522;
 const KB_BUF_HEAD: u32 = 0x0524;
-const KB_BUF_TAIL: u32 = 0x0526;
 const KB_BUF_COUNT: u32 = 0x0528;
+
+const SCAN_INSERT: u8 = 0x37;
+const SCAN_DELETE: u8 = 0x38;
+const SCAN_UP: u8 = 0x39;
+const SCAN_LEFT: u8 = 0x3A;
+const SCAN_RIGHT: u8 = 0x3B;
+const SCAN_DOWN: u8 = 0x3C;
+const SCAN_HOME: u8 = 0x3D;
+const SCAN_END: u8 = 0x3E;
 
 pub(crate) struct LineEditor {
     buffer: Vec<u8>,
     cursor: usize,
+    prompt_col: u8,
+    insert_mode: bool,
+    saved_line: Option<Vec<u8>>,
 }
 
 impl LineEditor {
-    fn new() -> Self {
+    fn new(prompt_col: u8) -> Self {
         Self {
             buffer: Vec::with_capacity(128),
             cursor: 0,
+            prompt_col,
+            insert_mode: true,
+            saved_line: None,
         }
     }
 }
@@ -94,42 +108,114 @@ impl Shell {
                     self.boot_banner_shown = true;
                 }
                 render_prompt(state, io);
-                ShellPhase::ReadingInput(LineEditor::new())
+                let prompt_col = io.console.cursor_col(io.memory);
+                ShellPhase::ReadingInput(LineEditor::new(prompt_col))
             }
             ShellPhase::ReadingInput(mut editor) => {
                 if !key_available(io.memory) {
                     ShellPhase::ReadingInput(editor)
                 } else {
-                    let (_scan, ch) = read_key(io.memory);
+                    let (scan, ch) = read_key(io.memory);
                     match ch {
                         0x0D => {
-                            // Enter
                             io.console.process_byte(io.memory, b'\r');
                             io.console.process_byte(io.memory, b'\n');
                             let line = editor.buffer.clone();
+                            if !line.trim_ascii().is_empty() {
+                                self.history.push(line.clone());
+                            }
+                            self.history.reset_position();
                             self.dispatch_command(state, &line)
                         }
                         0x08 => {
-                            // Backspace
                             if editor.cursor > 0 {
                                 editor.cursor -= 1;
                                 editor.buffer.remove(editor.cursor);
-                                io.console.process_byte(io.memory, 0x08);
-                                io.console.process_byte(io.memory, b' ');
-                                io.console.process_byte(io.memory, 0x08);
+                                redraw_from_cursor(&editor, io);
                             }
                             ShellPhase::ReadingInput(editor)
                         }
                         0x00 => {
-                            // Extended key (arrows, function keys) -- ignore for now
+                            match scan {
+                                SCAN_LEFT => {
+                                    if editor.cursor > 0 {
+                                        editor.cursor -= 1;
+                                        let row = io.console.cursor_row(io.memory);
+                                        let col = editor.prompt_col + editor.cursor as u8;
+                                        io.console.set_cursor(io.memory, row, col);
+                                    }
+                                }
+                                SCAN_RIGHT => {
+                                    if editor.cursor < editor.buffer.len() {
+                                        editor.cursor += 1;
+                                        let row = io.console.cursor_row(io.memory);
+                                        let col = editor.prompt_col + editor.cursor as u8;
+                                        io.console.set_cursor(io.memory, row, col);
+                                    }
+                                }
+                                SCAN_HOME => {
+                                    editor.cursor = 0;
+                                    let row = io.console.cursor_row(io.memory);
+                                    io.console.set_cursor(io.memory, row, editor.prompt_col);
+                                }
+                                SCAN_END => {
+                                    editor.cursor = editor.buffer.len();
+                                    let row = io.console.cursor_row(io.memory);
+                                    let col = editor.prompt_col + editor.cursor as u8;
+                                    io.console.set_cursor(io.memory, row, col);
+                                }
+                                SCAN_INSERT => {
+                                    editor.insert_mode = !editor.insert_mode;
+                                }
+                                SCAN_DELETE => {
+                                    if editor.cursor < editor.buffer.len() {
+                                        editor.buffer.remove(editor.cursor);
+                                        redraw_from_cursor(&editor, io);
+                                    }
+                                }
+                                SCAN_UP => {
+                                    if self.history.at_end() && !self.history.is_empty() {
+                                        editor.saved_line = Some(editor.buffer.clone());
+                                    }
+                                    if let Some(entry) = self.history.navigate_up() {
+                                        let entry = entry.to_vec();
+                                        replace_line(&mut editor, entry, io);
+                                    }
+                                }
+                                SCAN_DOWN => {
+                                    if !self.history.at_end() {
+                                        match self.history.navigate_down() {
+                                            Some(entry) => {
+                                                let entry = entry.to_vec();
+                                                replace_line(&mut editor, entry, io);
+                                            }
+                                            None => {
+                                                let restored =
+                                                    editor.saved_line.take().unwrap_or_default();
+                                                replace_line(&mut editor, restored, io);
+                                            }
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
                             ShellPhase::ReadingInput(editor)
                         }
                         ch if ch >= 0x20 => {
-                            // Printable character
                             if editor.buffer.len() < 127 {
-                                editor.buffer.insert(editor.cursor, ch);
-                                editor.cursor += 1;
-                                io.console.process_byte(io.memory, ch);
+                                if editor.insert_mode || editor.cursor >= editor.buffer.len() {
+                                    editor.buffer.insert(editor.cursor, ch);
+                                    editor.cursor += 1;
+                                    if editor.cursor == editor.buffer.len() {
+                                        io.console.process_byte(io.memory, ch);
+                                    } else {
+                                        redraw_from(&editor, editor.cursor - 1, io);
+                                    }
+                                } else {
+                                    editor.buffer[editor.cursor] = ch;
+                                    editor.cursor += 1;
+                                    io.console.process_byte(io.memory, ch);
+                                }
                             }
                             ShellPhase::ReadingInput(editor)
                         }
@@ -213,6 +299,33 @@ impl Shell {
         }
         None
     }
+}
+
+fn redraw_from_cursor(editor: &LineEditor, io: &mut IoAccess) {
+    redraw_from(editor, editor.cursor, io);
+}
+
+fn redraw_from(editor: &LineEditor, from: usize, io: &mut IoAccess) {
+    let row = io.console.cursor_row(io.memory);
+    io.console
+        .set_cursor(io.memory, row, editor.prompt_col + from as u8);
+    for &byte in &editor.buffer[from..] {
+        io.console.process_byte(io.memory, byte);
+    }
+    io.console.process_byte(io.memory, b' ');
+    io.console
+        .set_cursor(io.memory, row, editor.prompt_col + editor.cursor as u8);
+}
+
+fn replace_line(editor: &mut LineEditor, new_buffer: Vec<u8>, io: &mut IoAccess) {
+    let row = io.console.cursor_row(io.memory);
+    io.console.set_cursor(io.memory, row, editor.prompt_col);
+    io.console.clear_line_from_cursor(io.memory);
+    for &byte in &new_buffer {
+        io.console.process_byte(io.memory, byte);
+    }
+    editor.buffer = new_buffer;
+    editor.cursor = editor.buffer.len();
 }
 
 fn split_command(line: &[u8]) -> (&[u8], &[u8]) {

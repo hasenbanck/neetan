@@ -867,6 +867,33 @@ pub fn type_string(bus: &mut machine::Pc9801Bus, text: &[u8]) {
     }
 }
 
+pub const SCAN_INSERT: u8 = 0x37;
+pub const SCAN_DELETE: u8 = 0x38;
+pub const SCAN_UP: u8 = 0x39;
+pub const SCAN_LEFT: u8 = 0x3A;
+pub const SCAN_RIGHT: u8 = 0x3B;
+pub const SCAN_DOWN: u8 = 0x3C;
+pub const SCAN_HOME: u8 = 0x3D;
+pub const SCAN_END: u8 = 0x3E;
+
+/// Injects a special key (extended key) into the PC-98 keyboard buffer.
+/// The character code is set to 0x00 and the scan code to the given value.
+pub fn type_special_key(bus: &mut machine::Pc9801Bus, scan_code: u8) {
+    let count = bus.read_byte_direct(0x0528);
+    if count >= 0x10 {
+        panic!("keyboard buffer full while injecting special key");
+    }
+    let tail = read_word(bus, 0x0526) as u32;
+    bus.write_byte(tail, 0x00);
+    bus.write_byte(tail + 1, scan_code);
+    let mut new_tail = tail + 2;
+    if new_tail >= 0x0522 {
+        new_tail = 0x0502;
+    }
+    write_word_raw(bus, 0x0526, new_tail as u16);
+    bus.write_byte(0x0528, count + 1);
+}
+
 fn write_word_raw(bus: &mut machine::Pc9801Bus, addr: u32, value: u16) {
     bus.write_byte(addr, value as u8);
     bus.write_byte(addr + 1, (value >> 8) as u8);
@@ -884,8 +911,7 @@ pub fn run_until_prompt(machine: &mut machine::Pc9801Ra) {
         }
         assert!(
             total_cycles < max_cycles,
-            "shell did not return to prompt within {} cycles",
-            max_cycles
+            "shell did not return to prompt within {max_cycles} cycles"
         );
     }
 }

@@ -111,3 +111,48 @@ fn shell_bad_command() {
         "prompt should be visible after bad command"
     );
 }
+
+#[test]
+fn shell_line_editing() {
+    let mut machine = boot_hle();
+
+    // Type "VEER", move left twice, delete the extra 'E', then press Enter.
+    // This should produce "VER" which executes the version command.
+    type_string(&mut machine.bus, b"VEER");
+    type_special_key(&mut machine.bus, SCAN_LEFT);
+    type_special_key(&mut machine.bus, SCAN_LEFT);
+    type_special_key(&mut machine.bus, SCAN_DELETE);
+    type_string(&mut machine.bus, b"\r");
+    run_until_prompt(&mut machine);
+
+    let version = [0x0036, 0x002E, 0x0032, 0x0030]; // "6.20"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &version),
+        "line editing should produce working VER command"
+    );
+}
+
+#[test]
+fn shell_history() {
+    let mut machine = boot_hle();
+
+    // Execute VER command.
+    type_string(&mut machine.bus, b"VER\r");
+    run_until_prompt(&mut machine);
+
+    // Clear screen so we can verify the recalled command produces fresh output.
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    // Press up arrow twice (past CLS to VER), then Enter.
+    type_special_key(&mut machine.bus, SCAN_UP);
+    type_special_key(&mut machine.bus, SCAN_UP);
+    type_string(&mut machine.bus, b"\r");
+    run_until_prompt(&mut machine);
+
+    let version = [0x0036, 0x002E, 0x0032, 0x0030]; // "6.20"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &version),
+        "history recall should re-execute VER command"
+    );
+}
