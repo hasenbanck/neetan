@@ -63,7 +63,7 @@ impl RunningMore {
         while read.offset < end && read.remaining > 0 {
             if read.offset < read.cluster_data.len() {
                 let byte = read.cluster_data[read.offset];
-                io.console.process_byte(io.memory, byte);
+                io.output_byte(byte);
                 if byte == b'\n' {
                     lines_shown += 1;
                     if lines_shown >= LINES_PER_PAGE {
@@ -142,11 +142,11 @@ impl RunningCommand for RunningMore {
                     return StepResult::Continue;
                 }
                 consume_key(io);
-                io.console.process_byte(io.memory, b'\r');
+                io.output_byte(b'\r');
                 for _ in 0..40 {
-                    io.console.process_byte(io.memory, b' ');
+                    io.output_byte(b' ');
                 }
-                io.console.process_byte(io.memory, b'\r');
+                io.output_byte(b'\r');
 
                 self.phase = MorePhase::Outputting {
                     read,

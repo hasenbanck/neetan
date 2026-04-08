@@ -113,14 +113,14 @@ impl RunningCommand for RunningXcopy {
                         if xcopy_state.prompt_each {
                             let display_name = fat_dir::fcb_to_display_name(&entry.name);
                             for &byte in &display_name {
-                                io.console.process_byte(io.memory, byte);
+                                io.output_byte(byte);
                             }
                             io.print_msg(b" (Y/N)?");
                             self.phase = XcopyPhase::PromptFile(xcopy_state, entry);
                         } else {
                             let display_name = fat_dir::fcb_to_display_name(&entry.name);
                             for &byte in &display_name {
-                                io.console.process_byte(io.memory, byte);
+                                io.output_byte(byte);
                             }
                             io.print_msg(b"\r\n");
 
@@ -148,8 +148,8 @@ impl RunningCommand for RunningXcopy {
                     return StepResult::Continue;
                 }
                 let key = consume_key(io);
-                io.console.process_byte(io.memory, b'\r');
-                io.console.process_byte(io.memory, b'\n');
+                io.output_byte(b'\r');
+                io.output_byte(b'\n');
 
                 if key == b'Y' || key == b'y' {
                     self.start_file_copy(&mut xcopy_state, entry);

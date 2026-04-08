@@ -29,7 +29,7 @@ impl RunningCommand for RunningVer {
         let (major, minor) = state.version;
         let msg = format!("Neetan OS Version {}.{}\r\n\r\n", major, minor);
         for &byte in msg.as_bytes() {
-            io.console.process_byte(io.memory, byte);
+            io.output_byte(byte);
         }
         StepResult::Done(0)
     }

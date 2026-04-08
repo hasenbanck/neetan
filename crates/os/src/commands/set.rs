@@ -75,10 +75,10 @@ fn dump_environment(state: &OsState, io: &mut IoAccess) {
         // Print the string
         for i in start..offset {
             let byte = io.memory.read_byte(base + i);
-            io.console.process_byte(io.memory, byte);
+            io.output_byte(byte);
         }
-        io.console.process_byte(io.memory, b'\r');
-        io.console.process_byte(io.memory, b'\n');
+        io.output_byte(b'\r');
+        io.output_byte(b'\n');
         offset += 1; // skip NUL
     }
 }
@@ -109,10 +109,10 @@ fn dump_matching_vars(state: &OsState, io: &mut IoAccess, prefix: &[u8]) {
         if matches {
             for i in start..offset {
                 let byte = io.memory.read_byte(base + i);
-                io.console.process_byte(io.memory, byte);
+                io.output_byte(byte);
             }
-            io.console.process_byte(io.memory, b'\r');
-            io.console.process_byte(io.memory, b'\n');
+            io.output_byte(b'\r');
+            io.output_byte(b'\n');
         }
         offset += 1;
     }

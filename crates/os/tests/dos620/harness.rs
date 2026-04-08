@@ -386,6 +386,26 @@ pub fn boot_hle_with_floppy() -> machine::Pc9801Ra {
     machine
 }
 
+/// Boots an HLE machine with a custom floppy image as drive A:.
+pub fn boot_hle_with_floppy_image(floppy: device::floppy::FloppyImage) -> machine::Pc9801Ra {
+    let mut machine = create_hle_machine();
+    machine.bus.write_byte(0x055C, 0x01);
+    let mut total_cycles = 0u64;
+    loop {
+        total_cycles += machine.run_for(HLE_BOOT_CHECK_INTERVAL);
+        if hle_prompt_visible(&machine.bus) {
+            break;
+        }
+        assert!(
+            total_cycles < HLE_BOOT_MAX_CYCLES,
+            "HLE OS did not show prompt within {} cycles",
+            HLE_BOOT_MAX_CYCLES
+        );
+    }
+    machine.bus.insert_floppy(0, floppy, None);
+    machine
+}
+
 pub fn create_blank_floppy() -> device::floppy::FloppyImage {
     use device::floppy::d88::{D88Disk, D88MediaType, D88Sector};
 

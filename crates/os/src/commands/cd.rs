@@ -47,7 +47,7 @@ impl RunningCommand for RunningCd {
             Err(_) => {
                 let msg = b"Invalid directory\r\n";
                 for &byte in msg {
-                    io.console.process_byte(io.memory, byte);
+                    io.output_byte(byte);
                 }
                 StepResult::Done(1)
             }
@@ -68,8 +68,8 @@ fn print_current_directory(state: &OsState, io: &mut IoAccess) {
     }
 
     for &byte in &path {
-        io.console.process_byte(io.memory, byte);
+        io.output_byte(byte);
     }
-    io.console.process_byte(io.memory, b'\r');
-    io.console.process_byte(io.memory, b'\n');
+    io.output_byte(b'\r');
+    io.output_byte(b'\n');
 }

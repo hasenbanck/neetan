@@ -37,7 +37,7 @@ impl RunningCommand for RunningTime {
             hour, minute, second
         );
         for &byte in msg.as_bytes() {
-            io.console.process_byte(io.memory, byte);
+            io.output_byte(byte);
         }
         StepResult::Done(0)
     }

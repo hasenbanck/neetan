@@ -189,21 +189,38 @@ pub(crate) struct OsState {
     pub(crate) process_stack: Vec<process::ProcessContext>,
 }
 
+/// Data source for input redirection (`<`).
+pub(crate) struct RedirectInput {
+    pub data: Vec<u8>,
+    pub position: usize,
+}
+
 /// Bundles `Console` + `MemoryAccess` for shell and command I/O.
 ///
-/// Rust allows simultaneous mutable access to separate struct fields,
-/// so commands can call `io.console.process_byte(io.memory, ch)` without
-/// borrow conflicts.
+/// When `redirect_output` is `Some`, command output is captured into the
+/// buffer instead of being sent to the console. When `redirect_input` is
+/// `Some`, commands read from the buffer instead of the keyboard.
 pub(crate) struct IoAccess<'a> {
     pub console: &'a mut console::Console,
     pub memory: &'a mut dyn MemoryAccess,
+    pub redirect_output: Option<Vec<u8>>,
+    pub redirect_input: Option<RedirectInput>,
 }
 
 impl IoAccess<'_> {
-    /// Prints the given message to the console.
+    /// Writes a byte to the current output target (redirect buffer or console).
+    pub(crate) fn output_byte(&mut self, byte: u8) {
+        if let Some(ref mut buf) = self.redirect_output {
+            buf.push(byte);
+        } else {
+            self.console.process_byte(self.memory, byte);
+        }
+    }
+
+    /// Prints the given message to the current output target.
     pub(crate) fn print_msg(&mut self, msg: &[u8]) {
         for &byte in msg {
-            self.console.process_byte(self.memory, byte);
+            self.output_byte(byte);
         }
     }
 }
@@ -294,6 +311,8 @@ impl NeetanOs {
         let mut io = IoAccess {
             console: &mut self.console,
             memory,
+            redirect_output: None,
+            redirect_input: None,
         };
         shell.step(&mut self.state, &mut io, disk);
         self.shell = Some(shell);

@@ -209,9 +209,9 @@ impl RunningCommand for RunningDir {
                     if dir_state.recursive && !dir_state.current_path.is_empty() {
                         // /S /B: show full path
                         for &b in &dir_state.current_path {
-                            io.console.process_byte(io.memory, b);
+                            io.output_byte(b);
                         }
-                        io.console.process_byte(io.memory, b'\\');
+                        io.output_byte(b'\\');
                     }
                     format_bare(&entry, io);
                 } else if dir_state.wide {
@@ -598,12 +598,12 @@ fn format_standard(entry: &fat_dir::DirEntry, io: &mut IoAccess) {
         .map_or(0, |p| p + 1);
     for i in 0..8 {
         if i < base_end {
-            io.console.process_byte(io.memory, entry.name[i]);
+            io.output_byte(entry.name[i]);
         } else {
-            io.console.process_byte(io.memory, b' ');
+            io.output_byte(b' ');
         }
     }
-    io.console.process_byte(io.memory, b' ');
+    io.output_byte(b' ');
 
     // Extension (left-justified, 3 chars)
     let ext_end = entry.name[8..11]
@@ -612,9 +612,9 @@ fn format_standard(entry: &fat_dir::DirEntry, io: &mut IoAccess) {
         .map_or(0, |p| p + 1);
     for i in 0..3 {
         if i < ext_end {
-            io.console.process_byte(io.memory, entry.name[8 + i]);
+            io.output_byte(entry.name[8 + i]);
         } else {
-            io.console.process_byte(io.memory, b' ');
+            io.output_byte(b' ');
         }
     }
 
@@ -631,8 +631,8 @@ fn format_standard(entry: &fat_dir::DirEntry, io: &mut IoAccess) {
     let day = entry.date & 0x1F;
     let date_str = format!("{:02}-{:02}-{:02}", month, day, year % 100);
     io.print_msg(date_str.as_bytes());
-    io.console.process_byte(io.memory, b' ');
-    io.console.process_byte(io.memory, b' ');
+    io.output_byte(b' ');
+    io.output_byte(b' ');
 
     // Time: HH:MM
     let hour = (entry.time >> 11) & 0x1F;
@@ -646,7 +646,7 @@ fn format_standard(entry: &fat_dir::DirEntry, io: &mut IoAccess) {
 fn format_bare(entry: &fat_dir::DirEntry, io: &mut IoAccess) {
     let display_name = fat_dir::fcb_to_display_name(&entry.name);
     for &byte in &display_name {
-        io.console.process_byte(io.memory, byte);
+        io.output_byte(byte);
     }
     io.print_msg(b"\r\n");
 }
@@ -655,22 +655,22 @@ fn format_wide(entry: &fat_dir::DirEntry, dir_state: &mut DirState, io: &mut IoA
     let display_name = fat_dir::fcb_to_display_name(&entry.name);
 
     if entry.attribute & fat_dir::ATTR_DIRECTORY != 0 {
-        io.console.process_byte(io.memory, b'[');
+        io.output_byte(b'[');
         for &byte in &display_name {
-            io.console.process_byte(io.memory, byte);
+            io.output_byte(byte);
         }
-        io.console.process_byte(io.memory, b']');
+        io.output_byte(b']');
         // Pad to 15 chars total (name + brackets)
         let used = display_name.len() + 2;
         for _ in used..15 {
-            io.console.process_byte(io.memory, b' ');
+            io.output_byte(b' ');
         }
     } else {
         for &byte in &display_name {
-            io.console.process_byte(io.memory, byte);
+            io.output_byte(byte);
         }
         for _ in display_name.len()..15 {
-            io.console.process_byte(io.memory, b' ');
+            io.output_byte(b' ');
         }
     }
 

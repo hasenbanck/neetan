@@ -113,8 +113,8 @@ impl RunningCommand for RunningDel {
                     return StepResult::Continue;
                 }
                 let key = consume_key(io);
-                io.console.process_byte(io.memory, b'\r');
-                io.console.process_byte(io.memory, b'\n');
+                io.output_byte(b'\r');
+                io.output_byte(b'\n');
                 if key == b'Y' || key == b'y' {
                     self.phase = DelPhase::DeleteNext(del_state);
                     StepResult::Continue
@@ -156,7 +156,7 @@ impl RunningCommand for RunningDel {
                             // /P: show filename and ask
                             let display = fat_dir::fcb_to_display_name(&entry.name);
                             for &b in &display {
-                                io.console.process_byte(io.memory, b);
+                                io.output_byte(b);
                             }
                             io.print_msg(b", Delete (Y/N)?");
                             self.phase = DelPhase::PromptFile(del_state, entry);
@@ -196,8 +196,8 @@ impl RunningCommand for RunningDel {
                     return StepResult::Continue;
                 }
                 let key = consume_key(io);
-                io.console.process_byte(io.memory, b'\r');
-                io.console.process_byte(io.memory, b'\n');
+                io.output_byte(b'\r');
+                io.output_byte(b'\n');
 
                 if key == b'Y' || key == b'y' {
                     let vol = match state.fat_volumes[del_state.drive_index as usize].as_mut() {

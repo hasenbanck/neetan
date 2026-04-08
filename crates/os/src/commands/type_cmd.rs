@@ -58,7 +58,7 @@ impl RunningType {
 
         for i in read.offset..end {
             if i < read.cluster_data.len() {
-                io.console.process_byte(io.memory, read.cluster_data[i]);
+                io.output_byte(read.cluster_data[i]);
             }
         }
 

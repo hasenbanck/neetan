@@ -69,3 +69,9 @@ mod commands_format;
 
 #[path = "dos620/commands_diskcopy.rs"]
 mod commands_diskcopy;
+
+#[path = "dos620/shell_redirection.rs"]
+mod shell_redirection;
+
+#[path = "dos620/shell_batch.rs"]
+mod shell_batch;

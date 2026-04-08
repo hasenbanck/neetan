@@ -32,14 +32,14 @@ impl RunningCommand for RunningEcho {
     ) -> StepResult {
         if self.text.is_empty() {
             // ECHO. (bare dot) prints a blank line
-            io.console.process_byte(io.memory, b'\r');
-            io.console.process_byte(io.memory, b'\n');
+            io.output_byte(b'\r');
+            io.output_byte(b'\n');
         } else {
             for &byte in &self.text {
-                io.console.process_byte(io.memory, byte);
+                io.output_byte(byte);
             }
-            io.console.process_byte(io.memory, b'\r');
-            io.console.process_byte(io.memory, b'\n');
+            io.output_byte(b'\r');
+            io.output_byte(b'\n');
         }
         StepResult::Done(0)
     }

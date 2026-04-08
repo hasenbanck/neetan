@@ -139,7 +139,7 @@ impl RunningCommand for RunningCopy {
 
                         let display_name = fat_dir::fcb_to_display_name(&entry.name);
                         for &byte in &display_name {
-                            io.console.process_byte(io.memory, byte);
+                            io.output_byte(byte);
                         }
                         io.print_msg(b"\r\n");
 
@@ -214,8 +214,8 @@ impl RunningCommand for RunningCopy {
                     return StepResult::Continue;
                 }
                 let key = consume_key(io);
-                io.console.process_byte(io.memory, b'\r');
-                io.console.process_byte(io.memory, b'\n');
+                io.output_byte(b'\r');
+                io.output_byte(b'\n');
 
                 match key.to_ascii_uppercase() {
                     b'Y' => {
@@ -409,7 +409,7 @@ impl RunningCommand for RunningCopy {
 
                 let display_name = fat_dir::fcb_to_display_name(&entry.name);
                 for &byte in &display_name {
-                    io.console.process_byte(io.memory, byte);
+                    io.output_byte(byte);
                 }
                 io.print_msg(b"\r\n");
 

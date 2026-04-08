@@ -3,13 +3,31 @@
 pub mod batch;
 pub mod history;
 
+use std::collections::VecDeque;
+
 use history::History;
 
 use crate::{
     DiskIo, IoAccess, MemoryAccess, OsState,
     commands::{self, Command, RunningCommand, StepResult},
+    filesystem::{fat, fat_dir},
     tables,
 };
+
+pub(crate) enum RedirectSpec {
+    Overwrite(Vec<u8>),
+    Append(Vec<u8>),
+}
+
+struct ParsedCommand {
+    command: Vec<u8>,
+    output_redirect: Option<RedirectSpec>,
+    input_file: Option<Vec<u8>>,
+}
+
+struct PendingCommand {
+    parsed: ParsedCommand,
+}
 
 const KB_BUF_START: u32 = 0x0502;
 const KB_BUF_END: u32 = 0x0522;
@@ -50,17 +68,21 @@ pub(crate) enum ShellPhase {
     ReadingInput(LineEditor),
     ExecutingCommand(Box<dyn RunningCommand>),
     WaitingForChild,
-    ExecutingBatch(batch::BatchState),
+    ExecutingBatch(Box<batch::BatchState>),
 }
 
 pub(crate) struct Shell {
     phase: ShellPhase,
     history: History,
     commands: Vec<Box<dyn Command>>,
-    echo_on: bool,
-    last_exit_code: u8,
+    pub(crate) echo_on: bool,
+    pub(crate) last_exit_code: u8,
     boot_banner_shown: bool,
     pending_drive_change: Option<u8>,
+    pending_commands: VecDeque<PendingCommand>,
+    current_redirect: Option<RedirectSpec>,
+    redirect_buffer: Option<Vec<u8>>,
+    pipe_input: Option<Vec<u8>>,
 }
 
 impl Shell {
@@ -95,6 +117,10 @@ impl Shell {
             last_exit_code: 0,
             boot_banner_shown: false,
             pending_drive_change: None,
+            pending_commands: VecDeque::new(),
+            current_redirect: None,
+            redirect_buffer: None,
+            pipe_input: None,
         }
     }
 
@@ -129,7 +155,7 @@ impl Shell {
                                 self.history.push(line.clone());
                             }
                             self.history.reset_position();
-                            self.dispatch_command(io, &line)
+                            self.dispatch_command(state, io, disk, &line)
                         }
                         0x08 => {
                             if editor.cursor > 0 {
@@ -227,29 +253,147 @@ impl Shell {
                     }
                 }
             }
-            ShellPhase::ExecutingCommand(mut cmd) => match cmd.step(state, io, disk) {
-                StepResult::Continue => ShellPhase::ExecutingCommand(cmd),
-                StepResult::Done(code) => {
-                    self.last_exit_code = code;
-                    ShellPhase::ShowPrompt
+            ShellPhase::ExecutingCommand(mut cmd) => {
+                if self.redirect_buffer.is_some() {
+                    io.redirect_output = self.redirect_buffer.take();
                 }
-            },
+                if self.pipe_input.is_some() {
+                    io.redirect_input = self
+                        .pipe_input
+                        .take()
+                        .map(|data| crate::RedirectInput { data, position: 0 });
+                }
+                match cmd.step(state, io, disk) {
+                    StepResult::Continue => {
+                        self.redirect_buffer = io.redirect_output.take();
+                        self.pipe_input = io.redirect_input.take().map(|ri| {
+                            let mut d = ri.data;
+                            d.drain(..ri.position);
+                            d
+                        });
+                        ShellPhase::ExecutingCommand(cmd)
+                    }
+                    StepResult::Done(code) => {
+                        self.last_exit_code = code;
+                        let output_data = io.redirect_output.take();
+                        if let Some(spec) = self.current_redirect.take()
+                            && let Some(data) = &output_data
+                        {
+                            write_redirect_to_file(state, io, disk, data, &spec);
+                        }
+                        if let Some(next) = self.pending_commands.pop_front() {
+                            self.setup_and_dispatch(next, output_data, state, io, disk)
+                        } else {
+                            ShellPhase::ShowPrompt
+                        }
+                    }
+                }
+            }
             ShellPhase::WaitingForChild => {
                 unimplemented!("WaitingForChild shell phase")
             }
-            ShellPhase::ExecutingBatch(_) => {
-                unimplemented!("ExecutingBatch shell phase")
+            ShellPhase::ExecutingBatch(mut batch) => {
+                match batch.step_batch(self, state, io, disk) {
+                    batch::BatchStepResult::Continue => ShellPhase::ExecutingBatch(batch),
+                    batch::BatchStepResult::Finished => ShellPhase::ShowPrompt,
+                }
             }
         };
     }
 
-    fn dispatch_command(&mut self, _io: &mut IoAccess, line: &[u8]) -> ShellPhase {
+    fn dispatch_command(
+        &mut self,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+        line: &[u8],
+    ) -> ShellPhase {
         let trimmed = line.trim_ascii();
         if trimmed.is_empty() {
             return ShellPhase::ShowPrompt;
         }
 
-        // Split into command name and arguments
+        // Split on sequence separator (ASCII 0x14) first
+        let sequences = split_on_sequence(trimmed);
+        if sequences.len() > 1 {
+            let mut seq_iter = sequences.into_iter();
+            let first = seq_iter.next().unwrap();
+            for seg in seq_iter {
+                self.pending_commands.push_back(PendingCommand {
+                    parsed: ParsedCommand {
+                        command: seg,
+                        output_redirect: None,
+                        input_file: None,
+                    },
+                });
+            }
+            return self.dispatch_single(state, io, disk, &first);
+        }
+
+        // Split on pipes
+        let pipes = split_on_pipes(trimmed);
+        if pipes.len() > 1 {
+            let mut pipe_iter = pipes.into_iter();
+            let first = pipe_iter.next().unwrap();
+            for seg in pipe_iter {
+                let parsed = parse_redirections(&seg);
+                self.pending_commands.push_back(PendingCommand { parsed });
+            }
+            // First pipe stage: redirect output to buffer
+            let parsed = parse_redirections(&first);
+            self.current_redirect = None;
+            self.redirect_buffer = Some(Vec::new());
+            return self.dispatch_parsed(state, io, disk, &parsed.command);
+        }
+
+        self.dispatch_single(state, io, disk, trimmed)
+    }
+
+    fn dispatch_single(
+        &mut self,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+        segment: &[u8],
+    ) -> ShellPhase {
+        let parsed = parse_redirections(segment);
+
+        // Set up output redirection
+        if parsed.output_redirect.is_some() {
+            self.current_redirect = parsed.output_redirect;
+            self.redirect_buffer = Some(Vec::new());
+        }
+
+        // Set up input redirection
+        if let Some(ref filename) = parsed.input_file {
+            match read_file_data(state, io, disk, filename) {
+                Ok(data) => {
+                    self.pipe_input = Some(data);
+                }
+                Err(msg) => {
+                    io.print_msg(msg);
+                    self.current_redirect = None;
+                    self.redirect_buffer = None;
+                    return ShellPhase::ShowPrompt;
+                }
+            }
+        }
+
+        self.dispatch_parsed(state, io, disk, &parsed.command)
+    }
+
+    pub(crate) fn dispatch_parsed(
+        &mut self,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+        command: &[u8],
+    ) -> ShellPhase {
+        let trimmed = command.trim_ascii();
+        if trimmed.is_empty() {
+            return ShellPhase::ShowPrompt;
+        }
+
         let (cmd_name, args) = split_command(trimmed);
         let cmd_upper: Vec<u8> = cmd_name.iter().map(|b| b.to_ascii_uppercase()).collect();
 
@@ -290,9 +434,75 @@ impl Shell {
             return ShellPhase::ExecutingCommand(running);
         }
 
-        _io.print_msg(b"Bad command or file name\r\n");
+        // Try to find .BAT file
+        let mut bat_name = cmd_upper.clone();
+        bat_name.extend_from_slice(b".BAT");
+        if let Ok((drive_index, dir_cluster, fcb_name)) =
+            state.resolve_file_path(&bat_name, io.memory, disk)
+            && drive_index != 25
+            && let Some(vol) = state.fat_volumes[drive_index as usize].as_ref()
+            && let Ok(Some(entry)) = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk)
+            && entry.attribute & fat_dir::ATTR_DIRECTORY == 0
+        {
+            match batch::load_bat_file(vol, &entry, disk) {
+                Ok(lines) => {
+                    let params = parse_bat_params(args);
+                    let bat_state =
+                        batch::BatchState::new(lines, params, bat_name.clone(), self.echo_on);
+                    return ShellPhase::ExecutingBatch(Box::new(bat_state));
+                }
+                Err(_) => {
+                    io.print_msg(b"Error reading batch file\r\n");
+                    return ShellPhase::ShowPrompt;
+                }
+            }
+        }
+
+        io.print_msg(b"Bad command or file name\r\n");
+        self.last_exit_code = 1;
 
         ShellPhase::ShowPrompt
+    }
+
+    fn setup_and_dispatch(
+        &mut self,
+        pending: PendingCommand,
+        pipe_data: Option<Vec<u8>>,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> ShellPhase {
+        // Set up output redirection for this command
+        if pending.parsed.output_redirect.is_some() {
+            self.current_redirect = pending.parsed.output_redirect;
+            self.redirect_buffer = Some(Vec::new());
+        } else if !self.pending_commands.is_empty() {
+            // More pipe stages follow: capture output
+            self.current_redirect = None;
+            self.redirect_buffer = Some(Vec::new());
+        } else {
+            self.current_redirect = None;
+            self.redirect_buffer = None;
+        }
+
+        // Set up input: pipe data from previous command, or input file redirect
+        if let Some(data) = pipe_data {
+            self.pipe_input = Some(data);
+        } else if let Some(ref filename) = pending.parsed.input_file {
+            match read_file_data(state, io, disk, filename) {
+                Ok(data) => {
+                    self.pipe_input = Some(data);
+                }
+                Err(msg) => {
+                    io.print_msg(msg);
+                    self.current_redirect = None;
+                    self.redirect_buffer = None;
+                    return ShellPhase::ShowPrompt;
+                }
+            }
+        }
+
+        self.dispatch_parsed(state, io, disk, &pending.parsed.command)
     }
 
     fn find_command(&self, name: &[u8]) -> Option<&dyn Command> {
@@ -440,7 +650,11 @@ fn render_prompt(state: &OsState, io: &mut IoAccess) {
     }
 }
 
-fn read_env_var(state: &OsState, memory: &dyn MemoryAccess, var_name: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn read_env_var(
+    state: &OsState,
+    memory: &dyn MemoryAccess,
+    var_name: &[u8],
+) -> Option<Vec<u8>> {
     let psp_base = (state.current_psp as u32) << 4;
     let env_seg = memory.read_word(psp_base + tables::PSP_OFF_ENV_SEG);
     let base = (env_seg as u32) << 4;
@@ -481,4 +695,378 @@ fn read_env_var(state: &OsState, memory: &dyn MemoryAccess, var_name: &[u8]) -> 
 
         offset += 1;
     }
+}
+
+fn split_on_sequence(line: &[u8]) -> Vec<Vec<u8>> {
+    let mut segments = Vec::new();
+    let mut current = Vec::new();
+    for &byte in line {
+        if byte == 0x14 {
+            if !current.is_empty() {
+                segments.push(current);
+                current = Vec::new();
+            }
+        } else {
+            current.push(byte);
+        }
+    }
+    if !current.is_empty() {
+        segments.push(current);
+    }
+    segments
+}
+
+fn split_on_pipes(line: &[u8]) -> Vec<Vec<u8>> {
+    let mut segments = Vec::new();
+    let mut current = Vec::new();
+    for &byte in line {
+        if byte == b'|' {
+            segments.push(current);
+            current = Vec::new();
+        } else {
+            current.push(byte);
+        }
+    }
+    segments.push(current);
+    segments
+}
+
+fn parse_redirections(segment: &[u8]) -> ParsedCommand {
+    let mut command = Vec::new();
+    let mut output_redirect = None;
+    let mut input_file = None;
+
+    let mut i = 0;
+    while i < segment.len() {
+        if segment[i] == b'>' {
+            i += 1;
+            let append = i < segment.len() && segment[i] == b'>';
+            if append {
+                i += 1;
+            }
+            // Skip whitespace after >
+            while i < segment.len() && (segment[i] == b' ' || segment[i] == b'\t') {
+                i += 1;
+            }
+            // Read filename
+            let mut filename = Vec::new();
+            while i < segment.len()
+                && segment[i] != b' '
+                && segment[i] != b'\t'
+                && segment[i] != b'>'
+                && segment[i] != b'<'
+                && segment[i] != b'|'
+            {
+                filename.push(segment[i]);
+                i += 1;
+            }
+            if !filename.is_empty() {
+                output_redirect = if append {
+                    Some(RedirectSpec::Append(filename))
+                } else {
+                    Some(RedirectSpec::Overwrite(filename))
+                };
+            }
+        } else if segment[i] == b'<' {
+            i += 1;
+            while i < segment.len() && (segment[i] == b' ' || segment[i] == b'\t') {
+                i += 1;
+            }
+            let mut filename = Vec::new();
+            while i < segment.len()
+                && segment[i] != b' '
+                && segment[i] != b'\t'
+                && segment[i] != b'>'
+                && segment[i] != b'<'
+                && segment[i] != b'|'
+            {
+                filename.push(segment[i]);
+                i += 1;
+            }
+            if !filename.is_empty() {
+                input_file = Some(filename);
+            }
+        } else {
+            command.push(segment[i]);
+            i += 1;
+        }
+    }
+
+    ParsedCommand {
+        command,
+        output_redirect,
+        input_file,
+    }
+}
+
+fn parse_bat_params(args: &[u8]) -> [Vec<u8>; 10] {
+    let mut params: [Vec<u8>; 10] = Default::default();
+    let mut idx = 1usize; // %1 is first argument, %0 is filled by caller
+    let trimmed = args.trim_ascii();
+    if trimmed.is_empty() {
+        return params;
+    }
+    let mut i = 0;
+    while i < trimmed.len() && idx < 10 {
+        // Skip whitespace
+        while i < trimmed.len() && (trimmed[i] == b' ' || trimmed[i] == b'\t') {
+            i += 1;
+        }
+        if i >= trimmed.len() {
+            break;
+        }
+        let start = i;
+        while i < trimmed.len() && trimmed[i] != b' ' && trimmed[i] != b'\t' {
+            i += 1;
+        }
+        params[idx] = trimmed[start..i].to_vec();
+        idx += 1;
+    }
+    params
+}
+
+fn write_redirect_to_file(
+    state: &mut OsState,
+    io: &mut IoAccess,
+    disk: &mut dyn DiskIo,
+    data: &[u8],
+    spec: &RedirectSpec,
+) {
+    let filename = match spec {
+        RedirectSpec::Overwrite(f) | RedirectSpec::Append(f) => f,
+    };
+    let is_append = matches!(spec, RedirectSpec::Append(_));
+
+    let (drive_index, dir_cluster, fcb_name) =
+        match state.resolve_file_path(filename, io.memory, disk) {
+            Ok(r) => r,
+            Err(_) => {
+                io.console.process_byte(io.memory, b'\r');
+                io.console.process_byte(io.memory, b'\n');
+                for &byte in b"File creation error" {
+                    io.console.process_byte(io.memory, byte);
+                }
+                io.console.process_byte(io.memory, b'\r');
+                io.console.process_byte(io.memory, b'\n');
+                return;
+            }
+        };
+
+    if drive_index == 25 {
+        return; // Z: is read-only
+    }
+
+    let vol = match state.fat_volumes[drive_index as usize].as_mut() {
+        Some(v) => v,
+        None => return,
+    };
+
+    if is_append {
+        // Append mode: find existing file, walk to end of chain, append data
+        if let Ok(Some(existing)) = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk) {
+            append_to_existing_file(vol, &existing, data, disk);
+        } else {
+            create_new_file_with_data(vol, dir_cluster, &fcb_name, data, disk);
+        }
+    } else {
+        // Overwrite mode: delete existing, create new
+        if let Ok(Some(existing)) = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk) {
+            if existing.start_cluster >= 2 {
+                vol.free_chain(existing.start_cluster);
+            }
+            let _ = fat_dir::delete_entry(vol, &existing, disk);
+        }
+        create_new_file_with_data(vol, dir_cluster, &fcb_name, data, disk);
+    }
+
+    let _ = vol.flush_fat(disk);
+}
+
+fn create_new_file_with_data(
+    vol: &mut fat::FatVolume,
+    dir_cluster: u16,
+    fcb_name: &[u8; 11],
+    data: &[u8],
+    disk: &mut dyn DiskIo,
+) {
+    let cluster_size = vol.bpb.sectors_per_cluster as usize * vol.bpb.bytes_per_sector as usize;
+    let mut first_cluster: u16 = 0;
+    let mut last_cluster: u16 = 0;
+    let mut offset = 0;
+
+    while offset < data.len() {
+        let end = (offset + cluster_size).min(data.len());
+        let mut cluster_data = vec![0u8; cluster_size];
+        cluster_data[..end - offset].copy_from_slice(&data[offset..end]);
+
+        let new_cluster = match vol.allocate_cluster(last_cluster) {
+            Some(c) => c,
+            None => return,
+        };
+        if first_cluster == 0 {
+            first_cluster = new_cluster;
+        }
+        let _ = vol.write_cluster(new_cluster, &cluster_data, disk);
+        last_cluster = new_cluster;
+        offset = end;
+    }
+
+    let new_entry = fat_dir::DirEntry {
+        name: *fcb_name,
+        attribute: 0x20, // archive
+        time: 0x6000,    // 12:00:00
+        date: 0x1E21,    // 1995-01-01
+        start_cluster: first_cluster,
+        file_size: data.len() as u32,
+        dir_sector: 0,
+        dir_offset: 0,
+    };
+    let _ = fat_dir::create_entry(vol, dir_cluster, &new_entry, disk);
+}
+
+fn append_to_existing_file(
+    vol: &mut fat::FatVolume,
+    entry: &fat_dir::DirEntry,
+    data: &[u8],
+    disk: &mut dyn DiskIo,
+) {
+    let cluster_size = vol.bpb.sectors_per_cluster as usize * vol.bpb.bytes_per_sector as usize;
+    let old_size = entry.file_size as usize;
+
+    // Find last cluster and its fill level
+    let mut last_cluster = entry.start_cluster;
+    let mut remaining_in_chain = old_size;
+
+    if last_cluster < 2 {
+        // Empty file: allocate first cluster
+        let new_cluster = match vol.allocate_cluster(0) {
+            Some(c) => c,
+            None => return,
+        };
+        let mut cluster_data = vec![0u8; cluster_size];
+        let write_len = data.len().min(cluster_size);
+        cluster_data[..write_len].copy_from_slice(&data[..write_len]);
+        let _ = vol.write_cluster(new_cluster, &cluster_data, disk);
+
+        let mut updated = entry.clone();
+        updated.start_cluster = new_cluster;
+        updated.file_size = data.len() as u32;
+
+        // Write remaining data if any
+        let mut offset = write_len;
+        let mut prev = new_cluster;
+        while offset < data.len() {
+            let end = (offset + cluster_size).min(data.len());
+            let mut cd = vec![0u8; cluster_size];
+            cd[..end - offset].copy_from_slice(&data[offset..end]);
+            let nc = match vol.allocate_cluster(prev) {
+                Some(c) => c,
+                None => break,
+            };
+            let _ = vol.write_cluster(nc, &cd, disk);
+            prev = nc;
+            offset = end;
+        }
+        updated.file_size = (old_size + data.len()) as u32;
+        let _ = fat_dir::update_entry(vol, &updated, disk);
+        return;
+    }
+
+    // Walk to last cluster
+    while remaining_in_chain > cluster_size {
+        if let Some(next) = vol.next_cluster(last_cluster) {
+            last_cluster = next;
+            remaining_in_chain -= cluster_size;
+        } else {
+            break;
+        }
+    }
+
+    let used_in_last = remaining_in_chain % cluster_size;
+    let free_in_last = if used_in_last == 0 && old_size > 0 {
+        0
+    } else {
+        cluster_size - used_in_last
+    };
+
+    let mut offset = 0;
+
+    // Fill remaining space in last cluster
+    if free_in_last > 0 && !data.is_empty() {
+        let mut existing_data = match vol.read_cluster(last_cluster, disk) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let write_len = data.len().min(free_in_last);
+        existing_data[used_in_last..used_in_last + write_len].copy_from_slice(&data[..write_len]);
+        let _ = vol.write_cluster(last_cluster, &existing_data, disk);
+        offset = write_len;
+    }
+
+    // Allocate new clusters for remaining data
+    while offset < data.len() {
+        let end = (offset + cluster_size).min(data.len());
+        let mut cluster_data = vec![0u8; cluster_size];
+        cluster_data[..end - offset].copy_from_slice(&data[offset..end]);
+        let new_cluster = match vol.allocate_cluster(last_cluster) {
+            Some(c) => c,
+            None => break,
+        };
+        let _ = vol.write_cluster(new_cluster, &cluster_data, disk);
+        last_cluster = new_cluster;
+        offset = end;
+    }
+
+    let mut updated = entry.clone();
+    updated.file_size = (old_size + data.len()) as u32;
+    let _ = fat_dir::update_entry(vol, &updated, disk);
+}
+
+fn read_file_data(
+    state: &mut OsState,
+    io: &mut IoAccess,
+    disk: &mut dyn DiskIo,
+    filename: &[u8],
+) -> Result<Vec<u8>, &'static [u8]> {
+    let (drive_index, dir_cluster, fcb_name) = state
+        .resolve_file_path(filename, io.memory, disk)
+        .map_err(|_| &b"File not found\r\n"[..])?;
+
+    if drive_index == 25 {
+        return Err(b"Access denied\r\n");
+    }
+
+    let vol = state.fat_volumes[drive_index as usize]
+        .as_ref()
+        .ok_or(&b"Invalid drive\r\n"[..])?;
+
+    let entry = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk)
+        .map_err(|_| &b"File not found\r\n"[..])?
+        .ok_or(&b"File not found\r\n"[..])?;
+
+    if entry.file_size == 0 || entry.start_cluster < 2 {
+        return Ok(Vec::new());
+    }
+
+    let mut data = Vec::with_capacity(entry.file_size as usize);
+    let mut cluster = entry.start_cluster;
+    let mut remaining = entry.file_size as usize;
+
+    loop {
+        let cluster_data = vol
+            .read_cluster(cluster, disk)
+            .map_err(|_| &b"Read error\r\n"[..])?;
+        let take = remaining.min(cluster_data.len());
+        data.extend_from_slice(&cluster_data[..take]);
+        remaining -= take;
+        if remaining == 0 {
+            break;
+        }
+        cluster = match vol.next_cluster(cluster) {
+            Some(c) => c,
+            None => break,
+        };
+    }
+
+    Ok(data)
 }

@@ -49,7 +49,7 @@ impl RunningCommand for RunningDate {
             dow_name, month, day, year
         );
         for &byte in msg.as_bytes() {
-            io.console.process_byte(io.memory, byte);
+            io.output_byte(byte);
         }
         StepResult::Done(0)
     }
