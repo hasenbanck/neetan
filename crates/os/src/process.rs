@@ -7,6 +7,18 @@ use crate::{
     tables::*,
 };
 
+fn hard_clear_text_vram(memory: &mut dyn MemoryAccess) {
+    for row in 0u32..25 {
+        for col in 0u32..80 {
+            let offset = (row * 80 + col) * 2;
+            memory.write_byte(0xA0000 + offset, 0x00);
+            memory.write_byte(0xA0000 + offset + 1, 0x00);
+            memory.write_byte(0xA2000 + offset, 0xE1);
+            memory.write_byte(0xA2000 + offset + 1, 0x00);
+        }
+    }
+}
+
 /// Parameters parsed from the EXEC parameter block (ES:BX).
 pub(crate) struct ExecParams {
     pub env_seg: u16,
@@ -653,6 +665,11 @@ impl NeetanOs {
         self.state.last_termination_type = termination_type;
         self.state.buffered_input = None;
         self.state.pending_key_bytes.clear();
+
+        // Hard-clear text VRAM so the shell prompt starts on a clean screen.
+        // Programs may leave arbitrary content in VRAM; the HLE shell re-renders
+        // the prompt after this, so a full clear is safe.
+        hard_clear_text_vram(mem);
 
         // Restore parent's IRET frame.
         cpu.set_ss(parent.return_ss);
