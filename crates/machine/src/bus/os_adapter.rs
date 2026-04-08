@@ -5,7 +5,10 @@
 //! (`common::Cpu`, `Pc9801Memory`) to implement those traits.
 
 use common::Cpu;
-use device::{ide::IdeController, sasi::SasiController, upd765a_fdc::FloppyController};
+use device::{
+    cd_audio::CdAudioState as DeviceCdAudioState, cdrom::TrackType, ide::IdeController,
+    sasi::SasiController, upd765a_fdc::FloppyController,
+};
 
 use crate::memory::Pc9801Memory;
 
@@ -343,6 +346,102 @@ impl os::DiskIo for OsDiskIo<'_> {
         } else {
             None
         }
+    }
+}
+
+impl os::CdromIo for OsDiskIo<'_> {
+    fn cdrom_present(&self) -> bool {
+        self.ide.has_cdrom()
+    }
+
+    fn cdrom_media_loaded(&self) -> bool {
+        self.ide.cdrom_image().is_some()
+    }
+
+    fn read_sector_cooked(&self, lba: u32, buf: &mut [u8]) -> Option<usize> {
+        self.ide.cdrom_image()?.read_sector(lba, buf)
+    }
+
+    fn read_sector_raw(&self, lba: u32, buf: &mut [u8]) -> Option<usize> {
+        self.ide.cdrom_image()?.read_sector_raw(lba, buf)
+    }
+
+    fn track_count(&self) -> u8 {
+        self.ide
+            .cdrom_image()
+            .map_or(0, |cdrom| cdrom.track_count())
+    }
+
+    fn track_info(&self, track_number: u8) -> Option<os::CdromTrackInfo> {
+        let cdrom = self.ide.cdrom_image()?;
+        let track = cdrom.track(track_number)?;
+        let (track_type, control) = match track.track_type {
+            TrackType::Data => (os::CdromTrackType::Data, 0x14),
+            TrackType::Audio => (os::CdromTrackType::Audio, 0x10),
+        };
+        Some(os::CdromTrackInfo {
+            start_lba: track.start_lba,
+            track_type,
+            control,
+        })
+    }
+
+    fn leadout_lba(&self) -> u32 {
+        self.ide
+            .cdrom_image()
+            .map_or(0, |cdrom| cdrom.total_sectors())
+    }
+
+    fn total_sectors(&self) -> u32 {
+        self.ide
+            .cdrom_image()
+            .map_or(0, |cdrom| cdrom.total_sectors())
+    }
+
+    fn audio_play(&mut self, start_lba: u32, sector_count: u32) {
+        self.ide.play_cd_audio(start_lba, sector_count);
+    }
+
+    fn audio_stop(&mut self) {
+        self.ide.cd_audio_player_mut().stop();
+    }
+
+    fn audio_resume(&mut self) {
+        self.ide.resume_cd_audio();
+    }
+
+    fn audio_state(&self) -> os::CdAudioStatus {
+        let player = self.ide.cd_audio_player();
+        let (current_lba, start_lba, end_lba) = player.current_position();
+        let state = match player.state() {
+            DeviceCdAudioState::Stopped => os::CdAudioState::Stopped,
+            DeviceCdAudioState::Playing => os::CdAudioState::Playing,
+            DeviceCdAudioState::Paused => os::CdAudioState::Paused,
+        };
+        os::CdAudioStatus {
+            state,
+            current_lba,
+            start_lba,
+            end_lba,
+        }
+    }
+
+    fn audio_channel_info(&self) -> os::AudioChannelInfo {
+        let channels = self.ide.cd_audio_player().channels();
+        os::AudioChannelInfo {
+            input_channel: channels.input_channel,
+            volume: channels.volume,
+        }
+    }
+
+    fn set_audio_channel_info(&mut self, info: &os::AudioChannelInfo) {
+        use device::cd_audio::AudioChannelControl;
+        self.ide
+            .cd_audio_player_mut()
+            .set_channels(AudioChannelControl {
+                input_channel: info.input_channel,
+                volume: info.volume,
+            });
     }
 }
 

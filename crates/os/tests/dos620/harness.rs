@@ -908,6 +908,65 @@ pub fn boot_hle_with_ide_hdd(sector_size: u16) -> machine::Pc9821Ap {
     machine
 }
 
+/// Creates a minimal CD-ROM disc image with one data track and one audio track.
+/// Uses raw (2352-byte) sectors throughout, as is standard for single-file BIN images.
+pub fn create_test_cdimage() -> device::cdrom::CdImage {
+    let cue = r#"FILE "test.bin" BINARY
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+  TRACK 02 AUDIO
+    INDEX 01 00:02:00
+"#;
+    // Track 1: 150 raw data sectors (2352 bytes each, with sync+header+user data).
+    let mut bin_data = Vec::with_capacity(2352 * 200);
+    for _ in 0..150 {
+        let mut sector = vec![0u8; 2352];
+        // Minimal sync pattern.
+        sector[0] = 0x00;
+        for b in &mut sector[1..11] {
+            *b = 0xFF;
+        }
+        sector[11] = 0x00;
+        sector[15] = 0x01; // Mode 1.
+        // User data filled with 0x11.
+        for b in &mut sector[16..16 + 2048] {
+            *b = 0x11;
+        }
+        bin_data.extend_from_slice(&sector);
+    }
+    // Track 2: 50 audio sectors (2352 bytes each).
+    bin_data.extend_from_slice(&vec![0xAAu8; 2352 * 50]);
+    device::cdrom::CdImage::from_cue(cue, bin_data).unwrap()
+}
+
+/// Boots an HLE machine (PC-9821AP / IDE) with a test CD-ROM inserted.
+/// The CD-ROM is inserted before boot so MSCDEX activates the Q: drive.
+pub fn boot_hle_with_cdrom() -> machine::Pc9821Ap {
+    let mut machine = machine::Pc9821Ap::new(
+        cpu::I386::<{ cpu::CPU_MODEL_486 }>::new(),
+        machine::Pc9801Bus::new(MachineModel::PC9821AP, 48000),
+    );
+    machine.bus.load_font_rom(FONT_ROM_DATA);
+
+    // Insert CD-ROM before boot so cdrom_present() is true during boot.
+    let cdimage = create_test_cdimage();
+    machine.bus.insert_cdrom(cdimage);
+
+    let mut total_cycles = 0u64;
+    loop {
+        total_cycles += machine.run_for(HLE_BOOT_CHECK_INTERVAL);
+        if hle_prompt_visible(&machine.bus) {
+            break;
+        }
+        assert!(
+            total_cycles < HLE_BOOT_MAX_CYCLES,
+            "HLE OS did not show prompt within {} cycles (CDROM)",
+            HLE_BOOT_MAX_CYCLES
+        );
+    }
+    machine
+}
+
 pub fn inject_and_run_generic_with_budget<const M: u8>(
     machine: &mut machine::Machine<cpu::I386<M>>,
     code: &[u8],
@@ -949,14 +1008,9 @@ pub fn type_string(bus: &mut machine::Pc9801Bus, text: &[u8]) {
     }
 }
 
-pub const SCAN_INSERT: u8 = 0x37;
 pub const SCAN_DELETE: u8 = 0x38;
 pub const SCAN_UP: u8 = 0x39;
 pub const SCAN_LEFT: u8 = 0x3A;
-pub const SCAN_RIGHT: u8 = 0x3B;
-pub const SCAN_DOWN: u8 = 0x3C;
-pub const SCAN_HOME: u8 = 0x3D;
-pub const SCAN_END: u8 = 0x3E;
 
 /// Injects a special key (extended key) into the PC-98 keyboard buffer.
 /// The character code is set to 0x00 and the scan code to the given value.

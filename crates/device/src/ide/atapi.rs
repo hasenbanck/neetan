@@ -8,7 +8,10 @@
 //! The SCSI command set implemented here covers the MMC (Multi-Media Commands)
 //! subset needed for CD-ROM data access, TOC reading, and media change.
 
-use crate::cdrom::CdImage;
+use crate::{
+    cd_audio::{CdAudioPlayer, CdAudioState},
+    cdrom::CdImage,
+};
 
 /// Maximum data buffer size (64 KB).
 const MAX_BUFFER_SIZE: usize = 65536;
@@ -164,7 +167,11 @@ impl AtapiState {
 
     /// Executes the received SCSI packet command.
     /// Returns (has_data, is_error): has_data means data_buffer is filled for transfer.
-    pub(super) fn execute_packet(&mut self, cdrom: Option<&CdImage>) -> (bool, bool) {
+    pub(super) fn execute_packet(
+        &mut self,
+        cdrom: Option<&CdImage>,
+        cd_audio: &mut CdAudioPlayer,
+    ) -> (bool, bool) {
         let opcode = self.packet[0];
         match opcode {
             0x00 => self.cmd_test_unit_ready(),
@@ -175,12 +182,12 @@ impl AtapiState {
             0x25 => self.cmd_read_capacity(cdrom),
             0x28 => self.cmd_read_10(cdrom),
             0x2B => self.cmd_seek(cdrom),
-            0x42 => self.cmd_read_sub_channel(cdrom),
+            0x42 => self.cmd_read_sub_channel(cdrom, cd_audio),
             0x43 => self.cmd_read_toc(cdrom),
-            0x45 => self.cmd_play_audio(),
+            0x45 => self.cmd_play_audio(cdrom, cd_audio),
             0x46 => self.cmd_get_configuration(),
-            0x47 => self.cmd_play_audio_msf(),
-            0x4B => self.cmd_pause_resume(),
+            0x47 => self.cmd_play_audio_msf(cdrom, cd_audio),
+            0x4B => self.cmd_pause_resume(cdrom, cd_audio),
             0x55 => self.cmd_mode_select_10(),
             0x5A => self.cmd_mode_sense_10(cdrom),
             0xB9 => self.cmd_read_cd_msf(cdrom),
@@ -497,13 +504,24 @@ impl AtapiState {
     }
 
     // 0x42: READ SUB-CHANNEL
-    fn cmd_read_sub_channel(&mut self, cdrom: Option<&CdImage>) -> (bool, bool) {
+    fn cmd_read_sub_channel(
+        &mut self,
+        cdrom: Option<&CdImage>,
+        cd_audio: &CdAudioPlayer,
+    ) -> (bool, bool) {
         if let Err(result) = self.check_media_with_sense() {
             return result;
         }
 
+        let audio_status = match cd_audio.state() {
+            CdAudioState::Playing => 0x11,
+            CdAudioState::Paused => 0x12,
+            CdAudioState::Stopped => 0x15,
+        };
+
         let sub_q = self.packet[2] & 0x40 != 0;
         let format = self.packet[3];
+        let msf = self.packet[1] & 0x02 != 0;
         let allocation_length = u16::from(self.packet[7]) << 8 | u16::from(self.packet[8]);
 
         if sub_q && format == 0x01 {
@@ -511,33 +529,43 @@ impl AtapiState {
             self.data_buffer.clear();
             self.data_buffer.resize(16, 0);
             self.data_buffer[0] = 0x00; // Reserved.
-            self.data_buffer[1] = 0x15; // Audio status: no current audio status.
+            self.data_buffer[1] = audio_status;
             self.data_buffer[2] = 0x00; // Sub-channel data length (MSB).
             self.data_buffer[3] = 0x0C; // Sub-channel data length = 12.
             self.data_buffer[4] = 0x01; // Sub-Q format code: current position.
 
+            let (current_lba, _, _) = cd_audio.current_position();
+
             // Fill ADR/CTL and track from disc info.
             if let Some(cdrom) = cdrom {
-                let track = cdrom.track(1);
+                let track = cdrom.track_for_lba(current_lba).or_else(|| cdrom.track(1));
                 let adr_ctl = track.map_or(0x14, |t| match t.track_type {
                     crate::cdrom::TrackType::Data => 0x14,
                     crate::cdrom::TrackType::Audio => 0x10,
                 });
                 self.data_buffer[5] = adr_ctl;
-                self.data_buffer[6] = track.map_or(1, |t| t.number); // Track number.
+                self.data_buffer[6] = track.map_or(1, |t| t.number);
+                let track_relative_lba =
+                    track.map_or(0, |t| current_lba.saturating_sub(t.start_lba));
+                store_address(
+                    &mut self.data_buffer[8..12],
+                    current_lba,
+                    msf,
+                    self.bcd_msf_mode,
+                );
+                store_address(
+                    &mut self.data_buffer[12..16],
+                    track_relative_lba,
+                    msf,
+                    self.bcd_msf_mode,
+                );
             } else {
-                self.data_buffer[5] = 0x14; // Default: data track.
+                self.data_buffer[5] = 0x14;
                 self.data_buffer[6] = 1;
+                store_address(&mut self.data_buffer[8..12], 0, msf, self.bcd_msf_mode);
+                store_address(&mut self.data_buffer[12..16], 0, msf, self.bcd_msf_mode);
             }
             self.data_buffer[7] = 0x01; // Index.
-
-            // Absolute position: default to LBA 0 = MSF 0:02:00 (start of track 1).
-            store_address(&mut self.data_buffer[8..12], 0, true, self.bcd_msf_mode);
-            // Relative position: 0:00:00.
-            self.data_buffer[12] = 0;
-            self.data_buffer[13] = 0;
-            self.data_buffer[14] = 0;
-            self.data_buffer[15] = 0;
 
             let size = 16.min(allocation_length as usize);
             return self.cmd_complete_with_data(size);
@@ -551,7 +579,7 @@ impl AtapiState {
             self.data_buffer[0] = 0x00; // Reserved.
         }
         if self.data_buffer.len() > 1 {
-            self.data_buffer[1] = 0x15; // Audio status: no current audio status.
+            self.data_buffer[1] = audio_status;
         }
         // Bytes 2-3: sub-channel data length = 0.
 
@@ -782,7 +810,23 @@ impl AtapiState {
     }
 
     // 0x45: PLAY AUDIO(10)
-    fn cmd_play_audio(&mut self) -> (bool, bool) {
+    fn cmd_play_audio(
+        &mut self,
+        cdrom: Option<&CdImage>,
+        cd_audio: &mut CdAudioPlayer,
+    ) -> (bool, bool) {
+        if let Err(result) = self.check_media_with_sense() {
+            return result;
+        }
+        let Some(cdrom) = cdrom else {
+            return self.cmd_error(SENSE_NOT_READY, ASC_MEDIUM_NOT_PRESENT, ASCQ_NO_QUALIFIER);
+        };
+        let start_lba = u32::from(self.packet[2]) << 24
+            | u32::from(self.packet[3]) << 16
+            | u32::from(self.packet[4]) << 8
+            | u32::from(self.packet[5]);
+        let transfer_length = u16::from(self.packet[7]) << 8 | u16::from(self.packet[8]);
+        cd_audio.play(cdrom, start_lba, u32::from(transfer_length));
         self.cmd_complete_no_data()
     }
 
@@ -808,12 +852,44 @@ impl AtapiState {
     }
 
     // 0x47: PLAY AUDIO MSF
-    fn cmd_play_audio_msf(&mut self) -> (bool, bool) {
+    fn cmd_play_audio_msf(
+        &mut self,
+        cdrom: Option<&CdImage>,
+        cd_audio: &mut CdAudioPlayer,
+    ) -> (bool, bool) {
+        if let Err(result) = self.check_media_with_sense() {
+            return result;
+        }
+        let Some(cdrom) = cdrom else {
+            return self.cmd_error(SENSE_NOT_READY, ASC_MEDIUM_NOT_PRESENT, ASCQ_NO_QUALIFIER);
+        };
+        let start_m = u32::from(self.packet[3]);
+        let start_s = u32::from(self.packet[4]);
+        let start_f = u32::from(self.packet[5]);
+        let end_m = u32::from(self.packet[6]);
+        let end_s = u32::from(self.packet[7]);
+        let end_f = u32::from(self.packet[8]);
+        let start_lba = msf_to_lba(start_m, start_s, start_f);
+        let end_lba = msf_to_lba(end_m, end_s, end_f);
+        let sector_count = end_lba.saturating_sub(start_lba);
+        cd_audio.play(cdrom, start_lba, sector_count);
         self.cmd_complete_no_data()
     }
 
     // 0x4B: PAUSE/RESUME
-    fn cmd_pause_resume(&mut self) -> (bool, bool) {
+    fn cmd_pause_resume(
+        &mut self,
+        cdrom: Option<&CdImage>,
+        cd_audio: &mut CdAudioPlayer,
+    ) -> (bool, bool) {
+        let resume = self.packet[8] & 0x01 != 0;
+        if resume {
+            if let Some(cdrom) = cdrom {
+                cd_audio.resume(cdrom);
+            }
+        } else {
+            cd_audio.stop();
+        }
         self.cmd_complete_no_data()
     }
 
@@ -1379,7 +1455,10 @@ pub(super) fn build_identify_packet_device(buffer: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cdrom::CdImage;
+    use crate::{
+        cd_audio::{CdAudioPlayer, CdAudioState},
+        cdrom::CdImage,
+    };
 
     fn make_test_cdimage() -> CdImage {
         let cue = r#"FILE "test.bin" BINARY
@@ -1890,7 +1969,8 @@ mod tests {
 
         state.packet = [0x42, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0];
 
-        let (has_data, is_error) = state.cmd_read_sub_channel(Some(&cdrom));
+        let cd_audio = CdAudioPlayer::new(44100);
+        let (has_data, is_error) = state.cmd_read_sub_channel(Some(&cdrom), &cd_audio);
         assert!(has_data);
         assert!(!is_error);
         assert_eq!(state.data_buffer[1], 0x15); // No audio status.
@@ -2284,28 +2364,52 @@ mod tests {
     #[test]
     fn play_audio_succeeds() {
         let mut state = AtapiState::new();
-        state.packet = [0x45, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        let (has_data, is_error) = state.cmd_play_audio();
+        state.media_loaded = true;
+        let cdrom = make_multi_track_cdimage();
+        let mut cd_audio = CdAudioPlayer::new(44100);
+        // PLAY AUDIO(10): start LBA 150, length 50 sectors.
+        state.packet = [0x45, 0, 0, 0, 0, 150, 0, 0, 50, 0, 0, 0];
+        let (has_data, is_error) = state.cmd_play_audio(Some(&cdrom), &mut cd_audio);
         assert!(!has_data);
         assert!(!is_error);
+        assert_eq!(cd_audio.state(), CdAudioState::Playing);
     }
 
     #[test]
     fn play_audio_msf_succeeds() {
         let mut state = AtapiState::new();
-        state.packet = [0x47, 0, 0, 0, 2, 0, 0, 0, 4, 0, 0, 0];
-        let (has_data, is_error) = state.cmd_play_audio_msf();
+        state.media_loaded = true;
+        let cdrom = make_multi_track_cdimage();
+        let mut cd_audio = CdAudioPlayer::new(44100);
+        // PLAY AUDIO MSF: start 0:04:00 (LBA 150), end 0:04:50 (LBA 200).
+        state.packet = [0x47, 0, 0, 0, 4, 0, 0, 4, 50, 0, 0, 0];
+        let (has_data, is_error) = state.cmd_play_audio_msf(Some(&cdrom), &mut cd_audio);
         assert!(!has_data);
         assert!(!is_error);
+        assert_eq!(cd_audio.state(), CdAudioState::Playing);
     }
 
     #[test]
     fn pause_resume_succeeds() {
         let mut state = AtapiState::new();
+        state.media_loaded = true;
+        let cdrom = make_multi_track_cdimage();
+        let mut cd_audio = CdAudioPlayer::new(44100);
+        // Start playback first.
+        state.packet = [0x45, 0, 0, 0, 0, 150, 0, 0, 50, 0, 0, 0];
+        state.cmd_play_audio(Some(&cdrom), &mut cd_audio);
+        // Pause.
         state.packet = [0x4B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        let (has_data, is_error) = state.cmd_pause_resume();
+        let (has_data, is_error) = state.cmd_pause_resume(Some(&cdrom), &mut cd_audio);
         assert!(!has_data);
         assert!(!is_error);
+        assert_eq!(cd_audio.state(), CdAudioState::Paused);
+        // Resume.
+        state.packet = [0x4B, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0];
+        let (has_data, is_error) = state.cmd_pause_resume(Some(&cdrom), &mut cd_audio);
+        assert!(!has_data);
+        assert!(!is_error);
+        assert_eq!(cd_audio.state(), CdAudioState::Playing);
     }
 
     #[test]

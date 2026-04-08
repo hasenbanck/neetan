@@ -110,6 +110,95 @@ pub trait DiskIo {
     fn drive_geometry(&self, drive_da: u8) -> Option<(u16, u8, u8)>;
 }
 
+/// CD-ROM access for the MSCDEX layer.
+///
+/// Abstracts CD-ROM data access, TOC queries, and audio playback control.
+/// Implemented by the machine crate's adapter, delegating to `CdImage` and
+/// `CdAudioPlayer` on the IDE controller.
+pub trait CdromIo {
+    /// Returns true if the machine model has a CD-ROM drive.
+    fn cdrom_present(&self) -> bool;
+    /// Returns true if a disc is loaded in the drive.
+    fn cdrom_media_loaded(&self) -> bool;
+
+    /// Reads 2048 bytes of user data (cooked) from the given LBA.
+    fn read_sector_cooked(&self, lba: u32, buf: &mut [u8]) -> Option<usize>;
+    /// Reads a full raw sector (2352 bytes) from the given LBA.
+    fn read_sector_raw(&self, lba: u32, buf: &mut [u8]) -> Option<usize>;
+
+    /// Returns the number of tracks on the disc.
+    fn track_count(&self) -> u8;
+    /// Returns info for a 1-based track number.
+    fn track_info(&self, track_number: u8) -> Option<CdromTrackInfo>;
+    /// Returns the LBA of the lead-out area (end of last track).
+    fn leadout_lba(&self) -> u32;
+    /// Returns the total addressable sector count.
+    fn total_sectors(&self) -> u32;
+
+    /// Starts audio playback from `start_lba` for `sector_count` sectors.
+    fn audio_play(&mut self, start_lba: u32, sector_count: u32);
+    /// Pauses audio playback (if playing).
+    fn audio_stop(&mut self);
+    /// Resumes audio playback (if paused).
+    fn audio_resume(&mut self);
+    /// Returns current audio playback state and positions.
+    fn audio_state(&self) -> CdAudioStatus;
+    /// Returns current audio channel mapping and volumes.
+    fn audio_channel_info(&self) -> AudioChannelInfo;
+    /// Sets audio channel mapping and volumes.
+    fn set_audio_channel_info(&mut self, info: &AudioChannelInfo);
+}
+
+/// Track metadata returned by `CdromIo::track_info`.
+pub struct CdromTrackInfo {
+    /// LBA of the track start (INDEX 01).
+    pub start_lba: u32,
+    /// Track type (data or audio).
+    pub track_type: CdromTrackType,
+    /// ADR/Control byte (0x14 = data, 0x10 = audio).
+    pub control: u8,
+}
+
+/// CD-ROM track type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CdromTrackType {
+    /// Data track.
+    Data,
+    /// Audio track (CD-DA).
+    Audio,
+}
+
+/// Current audio playback state.
+pub struct CdAudioStatus {
+    /// Playback state.
+    pub state: CdAudioState,
+    /// Current playback position (LBA).
+    pub current_lba: u32,
+    /// Start of the current play range (LBA).
+    pub start_lba: u32,
+    /// End of the current play range (LBA).
+    pub end_lba: u32,
+}
+
+/// CD audio state enum for the OS layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CdAudioState {
+    /// Not playing.
+    Stopped,
+    /// Currently playing.
+    Playing,
+    /// Paused.
+    Paused,
+}
+
+/// Audio channel mapping and volume info.
+pub struct AudioChannelInfo {
+    /// Which input channel (0 or 1) feeds each of the four output slots.
+    pub input_channel: [u8; 4],
+    /// Volume for each of the four output slots (0-255).
+    pub volume: [u8; 4],
+}
+
 /// Console I/O for commands and the shell.
 ///
 /// Abstracts keyboard input and text output through the machine's display.
@@ -294,7 +383,7 @@ impl NeetanOs {
         &mut self,
         _cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
-        disk: &mut dyn DiskIo,
+        device: &mut (impl DiskIo + CdromIo),
         _console: &mut dyn ConsoleIo,
     ) {
         self.write_dos_data_structures(memory);
@@ -303,13 +392,18 @@ impl NeetanOs {
         self.write_drive_structures(memory, &drives);
 
         // Parse CONFIG.SYS if present on any mounted drive.
-        let cfg = self.try_parse_config_sys(memory, disk, &drives);
+        let cfg = self.try_parse_config_sys(memory, device, &drives);
         self.apply_config(&cfg, memory);
+
+        // Set up CD-ROM drive Q: if the machine has a CD-ROM.
+        if device.cdrom_present() {
+            self.write_cdrom_drive(memory);
+        }
 
         self.write_initial_mcb_and_process(memory);
 
         // Load AUTOEXEC.BAT if present on any mounted drive.
-        let autoexec_lines = self.try_load_autoexec_bat(memory, disk, &drives);
+        let autoexec_lines = self.try_load_autoexec_bat(memory, device, &drives);
 
         let psp = self.state.current_psp;
         if let Some((lines, bat_path)) = autoexec_lines {
@@ -380,10 +474,11 @@ impl NeetanOs {
         // BREAK=
         self.state.ctrl_break = cfg.ctrl_break;
 
-        // DEVICE=NECCD.SYS -> activate MSCDEX
+        // DEVICE=NECCD.SYS -> override device name
         if let Some(ref name) = cfg.cdrom_device_name {
-            self.state.mscdex.active = true;
-            self.state.mscdex.device_name = name.clone();
+            let mut padded = name.clone();
+            padded.resize(8, b' ');
+            self.state.mscdex.device_name = padded;
         }
     }
 
@@ -536,7 +631,7 @@ impl NeetanOs {
         vector: u8,
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
-        disk: &mut dyn DiskIo,
+        device: &mut (impl DiskIo + CdromIo),
         _console: &mut dyn ConsoleIo,
     ) -> bool {
         match vector {
@@ -545,18 +640,18 @@ impl NeetanOs {
                 true
             }
             0x21 => {
-                self.int21h(cpu, memory, disk);
+                self.int21h(cpu, memory, device);
                 true
             }
             0x22 => false,
             0x23 => false,
             0x24 => false,
             0x25 => {
-                self.int25h(cpu, memory, disk);
+                self.int25h(cpu, memory, device);
                 true
             }
             0x26 => {
-                self.int26h(cpu, memory, disk);
+                self.int26h(cpu, memory, device);
                 true
             }
             0x27 => {
@@ -577,7 +672,7 @@ impl NeetanOs {
                 true
             }
             0x2F => {
-                self.int2fh(cpu, memory);
+                self.int2fh(cpu, memory, device);
                 true
             }
             0x33 => false,
@@ -917,6 +1012,26 @@ impl NeetanOs {
         // Update SYSVARS.
         mem.write_byte(SYSVARS_BASE + SYSVARS_OFF_BLOCK_DEVS, drives.len() as u8);
         mem.write_word(SYSVARS_BASE + SYSVARS_OFF_MAX_SECTOR, max_sector_size);
+    }
+
+    /// Writes the CDS entry for the CD-ROM drive (Q:).
+    fn write_cdrom_drive(&self, mem: &mut dyn MemoryAccess) {
+        use tables::*;
+
+        let drive_index = self.state.mscdex.drive_letter as u32;
+        let cds_addr = CDS_BASE + drive_index * CDS_ENTRY_SIZE;
+        let drive_letter = b'A' + self.state.mscdex.drive_letter;
+
+        // Path: "Q:\"
+        mem.write_byte(cds_addr + CDS_OFF_PATH, drive_letter);
+        mem.write_byte(cds_addr + CDS_OFF_PATH + 1, b':');
+        mem.write_byte(cds_addr + CDS_OFF_PATH + 2, b'\\');
+
+        // CD-ROM drives use the NETWORK flag (same as MSCDEX convention).
+        mem.write_word(cds_addr + CDS_OFF_FLAGS, CDS_FLAG_NETWORK);
+
+        // Backslash offset (points past "Q:").
+        mem.write_word(cds_addr + CDS_OFF_BACKSLASH_OFFSET, 2);
     }
 
     /// Writes a single DPB entry with geometry appropriate for the drive type.

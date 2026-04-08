@@ -1182,6 +1182,8 @@ impl<T: Tracing> Pc9801Bus<T> {
         }
         self.process_soundboard_sb16_actions();
 
+        self.ide.generate_cd_audio_samples(volume, output);
+
         #[cfg(feature = "mt32")]
         if let Some(ref mt32) = self.mt32 {
             mt32.exchange(volume, output, |buf| self.mpu_pc98ii.flush_midi_into(buf));

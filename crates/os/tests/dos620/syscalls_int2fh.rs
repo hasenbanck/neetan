@@ -85,3 +85,394 @@ fn hma_query() {
         bx
     );
 }
+
+#[test]
+fn mscdex_installation_check_no_cdrom() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x00, 0x15,                   // MOV AX, 1500h
+        0xBB, 0xFF, 0xFF,                   // MOV BX, FFFFh (sentinel)
+        0xCD, 0x2F,                         // INT 2Fh
+        0x89, 0x1E, 0x00, 0x01,             // MOV [0x0100], BX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let bx = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        bx, 0x0000,
+        "MSCDEX install check: BX should be 0 (no CD-ROM drives), got {:#06X}",
+        bx
+    );
+}
+
+#[test]
+fn mscdex_drive_check_no_cdrom() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x0B, 0x15,                   // MOV AX, 150Bh
+        0xB9, 0x10, 0x00,                   // MOV CX, 16 (Q:)
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let ax = harness::result_word(&machine.bus, 0);
+    let al = ax as u8;
+    assert_eq!(
+        al, 0x00,
+        "MSCDEX drive check: AL should be 0 (not CD-ROM), got {:#04X}",
+        al
+    );
+}
+
+#[test]
+fn mscdex_version() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x0C, 0x15,                   // MOV AX, 150Ch
+        0xCD, 0x2F,                         // INT 2Fh
+        0x89, 0x1E, 0x00, 0x01,             // MOV [0x0100], BX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let bx = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        bx, 0x020A,
+        "MSCDEX version: BX should be 020Ah (v2.10), got {:#06X}",
+        bx
+    );
+}
+
+#[test]
+fn mscdex_installation_check_with_cdrom() {
+    let mut machine = harness::boot_hle_with_cdrom();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x00, 0x15,                   // MOV AX, 1500h
+        0xCD, 0x2F,                         // INT 2Fh
+        0x89, 0x1E, 0x00, 0x01,             // MOV [0x0100], BX
+        0x89, 0x0E, 0x02, 0x01,             // MOV [0x0102], CX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(&mut machine, code, harness::INJECT_BUDGET);
+
+    let bx = harness::result_word(&machine.bus, 0);
+    let cx = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        bx, 0x0001,
+        "MSCDEX install check: BX should be 1 (one CD-ROM drive), got {:#06X}",
+        bx
+    );
+    assert_eq!(
+        cx, 0x0010,
+        "MSCDEX install check: CX should be 16 (Q: drive letter), got {:#06X}",
+        cx
+    );
+}
+
+#[test]
+fn mscdex_drive_check_with_cdrom() {
+    let mut machine = harness::boot_hle_with_cdrom();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x0B, 0x15,                   // MOV AX, 150Bh
+        0xB9, 0x10, 0x00,                   // MOV CX, 16 (Q:)
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(&mut machine, code, harness::INJECT_BUDGET);
+
+    let al = harness::result_byte(&machine.bus, 0);
+    let bx = harness::result_word(&machine.bus, 2);
+    assert_ne!(
+        al, 0x00,
+        "MSCDEX drive check: AL should be non-zero (is CD-ROM), got {:#04X}",
+        al
+    );
+    assert_eq!(
+        bx, 0xADAD,
+        "MSCDEX drive check: BX should be ADADh, got {:#06X}",
+        bx
+    );
+}
+
+#[test]
+fn mscdex_drive_check_wrong_drive() {
+    let mut machine = harness::boot_hle_with_cdrom();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x0B, 0x15,                   // MOV AX, 150Bh
+        0xB9, 0x02, 0x00,                   // MOV CX, 2 (C: -- not CD-ROM)
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(&mut machine, code, harness::INJECT_BUDGET);
+
+    let al = harness::result_byte(&machine.bus, 0);
+    assert_eq!(
+        al, 0x00,
+        "MSCDEX drive check for C: should return AL=0 (not CD-ROM), got {:#04X}",
+        al
+    );
+}
+
+#[test]
+fn mscdex_get_drive_letters() {
+    let mut machine = harness::boot_hle_with_cdrom();
+    // Set up a buffer at DS:0200h, then call INT 2Fh AX=150Dh with ES:BX pointing there.
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0x8C, 0xD8,                         // MOV AX, DS
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xBB, 0x00, 0x02,                   // MOV BX, 0200h
+        0xC6, 0x07, 0xFF,                   // MOV BYTE [BX], FFh (sentinel)
+        0xB8, 0x0D, 0x15,                   // MOV AX, 150Dh
+        0xCD, 0x2F,                         // INT 2Fh
+        // Copy result from [0200h] to result area [0100h].
+        0x8A, 0x07,                         // MOV AL, [BX]
+        0xA2, 0x00, 0x01,                   // MOV [0100h], AL
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(&mut machine, code, harness::INJECT_BUDGET);
+
+    let drive_letter = harness::result_byte(&machine.bus, 0);
+    assert_eq!(
+        drive_letter, 16,
+        "MSCDEX get drive letters: should return 16 (Q:), got {}",
+        drive_letter
+    );
+}
+
+#[test]
+fn mscdex_ioctl_device_status() {
+    let mut machine = harness::boot_hle_with_cdrom();
+
+    // Build a device driver request at DS:0200h for IOCTL Input (cmd 3),
+    // with a control block at DS:0220h requesting device status (code 6).
+    let base = harness::INJECT_CODE_BASE;
+    let req_off: u16 = 0x0200;
+    let req_addr = base + req_off as u32;
+    let ctl_off: u16 = 0x0220;
+    let ctl_addr = base + ctl_off as u32;
+
+    // Request header: length=26, subunit=0, command=3 (IOCTL Input).
+    harness::write_bytes(&mut machine.bus, req_addr, &[26, 0, 3]);
+    // Status word at +3 (zeroed).
+    harness::write_bytes(&mut machine.bus, req_addr + 3, &[0, 0]);
+    // Reserved 8 bytes at +5.
+    harness::write_bytes(&mut machine.bus, req_addr + 5, &[0; 8]);
+    // Transfer address at +14: far pointer to control block.
+    let seg = harness::INJECT_CODE_SEGMENT;
+    harness::write_bytes(
+        &mut machine.bus,
+        req_addr + 14,
+        &[
+            ctl_off as u8,
+            (ctl_off >> 8) as u8,
+            seg as u8,
+            (seg >> 8) as u8,
+        ],
+    );
+
+    // Control block: code 6 = device status.
+    harness::write_bytes(&mut machine.bus, ctl_addr, &[6]);
+    // Clear the result area (4 bytes at ctl+1).
+    harness::write_bytes(&mut machine.bus, ctl_addr + 1, &[0, 0, 0, 0]);
+
+    // Call INT 2Fh AX=1510h, CX=drive (Q:=16), ES:BX=request header.
+    let seg_lo = (seg & 0xFF) as u8;
+    let seg_hi = (seg >> 8) as u8;
+    let req_lo = (req_off & 0xFF) as u8;
+    let req_hi = (req_off >> 8) as u8;
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, seg_lo, seg_hi,               // MOV AX, seg
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xBB, req_lo, req_hi,               // MOV BX, req_off
+        0xB9, 0x10, 0x00,                   // MOV CX, 16
+        0xB8, 0x10, 0x15,                   // MOV AX, 1510h
+        0xCD, 0x2F,                         // INT 2Fh
+        // Copy status flags from control block to result area.
+        0xA1, ctl_off.wrapping_add(1) as u8,
+              (ctl_off.wrapping_add(1) >> 8) as u8, // MOV AX, [ctl+1]
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0xA1, ctl_off.wrapping_add(3) as u8,
+              (ctl_off.wrapping_add(3) >> 8) as u8, // MOV AX, [ctl+3]
+        0xA3, 0x02, 0x01,                   // MOV [0102h], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(&mut machine, code, harness::INJECT_BUDGET);
+
+    let flags_lo = harness::result_word(&machine.bus, 0);
+    let flags_hi = harness::result_word(&machine.bus, 2);
+    let flags = flags_lo as u32 | ((flags_hi as u32) << 16);
+
+    // Expected: door unlocked (0x02), cooked+raw (0x04), audio (0x10),
+    // prefetch (0x80), audio channels (0x100), red book (0x200), disc present (0x800).
+    assert!(
+        flags & 0x02 != 0,
+        "Device status: door unlocked bit should be set, flags={flags:#06X}"
+    );
+    assert!(
+        flags & 0x04 != 0,
+        "Device status: cooked+raw bit should be set, flags={flags:#06X}"
+    );
+    assert!(
+        flags & 0x10 != 0,
+        "Device status: audio play bit should be set, flags={flags:#06X}"
+    );
+    assert!(
+        flags & 0x200 != 0,
+        "Device status: Red Book bit should be set, flags={flags:#06X}"
+    );
+    assert!(
+        flags & 0x800 != 0,
+        "Device status: disc present bit should be set, flags={flags:#06X}"
+    );
+}
+
+#[test]
+fn mscdex_ioctl_audio_disk_info() {
+    let mut machine = harness::boot_hle_with_cdrom();
+
+    let base = harness::INJECT_CODE_BASE;
+    let req_off: u16 = 0x0200;
+    let req_addr = base + req_off as u32;
+    let ctl_off: u16 = 0x0220;
+    let ctl_addr = base + ctl_off as u32;
+
+    // Request header: IOCTL Input (cmd 3).
+    harness::write_bytes(&mut machine.bus, req_addr, &[26, 0, 3, 0, 0]);
+    harness::write_bytes(&mut machine.bus, req_addr + 5, &[0; 8]);
+    // Transfer address -> control block.
+    let seg = harness::INJECT_CODE_SEGMENT;
+    harness::write_bytes(
+        &mut machine.bus,
+        req_addr + 14,
+        &[
+            ctl_off as u8,
+            (ctl_off >> 8) as u8,
+            seg as u8,
+            (seg >> 8) as u8,
+        ],
+    );
+
+    // Control block: code 10 = audio disk info.
+    harness::write_bytes(&mut machine.bus, ctl_addr, &[10]);
+    harness::write_bytes(&mut machine.bus, ctl_addr + 1, &[0; 6]);
+
+    let seg_lo = (seg & 0xFF) as u8;
+    let seg_hi = (seg >> 8) as u8;
+    let req_lo = (req_off & 0xFF) as u8;
+    let req_hi = (req_off >> 8) as u8;
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, seg_lo, seg_hi,
+        0x8E, 0xC0,
+        0xBB, req_lo, req_hi,
+        0xB9, 0x10, 0x00,
+        0xB8, 0x10, 0x15,
+        0xCD, 0x2F,
+        // Copy 7 bytes from control block to result area.
+        0xBE, ctl_off as u8, (ctl_off >> 8) as u8, // MOV SI, ctl_off
+        0xBF, 0x00, 0x01,                           // MOV DI, 0100h
+        0xB9, 0x07, 0x00,                           // MOV CX, 7
+        0xF3, 0xA4,                                  // REP MOVSB
+        0xFA,
+        0xF4,
+    ];
+    harness::inject_and_run_generic_with_budget(&mut machine, code, harness::INJECT_BUDGET);
+
+    // Code byte.
+    let code_byte = harness::result_byte(&machine.bus, 0);
+    assert_eq!(code_byte, 10, "IOCTL code should still be 10");
+
+    // First track.
+    let first_track = harness::result_byte(&machine.bus, 1);
+    assert_eq!(first_track, 1, "First track should be 1, got {first_track}");
+
+    // Last track (test image has 2 tracks).
+    let last_track = harness::result_byte(&machine.bus, 2);
+    assert_eq!(last_track, 2, "Last track should be 2, got {last_track}");
+}
+
+#[test]
+fn mscdex_ioctl_volume_size() {
+    let mut machine = harness::boot_hle_with_cdrom();
+
+    let base = harness::INJECT_CODE_BASE;
+    let req_off: u16 = 0x0200;
+    let req_addr = base + req_off as u32;
+    let ctl_off: u16 = 0x0220;
+    let ctl_addr = base + ctl_off as u32;
+
+    // Request header: IOCTL Input (cmd 3).
+    harness::write_bytes(&mut machine.bus, req_addr, &[26, 0, 3, 0, 0]);
+    harness::write_bytes(&mut machine.bus, req_addr + 5, &[0; 8]);
+    let seg = harness::INJECT_CODE_SEGMENT;
+    harness::write_bytes(
+        &mut machine.bus,
+        req_addr + 14,
+        &[
+            ctl_off as u8,
+            (ctl_off >> 8) as u8,
+            seg as u8,
+            (seg >> 8) as u8,
+        ],
+    );
+
+    // Control block: code 8 = volume size.
+    harness::write_bytes(&mut machine.bus, ctl_addr, &[8]);
+    harness::write_bytes(&mut machine.bus, ctl_addr + 1, &[0; 4]);
+
+    let seg_lo = (seg & 0xFF) as u8;
+    let seg_hi = (seg >> 8) as u8;
+    let req_lo = (req_off & 0xFF) as u8;
+    let req_hi = (req_off >> 8) as u8;
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, seg_lo, seg_hi,
+        0x8E, 0xC0,
+        0xBB, req_lo, req_hi,
+        0xB9, 0x10, 0x00,
+        0xB8, 0x10, 0x15,
+        0xCD, 0x2F,
+        // Copy 4 bytes of volume size from ctl+1 to result.
+        0xA1, ctl_off.wrapping_add(1) as u8,
+              (ctl_off.wrapping_add(1) >> 8) as u8,
+        0xA3, 0x00, 0x01,
+        0xA1, ctl_off.wrapping_add(3) as u8,
+              (ctl_off.wrapping_add(3) >> 8) as u8,
+        0xA3, 0x02, 0x01,
+        0xFA,
+        0xF4,
+    ];
+    harness::inject_and_run_generic_with_budget(&mut machine, code, harness::INJECT_BUDGET);
+
+    let total_lo = harness::result_word(&machine.bus, 0);
+    let total_hi = harness::result_word(&machine.bus, 2);
+    let total_sectors = total_lo as u32 | ((total_hi as u32) << 16);
+    // Test image: 150 data sectors + 50 audio sectors = 200 total.
+    assert_eq!(
+        total_sectors, 200,
+        "Volume size should be 200 sectors, got {total_sectors}"
+    );
+}

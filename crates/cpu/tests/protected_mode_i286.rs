@@ -741,8 +741,7 @@ fn i286_gp_escalates_to_double_fault() {
 
     bus.ram[(PM_CODE_BASE + df_handler_ip as u32) as usize] = 0xF4; // HLT
 
-    // Trigger #GP with HLT at CPL=3 (but we're at CPL=0, so let's use INT to bad gate).
-    // Actually, let's trigger #GP by loading an invalid segment.
+    // Trigger #GP by loading an invalid segment.
     // MOV AX, 0x0028; MOV DS, AX
     place_at(
         &mut bus,
