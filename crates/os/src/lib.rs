@@ -582,10 +582,11 @@ impl NeetanOs {
         let psp_base = (self.state.current_psp as u32) << 4;
         let scratch_base = psp_base + 0x0108;
 
-        // Write ASCIIZ filename at scratch_base
+        // Write ASCIIZ filename at scratch_base (max 127 chars + NUL to stay in bounds)
         let filename_addr = scratch_base;
-        mem.write_block(filename_addr, path);
-        mem.write_byte(filename_addr + path.len() as u32, 0x00);
+        let path_len = path.len().min(127);
+        mem.write_block(filename_addr, &path[..path_len]);
+        mem.write_byte(filename_addr + path_len as u32, 0x00);
 
         // Write command tail at scratch_base + 128
         let tail_addr = scratch_base + 128;

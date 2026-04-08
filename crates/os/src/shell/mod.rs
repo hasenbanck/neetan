@@ -481,11 +481,15 @@ impl Shell {
             return ShellPhase::ExecutingCommand(running);
         }
 
-        // Try to find .BAT file
+        // Try to find .BAT file (skip if command already has .COM/.EXE extension,
+        // otherwise name_to_fcb would truncate e.g. "INSTALL.EXE.BAT" to match "INSTALL.EXE")
+        let has_exe_ext =
+            cmd_upper.len() > 4 && (cmd_upper.ends_with(b".COM") || cmd_upper.ends_with(b".EXE"));
         let mut bat_name = cmd_upper.clone();
         bat_name.extend_from_slice(b".BAT");
-        if let Ok((drive_index, dir_cluster, fcb_name)) =
-            state.resolve_file_path(&bat_name, io.memory, disk)
+        if !has_exe_ext
+            && let Ok((drive_index, dir_cluster, fcb_name)) =
+                state.resolve_file_path(&bat_name, io.memory, disk)
             && drive_index != 25
             && let Some(vol) = state.fat_volumes[drive_index as usize].as_ref()
             && let Ok(Some(entry)) = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk)
