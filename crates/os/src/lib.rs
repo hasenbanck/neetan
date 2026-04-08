@@ -286,12 +286,90 @@ pub(crate) struct OsState {
     pub(crate) buffered_input: Option<BufferedInputState>,
     /// Function key escape code storage for INT DCh CL=0x0C/0x0D (786 bytes).
     pub(crate) fn_key_map: Vec<u8>,
+    /// Pending bytes from function key / arrow key expansion. When an extended
+    /// key (ch=0x00) is read from the keyboard buffer, NEC DOS IO.SYS expands it
+    /// into the programmed escape sequence from the function key map. These bytes
+    /// are queued here and returned one at a time by subsequent INT 21h input calls.
+    pub(crate) pending_key_bytes: std::collections::VecDeque<u8>,
 }
 
 pub(crate) struct BufferedInputState {
     pub buffer_addr: u32,
     pub max_chars: u8,
     pub current_pos: u8,
+}
+
+/// Builds the default function key map (specifier 0x0000 layout, 386 bytes).
+///
+/// Layout: F1-F10 (10x16), Shift+F1-F10 (10x16), then 11 editing keys (11x6).
+/// The editing keys are: ROLL UP, ROLL DOWN, INS, DEL, UP, LEFT, RIGHT, DOWN,
+/// HOME/CLR, HELP, SHIFT+HOME/CLR.
+///
+/// Values extracted from real MS-DOS 6.20 via INT DCh CL=0x0C AX=0x0000
+/// (see machine crate test `fnkey_oracle::read_dos620_default_fnkey_map`).
+fn build_default_fn_key_map() -> Vec<u8> {
+    let mut map = vec![0u8; 786];
+
+    // F1-F10: 16 bytes each. Byte 0 = 0xFE means bytes 1-5 are display-only,
+    // and the actual input sequence starts at byte 6.
+    #[rustfmt::skip]
+    let fkey_defaults: [&[u8]; 10] = [
+        b"\xfe\x43\x31\x20\x20\x20\x1b\x53",         // F1:  display "C1   ", input ESC S
+        b"\xfe\x43\x57\x20\x20\x20\x1b\x54",         // F2:  display "CW   ", input ESC T
+        b"\xfe\x43\x55\x20\x20\x20\x1b\x55",         // F3:  display "CU   ", input ESC U
+        b"\xfe\x43\x44\x20\x20\x20\x1b\x56",         // F4:  display "CD   ", input ESC V
+        b"\xfe\x43\x52\x20\x20\x20\x1b\x57",         // F5:  display "CR   ", input ESC W
+        b"\xfe\x45\x4c\x20\x20\x20\x1b\x45",         // F6:  display "EL   ", input ESC E
+        b"\xfe\x4e\x57\x4c\x20\x20\x1b\x4a",         // F7:  display "NWL  ", input ESC J
+        b"\xfe\x49\x4e\x53\x20\x20\x1b\x50",         // F8:  display "INS  ", input ESC P
+        b"\xfe\x52\x45\x50\x20\x20\x1b\x51",         // F9:  display "REP  ", input ESC Q
+        b"\xfe\x20\x5e\x5a\x20\x20\x1b\x5a",         // F10: display " ^Z  ", input ESC Z
+    ];
+    for (i, seq) in fkey_defaults.iter().enumerate() {
+        let offset = i * 16;
+        map[offset..offset + seq.len()].copy_from_slice(seq);
+    }
+
+    // Shift+F1-F10: 16 bytes each.
+    #[rustfmt::skip]
+    let shift_fkey_defaults: [&[u8]; 10] = [
+        b"\x64\x69\x72\x20\x61\x3a\x0d",             // Shift+F1: "dir a:\r"
+        b"\x64\x69\x72\x20\x62\x3a\x0d",             // Shift+F2: "dir b:\r"
+        b"\x63\x6f\x70\x79\x20",                     // Shift+F3: "copy "
+        b"\x64\x65\x6c\x20",                         // Shift+F4: "del "
+        b"\x72\x65\x6e\x20",                         // Shift+F5: "ren "
+        b"\x63\x68\x6b\x64\x73\x6b\x20\x61\x3a\x0d", // Shift+F6: "chkdsk a:\r"
+        b"\x63\x68\x6b\x64\x73\x6b\x20\x62\x3a\x0d", // Shift+F7: "chkdsk b:\r"
+        b"\x74\x79\x70\x65\x20",                     // Shift+F8: "type "
+        b"\x64\x61\x74\x65\x0d",                     // Shift+F9: "date\r"
+        b"\x74\x69\x6d\x65\x0d",                     // Shift+F10: "time\r"
+    ];
+    for (i, seq) in shift_fkey_defaults.iter().enumerate() {
+        let offset = 160 + i * 16;
+        map[offset..offset + seq.len()].copy_from_slice(seq);
+    }
+
+    // Editing keys at offset 320 (after 20 function keys * 16 bytes each).
+    // Each editing key has a 6-byte slot (5 data + NUL).
+    let editing_defaults: [&[u8]; 11] = [
+        b"",         // ROLL UP (empty)
+        b"",         // ROLL DOWN (empty)
+        b"\x1b\x50", // INS = ESC P
+        b"\x1b\x44", // DEL = ESC D
+        b"\x0b",     // UP = 0x0B (VT)
+        b"\x08",     // LEFT = 0x08 (BS)
+        b"\x0c",     // RIGHT = 0x0C (FF)
+        b"\x0a",     // DOWN = 0x0A (LF)
+        b"\x1a",     // HOME/CLR = 0x1A (SUB)
+        b"",         // HELP (empty)
+        b"\x1e",     // SHIFT+HOME = 0x1E (RS)
+    ];
+    for (i, seq) in editing_defaults.iter().enumerate() {
+        let offset = 320 + i * 6;
+        map[offset..offset + seq.len()].copy_from_slice(seq);
+    }
+
+    map
 }
 
 /// Data source for input redirection (`<`).
@@ -377,7 +455,8 @@ impl NeetanOs {
                 mscdex: cdrom::MscdexState::new(),
                 sft2_count: 15,
                 buffered_input: None,
-                fn_key_map: vec![0u8; 786],
+                fn_key_map: build_default_fn_key_map(),
+                pending_key_bytes: std::collections::VecDeque::new(),
             },
             console: console::Console::default(),
             shell: None,

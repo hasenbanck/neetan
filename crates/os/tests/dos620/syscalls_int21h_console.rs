@@ -310,3 +310,34 @@ fn flush_and_invoke_0ch() {
     let flags = result_word(&machine.bus, 0);
     assert_ne!(flags & 0x0040, 0, "ZF should be set (no key after flush)");
 }
+
+/// Extended keys (arrows) are expanded into function key map sequences by the
+/// HLE OS, matching NEC DOS IO.SYS behavior. Arrow UP (hardware scan 0x3A)
+/// produces 0x0B (VT control character). This is a single byte, so only one
+/// INT 21h AH=07h call is needed.
+///
+/// Default values verified against real MS-DOS 6.20 via oracle test
+/// (machine crate `fnkey_oracle::read_dos620_default_fnkey_map`).
+#[test]
+fn extended_key_07h_arrow_up_returns_vt() {
+    let mut machine = harness::boot_hle();
+
+    // Inject arrow-up key using real PC-98 hardware scan code (0x3A)
+    const PC98_SCAN_UP: u8 = 0x3A;
+    type_special_key(&mut machine.bus, PC98_SCAN_UP);
+
+    const RES_LO: u8 = (INJECT_RESULT_OFFSET & 0xFF) as u8;
+    const RES_HI: u8 = (INJECT_RESULT_OFFSET >> 8) as u8;
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x07,                         // MOV AH, 07h
+        0xCD, 0x21,                         // INT 21h
+        0x89, 0x06, RES_LO, RES_HI,         // MOV [result+0], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    inject_and_run_with_budget(&mut machine, code, INJECT_BUDGET_DISK_IO);
+
+    let al = result_word(&machine.bus, 0) & 0xFF;
+    assert_eq!(al, 0x0B, "arrow-up should produce 0x0B (VT), got {al:#04X}");
+}

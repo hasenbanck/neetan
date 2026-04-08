@@ -90,6 +90,84 @@ impl NeetanOs {
         cpu.set_ax((cpu.ax() & 0xFF00) | dl as u16);
     }
 
+    /// Reads one key byte for INT 21h input functions.
+    ///
+    /// Extended keys (arrows, function keys) have ch=0x00 in the keyboard buffer.
+    /// NEC DOS IO.SYS expands these into the programmed escape sequences from
+    /// the function key map (INT DCh CL=0x0C/0x0D). This method queues the
+    /// escape sequence bytes and returns them one at a time.
+    ///
+    /// Returns `Some(byte)` if a byte is available, `None` if the keyboard
+    /// buffer is empty (and no pending bytes).
+    fn read_input_byte(&mut self, memory: &mut dyn MemoryAccess) -> Option<u8> {
+        if let Some(byte) = self.state.pending_key_bytes.pop_front() {
+            return Some(byte);
+        }
+        if !tables::key_available(memory) {
+            return None;
+        }
+        let (scan, ch) = tables::read_key(memory);
+        if ch == 0x00 {
+            // Extended key: look up the escape sequence in the function key map.
+            if let Some(seq) = self.lookup_fnkey_sequence(scan) {
+                if seq.is_empty() {
+                    // No mapping: return raw 0x00 + scan code (legacy fallback).
+                    self.state.pending_key_bytes.push_back(scan);
+                    return Some(0x00);
+                }
+                // Queue remaining bytes after the first one.
+                for &b in &seq[1..] {
+                    self.state.pending_key_bytes.push_back(b);
+                }
+                return Some(seq[0]);
+            }
+            // Unknown scan code: return raw 0x00 + scan code.
+            self.state.pending_key_bytes.push_back(scan);
+            return Some(0x00);
+        }
+        Some(ch)
+    }
+
+    /// Returns true if an input byte is ready (pending bytes or key in buffer).
+    fn input_byte_available(&self, memory: &dyn MemoryAccess) -> bool {
+        !self.state.pending_key_bytes.is_empty() || tables::key_available(memory)
+    }
+
+    /// Looks up the escape sequence for a hardware scan code in the function key map.
+    /// Returns the sequence bytes (up to the first NUL), or None if not a mapped key.
+    fn lookup_fnkey_sequence(&self, scan: u8) -> Option<Vec<u8>> {
+        // Map hardware scan code to fn_key_map offset and slot size.
+        // fn_key_map layout (specifier 0x0000):
+        //   0-159:   F1-F10 (10 x 16 bytes), scan codes 0x62-0x6B
+        //   160-319: Shift+F1-F10 (10 x 16 bytes) -- shifted versions, not mapped by scan
+        //   320+:    editing keys (11 x 6 bytes):
+        //     0=ROLL UP(0x36), 1=ROLL DOWN(0x37), 2=INS(0x38), 3=DEL(0x39),
+        //     4=UP(0x3A), 5=LEFT(0x3B), 6=RIGHT(0x3C), 7=DOWN(0x3D),
+        //     8=HOME(0x3E), 9=HELP(0x3F), 10=SHIFT+HOME
+        let (offset, max_len) = match scan {
+            0x62..=0x6B => {
+                let idx = (scan - 0x62) as usize;
+                (idx * 16, 15)
+            }
+            0x36..=0x3F => {
+                let idx = (scan - 0x36) as usize;
+                (320 + idx * 6, 5)
+            }
+            _ => return None,
+        };
+
+        let map = &self.state.fn_key_map;
+        let mut seq = Vec::new();
+        for i in 0..max_len {
+            let b = map.get(offset + i).copied().unwrap_or(0);
+            if b == 0 {
+                break;
+            }
+            seq.push(b);
+        }
+        Some(seq)
+    }
+
     /// AH=01h: Keyboard input with echo (blocking).
     /// Waits for a key, echoes it, returns AL = character.
     fn int21h_01h_keyboard_input_with_echo(
@@ -97,13 +175,13 @@ impl NeetanOs {
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
     ) {
-        if !tables::key_available(memory) {
-            adjust_iret_ip(cpu, memory, -2);
-            return;
+        match self.read_input_byte(memory) {
+            Some(ch) => {
+                self.console.process_byte(memory, ch);
+                cpu.set_ax((cpu.ax() & 0xFF00) | ch as u16);
+            }
+            None => adjust_iret_ip(cpu, memory, -2),
         }
-        let (_scan, ch) = tables::read_key(memory);
-        self.console.process_byte(memory, ch);
-        cpu.set_ax((cpu.ax() & 0xFF00) | ch as u16);
     }
 
     /// AH=06h: Direct console I/O.
@@ -116,13 +194,15 @@ impl NeetanOs {
     ) {
         let dl = (cpu.dx() & 0xFF) as u8;
         if dl == 0xFF {
-            if tables::key_available(memory) {
-                let (_scan, ch) = tables::read_key(memory);
-                cpu.set_ax((cpu.ax() & 0xFF00) | ch as u16);
-                set_iret_zf(cpu, memory, false);
-            } else {
-                cpu.set_ax(cpu.ax() & 0xFF00);
-                set_iret_zf(cpu, memory, true);
+            match self.read_input_byte(memory) {
+                Some(ch) => {
+                    cpu.set_ax((cpu.ax() & 0xFF00) | ch as u16);
+                    set_iret_zf(cpu, memory, false);
+                }
+                None => {
+                    cpu.set_ax(cpu.ax() & 0xFF00);
+                    set_iret_zf(cpu, memory, true);
+                }
             }
             return;
         }
@@ -137,12 +217,10 @@ impl NeetanOs {
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
     ) {
-        if !tables::key_available(memory) {
-            adjust_iret_ip(cpu, memory, -2);
-            return;
+        match self.read_input_byte(memory) {
+            Some(ch) => cpu.set_ax((cpu.ax() & 0xFF00) | ch as u16),
+            None => adjust_iret_ip(cpu, memory, -2),
         }
-        let (_scan, ch) = tables::read_key(memory);
-        cpu.set_ax((cpu.ax() & 0xFF00) | ch as u16);
     }
 
     /// AH=08h: Character input without echo (blocking, with Ctrl+C check).
@@ -152,12 +230,10 @@ impl NeetanOs {
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
     ) {
-        if !tables::key_available(memory) {
-            adjust_iret_ip(cpu, memory, -2);
-            return;
+        match self.read_input_byte(memory) {
+            Some(ch) => cpu.set_ax((cpu.ax() & 0xFF00) | ch as u16),
+            None => adjust_iret_ip(cpu, memory, -2),
         }
-        let (_scan, ch) = tables::read_key(memory);
-        cpu.set_ax((cpu.ax() & 0xFF00) | ch as u16);
     }
 
     /// AH=0Ah: Buffered keyboard input (blocking, with echo).
@@ -180,12 +256,13 @@ impl NeetanOs {
             });
         }
 
-        if !tables::key_available(memory) {
-            adjust_iret_ip(cpu, memory, -2);
-            return;
-        }
-
-        let (_scan, ch) = tables::read_key(memory);
+        let ch = match self.read_input_byte(memory) {
+            Some(ch) => ch,
+            None => {
+                adjust_iret_ip(cpu, memory, -2);
+                return;
+            }
+        };
         let bi = self.state.buffered_input.as_mut().unwrap();
 
         match ch {
@@ -224,12 +301,8 @@ impl NeetanOs {
 
     /// AH=0Bh: Check keyboard status (non-blocking).
     /// Returns AL = FFh if key available, 00h if not.
-    fn int21h_0bh_check_keyboard_status(
-        &self,
-        cpu: &mut dyn CpuAccess,
-        memory: &mut dyn MemoryAccess,
-    ) {
-        let al: u8 = if tables::key_available(memory) {
+    fn int21h_0bh_check_keyboard_status(&self, cpu: &mut dyn CpuAccess, memory: &dyn MemoryAccess) {
+        let al: u8 = if self.input_byte_available(memory) {
             0xFF
         } else {
             0x00
@@ -245,6 +318,7 @@ impl NeetanOs {
         memory: &mut dyn MemoryAccess,
     ) {
         tables::flush_keyboard_buffer(memory);
+        self.state.pending_key_bytes.clear();
         let al = (cpu.ax() & 0xFF) as u8;
         match al {
             0x01 => self.int21h_01h_keyboard_input_with_echo(cpu, memory),
