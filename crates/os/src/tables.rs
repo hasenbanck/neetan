@@ -182,6 +182,42 @@ pub const FREE_MCB_SEGMENT: u16 = PSP_SEGMENT + COMMAND_BLOCK_PARAGRAPHS;
 // Top of conventional memory (640 KB boundary)
 pub const MEMORY_TOP_SEGMENT: u16 = 0xA000;
 
+// PC-98 keyboard buffer in BDA (circular buffer, 16 entries of 2 bytes each)
+pub const KB_BUF_START: u32 = 0x0502;
+pub const KB_BUF_END: u32 = 0x0522;
+pub const KB_BUF_HEAD: u32 = 0x0524;
+pub const KB_BUF_TAIL: u32 = 0x0526;
+pub const KB_BUF_COUNT: u32 = 0x0528;
+
+pub(crate) fn key_available(memory: &dyn MemoryAccess) -> bool {
+    memory.read_byte(KB_BUF_COUNT) > 0
+}
+
+pub(crate) fn read_key(memory: &mut dyn MemoryAccess) -> (u8, u8) {
+    let head = memory.read_word(KB_BUF_HEAD) as u32;
+    let ch = memory.read_byte(head);
+    let scan = memory.read_byte(head + 1);
+
+    let mut new_head = head + 2;
+    if new_head >= KB_BUF_END {
+        new_head = KB_BUF_START;
+    }
+    memory.write_word(KB_BUF_HEAD, new_head as u16);
+
+    let count = memory.read_byte(KB_BUF_COUNT);
+    if count > 0 {
+        memory.write_byte(KB_BUF_COUNT, count - 1);
+    }
+
+    (scan, ch)
+}
+
+pub(crate) fn flush_keyboard_buffer(memory: &mut dyn MemoryAccess) {
+    memory.write_byte(KB_BUF_COUNT, 0);
+    let head = memory.read_word(KB_BUF_HEAD);
+    memory.write_word(KB_BUF_TAIL, head);
+}
+
 // PSP field offsets (within the 256-byte PSP)
 pub const PSP_OFF_INT20: u32 = 0x00;
 pub const PSP_OFF_MEM_TOP: u32 = 0x02;

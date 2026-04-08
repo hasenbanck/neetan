@@ -35,11 +35,6 @@ pub(crate) struct PendingExec {
     pub args: Vec<u8>,
 }
 
-const KB_BUF_START: u32 = 0x0502;
-const KB_BUF_END: u32 = 0x0522;
-const KB_BUF_HEAD: u32 = 0x0524;
-const KB_BUF_COUNT: u32 = 0x0528;
-
 const SCAN_INSERT: u8 = 0x37;
 const SCAN_DELETE: u8 = 0x38;
 const SCAN_UP: u8 = 0x39;
@@ -617,26 +612,11 @@ fn split_command(line: &[u8]) -> (&[u8], &[u8]) {
 }
 
 fn key_available(memory: &dyn MemoryAccess) -> bool {
-    memory.read_byte(KB_BUF_COUNT) > 0
+    tables::key_available(memory)
 }
 
 fn read_key(memory: &mut dyn MemoryAccess) -> (u8, u8) {
-    let head = memory.read_word(KB_BUF_HEAD) as u32;
-    let ch = memory.read_byte(head);
-    let scan = memory.read_byte(head + 1);
-
-    let mut new_head = head + 2;
-    if new_head >= KB_BUF_END {
-        new_head = KB_BUF_START;
-    }
-    memory.write_word(KB_BUF_HEAD, new_head as u16);
-
-    let count = memory.read_byte(KB_BUF_COUNT);
-    if count > 0 {
-        memory.write_byte(KB_BUF_COUNT, count - 1);
-    }
-
-    (scan, ch)
+    tables::read_key(memory)
 }
 
 fn render_prompt(state: &OsState, io: &mut IoAccess) {

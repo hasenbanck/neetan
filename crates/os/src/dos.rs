@@ -2,7 +2,10 @@
 
 use common::warn;
 
-use crate::{CpuAccess, DiskIo, MemoryAccess, NeetanOs, country, memory, set_iret_carry, tables};
+use crate::{
+    BufferedInputState, CpuAccess, DiskIo, MemoryAccess, NeetanOs, adjust_iret_ip, country, memory,
+    set_iret_carry, set_iret_zf, tables,
+};
 
 impl NeetanOs {
     /// Dispatches an INT 21h call based on the AH register.
@@ -15,13 +18,15 @@ impl NeetanOs {
         let ah = (cpu.ax() >> 8) as u8;
         match ah {
             0x00 => self.terminate_process(cpu, memory, 0, 0),
+            0x01 => self.int21h_01h_keyboard_input_with_echo(cpu, memory),
             0x02 => self.int21h_02h_display_character(cpu, memory),
             0x06 => self.int21h_06h_direct_console_io(cpu, memory),
-            0x07 => unimplemented!("INT 21h AH=07h: direct character input without echo"),
-            0x08 => unimplemented!("INT 21h AH=08h: character input without echo"),
+            0x07 => self.int21h_07h_direct_char_input(cpu, memory),
+            0x08 => self.int21h_08h_char_input_no_echo(cpu, memory),
             0x09 => self.int21h_09h_display_string(cpu, memory),
-            0x0A => unimplemented!("INT 21h AH=0Ah: buffered keyboard input"),
-            0x0C => unimplemented!("INT 21h AH=0Ch: flush input buffer and invoke input"),
+            0x0A => self.int21h_0ah_buffered_input(cpu, memory),
+            0x0B => self.int21h_0bh_check_keyboard_status(cpu, memory),
+            0x0C => self.int21h_0ch_flush_and_invoke(cpu, memory),
             0x0D => self.int21h_0dh_disk_reset(disk),
             0x0E => self.int21h_0eh_select_drive(cpu, memory),
             0x19 => self.int21h_19h_get_current_drive(cpu),
@@ -85,6 +90,22 @@ impl NeetanOs {
         cpu.set_ax((cpu.ax() & 0xFF00) | dl as u16);
     }
 
+    /// AH=01h: Keyboard input with echo (blocking).
+    /// Waits for a key, echoes it, returns AL = character.
+    fn int21h_01h_keyboard_input_with_echo(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        if !tables::key_available(memory) {
+            adjust_iret_ip(cpu, memory, -2);
+            return;
+        }
+        let (_scan, ch) = tables::read_key(memory);
+        self.console.process_byte(memory, ch);
+        cpu.set_ax((cpu.ax() & 0xFF00) | ch as u16);
+    }
+
     /// AH=06h: Direct console I/O.
     /// DL = character to output (if DL != FFh).
     /// DL = FFh: input request (returns ZF=1 if no char, ZF=0 + AL=char if available).
@@ -95,10 +116,144 @@ impl NeetanOs {
     ) {
         let dl = (cpu.dx() & 0xFF) as u8;
         if dl == 0xFF {
-            unimplemented!("INT 21h AH=06h DL=FFh: console input not yet implemented");
+            if tables::key_available(memory) {
+                let (_scan, ch) = tables::read_key(memory);
+                cpu.set_ax((cpu.ax() & 0xFF00) | ch as u16);
+                set_iret_zf(cpu, memory, false);
+            } else {
+                cpu.set_ax(cpu.ax() & 0xFF00);
+                set_iret_zf(cpu, memory, true);
+            }
+            return;
         }
         self.console.process_byte(memory, dl);
         cpu.set_ax((cpu.ax() & 0xFF00) | dl as u16);
+    }
+
+    /// AH=07h: Direct character input without echo (blocking, no Ctrl+C check).
+    /// Waits for a key, returns AL = character.
+    fn int21h_07h_direct_char_input(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        if !tables::key_available(memory) {
+            adjust_iret_ip(cpu, memory, -2);
+            return;
+        }
+        let (_scan, ch) = tables::read_key(memory);
+        cpu.set_ax((cpu.ax() & 0xFF00) | ch as u16);
+    }
+
+    /// AH=08h: Character input without echo (blocking, with Ctrl+C check).
+    /// Waits for a key, returns AL = character.
+    fn int21h_08h_char_input_no_echo(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        if !tables::key_available(memory) {
+            adjust_iret_ip(cpu, memory, -2);
+            return;
+        }
+        let (_scan, ch) = tables::read_key(memory);
+        cpu.set_ax((cpu.ax() & 0xFF00) | ch as u16);
+    }
+
+    /// AH=0Ah: Buffered keyboard input (blocking, with echo).
+    /// DS:DX -> buffer: byte[0]=max chars, byte[1]=actual count, byte[2+]=data.
+    fn int21h_0ah_buffered_input(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        if self.state.buffered_input.is_none() {
+            let buffer_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+            let max_chars = memory.read_byte(buffer_addr);
+            if max_chars == 0 {
+                return;
+            }
+            self.state.buffered_input = Some(BufferedInputState {
+                buffer_addr,
+                max_chars,
+                current_pos: 0,
+            });
+        }
+
+        if !tables::key_available(memory) {
+            adjust_iret_ip(cpu, memory, -2);
+            return;
+        }
+
+        let (_scan, ch) = tables::read_key(memory);
+        let bi = self.state.buffered_input.as_mut().unwrap();
+
+        match ch {
+            0x0D => {
+                let addr = bi.buffer_addr;
+                let pos = bi.current_pos;
+                memory.write_byte(addr + 1, pos);
+                memory.write_byte(addr + 2 + pos as u32, 0x0D);
+                self.console.process_byte(memory, b'\r');
+                self.console.process_byte(memory, b'\n');
+                self.state.buffered_input = None;
+            }
+            0x08 => {
+                if let Some(bi) = self.state.buffered_input.as_mut()
+                    && bi.current_pos > 0
+                {
+                    bi.current_pos -= 1;
+                    self.console.process_byte(memory, 0x08);
+                    self.console.process_byte(memory, b' ');
+                    self.console.process_byte(memory, 0x08);
+                }
+                adjust_iret_ip(cpu, memory, -2);
+            }
+            _ => {
+                let bi = self.state.buffered_input.as_mut().unwrap();
+                if bi.current_pos < bi.max_chars.saturating_sub(1) {
+                    let addr = bi.buffer_addr + 2 + bi.current_pos as u32;
+                    memory.write_byte(addr, ch);
+                    bi.current_pos += 1;
+                    self.console.process_byte(memory, ch);
+                }
+                adjust_iret_ip(cpu, memory, -2);
+            }
+        }
+    }
+
+    /// AH=0Bh: Check keyboard status (non-blocking).
+    /// Returns AL = FFh if key available, 00h if not.
+    fn int21h_0bh_check_keyboard_status(
+        &self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        let al: u8 = if tables::key_available(memory) {
+            0xFF
+        } else {
+            0x00
+        };
+        cpu.set_ax((cpu.ax() & 0xFF00) | al as u16);
+    }
+
+    /// AH=0Ch: Flush input buffer and invoke input function.
+    /// AL = function to invoke (01h, 06h, 07h, 08h, or 0Ah).
+    fn int21h_0ch_flush_and_invoke(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        tables::flush_keyboard_buffer(memory);
+        let al = (cpu.ax() & 0xFF) as u8;
+        match al {
+            0x01 => self.int21h_01h_keyboard_input_with_echo(cpu, memory),
+            0x06 => self.int21h_06h_direct_console_io(cpu, memory),
+            0x07 => self.int21h_07h_direct_char_input(cpu, memory),
+            0x08 => self.int21h_08h_char_input_no_echo(cpu, memory),
+            0x0A => self.int21h_0ah_buffered_input(cpu, memory),
+            _ => {}
+        }
     }
 
     /// AH=09h: Display string.

@@ -651,6 +651,7 @@ impl NeetanOs {
         // Store return code.
         self.state.last_return_code = return_code;
         self.state.last_termination_type = termination_type;
+        self.state.buffered_input = None;
 
         // Restore parent's IRET frame.
         cpu.set_ss(parent.return_ss);

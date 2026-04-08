@@ -282,6 +282,16 @@ pub(crate) struct OsState {
     pub(crate) mscdex: cdrom::MscdexState,
     /// Number of entries in the second SFT block (dynamic, based on FILES=).
     pub(crate) sft2_count: u16,
+    /// Pending buffered input state for INT 21h AH=0Ah.
+    pub(crate) buffered_input: Option<BufferedInputState>,
+    /// Function key escape code storage for INT DCh CL=0x0C/0x0D (786 bytes).
+    pub(crate) fn_key_map: Vec<u8>,
+}
+
+pub(crate) struct BufferedInputState {
+    pub buffer_addr: u32,
+    pub max_chars: u8,
+    pub current_pos: u8,
 }
 
 /// Data source for input redirection (`<`).
@@ -366,6 +376,8 @@ impl NeetanOs {
                 country_code: 81,
                 mscdex: cdrom::MscdexState::new(),
                 sft2_count: 15,
+                buffered_input: None,
+                fn_key_map: vec![0u8; 786],
             },
             console: console::Console::default(),
             shell: None,
@@ -1665,4 +1677,21 @@ pub(crate) fn set_iret_carry(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, ca
         flags &= !0x0001;
     }
     mem.write_word(flags_addr, flags);
+}
+
+pub(crate) fn set_iret_zf(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, zero: bool) {
+    let flags_addr = ((cpu.ss() as u32) << 4) + cpu.sp() as u32 + 4;
+    let mut flags = mem.read_word(flags_addr);
+    if zero {
+        flags |= 0x0040;
+    } else {
+        flags &= !0x0040;
+    }
+    mem.write_word(flags_addr, flags);
+}
+
+pub(crate) fn adjust_iret_ip(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, delta: i16) {
+    let ip_addr = ((cpu.ss() as u32) << 4) + cpu.sp() as u32;
+    let ip = mem.read_word(ip_addr);
+    mem.write_word(ip_addr, ip.wrapping_add(delta as u16));
 }

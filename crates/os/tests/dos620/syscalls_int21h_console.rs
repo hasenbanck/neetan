@@ -1,4 +1,4 @@
-use crate::harness;
+use crate::harness::{self, *};
 
 #[test]
 fn display_character_02h() {
@@ -80,4 +80,233 @@ fn fast_console_output_int29h() {
         harness::find_char_in_text_vram(&machine.bus, 0x007C),
         "Text VRAM should contain character '|' (0x007C) after INT 29h"
     );
+}
+
+#[test]
+fn direct_console_input_06h_key_available() {
+    let mut machine = harness::boot_hle();
+    type_string(&mut machine.bus, b"Q");
+
+    const RES_LO: u8 = (INJECT_RESULT_OFFSET & 0xFF) as u8;
+    const RES_HI: u8 = (INJECT_RESULT_OFFSET >> 8) as u8;
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x06,                         // MOV AH, 06h
+        0xB2, 0xFF,                         // MOV DL, FFh (input request)
+        0xCD, 0x21,                         // INT 21h
+        0x89, 0x06, RES_LO, RES_HI,         // MOV [result+0], AX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0x89, 0x06, RES_LO + 2, RES_HI,     // MOV [result+2], AX (flags)
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    inject_and_run(&mut machine, code);
+
+    let ax = result_word(&machine.bus, 0);
+    assert_eq!(ax & 0xFF, b'Q' as u16, "AL should be 'Q'");
+
+    let flags = result_word(&machine.bus, 2);
+    assert_eq!(flags & 0x0040, 0, "ZF should be clear when key available");
+}
+
+#[test]
+fn direct_console_input_06h_no_key() {
+    let mut machine = harness::boot_hle();
+
+    const RES_LO: u8 = (INJECT_RESULT_OFFSET & 0xFF) as u8;
+    const RES_HI: u8 = (INJECT_RESULT_OFFSET >> 8) as u8;
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x06,                         // MOV AH, 06h
+        0xB2, 0xFF,                         // MOV DL, FFh (input request)
+        0xCD, 0x21,                         // INT 21h
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0x89, 0x06, RES_LO, RES_HI,         // MOV [result+0], AX (flags)
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    inject_and_run(&mut machine, code);
+
+    let flags = result_word(&machine.bus, 0);
+    assert_ne!(flags & 0x0040, 0, "ZF should be set when no key available");
+}
+
+#[test]
+fn direct_char_input_07h() {
+    let mut machine = harness::boot_hle();
+    type_string(&mut machine.bus, b"Z");
+
+    const RES_LO: u8 = (INJECT_RESULT_OFFSET & 0xFF) as u8;
+    const RES_HI: u8 = (INJECT_RESULT_OFFSET >> 8) as u8;
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x07,                         // MOV AH, 07h
+        0xCD, 0x21,                         // INT 21h
+        0x89, 0x06, RES_LO, RES_HI,         // MOV [result+0], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    inject_and_run(&mut machine, code);
+
+    let ax = result_word(&machine.bus, 0);
+    assert_eq!(ax & 0xFF, b'Z' as u16, "AL should be 'Z'");
+}
+
+#[test]
+fn char_input_no_echo_08h() {
+    let mut machine = harness::boot_hle();
+    type_string(&mut machine.bus, b"W");
+
+    const RES_LO: u8 = (INJECT_RESULT_OFFSET & 0xFF) as u8;
+    const RES_HI: u8 = (INJECT_RESULT_OFFSET >> 8) as u8;
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x08,                         // MOV AH, 08h
+        0xCD, 0x21,                         // INT 21h
+        0x89, 0x06, RES_LO, RES_HI,         // MOV [result+0], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    inject_and_run(&mut machine, code);
+
+    let ax = result_word(&machine.bus, 0);
+    assert_eq!(ax & 0xFF, b'W' as u16, "AL should be 'W'");
+}
+
+#[test]
+fn keyboard_input_with_echo_01h() {
+    let mut machine = harness::boot_hle();
+    type_string(&mut machine.bus, b"#");
+
+    const RES_LO: u8 = (INJECT_RESULT_OFFSET & 0xFF) as u8;
+    const RES_HI: u8 = (INJECT_RESULT_OFFSET >> 8) as u8;
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x01,                         // MOV AH, 01h
+        0xCD, 0x21,                         // INT 21h
+        0x89, 0x06, RES_LO, RES_HI,         // MOV [result+0], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    inject_and_run(&mut machine, code);
+
+    let ax = result_word(&machine.bus, 0);
+    assert_eq!(ax & 0xFF, b'#' as u16, "AL should be '#'");
+
+    assert!(
+        harness::find_char_in_text_vram(&machine.bus, 0x0023),
+        "Character '#' should be echoed to VRAM by AH=01h"
+    );
+}
+
+#[test]
+fn check_keyboard_status_0bh_available() {
+    let mut machine = harness::boot_hle();
+    type_string(&mut machine.bus, b"A");
+
+    const RES_LO: u8 = (INJECT_RESULT_OFFSET & 0xFF) as u8;
+    const RES_HI: u8 = (INJECT_RESULT_OFFSET >> 8) as u8;
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x0B,                         // MOV AH, 0Bh
+        0xCD, 0x21,                         // INT 21h
+        0x89, 0x06, RES_LO, RES_HI,         // MOV [result+0], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    inject_and_run(&mut machine, code);
+
+    let ax = result_word(&machine.bus, 0);
+    assert_eq!(ax & 0xFF, 0xFF, "AL should be FFh when key available");
+}
+
+#[test]
+fn check_keyboard_status_0bh_empty() {
+    let mut machine = harness::boot_hle();
+
+    const RES_LO: u8 = (INJECT_RESULT_OFFSET & 0xFF) as u8;
+    const RES_HI: u8 = (INJECT_RESULT_OFFSET >> 8) as u8;
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x0B,                         // MOV AH, 0Bh
+        0xCD, 0x21,                         // INT 21h
+        0x89, 0x06, RES_LO, RES_HI,         // MOV [result+0], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    inject_and_run(&mut machine, code);
+
+    let ax = result_word(&machine.bus, 0);
+    assert_eq!(ax & 0xFF, 0x00, "AL should be 00h when no key available");
+}
+
+#[test]
+fn buffered_input_0ah() {
+    let mut machine = harness::boot_hle();
+
+    let base = INJECT_CODE_BASE;
+
+    // Set up input buffer at +0x0200: byte[0]=10 (max), byte[1]=0 (count, output)
+    write_bytes(&mut machine.bus, base + 0x0200, &[10, 0]);
+
+    // Inject "HI\r" into keyboard buffer
+    type_string(&mut machine.bus, b"HI\r");
+
+    const RES_LO: u8 = (INJECT_RESULT_OFFSET & 0xFF) as u8;
+    const RES_HI: u8 = (INJECT_RESULT_OFFSET >> 8) as u8;
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h (buffer)
+        0xB4, 0x0A,                         // MOV AH, 0Ah
+        0xCD, 0x21,                         // INT 21h
+        0xC6, 0x06, RES_LO, RES_HI, 0x01,   // MOV BYTE [result+0], 01h (done marker)
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    inject_and_run_with_budget(&mut machine, code, INJECT_BUDGET_DISK_IO);
+
+    assert_eq!(
+        result_byte(&machine.bus, 0),
+        0x01,
+        "code should have completed"
+    );
+
+    let actual_count = machine.bus.read_byte_direct(base + 0x0201);
+    assert_eq!(actual_count, 2, "byte[1] should be 2 (chars read)");
+
+    let ch0 = machine.bus.read_byte_direct(base + 0x0202);
+    let ch1 = machine.bus.read_byte_direct(base + 0x0203);
+    let ch2 = machine.bus.read_byte_direct(base + 0x0204);
+    assert_eq!(ch0, b'H', "byte[2] should be 'H'");
+    assert_eq!(ch1, b'I', "byte[3] should be 'I'");
+    assert_eq!(ch2, 0x0D, "byte[4] should be CR");
+}
+
+#[test]
+fn flush_and_invoke_0ch() {
+    let mut machine = harness::boot_hle();
+
+    // Inject a key that should be flushed
+    type_string(&mut machine.bus, b"X");
+
+    const RES_LO: u8 = (INJECT_RESULT_OFFSET & 0xFF) as u8;
+    const RES_HI: u8 = (INJECT_RESULT_OFFSET >> 8) as u8;
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // AH=0Ch, AL=06h (flush then direct console input DL=FFh)
+        0xB8, 0x06, 0x0C,                   // MOV AX, 0C06h
+        0xB2, 0xFF,                         // MOV DL, FFh
+        0xCD, 0x21,                         // INT 21h
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0x89, 0x06, RES_LO, RES_HI,         // MOV [result+0], AX (flags)
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    inject_and_run(&mut machine, code);
+
+    let flags = result_word(&machine.bus, 0);
+    assert_ne!(flags & 0x0040, 0, "ZF should be set (no key after flush)");
 }

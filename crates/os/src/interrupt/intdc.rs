@@ -14,6 +14,8 @@ impl NeetanOs {
         let cl = (cpu.cx() & 0xFF) as u8;
         match cl {
             0x00..=0x08 => {}
+            0x0C => self.intdch_0ch_read_fnkey_map(cpu, memory),
+            0x0D => self.intdch_0dh_write_fnkey_map(cpu, memory),
             0x10 => self.intdch_10h_console(cpu, memory),
             0x12 => self.intdch_12h_system_identification(cpu, memory),
             0x13 => self.intdch_13h_daua_mapping_buffer(cpu, memory),
@@ -211,5 +213,70 @@ impl NeetanOs {
     fn intdch_81h_extended_memory_query(&self, cpu: &mut dyn CpuAccess, memory: &dyn MemoryAccess) {
         let ext_mem = memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_EXT_MEM_128K);
         cpu.set_ax((cpu.ax() & 0xFF00) | ext_mem as u16);
+    }
+
+    /// CL=0Ch: Read programmable function key mapping.
+    /// AX = key specifier, DS:DX = destination buffer.
+    fn intdch_0ch_read_fnkey_map(&self, cpu: &dyn CpuAccess, memory: &mut dyn MemoryAccess) {
+        let key_specifier = cpu.ax();
+        let buffer_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+
+        let (src_offset, length) = match key_specifier {
+            0x0000 => (0, 786),
+            0x0001..=0x000A => {
+                let idx = (key_specifier - 1) as usize;
+                (idx * 16, 16)
+            }
+            0x000B..=0x0014 => {
+                let idx = (key_specifier - 0x000B) as usize;
+                (160 + idx * 16, 16)
+            }
+            0x0015..=0x001F => {
+                let idx = (key_specifier - 0x0015) as usize;
+                (320 + idx * 6, 6)
+            }
+            _ => return,
+        };
+
+        for i in 0..length {
+            let byte = self
+                .state
+                .fn_key_map
+                .get(src_offset + i)
+                .copied()
+                .unwrap_or(0);
+            memory.write_byte(buffer_addr + i as u32, byte);
+        }
+    }
+
+    /// CL=0Dh: Write programmable function key mapping.
+    /// AX = key specifier, DS:DX = source buffer.
+    fn intdch_0dh_write_fnkey_map(&mut self, cpu: &dyn CpuAccess, memory: &dyn MemoryAccess) {
+        let key_specifier = cpu.ax();
+        let buffer_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+
+        let (dst_offset, length) = match key_specifier {
+            0x0000 => (0, 786),
+            0x0001..=0x000A => {
+                let idx = (key_specifier - 1) as usize;
+                (idx * 16, 16)
+            }
+            0x000B..=0x0014 => {
+                let idx = (key_specifier - 0x000B) as usize;
+                (160 + idx * 16, 16)
+            }
+            0x0015..=0x001F => {
+                let idx = (key_specifier - 0x0015) as usize;
+                (320 + idx * 6, 6)
+            }
+            _ => return,
+        };
+
+        for i in 0..length {
+            let byte = memory.read_byte(buffer_addr + i as u32);
+            if let Some(dest) = self.state.fn_key_map.get_mut(dst_offset + i) {
+                *dest = byte;
+            }
+        }
     }
 }

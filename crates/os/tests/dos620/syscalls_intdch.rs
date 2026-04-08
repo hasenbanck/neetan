@@ -1,4 +1,4 @@
-use crate::harness;
+use crate::harness::{self, *};
 
 #[test]
 fn system_identification() {
@@ -151,4 +151,51 @@ fn disk_partition_info_80h() {
     // depend on the drive configuration.
     let _ax = harness::result_word(&machine.bus, 0);
     let _bx = harness::result_word(&machine.bus, 2);
+}
+
+#[test]
+fn fnkey_write_then_read_roundtrip() {
+    let mut machine = harness::boot_hle();
+    let base = INJECT_CODE_BASE;
+
+    // Write 16 test bytes at +0x0200 (data to write as F1 key mapping)
+    let test_data: [u8; 16] = [
+        0x1B, 0x5B, 0x31, 0x7E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ];
+    write_bytes(&mut machine.bus, base + 0x0200, &test_data);
+
+    // Zero out read buffer at +0x0220
+    write_bytes(&mut machine.bus, base + 0x0220, &[0u8; 16]);
+
+    let seg_lo = (INJECT_CODE_SEGMENT & 0xFF) as u8;
+    let seg_hi = (INJECT_CODE_SEGMENT >> 8) as u8;
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Write F1 mapping: CL=0Dh, AX=0001h, DS:DX=seg:0200h
+        0xB8, seg_lo, seg_hi,               // MOV AX, INJECT_CODE_SEGMENT
+        0x8E, 0xD8,                         // MOV DS, AX
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xB8, 0x01, 0x00,                   // MOV AX, 0001h (F1 key specifier)
+        0xB9, 0x0D, 0x00,                   // MOV CX, 000Dh (CL=0Dh = write)
+        0xCD, 0xDC,                         // INT DCh
+        // Read F1 mapping: CL=0Ch, AX=0001h, DS:DX=seg:0220h
+        0xBA, 0x20, 0x02,                   // MOV DX, 0220h
+        0xB8, 0x01, 0x00,                   // MOV AX, 0001h
+        0xB9, 0x0C, 0x00,                   // MOV CX, 000Ch (CL=0Ch = read)
+        0xCD, 0xDC,                         // INT DCh
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    inject_and_run(&mut machine, code);
+
+    // Verify the read buffer matches what we wrote
+    for i in 0..16u32 {
+        let expected = test_data[i as usize];
+        let actual = machine.bus.read_byte_direct(base + 0x0220 + i);
+        assert_eq!(
+            actual, expected,
+            "fnkey map byte {i}: expected {expected:#04X}, got {actual:#04X}"
+        );
+    }
 }
