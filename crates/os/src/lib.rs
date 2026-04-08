@@ -669,9 +669,9 @@ impl NeetanOs {
         path: &[u8],
         args: &[u8],
     ) -> Result<(), u16> {
-        // Use the area after COMMAND.COM's code stub (PSP:0108h) for scratch data.
+        // Use the area after COMMAND.COM's code stub (PSP:010Fh) for scratch data.
         let psp_base = (self.state.current_psp as u32) << 4;
-        let scratch_base = psp_base + 0x0108;
+        let scratch_base = psp_base + 0x010F;
 
         // Write ASCIIZ filename at scratch_base (max 127 chars + NUL to stay in bounds)
         let filename_addr = scratch_base;
@@ -694,7 +694,7 @@ impl NeetanOs {
         mem.write_word(pb_addr, 0x0000);
         // cmd_tail pointer: seg:off relative to COMMAND.COM PSP
         let tail_seg = self.state.current_psp;
-        let tail_off = 0x0108u16 + 128;
+        let tail_off = 0x010Fu16 + 128;
         mem.write_word(pb_addr + 2, tail_off);
         mem.write_word(pb_addr + 4, tail_seg);
         // FCB1 and FCB2 point to default FCBs at PSP:005Ch and PSP:006Ch
@@ -705,9 +705,9 @@ impl NeetanOs {
 
         // Set up CPU registers for EXEC: DS:DX = filename, ES:BX = parameter block
         cpu.set_ds(self.state.current_psp);
-        cpu.set_dx(0x0108);
+        cpu.set_dx(0x010F);
         cpu.set_es(self.state.current_psp);
-        cpu.set_bx(0x0108 + 256);
+        cpu.set_bx(0x010F + 256);
         cpu.set_ax(0x4B00);
 
         self.exec_load_and_execute(cpu, mem, disk)

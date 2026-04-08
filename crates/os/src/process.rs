@@ -173,26 +173,39 @@ pub(crate) fn write_environment_block(mem: &mut dyn MemoryAccess, env_segment: u
 ///
 /// INT 28h (DOS Idle) is called on each iteration so that TSR programs
 /// hooked to the idle interrupt get a chance to run.
-///
-/// ```text
-/// loop:
-///     MOV AH, FFh     ; B4 FF
-///     INT 21h          ; CD 21
-///     INT 28h          ; CD 28
-///     JMP SHORT loop   ; EB F8
-/// ```
 pub(crate) fn write_command_com_stub(mem: &mut dyn MemoryAccess, psp_segment: u16) {
     let base = (psp_segment as u32) << 4;
     let entry = base + 0x0100;
 
-    mem.write_byte(entry, 0xB4); // MOV AH, imm8
-    mem.write_byte(entry + 1, 0xFF); // FFh
-    mem.write_byte(entry + 2, 0xCD); // INT
-    mem.write_byte(entry + 3, 0x21); // 21h
-    mem.write_byte(entry + 4, 0xCD); // INT
-    mem.write_byte(entry + 5, 0x28); // 28h
-    mem.write_byte(entry + 6, 0xEB); // JMP SHORT
-    mem.write_byte(entry + 7, 0xF8); // -8 (back to MOV AH)
+    // Set up a stack inside COMMAND.COM's own MCB allocation (34 paragraphs =
+    // 0x220 bytes). The bootstrap IRET lands here with the inherited ITF stack
+    // at 0:7C00 which sits in the free memory pool; child EXEC allocations
+    // would overwrite that IRET frame. Moving SS:SP into our own allocation
+    // keeps the parent's return frame safe.
+    //
+    // 0x0100: 8C C8        MOV AX, CS
+    // 0x0102: 8E D0        MOV SS, AX
+    // 0x0104: BC 40 02     MOV SP, 0x0240
+    // loop:
+    // 0x0107: B4 FF        MOV AH, FFh
+    // 0x0109: CD 21        INT 21h
+    // 0x010B: CD 28        INT 28h
+    // 0x010D: EB F8        JMP SHORT loop (-8 -> 0x0107)
+    mem.write_byte(entry, 0x8C); // MOV AX, CS
+    mem.write_byte(entry + 1, 0xC8);
+    mem.write_byte(entry + 2, 0x8E); // MOV SS, AX
+    mem.write_byte(entry + 3, 0xD0);
+    mem.write_byte(entry + 4, 0xBC); // MOV SP, imm16
+    mem.write_byte(entry + 5, 0x40); // low byte of 0x0240
+    mem.write_byte(entry + 6, 0x02); // high byte of 0x0240
+    mem.write_byte(entry + 7, 0xB4); // MOV AH, imm8
+    mem.write_byte(entry + 8, 0xFF); // FFh
+    mem.write_byte(entry + 9, 0xCD); // INT
+    mem.write_byte(entry + 10, 0x21); // 21h
+    mem.write_byte(entry + 11, 0xCD); // INT
+    mem.write_byte(entry + 12, 0x28); // 28h
+    mem.write_byte(entry + 13, 0xEB); // JMP SHORT
+    mem.write_byte(entry + 14, 0xF8); // -8 (back to MOV AH)
 }
 
 /// Writes a child PSP with inherited handles, command tail, and FCBs.

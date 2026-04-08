@@ -78,6 +78,3 @@ mod shell_batch;
 
 #[path = "dos620/shell_exec.rs"]
 mod shell_exec;
-
-#[path = "dos620/yuno_install.rs"]
-mod yuno_install;
