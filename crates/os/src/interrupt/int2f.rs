@@ -10,6 +10,8 @@ use crate::{CpuAccess, MemoryAccess, NeetanOs};
 impl NeetanOs {
     /// Dispatches an INT 2Fh call based on the AH register.
     pub(crate) fn int2fh(&self, cpu: &mut dyn CpuAccess, _memory: &mut dyn MemoryAccess) {
+        // TODO: We don't handle this correctly. Both AL and AH needs to be tested.
+        //       See: https://www.stanislavs.org/helppc/int_2f.html
         let ah = (cpu.ax() >> 8) as u8;
         match ah {
             0x16 => self.int2fh_16h_windows_check(cpu),

@@ -187,6 +187,12 @@ pub(crate) struct OsState {
     pub(crate) virtual_drive: filesystem::virtual_drive::VirtualDrive,
     /// Process stack for nested EXEC calls.
     pub(crate) process_stack: Vec<process::ProcessContext>,
+    /// Country code from CONFIG.SYS (default 81 = Japan).
+    pub(crate) country_code: u16,
+    /// MSCDEX state (activated by DEVICE=NECCD.SYS in CONFIG.SYS).
+    pub(crate) mscdex: cdrom::MscdexState,
+    /// Number of entries in the second SFT block (dynamic, based on FILES=).
+    pub(crate) sft2_count: u16,
 }
 
 /// Data source for input redirection (`<`).
@@ -268,6 +274,9 @@ impl NeetanOs {
                 sft2_base: 0,
                 virtual_drive: filesystem::virtual_drive::VirtualDrive::new(),
                 process_stack: Vec::new(),
+                country_code: 81,
+                mscdex: cdrom::MscdexState::new(),
+                sft2_count: 15,
             },
             console: console::Console::default(),
             shell: None,
@@ -285,15 +294,138 @@ impl NeetanOs {
         &mut self,
         _cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
-        _disk: &mut dyn DiskIo,
+        disk: &mut dyn DiskIo,
         _console: &mut dyn ConsoleIo,
     ) {
         self.write_dos_data_structures(memory);
         self.write_iosys_work_area(memory);
         let drives = Self::discover_drives(memory);
         self.write_drive_structures(memory, &drives);
+
+        // Parse CONFIG.SYS if present on any mounted drive.
+        let cfg = self.try_parse_config_sys(memory, disk, &drives);
+        self.apply_config(&cfg, memory);
+
         self.write_initial_mcb_and_process(memory);
-        self.shell = Some(shell::Shell::new());
+
+        // Load AUTOEXEC.BAT if present on any mounted drive.
+        let autoexec_lines = self.try_load_autoexec_bat(memory, disk, &drives);
+
+        let psp = self.state.current_psp;
+        if let Some((lines, bat_path)) = autoexec_lines {
+            self.shell = Some(shell::Shell::new_with_autoexec(psp, lines, bat_path));
+        } else {
+            self.shell = Some(shell::Shell::new(psp));
+        }
+    }
+
+    /// Searches mounted drives for CONFIG.SYS and parses it.
+    fn try_parse_config_sys(
+        &mut self,
+        memory: &dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+        drives: &[DriveInfo],
+    ) -> config::ConfigSys {
+        for drive in drives {
+            if drive.is_virtual {
+                continue;
+            }
+            if self
+                .state
+                .ensure_volume_mounted(drive.drive_index, memory, disk)
+                .is_err()
+            {
+                continue;
+            }
+            let vol = match self.state.fat_volumes[drive.drive_index as usize].as_ref() {
+                Some(v) => v,
+                None => continue,
+            };
+            let fcb_name = filesystem::fat_dir::name_to_fcb(b"CONFIG.SYS");
+            let entry = match filesystem::fat_dir::find_entry(vol, 0, &fcb_name, disk) {
+                Ok(Some(e)) => e,
+                _ => continue,
+            };
+            if entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY != 0 {
+                continue;
+            }
+            if let Ok(data) = process::read_file_data(vol, &entry, disk) {
+                return config::parse_config_sys(&data);
+            }
+        }
+        config::ConfigSys::default()
+    }
+
+    /// Applies parsed CONFIG.SYS values to OsState and SYSVARS in memory.
+    fn apply_config(&mut self, cfg: &config::ConfigSys, memory: &mut dyn MemoryAccess) {
+        // FILES= -> SFT2 entry count
+        let sft2_count = cfg.files.saturating_sub(tables::SFT_INITIAL_COUNT);
+        self.state.sft2_count = sft2_count.max(1);
+
+        // BUFFERS=
+        memory.write_word(
+            self.state.sysvars_base + tables::SYSVARS_OFF_BUFFERS,
+            cfg.buffers,
+        );
+
+        // LASTDRIVE=
+        memory.write_byte(
+            self.state.sysvars_base + tables::SYSVARS_OFF_LASTDRIVE,
+            cfg.lastdrive,
+        );
+
+        // COUNTRY=
+        self.state.country_code = cfg.country;
+
+        // BREAK=
+        self.state.ctrl_break = cfg.ctrl_break;
+
+        // DEVICE=NECCD.SYS -> activate MSCDEX
+        if let Some(ref name) = cfg.cdrom_device_name {
+            self.state.mscdex.active = true;
+            self.state.mscdex.device_name = name.clone();
+        }
+    }
+
+    /// Searches mounted drives for AUTOEXEC.BAT and loads its lines.
+    fn try_load_autoexec_bat(
+        &mut self,
+        memory: &dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+        drives: &[DriveInfo],
+    ) -> Option<(Vec<Vec<u8>>, Vec<u8>)> {
+        for drive in drives {
+            if drive.is_virtual {
+                continue;
+            }
+            if self
+                .state
+                .ensure_volume_mounted(drive.drive_index, memory, disk)
+                .is_err()
+            {
+                continue;
+            }
+            let vol = match self.state.fat_volumes[drive.drive_index as usize].as_ref() {
+                Some(v) => v,
+                None => continue,
+            };
+            let fcb_name = filesystem::fat_dir::name_to_fcb(b"AUTOEXEC.BAT");
+            let entry = match filesystem::fat_dir::find_entry(vol, 0, &fcb_name, disk) {
+                Ok(Some(e)) => e,
+                _ => continue,
+            };
+            if entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY != 0 {
+                continue;
+            }
+            if let Ok(data) = process::read_file_data(vol, &entry, disk) {
+                let lines = shell::batch::split_bat_lines(&data);
+                let drive_letter = b'A' + drive.drive_index;
+                let mut bat_path = vec![drive_letter, b':', b'\\'];
+                bat_path.extend_from_slice(b"AUTOEXEC.BAT");
+                return Some((lines, bat_path));
+            }
+        }
+        None
     }
 
     /// INT 21h AH=FFh: Shell prompt/command cycle step.
@@ -302,20 +434,96 @@ impl NeetanOs {
     /// `self.console` + the `memory` parameter, and calls `shell.step()`.
     /// This cleanly splits borrows between `self.state`, `self.console`,
     /// and `self.shell`.
+    ///
+    /// After `shell.step()`, if an external program EXEC is pending, we build
+    /// the parameter block and perform the EXEC here (where we have access to
+    /// the full `NeetanOs` process infrastructure).
     pub(crate) fn int21h_ffh_shell_step(
         &mut self,
+        cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
         disk: &mut dyn DiskIo,
     ) {
         let mut shell = self.shell.take().expect("shell not initialized");
-        let mut io = IoAccess {
-            console: &mut self.console,
-            memory,
-            redirect_output: None,
-            redirect_input: None,
-        };
-        shell.step(&mut self.state, &mut io, disk);
+        {
+            let mut io = IoAccess {
+                console: &mut self.console,
+                memory,
+                redirect_output: None,
+                redirect_input: None,
+            };
+            shell.step(&mut self.state, &mut io, disk);
+        }
+
+        // Handle pending EXEC from shell dispatch.
+        if let Some(exec) = shell.pending_exec.take()
+            && let Err(error_code) = self.exec_from_shell(cpu, memory, disk, &exec.path, &exec.args)
+        {
+            let msg = format!("Error loading program ({})\r\n", error_code);
+            for &byte in msg.as_bytes() {
+                self.console.process_byte(memory, byte);
+            }
+            shell.last_exit_code = 1;
+            shell.phase = shell::ShellPhase::ShowPrompt;
+        }
+
         self.shell = Some(shell);
+    }
+
+    /// Performs EXEC for an external program launched from the shell.
+    ///
+    /// Writes the program filename and command tail into a scratch area in
+    /// COMMAND.COM's memory, builds the EXEC parameter block, and delegates
+    /// to `exec_load_and_execute()`.
+    fn exec_from_shell(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        mem: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+        path: &[u8],
+        args: &[u8],
+    ) -> Result<(), u16> {
+        // Use the area after COMMAND.COM's code stub (PSP:0108h) for scratch data.
+        let psp_base = (self.state.current_psp as u32) << 4;
+        let scratch_base = psp_base + 0x0108;
+
+        // Write ASCIIZ filename at scratch_base
+        let filename_addr = scratch_base;
+        mem.write_block(filename_addr, path);
+        mem.write_byte(filename_addr + path.len() as u32, 0x00);
+
+        // Write command tail at scratch_base + 128
+        let tail_addr = scratch_base + 128;
+        let tail_len = args.len().min(126) as u8;
+        mem.write_byte(tail_addr, tail_len);
+        if tail_len > 0 {
+            mem.write_block(tail_addr + 1, &args[..tail_len as usize]);
+        }
+        mem.write_byte(tail_addr + 1 + tail_len as u32, 0x0D);
+
+        // Write EXEC parameter block at scratch_base + 256
+        let pb_addr = scratch_base + 256;
+        // env_seg = 0 (inherit parent environment)
+        mem.write_word(pb_addr, 0x0000);
+        // cmd_tail pointer: seg:off relative to COMMAND.COM PSP
+        let tail_seg = self.state.current_psp;
+        let tail_off = 0x0108u16 + 128;
+        mem.write_word(pb_addr + 2, tail_off);
+        mem.write_word(pb_addr + 4, tail_seg);
+        // FCB1 and FCB2 point to default FCBs at PSP:005Ch and PSP:006Ch
+        mem.write_word(pb_addr + 6, 0x005C);
+        mem.write_word(pb_addr + 8, self.state.current_psp);
+        mem.write_word(pb_addr + 10, 0x006C);
+        mem.write_word(pb_addr + 12, self.state.current_psp);
+
+        // Set up CPU registers for EXEC: DS:DX = filename, ES:BX = parameter block
+        cpu.set_ds(self.state.current_psp);
+        cpu.set_dx(0x0108);
+        cpu.set_es(self.state.current_psp);
+        cpu.set_bx(0x0108 + 256);
+        cpu.set_ax(0x4B00);
+
+        self.exec_load_and_execute(cpu, mem, disk)
     }
 
     /// Dispatches a DOS/OS interrupt to the appropriate handler.
@@ -435,7 +643,7 @@ impl NeetanOs {
         // SETVER list = NULL
         write_far_ptr(mem, SYSVARS_BASE + SYSVARS_OFF_SETVER_PTR, 0, 0);
         // BUFFERS
-        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_BUFFERS, 5);
+        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_BUFFERS, 15);
         mem.write_word(SYSVARS_BASE + SYSVARS_OFF_LOOKAHEAD, 0);
         mem.write_byte(SYSVARS_BASE + SYSVARS_OFF_BOOT_DRIVE, self.state.boot_drive);
         mem.write_byte(SYSVARS_BASE + SYSVARS_OFF_386_FLAG, 0x01);
@@ -838,14 +1046,15 @@ impl NeetanOs {
         });
     }
 
-    /// Allocates a second SFT block (chained from the first) for 15 additional handles.
+    /// Allocates a second SFT block (chained from the first) for additional handles.
+    /// The number of entries is determined by `self.state.sft2_count` (from FILES=).
     fn write_sft2_block(&mut self, mem: &mut dyn MemoryAccess) {
         use tables::*;
 
-        // Place SFT2 in an MCB-allocated block.
-        // Insert a new MCB for SFT2 between the environment MCB and COMMAND.COM MCB.
-        // SFT2 needs: header(6) + 15*59 = 891 bytes = 56 paragraphs.
-        let sft2_paragraphs: u16 = 56;
+        let sft2_entry_count = self.state.sft2_count;
+        // SFT2 needs: header(6) + entry_count * 59 bytes, rounded up to paragraphs.
+        let sft2_bytes = SFT_HEADER_SIZE as u16 + sft2_entry_count * SFT_ENTRY_SIZE as u16;
+        let sft2_paragraphs: u16 = sft2_bytes.div_ceil(16);
 
         // Rewrite MCB chain to include SFT2 block.
         // Current chain: ENV_MCB -> COMMAND_MCB -> FREE_MCB
@@ -871,9 +1080,9 @@ impl NeetanOs {
         let sft2_base = (sft2_data_segment as u32) << 4;
         self.state.sft2_base = sft2_base;
         tables::write_far_ptr(mem, sft2_base, 0xFFFF, 0xFFFF);
-        mem.write_word(sft2_base + 4, SFT_EXTENDED_COUNT);
+        mem.write_word(sft2_base + 4, sft2_entry_count);
         // Zero all entries
-        let zero_data = vec![0u8; (SFT_EXTENDED_COUNT as usize) * (SFT_ENTRY_SIZE as usize)];
+        let zero_data = vec![0u8; (sft2_entry_count as usize) * (SFT_ENTRY_SIZE as usize)];
         mem.write_block(sft2_base + SFT_HEADER_SIZE, &zero_data);
 
         // Update first SFT's next-ptr to point to SFT2
@@ -985,9 +1194,10 @@ impl OsState {
     /// Returns the SFT entry base address for a given SFT index (0-based).
     pub(crate) fn sft_entry_addr(&self, sft_index: u8) -> Option<u32> {
         use tables::*;
+        let total = SFT_INITIAL_COUNT + self.sft2_count;
         if (sft_index as u16) < SFT_INITIAL_COUNT {
             Some(SFT_BASE + SFT_HEADER_SIZE + sft_index as u32 * SFT_ENTRY_SIZE)
-        } else if (sft_index as u16) < SFT_TOTAL_COUNT {
+        } else if (sft_index as u16) < total {
             let local = sft_index as u32 - SFT_INITIAL_COUNT as u32;
             Some(self.sft2_base + SFT_HEADER_SIZE + local * SFT_ENTRY_SIZE)
         } else {
@@ -1029,7 +1239,8 @@ impl OsState {
 
         // Find free SFT entry (skip first 5 device entries)
         let mut free_sft = None;
-        for idx in tables::SFT_INITIAL_COUNT..tables::SFT_TOTAL_COUNT {
+        let total_count = tables::SFT_INITIAL_COUNT + self.sft2_count;
+        for idx in tables::SFT_INITIAL_COUNT..total_count {
             if let Some(addr) = self.sft_entry_addr(idx as u8) {
                 let ref_count = mem.read_word(addr + tables::SFT_ENT_REF_COUNT);
                 if ref_count == 0 {

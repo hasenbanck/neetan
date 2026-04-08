@@ -29,6 +29,12 @@ struct PendingCommand {
     parsed: ParsedCommand,
 }
 
+/// An external program (.COM or .EXE) to be EXECed from the shell.
+pub(crate) struct PendingExec {
+    pub path: Vec<u8>,
+    pub args: Vec<u8>,
+}
+
 const KB_BUF_START: u32 = 0x0502;
 const KB_BUF_END: u32 = 0x0522;
 const KB_BUF_HEAD: u32 = 0x0524;
@@ -72,7 +78,7 @@ pub(crate) enum ShellPhase {
 }
 
 pub(crate) struct Shell {
-    phase: ShellPhase,
+    pub(crate) phase: ShellPhase,
     history: History,
     commands: Vec<Box<dyn Command>>,
     pub(crate) echo_on: bool,
@@ -83,11 +89,15 @@ pub(crate) struct Shell {
     current_redirect: Option<RedirectSpec>,
     redirect_buffer: Option<Vec<u8>>,
     pipe_input: Option<Vec<u8>>,
+    /// COMMAND.COM PSP segment, used to detect child process termination.
+    pub(crate) command_com_psp: u16,
+    /// External program pending EXEC (set by dispatch, consumed by int21h_ffh_shell_step).
+    pub(crate) pending_exec: Option<PendingExec>,
 }
 
 impl Shell {
-    pub(crate) fn new() -> Self {
-        let commands: Vec<Box<dyn Command>> = vec![
+    fn build_commands() -> Vec<Box<dyn Command>> {
+        vec![
             Box::new(commands::cls::Cls),
             Box::new(commands::ver::Ver),
             Box::new(commands::echo::Echo),
@@ -107,12 +117,14 @@ impl Shell {
             Box::new(commands::time::Time),
             Box::new(commands::type_cmd::TypeCmd),
             Box::new(commands::xcopy::Xcopy),
-        ];
+        ]
+    }
 
+    pub(crate) fn new(command_com_psp: u16) -> Self {
         Self {
             phase: ShellPhase::ShowPrompt,
             history: History::new(),
-            commands,
+            commands: Self::build_commands(),
             echo_on: true,
             last_exit_code: 0,
             boot_banner_shown: false,
@@ -121,6 +133,32 @@ impl Shell {
             current_redirect: None,
             redirect_buffer: None,
             pipe_input: None,
+            command_com_psp,
+            pending_exec: None,
+        }
+    }
+
+    pub(crate) fn new_with_autoexec(
+        command_com_psp: u16,
+        lines: Vec<Vec<u8>>,
+        bat_path: Vec<u8>,
+    ) -> Self {
+        let params: [Vec<u8>; 10] = Default::default();
+        let bat_state = batch::BatchState::new(lines, params, bat_path, true);
+        Self {
+            phase: ShellPhase::ExecutingBatch(Box::new(bat_state)),
+            history: History::new(),
+            commands: Self::build_commands(),
+            echo_on: true,
+            last_exit_code: 0,
+            boot_banner_shown: true,
+            pending_drive_change: None,
+            pending_commands: VecDeque::new(),
+            current_redirect: None,
+            redirect_buffer: None,
+            pipe_input: None,
+            command_com_psp,
+            pending_exec: None,
         }
     }
 
@@ -290,7 +328,16 @@ impl Shell {
                 }
             }
             ShellPhase::WaitingForChild => {
-                unimplemented!("WaitingForChild shell phase")
+                // The child process runs via CPU execution. When it terminates
+                // (INT 21h AH=4Ch), terminate_process() restores COMMAND.COM's
+                // PSP and IRET frame. We detect completion by checking if
+                // current_psp has returned to COMMAND.COM's PSP.
+                if state.current_psp == self.command_com_psp {
+                    self.last_exit_code = state.last_return_code;
+                    ShellPhase::ShowPrompt
+                } else {
+                    ShellPhase::WaitingForChild
+                }
             }
             ShellPhase::ExecutingBatch(mut batch) => {
                 match batch.step_batch(self, state, io, disk) {
@@ -456,6 +503,16 @@ impl Shell {
                     return ShellPhase::ShowPrompt;
                 }
             }
+        }
+
+        // Try external program (.COM or .EXE)
+        if let Some(full_path) = find_external_program(trimmed, &cmd_upper, state, io.memory, disk)
+        {
+            self.pending_exec = Some(PendingExec {
+                path: full_path,
+                args: args.to_vec(),
+            });
+            return ShellPhase::WaitingForChild;
         }
 
         io.print_msg(b"Bad command or file name\r\n");
@@ -797,6 +854,106 @@ fn parse_redirections(segment: &[u8]) -> ParsedCommand {
         output_redirect,
         input_file,
     }
+}
+
+/// Searches for an external program (.COM or .EXE) matching the command name.
+///
+/// Search order: if the command already has an extension (.COM/.EXE), use as-is.
+/// Otherwise, try .COM then .EXE in: current directory, then each PATH directory.
+fn find_external_program(
+    original_cmd: &[u8],
+    cmd_upper: &[u8],
+    state: &mut OsState,
+    memory: &dyn crate::MemoryAccess,
+    disk: &mut dyn DiskIo,
+) -> Option<Vec<u8>> {
+    let has_extension =
+        cmd_upper.len() > 4 && (cmd_upper.ends_with(b".COM") || cmd_upper.ends_with(b".EXE"));
+
+    // If the command contains a path separator or drive letter, try it directly
+    let has_path = original_cmd.contains(&b'\\') || original_cmd.contains(&b'/');
+    let has_drive = original_cmd.len() >= 2 && original_cmd[1] == b':';
+
+    if has_path || has_drive {
+        // Direct path: try as given (with extension search if needed)
+        return try_find_program(original_cmd, has_extension, state, memory, disk);
+    }
+
+    // Search current directory first
+    if let Some(path) = try_find_program(original_cmd, has_extension, state, memory, disk) {
+        return Some(path);
+    }
+
+    // Search PATH directories
+    let path_value = read_env_var(state, memory, b"PATH")?;
+    for dir in path_value.split(|&b| b == b';') {
+        let dir = dir.trim_ascii();
+        if dir.is_empty() {
+            continue;
+        }
+        let mut full_path = dir.to_vec();
+        if !full_path.ends_with(b"\\") {
+            full_path.push(b'\\');
+        }
+        full_path.extend_from_slice(original_cmd);
+        if let Some(path) = try_find_program(&full_path, has_extension, state, memory, disk) {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+/// Tries to find a program file at the given path, optionally appending .COM/.EXE.
+fn try_find_program(
+    path: &[u8],
+    has_extension: bool,
+    state: &mut OsState,
+    memory: &dyn crate::MemoryAccess,
+    disk: &mut dyn DiskIo,
+) -> Option<Vec<u8>> {
+    if has_extension {
+        if file_exists_on_disk(path, state, memory, disk) {
+            return Some(path.to_vec());
+        }
+    } else {
+        // Try .COM first, then .EXE
+        let mut com_path = path.to_vec();
+        com_path.extend_from_slice(b".COM");
+        if file_exists_on_disk(&com_path, state, memory, disk) {
+            return Some(com_path);
+        }
+        let mut exe_path = path.to_vec();
+        exe_path.extend_from_slice(b".EXE");
+        if file_exists_on_disk(&exe_path, state, memory, disk) {
+            return Some(exe_path);
+        }
+    }
+    None
+}
+
+/// Checks if a file exists on a real (non-virtual) drive.
+fn file_exists_on_disk(
+    path: &[u8],
+    state: &mut OsState,
+    memory: &dyn crate::MemoryAccess,
+    disk: &mut dyn DiskIo,
+) -> bool {
+    let (drive_index, dir_cluster, fcb_name) = match state.resolve_file_path(path, memory, disk) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    if drive_index == 25 {
+        return false;
+    }
+    let vol = match state.fat_volumes[drive_index as usize].as_ref() {
+        Some(v) => v,
+        None => return false,
+    };
+    matches!(
+        fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk),
+        Ok(Some(e)) if e.attribute & fat_dir::ATTR_DIRECTORY == 0
+    )
 }
 
 fn parse_bat_params(args: &[u8]) -> [Vec<u8>; 10] {

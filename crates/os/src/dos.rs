@@ -67,7 +67,7 @@ impl NeetanOs {
             0x62 => self.int21h_62h_get_psp(cpu),
             0x63 => self.int21h_63h_get_dbcs_table(cpu),
             0x65 => self.int21h_65h_get_extended_country_info(cpu, memory),
-            0xFF => self.int21h_ffh_shell_step(memory, disk),
+            0xFF => self.int21h_ffh_shell_step(cpu, memory, disk),
             _ => warn!("INT 21h AH={ah:#04X} is unimplemented"),
         }
     }

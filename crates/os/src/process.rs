@@ -252,7 +252,7 @@ fn sft_entry_addr(index: u8, sft_base: u32, sft2_base: u32) -> Option<u32> {
 }
 
 /// Reads entire file contents from a FAT volume by walking the cluster chain.
-fn read_file_data(
+pub(crate) fn read_file_data(
     vol: &FatVolume,
     entry: &fat_dir::DirEntry,
     disk: &mut dyn DiskIo,
@@ -309,7 +309,7 @@ impl NeetanOs {
         }
     }
 
-    fn exec_load_and_execute(
+    pub(crate) fn exec_load_and_execute(
         &mut self,
         cpu: &mut dyn CpuAccess,
         mem: &mut dyn MemoryAccess,

@@ -1,1 +1,358 @@
 //! CONFIG.SYS and AUTOEXEC.BAT parsing.
+
+/// Parsed CONFIG.SYS directives with defaults matching MS-DOS 6.20.
+pub(crate) struct ConfigSys {
+    /// Maximum number of open file handles (FILES=).
+    pub files: u16,
+    /// Number of DOS disk buffers (BUFFERS=).
+    pub buffers: u16,
+    /// Last valid drive letter as 1-based index: 1=A .. 26=Z (LASTDRIVE=).
+    pub lastdrive: u8,
+    /// Country code (COUNTRY=). 081 = Japan.
+    pub country: u16,
+    /// Extended Ctrl-Break checking (BREAK=).
+    pub ctrl_break: bool,
+    /// Custom command interpreter path (SHELL=). Silently noted.
+    pub shell: Option<Vec<u8>>,
+    /// MSCDEX device name extracted from DEVICE=NECCD.SYS /D:name.
+    pub cdrom_device_name: Option<Vec<u8>>,
+}
+
+impl Default for ConfigSys {
+    fn default() -> Self {
+        Self {
+            files: 20,
+            buffers: 15,
+            lastdrive: 26,
+            country: 81,
+            ctrl_break: false,
+            shell: None,
+            cdrom_device_name: None,
+        }
+    }
+}
+
+/// Parses CONFIG.SYS file content into a `ConfigSys` struct.
+pub(crate) fn parse_config_sys(data: &[u8]) -> ConfigSys {
+    let lines = split_lines(data);
+    let mut config = ConfigSys::default();
+
+    for line in &lines {
+        let trimmed = line.trim_ascii();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Comments: lines starting with ';' or 'REM '
+        if trimmed[0] == b';' {
+            continue;
+        }
+        let upper: Vec<u8> = trimmed.iter().map(|b| b.to_ascii_uppercase()).collect();
+        if upper.starts_with(b"REM ") || upper == b"REM" {
+            continue;
+        }
+
+        // Find '=' separator
+        let eq_pos = match trimmed.iter().position(|&b| b == b'=') {
+            Some(p) => p,
+            None => continue,
+        };
+        let directive = &upper[..eq_pos];
+        let value = &trimmed[eq_pos + 1..];
+        let value_trimmed = value.trim_ascii();
+
+        match directive {
+            b"FILES" => {
+                if let Some(n) = parse_u16(value_trimmed)
+                    && n >= 8
+                {
+                    config.files = n;
+                }
+            }
+            b"BUFFERS" => {
+                if let Some(n) = parse_u16(value_trimmed)
+                    && (1..=99).contains(&n)
+                {
+                    config.buffers = n;
+                }
+            }
+            b"LASTDRIVE" => {
+                if value_trimmed.len() == 1 {
+                    let ch = value_trimmed[0].to_ascii_uppercase();
+                    if ch.is_ascii_uppercase() {
+                        config.lastdrive = ch - b'A' + 1;
+                    }
+                }
+            }
+            b"COUNTRY" => {
+                if let Some(n) = parse_u16(value_trimmed) {
+                    config.country = n;
+                }
+            }
+            b"BREAK" => {
+                let val_upper: Vec<u8> = value_trimmed
+                    .iter()
+                    .map(|b| b.to_ascii_uppercase())
+                    .collect();
+                if val_upper == b"ON" {
+                    config.ctrl_break = true;
+                } else if val_upper == b"OFF" {
+                    config.ctrl_break = false;
+                }
+            }
+            b"SHELL" => {
+                if !value_trimmed.is_empty() {
+                    config.shell = Some(value_trimmed.to_vec());
+                }
+            }
+            b"DEVICE" | b"DEVICEHIGH" => {
+                parse_device_line(value_trimmed, &mut config);
+            }
+            _ => {
+                // Unrecognized directive: silently ignored
+            }
+        }
+    }
+
+    config
+}
+
+/// Parses a DEVICE= value for NECCD.SYS / NECCDD.SYS driver recognition.
+fn parse_device_line(value: &[u8], config: &mut ConfigSys) {
+    // Extract the filename (first token, may include path)
+    let (path_token, rest) = split_first_token(value);
+    let upper_path: Vec<u8> = path_token.iter().map(|b| b.to_ascii_uppercase()).collect();
+
+    // Check if filename ends with NECCD.SYS or NECCDD.SYS
+    let is_neccd = upper_path.ends_with(b"NECCD.SYS") || upper_path.ends_with(b"NECCDD.SYS");
+    if !is_neccd {
+        return;
+    }
+
+    // Look for /D:name parameter
+    let mut i = 0;
+    let rest_bytes = rest;
+    while i < rest_bytes.len() {
+        if rest_bytes[i] == b'/' && i + 2 < rest_bytes.len() {
+            let flag = rest_bytes[i + 1].to_ascii_uppercase();
+            if flag == b'D' && rest_bytes[i + 2] == b':' {
+                // Extract device name (until next space or end)
+                let name_start = i + 3;
+                let name_end = rest_bytes[name_start..]
+                    .iter()
+                    .position(|&b| b == b' ' || b == b'\t')
+                    .map(|p| name_start + p)
+                    .unwrap_or(rest_bytes.len());
+                if name_start < name_end {
+                    config.cdrom_device_name = Some(rest_bytes[name_start..name_end].to_vec());
+                }
+                return;
+            }
+        }
+        i += 1;
+    }
+
+    // NECCD.SYS without /D: parameter: activate with empty device name
+    config.cdrom_device_name = Some(b"MSCD001".to_vec());
+}
+
+/// Splits the first whitespace-delimited token from the rest.
+fn split_first_token(data: &[u8]) -> (&[u8], &[u8]) {
+    let trimmed = data.trim_ascii_start();
+    if let Some(pos) = trimmed.iter().position(|&b| b == b' ' || b == b'\t') {
+        (&trimmed[..pos], trimmed[pos + 1..].trim_ascii_start())
+    } else {
+        (trimmed, &[])
+    }
+}
+
+/// Splits raw file data into lines on \r\n or \n.
+fn split_lines(data: &[u8]) -> Vec<Vec<u8>> {
+    let mut lines = Vec::new();
+    let mut current = Vec::new();
+    for &byte in data {
+        if byte == b'\n' {
+            lines.push(current);
+            current = Vec::new();
+        } else if byte == b'\r' {
+            // skip, we split on \n
+        } else {
+            current.push(byte);
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+/// Parses an ASCII decimal number.
+fn parse_u16(data: &[u8]) -> Option<u16> {
+    if data.is_empty() {
+        return None;
+    }
+    let mut result: u16 = 0;
+    for &byte in data {
+        if !byte.is_ascii_digit() {
+            break;
+        }
+        result = result.checked_mul(10)?.checked_add((byte - b'0') as u16)?;
+    }
+    if result == 0 && data[0] != b'0' {
+        return None;
+    }
+    Some(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_input_returns_defaults() {
+        let config = parse_config_sys(b"");
+        assert_eq!(config.files, 20);
+        assert_eq!(config.buffers, 15);
+        assert_eq!(config.lastdrive, 26);
+        assert_eq!(config.country, 81);
+        assert!(!config.ctrl_break);
+        assert!(config.shell.is_none());
+        assert!(config.cdrom_device_name.is_none());
+    }
+
+    #[test]
+    fn parse_files() {
+        let config = parse_config_sys(b"FILES=30\n");
+        assert_eq!(config.files, 30);
+    }
+
+    #[test]
+    fn parse_files_below_minimum_ignored() {
+        let config = parse_config_sys(b"FILES=5\n");
+        assert_eq!(config.files, 20); // default, 5 < 8
+    }
+
+    #[test]
+    fn parse_buffers() {
+        let config = parse_config_sys(b"BUFFERS=40\n");
+        assert_eq!(config.buffers, 40);
+    }
+
+    #[test]
+    fn parse_buffers_out_of_range_ignored() {
+        let config = parse_config_sys(b"BUFFERS=0\n");
+        assert_eq!(config.buffers, 15);
+        let config = parse_config_sys(b"BUFFERS=100\n");
+        assert_eq!(config.buffers, 15);
+    }
+
+    #[test]
+    fn parse_lastdrive() {
+        let config = parse_config_sys(b"LASTDRIVE=E\n");
+        assert_eq!(config.lastdrive, 5); // E = 5th letter
+    }
+
+    #[test]
+    fn parse_lastdrive_lowercase() {
+        let config = parse_config_sys(b"LASTDRIVE=e\n");
+        assert_eq!(config.lastdrive, 5);
+    }
+
+    #[test]
+    fn parse_country() {
+        let config = parse_config_sys(b"COUNTRY=001\n");
+        assert_eq!(config.country, 1);
+    }
+
+    #[test]
+    fn parse_break_on() {
+        let config = parse_config_sys(b"BREAK=ON\n");
+        assert!(config.ctrl_break);
+    }
+
+    #[test]
+    fn parse_break_off() {
+        let config = parse_config_sys(b"BREAK=OFF\n");
+        assert!(!config.ctrl_break);
+    }
+
+    #[test]
+    fn parse_shell() {
+        let config = parse_config_sys(b"SHELL=C:\\COMMAND.COM /P\n");
+        assert_eq!(
+            config.shell.as_deref(),
+            Some(b"C:\\COMMAND.COM /P".as_ref())
+        );
+    }
+
+    #[test]
+    fn parse_device_neccd() {
+        let config = parse_config_sys(b"DEVICE=A:\\NECCD.SYS /D:CD001\n");
+        assert_eq!(config.cdrom_device_name.as_deref(), Some(b"CD001".as_ref()));
+    }
+
+    #[test]
+    fn parse_device_neccdd() {
+        let config = parse_config_sys(b"DEVICE=A:\\DOS\\NECCDD.SYS /D:MYCDROM\n");
+        assert_eq!(
+            config.cdrom_device_name.as_deref(),
+            Some(b"MYCDROM".as_ref())
+        );
+    }
+
+    #[test]
+    fn parse_device_neccd_no_d_param() {
+        let config = parse_config_sys(b"DEVICE=NECCD.SYS\n");
+        assert_eq!(
+            config.cdrom_device_name.as_deref(),
+            Some(b"MSCD001".as_ref())
+        );
+    }
+
+    #[test]
+    fn parse_devicehigh() {
+        let config = parse_config_sys(b"DEVICEHIGH=A:\\NECCD.SYS /D:CD002\n");
+        assert_eq!(config.cdrom_device_name.as_deref(), Some(b"CD002".as_ref()));
+    }
+
+    #[test]
+    fn unknown_device_ignored() {
+        let config = parse_config_sys(b"DEVICE=MOUSE.SYS\n");
+        assert!(config.cdrom_device_name.is_none());
+    }
+
+    #[test]
+    fn comments_and_blank_lines_skipped() {
+        let input = b"; This is a comment\n\nREM Another comment\nFILES=25\n";
+        let config = parse_config_sys(input);
+        assert_eq!(config.files, 25);
+    }
+
+    #[test]
+    fn case_insensitive_directives() {
+        let config = parse_config_sys(b"files=30\nbuffers=20\nbreak=on\n");
+        assert_eq!(config.files, 30);
+        assert_eq!(config.buffers, 20);
+        assert!(config.ctrl_break);
+    }
+
+    #[test]
+    fn mixed_valid_and_invalid_lines() {
+        let input = b"FILES=30\nGARBAGE LINE\nBUFFERS=20\nNOEQUALS\n";
+        let config = parse_config_sys(input);
+        assert_eq!(config.files, 30);
+        assert_eq!(config.buffers, 20);
+    }
+
+    #[test]
+    fn crlf_line_endings() {
+        let config = parse_config_sys(b"FILES=25\r\nBUFFERS=10\r\n");
+        assert_eq!(config.files, 25);
+        assert_eq!(config.buffers, 10);
+    }
+
+    #[test]
+    fn last_value_wins() {
+        let config = parse_config_sys(b"FILES=30\nFILES=40\n");
+        assert_eq!(config.files, 40);
+    }
+}

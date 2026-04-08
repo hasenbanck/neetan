@@ -497,10 +497,14 @@ pub(crate) fn load_bat_file(
         };
     }
 
-    // Split into lines on \r\n or \n
+    Ok(split_bat_lines(&data))
+}
+
+/// Splits raw file data into lines on \r\n or \n.
+pub(crate) fn split_bat_lines(data: &[u8]) -> Vec<Vec<u8>> {
     let mut lines = Vec::new();
     let mut current = Vec::new();
-    for &byte in &data {
+    for &byte in data {
         if byte == b'\n' {
             lines.push(current);
             current = Vec::new();
@@ -513,8 +517,7 @@ pub(crate) fn load_bat_file(
     if !current.is_empty() {
         lines.push(current);
     }
-
-    Ok(lines)
+    lines
 }
 
 fn check_file_exists(
