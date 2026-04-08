@@ -4,9 +4,6 @@ use common::{Context, MachineModel, StringError, bail, info, warn};
 
 use crate::keymap::{self, KeyMap};
 
-// TODO: We need a config option to set the boot device (fdd1, fdd2, hdd1, hdd2, os, auto)
-//       This is helpful if a user wants to use the OS but floppy images / hard didks contain a boot sector.
-
 fn next_value(flag: &str, args: &mut impl Iterator<Item = String>) -> crate::Result<String> {
     match args.next() {
         Some(val) => Ok(val),
@@ -54,6 +51,7 @@ Options:
       --midi <DEVICE>           MIDI device: none, mt32, sc55 (default: none)
       --mt32-roms <PATH>        Path to MT-32 ROM directory
       --sc55-roms <PATH>        Path to SC55 ROM directory
+      --boot-device <DEVICE>    Boot device: auto, fdd1, fdd2, hdd1, hdd2, os (default: auto)
       --printer <PATH>          Output file for printer (must exist)
   -h, --help                    Print help
   -V, --version                 Print version
@@ -421,6 +419,10 @@ pub fn parse_args() -> crate::Result<Action> {
                 let val = value(&flag)?;
                 config.midi = val.parse::<MidiDevice>().map_err(StringError)?;
             }
+            "--boot-device" => {
+                let val = value(&flag)?;
+                config.boot_device = val.parse::<machine::BootDevice>().map_err(StringError)?;
+            }
             other => bail!("unknown argument: {other}"),
         }
     }
@@ -478,6 +480,7 @@ pub struct EmulatorConfig {
     pub mt32_roms: Option<PathBuf>,
     pub sc55_roms: Option<PathBuf>,
     pub midi: MidiDevice,
+    pub boot_device: machine::BootDevice,
     pub key_map: KeyMap,
 }
 
@@ -502,6 +505,7 @@ impl Default for EmulatorConfig {
             mt32_roms: None,
             sc55_roms: None,
             midi: MidiDevice::default(),
+            boot_device: machine::BootDevice::Auto,
             key_map: KeyMap::new(),
         }
     }
@@ -570,6 +574,10 @@ fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<
             "midi" => match val.parse::<MidiDevice>() {
                 Ok(device) => config.midi = device,
                 Err(_) => warn!("Unknown MIDI device in config: {val}"),
+            },
+            "boot-device" => match val.parse::<machine::BootDevice>() {
+                Ok(device) => config.boot_device = device,
+                Err(_) => warn!("Unknown boot device in config: {val}"),
             },
             key if key.starts_with("key.") => {
                 let host_name = &key[4..];

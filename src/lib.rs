@@ -873,6 +873,7 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
 
     let mut bus: machine::Pc9801Bus<Tracer> = machine::Pc9801Bus::new(model, sample_rate);
     bus.set_host_local_time_fn(host_local_time_bcd);
+    bus.set_boot_device(config.boot_device);
 
     // GDC clock rate configuration logic
     match (model.has_pegc(), model.has_egc(), config.force_gdc_clock) {

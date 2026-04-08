@@ -191,6 +191,55 @@ const GRAPHICS_PAGE_SIZE_BYTES: usize = 0x18000;
 /// E-plane VRAM bytes per page.
 const E_PLANE_PAGE_SIZE_BYTES: usize = 0x8000;
 
+/// Boot device selection for the HLE bootstrap.
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+pub enum BootDevice {
+    /// Try all devices in standard order: FDD 0-1, CD-ROM, SASI HDD, IDE HDD, HLE OS.
+    #[default]
+    Auto,
+    /// Boot from FDD drive 0 only.
+    Fdd1,
+    /// Boot from FDD drive 1 only.
+    Fdd2,
+    /// Boot from HDD drive 0 (SASI or IDE depending on machine model).
+    Hdd1,
+    /// Boot from HDD drive 1 (SASI or IDE depending on machine model).
+    Hdd2,
+    /// Skip all disk boot attempts, go straight to HLE Neetan OS.
+    Os,
+}
+
+impl std::fmt::Display for BootDevice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => f.write_str("auto"),
+            Self::Fdd1 => f.write_str("fdd1"),
+            Self::Fdd2 => f.write_str("fdd2"),
+            Self::Hdd1 => f.write_str("hdd1"),
+            Self::Hdd2 => f.write_str("hdd2"),
+            Self::Os => f.write_str("os"),
+        }
+    }
+}
+
+impl std::str::FromStr for BootDevice {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "fdd1" => Ok(Self::Fdd1),
+            "fdd2" => Ok(Self::Fdd2),
+            "hdd1" => Ok(Self::Hdd1),
+            "hdd2" => Ok(Self::Hdd2),
+            "os" => Ok(Self::Os),
+            _ => Err(format!(
+                "unknown boot device '{s}', expected auto, fdd1, fdd2, hdd1, hdd2 or os"
+            )),
+        }
+    }
+}
+
 /// PC-9801 system bus.
 pub struct Pc9801Bus<T: Tracing = NoTracing> {
     pub(crate) current_cycle: u64,
@@ -329,10 +378,16 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     /// Cached CR3 from the CPU, set before HLE dispatch.
     hle_cr3: u32,
     /// NEETAN OS HLE DOS instance. `None` when running with real DOS media.
+    boot_device: BootDevice,
     os: Option<os::NeetanOs>,
 }
 
 impl<T: Tracing> Pc9801Bus<T> {
+    /// Sets the boot device for the HLE bootstrap.
+    pub fn set_boot_device(&mut self, device: BootDevice) {
+        self.boot_device = device;
+    }
+
     /// Enables the NEETAN OS HLE DOS subsystem.
     ///
     /// When enabled, DOS interrupt vectors (INT 20h-2Ah, 2Fh, 33h, DCh) are

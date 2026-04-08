@@ -9,7 +9,7 @@ use common::{Cpu, MachineModel};
 use device::{floppy::D88MediaType, i8253_pit::PIT_FLAG_I, upd7220_gdc::GdcScrollPartition};
 
 use super::{
-    Pc9801Bus,
+    BootDevice, Pc9801Bus,
     os_adapter::{OsConsoleIo, OsCpuAccess, OsDiskIo, OsMemoryAccess},
 };
 use crate::{memory::Pc9801Memory, trace::Tracing};
@@ -2629,6 +2629,30 @@ impl<T: Tracing> Pc9801Bus<T> {
         base_lo | (base_mid << 8) | (base_hi << 16)
     }
 
+    fn try_boot_fdd(&mut self, cpu: &mut impl Cpu, drive: usize) -> bool {
+        if self.floppy.has_drive(drive)
+            && let Some(n) = self.floppy.boot_sector_size_code(drive)
+            && let Some(data) = self.floppy.read_sector_data(drive, 0, 0, 0, 1, n)
+        {
+            let boot_data: Vec<u8> = data.to_vec();
+            let is_2hd = self
+                .floppy
+                .drive(drive)
+                .is_some_and(|d| d.media_type == D88MediaType::Disk2HD);
+            let da_base: usize = if is_2hd { 0x90 } else { 0x70 };
+            if !is_2hd {
+                let equipped = self.floppy.fdc_1mb().state.drive_equipped & 0x0F;
+                self.memory.state.ram[0x055C] &= !equipped;
+                self.memory.state.ram[0x055D] |= equipped << 4;
+                self.memory.state.ram[0x0494] = (equipped & 0x03) << 6;
+            }
+            if self.try_boot_from_data(cpu, &boot_data, (da_base | drive) as u8) {
+                return true;
+            }
+        }
+        false
+    }
+
     fn try_boot_from_data(
         &mut self,
         cpu: &mut impl Cpu,
@@ -2719,79 +2743,80 @@ impl<T: Tracing> Pc9801Bus<T> {
             self.pic.invalidate_irq_cache();
         }
 
-        // Boot order: FDD -> CD-ROM (IDE only) -> SASI HDD -> IDE HDD.
-
-        // 1. FDD 0-3: determine sector size (N) from the actual first sector on track 0
-        //    to handle both 2HD (N=3, 1024B) and 2DD (N=2, 512B) disks.
-        for drive in 0..4usize {
-            if self.floppy.has_drive(drive)
-                && let Some(n) = self.floppy.boot_sector_size_code(drive)
-                && let Some(data) = self.floppy.read_sector_data(drive, 0, 0, 0, 1, n)
-            {
-                let boot_data: Vec<u8> = data.to_vec();
-                let is_2hd = self
-                    .floppy
-                    .drive(drive)
-                    .is_some_and(|d| d.media_type == D88MediaType::Disk2HD);
-                // Use DA=0x90 (1MB/2HD) or DA=0x70 (640KB/2DD) based on
-                // the disk's media type, matching what the real BIOS sets.
-                let da_base: usize = if is_2hd { 0x90 } else { 0x70 };
-                if !is_2hd {
-                    // The dual-mode FDC switches to 640KB mode for 2DD
-                    // media. Move ALL equipped drives from the 1MB FDD
-                    // section (055Ch bits 0-3) to the 640KB FDD section
-                    // (055Dh bits 4-7) so the DOS device driver uses
-                    // DA=0x70 (640KB) instead of DA=0x90 (1MB).
-                    let equipped = self.floppy.fdc_1mb().state.drive_equipped & 0x0F;
-                    self.memory.state.ram[0x055C] &= !equipped;
-                    self.memory.state.ram[0x055D] |= equipped << 4;
-
-                    // DISK_EQUIP2 (0494h): the equipped drives remain
-                    // accessible on the 1MB interface as external units
-                    // 2-3 (DA/UA F2h-F3h). Bits 7-4 indicate units 3-0
-                    // connected. Internal drives 0,1 map to units 2,3.
-                    // Ref: undoc98 memsys.txt (0000:0494h DISK_EQUIP2)
-                    self.memory.state.ram[0x0494] = (equipped & 0x03) << 6;
+        // Boot device selection.
+        match self.boot_device {
+            BootDevice::Auto => {
+                // FDD 0-1 -> CD-ROM (IDE only) -> SASI HDD 0-1 -> IDE HDD 0-1.
+                for drive in 0..4usize {
+                    if self.try_boot_fdd(cpu, drive) {
+                        return;
+                    }
                 }
-                if self.try_boot_from_data(cpu, &boot_data, (da_base | drive) as u8) {
+                if self.machine_model.has_ide()
+                    && let Some(boot_data) = self.ide.read_cdrom_boot_sector()
+                    && boot_sector_has_signature(&boot_data)
+                    && self.try_boot_from_data(cpu, &boot_data, 0x82)
+                {
+                    let lo = self.memory.state.ram[0x055C];
+                    let hi = self.memory.state.ram[0x055D];
+                    let disk_equip = u16::from(lo) | (u16::from(hi) << 8) | 0x0400;
+                    self.memory.state.ram[0x055C] = disk_equip as u8;
+                    self.memory.state.ram[0x055D] = (disk_equip >> 8) as u8;
+                    return;
+                }
+                for hdd in 0..2usize {
+                    if let Some(data) = self.sasi.read_boot_sector(hdd)
+                        && self.try_boot_from_data(cpu, &data, 0x80 | hdd as u8)
+                    {
+                        return;
+                    }
+                }
+                for hdd in 0..2usize {
+                    if let Some(data) = self.ide.read_boot_sector(hdd)
+                        && self.try_boot_from_data(cpu, &data, 0x80 | hdd as u8)
+                    {
+                        return;
+                    }
+                }
+            }
+            BootDevice::Fdd1 => {
+                if self.try_boot_fdd(cpu, 0) {
                     return;
                 }
             }
-        }
-
-        // 2. CD-ROM (IDE machines only, with 0x55AA signature gate).
-        if self.machine_model.has_ide()
-            && let Some(boot_data) = self.ide.read_cdrom_boot_sector()
-            && boot_sector_has_signature(&boot_data)
-            && self.try_boot_from_data(cpu, &boot_data, 0x82)
-        {
-            let lo = self.memory.state.ram[0x055C];
-            let hi = self.memory.state.ram[0x055D];
-            let disk_equip = u16::from(lo) | (u16::from(hi) << 8) | 0x0400;
-            self.memory.state.ram[0x055C] = disk_equip as u8;
-            self.memory.state.ram[0x055D] = (disk_equip >> 8) as u8;
-            return;
-        }
-
-        // 3. SASI HDD 0-1.
-        for hdd in 0..2usize {
-            if let Some(data) = self.sasi.read_boot_sector(hdd)
-                && self.try_boot_from_data(cpu, &data, 0x80 | hdd as u8)
-            {
-                return;
+            BootDevice::Fdd2 => {
+                if self.try_boot_fdd(cpu, 1) {
+                    return;
+                }
             }
-        }
-
-        // 4. IDE HDD 0-1.
-        for hdd in 0..2usize {
-            if let Some(data) = self.ide.read_boot_sector(hdd)
-                && self.try_boot_from_data(cpu, &data, 0x80 | hdd as u8)
-            {
-                return;
+            BootDevice::Hdd1 => {
+                if let Some(data) = self.sasi.read_boot_sector(0)
+                    && self.try_boot_from_data(cpu, &data, 0x80)
+                {
+                    return;
+                }
+                if let Some(data) = self.ide.read_boot_sector(0)
+                    && self.try_boot_from_data(cpu, &data, 0x80)
+                {
+                    return;
+                }
             }
+            BootDevice::Hdd2 => {
+                if let Some(data) = self.sasi.read_boot_sector(1)
+                    && self.try_boot_from_data(cpu, &data, 0x81)
+                {
+                    return;
+                }
+                if let Some(data) = self.ide.read_boot_sector(1)
+                    && self.try_boot_from_data(cpu, &data, 0x81)
+                {
+                    return;
+                }
+            }
+            BootDevice::Os => {}
         }
 
-        // No bootable device found: activate NEETAN OS HLE DOS.
+        // No bootable device found (or Os selected): activate NEETAN OS HLE DOS.
         let mut neetan_os = os::NeetanOs::new();
         {
             let mut cpu_access = OsCpuAccess(cpu);
