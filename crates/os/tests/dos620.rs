@@ -63,3 +63,9 @@ mod commands_copy;
 
 #[path = "dos620/commands_file_ops.rs"]
 mod commands_file_ops;
+
+#[path = "dos620/commands_format.rs"]
+mod commands_format;
+
+#[path = "dos620/commands_diskcopy.rs"]
+mod commands_diskcopy;

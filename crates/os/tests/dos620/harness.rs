@@ -386,6 +386,68 @@ pub fn boot_hle_with_floppy() -> machine::Pc9801Ra {
     machine
 }
 
+pub fn create_blank_floppy() -> device::floppy::FloppyImage {
+    use device::floppy::d88::{D88Disk, D88MediaType, D88Sector};
+
+    let cylinders = 77usize;
+    let heads = 2usize;
+    let spt = 8usize;
+    let sector_size = 1024usize;
+    let total_tracks = cylinders * heads;
+
+    let mut tracks: Vec<Option<Vec<D88Sector>>> = Vec::with_capacity(total_tracks);
+    for track_idx in 0..total_tracks {
+        let cylinder = (track_idx / heads) as u8;
+        let head = (track_idx % heads) as u8;
+        let mut sectors = Vec::with_capacity(spt);
+        for s in 0..spt {
+            sectors.push(D88Sector {
+                cylinder,
+                head,
+                record: (s + 1) as u8,
+                size_code: 3,
+                sector_count: spt as u16,
+                mfm_flag: 0x40,
+                deleted: 0,
+                status: 0,
+                reserved: [0; 5],
+                data: vec![0u8; sector_size],
+            });
+        }
+        tracks.push(Some(sectors));
+    }
+
+    let d88 = D88Disk::from_tracks("BLANK".to_string(), false, D88MediaType::Disk2HD, tracks);
+    device::floppy::FloppyImage::from_d88(d88)
+}
+
+pub fn boot_hle_with_two_floppies() -> machine::Pc9801Ra {
+    let mut machine = create_hle_machine();
+
+    // Set BDA DISK_EQUIP bits 0+1 (two 1MB FDD units) before boot.
+    machine.bus.write_byte(0x055C, 0x03);
+
+    let mut total_cycles = 0u64;
+    loop {
+        total_cycles += machine.run_for(HLE_BOOT_CHECK_INTERVAL);
+        if hle_prompt_visible(&machine.bus) {
+            break;
+        }
+        assert!(
+            total_cycles < HLE_BOOT_MAX_CYCLES,
+            "HLE OS did not show prompt within {} cycles",
+            HLE_BOOT_MAX_CYCLES
+        );
+    }
+
+    let floppy_a = create_test_floppy();
+    let floppy_b = create_blank_floppy();
+    machine.bus.insert_floppy(0, floppy_a, None);
+    machine.bus.insert_floppy(1, floppy_b, None);
+
+    machine
+}
+
 pub fn write_bytes(bus: &mut impl Bus, addr: u32, data: &[u8]) {
     for (i, &byte) in data.iter().enumerate() {
         bus.write_byte(addr + i as u32, byte);
