@@ -1657,6 +1657,7 @@ impl OsState {
     pub(crate) fn change_directory(
         &mut self,
         memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
         path_bytes: &[u8],
     ) -> Result<(), u16> {
         if path_bytes.is_empty() {
@@ -1724,6 +1725,30 @@ impl OsState {
 
         if final_path.len() > 67 {
             return Err(0x0003);
+        }
+
+        // Validate that the target directory exists on disk.
+        // Root directory (e.g. "A:\") always exists, skip validation.
+        if final_path.len() > 3 {
+            if drive_index == 25 {
+                // Z: is a virtual drive with no filesystem
+                return Err(0x0003);
+            }
+            self.ensure_volume_mounted(drive_index, memory, disk)?;
+            let vol = self.fat_volumes[drive_index as usize]
+                .as_ref()
+                .ok_or(0x000Fu16)?;
+            let (_, components, _) = filesystem::split_path(final_path);
+            let mut dir_cluster = 0u16;
+            for component in &components {
+                let fcb = filesystem::fat_dir::name_to_fcb(component);
+                let entry = filesystem::fat_dir::find_entry(vol, dir_cluster, &fcb, disk)?
+                    .ok_or(0x0003u16)?;
+                if entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY == 0 {
+                    return Err(0x0003);
+                }
+                dir_cluster = entry.start_cluster;
+            }
         }
 
         // Write path to CDS entry

@@ -45,7 +45,7 @@ impl NeetanOs {
             0x35 => self.int21h_35h_get_interrupt_vector(cpu, memory),
             0x37 => self.int21h_37h_switch_char(cpu),
             0x38 => self.int21h_38h_get_country_info(cpu, memory),
-            0x3B => self.int21h_3bh_chdir(cpu, memory),
+            0x3B => self.int21h_3bh_chdir(cpu, memory, disk),
             0x3C => self.int21h_3ch_create_file(cpu, memory, disk),
             0x3D => self.int21h_3dh_open_file(cpu, memory, disk),
             0x3E => self.int21h_3eh_close_handle(cpu, memory, disk),
@@ -480,7 +480,12 @@ impl NeetanOs {
 
     /// AH=3Bh: Change current directory (CHDIR).
     /// DS:DX = ASCIIZ pathname.
-    fn int21h_3bh_chdir(&mut self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
+    fn int21h_3bh_chdir(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) {
         let path_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
 
         let mut path_bytes = Vec::new();
@@ -492,7 +497,7 @@ impl NeetanOs {
             path_bytes.push(byte);
         }
 
-        match self.state.change_directory(memory, &path_bytes) {
+        match self.state.change_directory(memory, disk, &path_bytes) {
             Ok(()) => {
                 set_iret_carry(cpu, memory, false);
             }

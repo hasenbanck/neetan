@@ -156,3 +156,79 @@ fn shell_history() {
         "history recall should re-execute VER command"
     );
 }
+
+#[test]
+fn shell_switch_to_invalid_drive() {
+    let mut machine = boot_hle();
+
+    // Switching to E: should fail. boot_hle() configures built-in FDD
+    // drives A: and B: plus virtual Z:, but no drive E: exists (no CDS entry).
+    type_string(&mut machine.bus, b"E:\r");
+    run_until_prompt(&mut machine);
+
+    // "Invalid drive"
+    let invalid_drive = [
+        0x0049, 0x006E, 0x0076, 0x0061, 0x006C, 0x0069, 0x0064, 0x0020, 0x0064, 0x0072, 0x0069,
+        0x0076, 0x0065,
+    ];
+    assert!(
+        find_string_in_text_vram(&machine.bus, &invalid_drive),
+        "switching to E: with no such drive should display 'Invalid drive'"
+    );
+}
+
+#[test]
+fn shell_switch_to_drive_no_media() {
+    // boot_hle() configures FDD hardware (A: and B:) via BDA init, but no
+    // floppy image is inserted. Switching to A: should fail because the
+    // drive has no readable media.
+    let mut machine = boot_hle();
+
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    // "No media in drive A"
+    let no_media = [
+        0x004E, 0x006F, 0x0020, 0x006D, 0x0065, 0x0064, 0x0069, 0x0061, 0x0020, 0x0069, 0x006E,
+        0x0020, 0x0064, 0x0072, 0x0069, 0x0076, 0x0065, 0x0020, 0x0041,
+    ];
+    assert!(
+        find_string_in_text_vram(&machine.bus, &no_media),
+        "switching to A: with no media should display 'No media in drive A'"
+    );
+}
+
+#[test]
+fn shell_cd_nonexistent_directory() {
+    let mut machine = boot_hle_with_floppy();
+
+    // Switch to A: (which has a valid floppy)
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    // CD to a directory that does not exist on the floppy
+    type_string(&mut machine.bus, b"CD YUNO\r");
+    run_until_prompt(&mut machine);
+
+    // "Invalid directory"
+    let inv_dir = [
+        0x0049, 0x006E, 0x0076, 0x0061, 0x006C, 0x0069, 0x0064, 0x0020, 0x0064, 0x0069, 0x0072,
+        0x0065, 0x0063, 0x0074, 0x006F, 0x0072, 0x0079,
+    ];
+    assert!(
+        find_string_in_text_vram(&machine.bus, &inv_dir),
+        "CD YUNO should display 'Invalid directory' error"
+    );
+
+    // Clear screen and try again to verify the error is consistent
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CD YUNO\r");
+    run_until_prompt(&mut machine);
+
+    assert!(
+        find_string_in_text_vram(&machine.bus, &inv_dir),
+        "second CD YUNO should also display 'Invalid directory' error"
+    );
+}

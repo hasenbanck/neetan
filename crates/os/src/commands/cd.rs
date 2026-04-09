@@ -33,7 +33,7 @@ impl RunningCommand for RunningCd {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        _disk: &mut dyn DiskIo,
+        disk: &mut dyn DiskIo,
     ) -> StepResult {
         let args = self.args.trim_ascii();
 
@@ -42,13 +42,10 @@ impl RunningCommand for RunningCd {
             return StepResult::Done(0);
         }
 
-        match state.change_directory(io.memory, args) {
+        match state.change_directory(io.memory, disk, args) {
             Ok(()) => StepResult::Done(0),
             Err(_) => {
-                let msg = b"Invalid directory\r\n";
-                for &byte in msg {
-                    io.output_byte(byte);
-                }
+                io.print_msg(b"Invalid directory\r\n");
                 StepResult::Done(1)
             }
         }

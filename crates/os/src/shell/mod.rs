@@ -466,7 +466,31 @@ impl Shell {
 
         // Handle drive change: single letter followed by colon (e.g. "A:")
         if cmd_upper.len() == 2 && cmd_upper[1] == b':' && cmd_upper[0].is_ascii_uppercase() {
-            self.pending_drive_change = Some(cmd_upper[0] - b'A');
+            let drive_index = cmd_upper[0] - b'A';
+            let cds_addr = tables::CDS_BASE + (drive_index as u32) * tables::CDS_ENTRY_SIZE;
+            let cds_flags = io.memory.read_word(cds_addr + tables::CDS_OFF_FLAGS);
+            if cds_flags == 0 {
+                io.print_msg(b"Invalid drive\r\n");
+                self.last_exit_code = 1;
+                return ShellPhase::ShowPrompt;
+            }
+            // For physical drives, verify media is accessible.
+            if drive_index != 25
+                && state
+                    .ensure_volume_mounted(drive_index, io.memory, disk)
+                    .is_err()
+            {
+                let msg = [
+                    b"No media in drive ".as_slice(),
+                    &[b'A' + drive_index],
+                    b"\r\n",
+                ]
+                .concat();
+                io.print_msg(&msg);
+                self.last_exit_code = 1;
+                return ShellPhase::ShowPrompt;
+            }
+            self.pending_drive_change = Some(drive_index);
             return ShellPhase::ShowPrompt;
         }
 
