@@ -95,6 +95,264 @@ struct RunningDir {
     phase: DirPhase,
 }
 
+impl RunningDir {
+    fn step_init(
+        &mut self,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        if is_help_request(&self.args) {
+            print_help(io);
+            return StepResult::Done(0);
+        }
+        match init_dir(state, io, disk, &self.args) {
+            Ok(dir_state) => {
+                self.phase = DirPhase::CollectEntries(dir_state);
+                StepResult::Continue
+            }
+            Err(msg) => {
+                io.print(msg);
+                StepResult::Done(1)
+            }
+        }
+    }
+
+    fn step_collect_entries(
+        &mut self,
+        mut dir_state: DirState,
+        state: &mut OsState,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        // Collect all matching entries from current directory
+        let vol = match state.fat_volumes[dir_state.drive_index as usize].as_ref() {
+            Some(v) => v,
+            None => return StepResult::Done(1),
+        };
+
+        dir_state.entries.clear();
+        dir_state.entry_index = 0;
+        let mut start_index = 0u16;
+        let attr_mask = fat_dir::ATTR_HIDDEN
+            | fat_dir::ATTR_SYSTEM
+            | fat_dir::ATTR_DIRECTORY
+            | fat_dir::ATTR_READ_ONLY;
+
+        loop {
+            let result = fat_dir::find_matching(
+                vol,
+                dir_state.dir_cluster,
+                &dir_state.pattern,
+                attr_mask,
+                start_index,
+                disk,
+            );
+            match result {
+                Ok(Some((entry, next_index))) => {
+                    if should_show_entry(&entry, &dir_state.attr_filter) {
+                        dir_state.entries.push(entry);
+                    }
+                    start_index = next_index;
+                }
+                _ => break,
+            }
+        }
+
+        // Sort if requested
+        if dir_state.sort_order != SortOrder::None {
+            sort_entries(&mut dir_state.entries, dir_state.sort_order);
+        }
+
+        self.phase = DirPhase::Header(dir_state);
+        StepResult::Continue
+    }
+
+    fn step_header(
+        &mut self,
+        dir_state: DirState,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        if !dir_state.bare {
+            let drive_letter = (b'A' + dir_state.drive_index) as char;
+            let label = get_volume_label(state, dir_state.drive_index, disk);
+            if let Some(label) = label {
+                let msg = format!(" Volume in drive {} is {}\r\n", drive_letter, label);
+                io.print(msg.as_bytes());
+            } else {
+                let msg = format!(" Volume in drive {} has no label\r\n", drive_letter);
+                io.print(msg.as_bytes());
+            }
+
+            let dir_path = if dir_state.current_path.is_empty() {
+                get_dir_display_path(io.memory, dir_state.drive_index)
+            } else {
+                String::from_utf8_lossy(&dir_state.current_path).into_owned()
+            };
+            let msg = format!(" Directory of {}\r\n\r\n", dir_path);
+            io.print(msg.as_bytes());
+        }
+        self.phase = DirPhase::Listing(dir_state);
+        StepResult::Continue
+    }
+
+    fn step_listing(&mut self, mut dir_state: DirState, io: &mut IoAccess) -> StepResult {
+        if dir_state.entry_index >= dir_state.entries.len() {
+            // Done with this directory's entries
+            if dir_state.wide && dir_state.wide_col > 0 {
+                io.println(b"");
+                dir_state.wide_col = 0;
+            }
+
+            if dir_state.recursive {
+                self.phase = DirPhase::NextSubdir(dir_state);
+            } else {
+                if dir_state.total_files == 0 {
+                    io.println(b"File Not Found");
+                    return StepResult::Done(1);
+                }
+                self.phase = DirPhase::Footer(dir_state);
+            }
+            return StepResult::Continue;
+        }
+
+        let entry = dir_state.entries[dir_state.entry_index].clone();
+        dir_state.entry_index += 1;
+        dir_state.total_files += 1;
+        dir_state.total_bytes += entry.file_size as u64;
+
+        if dir_state.bare {
+            if dir_state.recursive && !dir_state.current_path.is_empty() {
+                // /S /B: show full path
+                for &b in &dir_state.current_path {
+                    io.output_byte(b);
+                }
+                io.output_byte(b'\\');
+            }
+            format_bare(&entry, io);
+        } else if dir_state.wide {
+            format_wide(&entry, &mut dir_state, io);
+        } else {
+            format_standard(&entry, io);
+        }
+        dir_state.lines_shown += 1;
+
+        if dir_state.paged && dir_state.lines_shown >= 23 {
+            self.phase = DirPhase::WaitKey(dir_state);
+        } else {
+            self.phase = DirPhase::Listing(dir_state);
+        }
+        StepResult::Continue
+    }
+
+    fn step_wait_key(&mut self, mut dir_state: DirState, io: &mut IoAccess) -> StepResult {
+        if io.memory.read_byte(KB_BUF_COUNT) == 0 {
+            self.phase = DirPhase::WaitKey(dir_state);
+            return StepResult::Continue;
+        }
+        consume_key(io);
+        dir_state.lines_shown = 0;
+        self.phase = DirPhase::Listing(dir_state);
+        StepResult::Continue
+    }
+
+    fn step_footer(
+        &mut self,
+        dir_state: DirState,
+        state: &mut OsState,
+        io: &mut IoAccess,
+    ) -> StepResult {
+        if !dir_state.bare {
+            let msg = format!(
+                "{:>9} file(s) {:>12} bytes\r\n",
+                dir_state.total_files, dir_state.total_bytes
+            );
+            io.print(msg.as_bytes());
+
+            let free_bytes = calculate_free_space(state, dir_state.drive_index);
+            let msg = format!("{:>25} bytes free\r\n", free_bytes);
+            io.print(msg.as_bytes());
+        }
+        StepResult::Done(0)
+    }
+
+    fn step_next_subdir(
+        &mut self,
+        mut dir_state: DirState,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        // /S: find subdirectories in the entries we just listed and push them
+        // We need to scan current entries for directories, excluding "." and ".."
+        let vol = match state.fat_volumes[dir_state.drive_index as usize].as_ref() {
+            Some(v) => v,
+            None => return StepResult::Done(1),
+        };
+
+        // Collect subdirectories from current dir (not from filtered entries)
+        if dir_state.dir_stack.is_empty() {
+            let all_pattern = [b'?'; 11];
+            let mut si = 0u16;
+            let attr_mask = fat_dir::ATTR_HIDDEN | fat_dir::ATTR_SYSTEM | fat_dir::ATTR_DIRECTORY;
+            loop {
+                let result = fat_dir::find_matching(
+                    vol,
+                    dir_state.dir_cluster,
+                    &all_pattern,
+                    attr_mask,
+                    si,
+                    disk,
+                );
+                match result {
+                    Ok(Some((entry, next_index))) => {
+                        if entry.attribute & fat_dir::ATTR_DIRECTORY != 0
+                            && entry.name != *b".          "
+                            && entry.name != *b"..         "
+                            && entry.start_cluster >= 2
+                        {
+                            let mut subpath = if dir_state.current_path.is_empty() {
+                                let cds_path =
+                                    get_dir_display_path(io.memory, dir_state.drive_index);
+                                cds_path.into_bytes()
+                            } else {
+                                dir_state.current_path.clone()
+                            };
+                            if !subpath.ends_with(b"\\") {
+                                subpath.push(b'\\');
+                            }
+                            let name = fat_dir::fcb_to_display_name(&entry.name);
+                            subpath.extend_from_slice(&name);
+                            dir_state.dir_stack.push((entry.start_cluster, subpath));
+                        }
+                        si = next_index;
+                    }
+                    _ => break,
+                }
+            }
+        }
+
+        // Pop next subdir from stack
+        if let Some((cluster, path)) = dir_state.dir_stack.pop() {
+            dir_state.dir_cluster = cluster;
+            dir_state.current_path = path;
+            if !dir_state.bare {
+                io.println(b"");
+            }
+            self.phase = DirPhase::CollectEntries(dir_state);
+        } else {
+            // No more subdirs
+            if dir_state.total_files == 0 {
+                io.println(b"File Not Found");
+                return StepResult::Done(1);
+            }
+            self.phase = DirPhase::Footer(dir_state);
+        }
+        StepResult::Continue
+    }
+}
+
 impl RunningCommand for RunningDir {
     fn step(
         &mut self,
@@ -104,229 +362,13 @@ impl RunningCommand for RunningDir {
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, DirPhase::Init);
         match phase {
-            DirPhase::Init => {
-                if is_help_request(&self.args) {
-                    print_help(io);
-                    return StepResult::Done(0);
-                }
-                match init_dir(state, io, disk, &self.args) {
-                    Ok(dir_state) => {
-                        self.phase = DirPhase::CollectEntries(dir_state);
-                        StepResult::Continue
-                    }
-                    Err(msg) => {
-                        io.print(msg);
-                        StepResult::Done(1)
-                    }
-                }
-            }
-            DirPhase::CollectEntries(mut dir_state) => {
-                // Collect all matching entries from current directory
-                let vol = match state.fat_volumes[dir_state.drive_index as usize].as_ref() {
-                    Some(v) => v,
-                    None => return StepResult::Done(1),
-                };
-
-                dir_state.entries.clear();
-                dir_state.entry_index = 0;
-                let mut start_index = 0u16;
-                let attr_mask = fat_dir::ATTR_HIDDEN
-                    | fat_dir::ATTR_SYSTEM
-                    | fat_dir::ATTR_DIRECTORY
-                    | fat_dir::ATTR_READ_ONLY;
-
-                loop {
-                    let result = fat_dir::find_matching(
-                        vol,
-                        dir_state.dir_cluster,
-                        &dir_state.pattern,
-                        attr_mask,
-                        start_index,
-                        disk,
-                    );
-                    match result {
-                        Ok(Some((entry, next_index))) => {
-                            if should_show_entry(&entry, &dir_state.attr_filter) {
-                                dir_state.entries.push(entry);
-                            }
-                            start_index = next_index;
-                        }
-                        _ => break,
-                    }
-                }
-
-                // Sort if requested
-                if dir_state.sort_order != SortOrder::None {
-                    sort_entries(&mut dir_state.entries, dir_state.sort_order);
-                }
-
-                self.phase = DirPhase::Header(dir_state);
-                StepResult::Continue
-            }
-            DirPhase::Header(dir_state) => {
-                if !dir_state.bare {
-                    let drive_letter = (b'A' + dir_state.drive_index) as char;
-                    let label = get_volume_label(state, dir_state.drive_index, disk);
-                    if let Some(label) = label {
-                        let msg = format!(" Volume in drive {} is {}\r\n", drive_letter, label);
-                        io.print(msg.as_bytes());
-                    } else {
-                        let msg = format!(" Volume in drive {} has no label\r\n", drive_letter);
-                        io.print(msg.as_bytes());
-                    }
-
-                    let dir_path = if dir_state.current_path.is_empty() {
-                        get_dir_display_path(io.memory, dir_state.drive_index)
-                    } else {
-                        String::from_utf8_lossy(&dir_state.current_path).into_owned()
-                    };
-                    let msg = format!(" Directory of {}\r\n\r\n", dir_path);
-                    io.print(msg.as_bytes());
-                }
-                self.phase = DirPhase::Listing(dir_state);
-                StepResult::Continue
-            }
-            DirPhase::Listing(mut dir_state) => {
-                if dir_state.entry_index >= dir_state.entries.len() {
-                    // Done with this directory's entries
-                    if dir_state.wide && dir_state.wide_col > 0 {
-                        io.println(b"");
-                        dir_state.wide_col = 0;
-                    }
-
-                    if dir_state.recursive {
-                        self.phase = DirPhase::NextSubdir(dir_state);
-                    } else {
-                        if dir_state.total_files == 0 {
-                            io.println(b"File Not Found");
-                            return StepResult::Done(1);
-                        }
-                        self.phase = DirPhase::Footer(dir_state);
-                    }
-                    return StepResult::Continue;
-                }
-
-                let entry = dir_state.entries[dir_state.entry_index].clone();
-                dir_state.entry_index += 1;
-                dir_state.total_files += 1;
-                dir_state.total_bytes += entry.file_size as u64;
-
-                if dir_state.bare {
-                    if dir_state.recursive && !dir_state.current_path.is_empty() {
-                        // /S /B: show full path
-                        for &b in &dir_state.current_path {
-                            io.output_byte(b);
-                        }
-                        io.output_byte(b'\\');
-                    }
-                    format_bare(&entry, io);
-                } else if dir_state.wide {
-                    format_wide(&entry, &mut dir_state, io);
-                } else {
-                    format_standard(&entry, io);
-                }
-                dir_state.lines_shown += 1;
-
-                if dir_state.paged && dir_state.lines_shown >= 23 {
-                    self.phase = DirPhase::WaitKey(dir_state);
-                } else {
-                    self.phase = DirPhase::Listing(dir_state);
-                }
-                StepResult::Continue
-            }
-            DirPhase::WaitKey(mut dir_state) => {
-                if io.memory.read_byte(KB_BUF_COUNT) == 0 {
-                    self.phase = DirPhase::WaitKey(dir_state);
-                    return StepResult::Continue;
-                }
-                consume_key(io);
-                dir_state.lines_shown = 0;
-                self.phase = DirPhase::Listing(dir_state);
-                StepResult::Continue
-            }
-            DirPhase::Footer(dir_state) => {
-                if !dir_state.bare {
-                    let msg = format!(
-                        "{:>9} file(s) {:>12} bytes\r\n",
-                        dir_state.total_files, dir_state.total_bytes
-                    );
-                    io.print(msg.as_bytes());
-
-                    let free_bytes = calculate_free_space(state, dir_state.drive_index);
-                    let msg = format!("{:>25} bytes free\r\n", free_bytes);
-                    io.print(msg.as_bytes());
-                }
-                StepResult::Done(0)
-            }
-            DirPhase::NextSubdir(mut dir_state) => {
-                // /S: find subdirectories in the entries we just listed and push them
-                // We need to scan current entries for directories, excluding "." and ".."
-                let vol = match state.fat_volumes[dir_state.drive_index as usize].as_ref() {
-                    Some(v) => v,
-                    None => return StepResult::Done(1),
-                };
-
-                // Collect subdirectories from current dir (not from filtered entries)
-                if dir_state.dir_stack.is_empty() {
-                    let all_pattern = [b'?'; 11];
-                    let mut si = 0u16;
-                    let attr_mask =
-                        fat_dir::ATTR_HIDDEN | fat_dir::ATTR_SYSTEM | fat_dir::ATTR_DIRECTORY;
-                    loop {
-                        let result = fat_dir::find_matching(
-                            vol,
-                            dir_state.dir_cluster,
-                            &all_pattern,
-                            attr_mask,
-                            si,
-                            disk,
-                        );
-                        match result {
-                            Ok(Some((entry, next_index))) => {
-                                if entry.attribute & fat_dir::ATTR_DIRECTORY != 0
-                                    && entry.name != *b".          "
-                                    && entry.name != *b"..         "
-                                    && entry.start_cluster >= 2
-                                {
-                                    let mut subpath = if dir_state.current_path.is_empty() {
-                                        let cds_path =
-                                            get_dir_display_path(io.memory, dir_state.drive_index);
-                                        cds_path.into_bytes()
-                                    } else {
-                                        dir_state.current_path.clone()
-                                    };
-                                    if !subpath.ends_with(b"\\") {
-                                        subpath.push(b'\\');
-                                    }
-                                    let name = fat_dir::fcb_to_display_name(&entry.name);
-                                    subpath.extend_from_slice(&name);
-                                    dir_state.dir_stack.push((entry.start_cluster, subpath));
-                                }
-                                si = next_index;
-                            }
-                            _ => break,
-                        }
-                    }
-                }
-
-                // Pop next subdir from stack
-                if let Some((cluster, path)) = dir_state.dir_stack.pop() {
-                    dir_state.dir_cluster = cluster;
-                    dir_state.current_path = path;
-                    if !dir_state.bare {
-                        io.println(b"");
-                    }
-                    self.phase = DirPhase::CollectEntries(dir_state);
-                } else {
-                    // No more subdirs
-                    if dir_state.total_files == 0 {
-                        io.println(b"File Not Found");
-                        return StepResult::Done(1);
-                    }
-                    self.phase = DirPhase::Footer(dir_state);
-                }
-                StepResult::Continue
-            }
+            DirPhase::Init => self.step_init(state, io, disk),
+            DirPhase::CollectEntries(ds) => self.step_collect_entries(ds, state, disk),
+            DirPhase::Header(ds) => self.step_header(ds, state, io, disk),
+            DirPhase::Listing(ds) => self.step_listing(ds, io),
+            DirPhase::WaitKey(ds) => self.step_wait_key(ds, io),
+            DirPhase::Footer(ds) => self.step_footer(ds, state, io),
+            DirPhase::NextSubdir(ds) => self.step_next_subdir(ds, state, io, disk),
         }
     }
 }

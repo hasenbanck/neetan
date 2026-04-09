@@ -53,6 +53,243 @@ struct RunningDiskcopy {
     phase: DiskcopyPhase,
 }
 
+impl RunningDiskcopy {
+    fn step_init(&mut self, io: &mut IoAccess, disk: &mut dyn DiskIo) -> StepResult {
+        if is_help_request(&self.args) || self.args.trim_ascii().is_empty() {
+            print_help(io);
+            return StepResult::Done(0);
+        }
+        match init_diskcopy(io, disk, &self.args) {
+            Ok(diskcopy_state) => {
+                if diskcopy_state.same_drive {
+                    let drive_letter = (b'A' + diskcopy_state.src_drive_index) as char;
+                    let msg = format!(
+                        "Insert SOURCE diskette in drive {}:\r\nPress any key to continue . . .",
+                        drive_letter
+                    );
+                    io.print(msg.as_bytes());
+                    self.phase = DiskcopyPhase::PromptInsertSource(diskcopy_state);
+                } else {
+                    io.println(b"");
+                    io.println(b"Reading from source disk . . .");
+                    self.phase = DiskcopyPhase::ReadTracks(diskcopy_state);
+                }
+                StepResult::Continue
+            }
+            Err(msg) => {
+                io.print(msg);
+                StepResult::Done(1)
+            }
+        }
+    }
+
+    fn step_prompt_insert_source(
+        &mut self,
+        diskcopy_state: DiskcopyState,
+        io: &mut IoAccess,
+    ) -> StepResult {
+        if io.memory.read_byte(KB_BUF_COUNT) == 0 {
+            self.phase = DiskcopyPhase::PromptInsertSource(diskcopy_state);
+            return StepResult::Continue;
+        }
+        consume_key(io);
+        io.println(b"");
+        io.println(b"");
+        io.println(b"Reading from source disk . . .");
+        self.phase = DiskcopyPhase::ReadTracks(diskcopy_state);
+        StepResult::Continue
+    }
+
+    fn step_read_tracks(
+        &mut self,
+        mut diskcopy_state: DiskcopyState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        if diskcopy_state.current_track >= diskcopy_state.total_tracks {
+            if diskcopy_state.same_drive {
+                let drive_letter = (b'A' + diskcopy_state.dst_drive_index) as char;
+                let msg = format!(
+                    "\r\nInsert DESTINATION diskette in drive {}:\r\nPress any key to continue . . .",
+                    drive_letter
+                );
+                io.print(msg.as_bytes());
+                diskcopy_state.current_track = 0;
+                self.phase = DiskcopyPhase::PromptInsertDest(diskcopy_state);
+            } else {
+                io.println(b"");
+                io.println(b"Writing to destination disk . . .");
+                diskcopy_state.current_track = 0;
+                self.phase = DiskcopyPhase::WriteTracks(diskcopy_state);
+            }
+            return StepResult::Continue;
+        }
+
+        let lba = diskcopy_state.current_track * diskcopy_state.sectors_per_track as u32;
+        match disk.read_sectors(
+            diskcopy_state.src_da_ua,
+            lba,
+            diskcopy_state.sectors_per_track as u32,
+        ) {
+            Ok(data) => {
+                diskcopy_state.disk_buffer.extend_from_slice(&data);
+                diskcopy_state.current_track += 1;
+                self.phase = DiskcopyPhase::ReadTracks(diskcopy_state);
+                StepResult::Continue
+            }
+            Err(_) => {
+                io.println(b"Read error on source disk");
+                StepResult::Done(1)
+            }
+        }
+    }
+
+    fn step_prompt_insert_dest(
+        &mut self,
+        diskcopy_state: DiskcopyState,
+        io: &mut IoAccess,
+    ) -> StepResult {
+        if io.memory.read_byte(KB_BUF_COUNT) == 0 {
+            self.phase = DiskcopyPhase::PromptInsertDest(diskcopy_state);
+            return StepResult::Continue;
+        }
+        consume_key(io);
+        io.println(b"");
+        io.println(b"");
+        io.println(b"Writing to destination disk . . .");
+        self.phase = DiskcopyPhase::WriteTracks(diskcopy_state);
+        StepResult::Continue
+    }
+
+    fn step_write_tracks(
+        &mut self,
+        mut diskcopy_state: DiskcopyState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        if diskcopy_state.current_track >= diskcopy_state.total_tracks {
+            if diskcopy_state.verify {
+                io.println(b"");
+                io.println(b"Verifying . . .");
+                diskcopy_state.current_track = 0;
+                self.phase = DiskcopyPhase::VerifyTracks(diskcopy_state);
+            } else {
+                self.phase = DiskcopyPhase::Summary(diskcopy_state);
+            }
+            return StepResult::Continue;
+        }
+
+        let track_size =
+            diskcopy_state.sectors_per_track as usize * diskcopy_state.sector_size as usize;
+        let buffer_offset = diskcopy_state.current_track as usize * track_size;
+        let track_data = &diskcopy_state.disk_buffer[buffer_offset..buffer_offset + track_size];
+        let lba = diskcopy_state.current_track * diskcopy_state.sectors_per_track as u32;
+
+        if disk
+            .write_sectors(diskcopy_state.dst_da_ua, lba, track_data)
+            .is_err()
+        {
+            io.println(b"Write error on destination disk");
+            return StepResult::Done(1);
+        }
+
+        diskcopy_state.current_track += 1;
+        self.phase = DiskcopyPhase::WriteTracks(diskcopy_state);
+        StepResult::Continue
+    }
+
+    fn step_verify_tracks(
+        &mut self,
+        mut diskcopy_state: DiskcopyState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        if diskcopy_state.current_track >= diskcopy_state.total_tracks {
+            self.phase = DiskcopyPhase::Summary(diskcopy_state);
+            return StepResult::Continue;
+        }
+
+        let track_size =
+            diskcopy_state.sectors_per_track as usize * diskcopy_state.sector_size as usize;
+        let buffer_offset = diskcopy_state.current_track as usize * track_size;
+        let expected = &diskcopy_state.disk_buffer[buffer_offset..buffer_offset + track_size];
+        let lba = diskcopy_state.current_track * diskcopy_state.sectors_per_track as u32;
+
+        match disk.read_sectors(
+            diskcopy_state.dst_da_ua,
+            lba,
+            diskcopy_state.sectors_per_track as u32,
+        ) {
+            Ok(readback) => {
+                if readback[..track_size] != expected[..track_size] {
+                    io.println(b"Verify error");
+                    return StepResult::Done(1);
+                }
+            }
+            Err(_) => {
+                io.println(b"Verify error");
+                return StepResult::Done(1);
+            }
+        }
+
+        diskcopy_state.current_track += 1;
+        self.phase = DiskcopyPhase::VerifyTracks(diskcopy_state);
+        StepResult::Continue
+    }
+
+    fn step_summary(
+        &mut self,
+        diskcopy_state: DiskcopyState,
+        state: &mut OsState,
+        io: &mut IoAccess,
+    ) -> StepResult {
+        io.println(b"");
+        io.println(b"Copy complete.");
+
+        // Invalidate destination volume cache
+        state.fat_volumes[diskcopy_state.dst_drive_index as usize] = None;
+
+        io.print(b"\r\nCopy another diskette (Y/N)?");
+        self.phase = DiskcopyPhase::PromptAnother(diskcopy_state);
+        StepResult::Continue
+    }
+
+    fn step_prompt_another(
+        &mut self,
+        mut diskcopy_state: DiskcopyState,
+        io: &mut IoAccess,
+    ) -> StepResult {
+        if io.memory.read_byte(KB_BUF_COUNT) == 0 {
+            self.phase = DiskcopyPhase::PromptAnother(diskcopy_state);
+            return StepResult::Continue;
+        }
+        let key = consume_key(io);
+        io.println(b"");
+
+        match key.to_ascii_uppercase() {
+            b'Y' => {
+                diskcopy_state.current_track = 0;
+                diskcopy_state.disk_buffer.clear();
+                if diskcopy_state.same_drive {
+                    let drive_letter = (b'A' + diskcopy_state.src_drive_index) as char;
+                    let msg = format!(
+                        "\r\nInsert SOURCE diskette in drive {}:\r\nPress any key to continue . . .",
+                        drive_letter
+                    );
+                    io.print(msg.as_bytes());
+                    self.phase = DiskcopyPhase::PromptInsertSource(diskcopy_state);
+                } else {
+                    io.println(b"");
+                    io.println(b"Reading from source disk . . .");
+                    self.phase = DiskcopyPhase::ReadTracks(diskcopy_state);
+                }
+                StepResult::Continue
+            }
+            _ => StepResult::Done(0),
+        }
+    }
+}
+
 impl RunningCommand for RunningDiskcopy {
     fn step(
         &mut self,
@@ -62,203 +299,14 @@ impl RunningCommand for RunningDiskcopy {
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, DiskcopyPhase::Init);
         match phase {
-            DiskcopyPhase::Init => {
-                if is_help_request(&self.args) || self.args.trim_ascii().is_empty() {
-                    print_help(io);
-                    return StepResult::Done(0);
-                }
-                match init_diskcopy(io, disk, &self.args) {
-                    Ok(diskcopy_state) => {
-                        if diskcopy_state.same_drive {
-                            let drive_letter = (b'A' + diskcopy_state.src_drive_index) as char;
-                            let msg = format!(
-                                "Insert SOURCE diskette in drive {}:\r\nPress any key to continue . . .",
-                                drive_letter
-                            );
-                            io.print(msg.as_bytes());
-                            self.phase = DiskcopyPhase::PromptInsertSource(diskcopy_state);
-                        } else {
-                            io.println(b"");
-                            io.println(b"Reading from source disk . . .");
-                            self.phase = DiskcopyPhase::ReadTracks(diskcopy_state);
-                        }
-                        StepResult::Continue
-                    }
-                    Err(msg) => {
-                        io.print(msg);
-                        StepResult::Done(1)
-                    }
-                }
-            }
-            DiskcopyPhase::PromptInsertSource(diskcopy_state) => {
-                if io.memory.read_byte(KB_BUF_COUNT) == 0 {
-                    self.phase = DiskcopyPhase::PromptInsertSource(diskcopy_state);
-                    return StepResult::Continue;
-                }
-                consume_key(io);
-                io.println(b"");
-                io.println(b"");
-                io.println(b"Reading from source disk . . .");
-                self.phase = DiskcopyPhase::ReadTracks(diskcopy_state);
-                StepResult::Continue
-            }
-            DiskcopyPhase::ReadTracks(mut diskcopy_state) => {
-                if diskcopy_state.current_track >= diskcopy_state.total_tracks {
-                    if diskcopy_state.same_drive {
-                        let drive_letter = (b'A' + diskcopy_state.dst_drive_index) as char;
-                        let msg = format!(
-                            "\r\nInsert DESTINATION diskette in drive {}:\r\nPress any key to continue . . .",
-                            drive_letter
-                        );
-                        io.print(msg.as_bytes());
-                        diskcopy_state.current_track = 0;
-                        self.phase = DiskcopyPhase::PromptInsertDest(diskcopy_state);
-                    } else {
-                        io.println(b"");
-                        io.println(b"Writing to destination disk . . .");
-                        diskcopy_state.current_track = 0;
-                        self.phase = DiskcopyPhase::WriteTracks(diskcopy_state);
-                    }
-                    return StepResult::Continue;
-                }
-
-                let lba = diskcopy_state.current_track * diskcopy_state.sectors_per_track as u32;
-                match disk.read_sectors(
-                    diskcopy_state.src_da_ua,
-                    lba,
-                    diskcopy_state.sectors_per_track as u32,
-                ) {
-                    Ok(data) => {
-                        diskcopy_state.disk_buffer.extend_from_slice(&data);
-                        diskcopy_state.current_track += 1;
-                        self.phase = DiskcopyPhase::ReadTracks(diskcopy_state);
-                        StepResult::Continue
-                    }
-                    Err(_) => {
-                        io.println(b"Read error on source disk");
-                        StepResult::Done(1)
-                    }
-                }
-            }
-            DiskcopyPhase::PromptInsertDest(diskcopy_state) => {
-                if io.memory.read_byte(KB_BUF_COUNT) == 0 {
-                    self.phase = DiskcopyPhase::PromptInsertDest(diskcopy_state);
-                    return StepResult::Continue;
-                }
-                consume_key(io);
-                io.println(b"");
-                io.println(b"");
-                io.println(b"Writing to destination disk . . .");
-                self.phase = DiskcopyPhase::WriteTracks(diskcopy_state);
-                StepResult::Continue
-            }
-            DiskcopyPhase::WriteTracks(mut diskcopy_state) => {
-                if diskcopy_state.current_track >= diskcopy_state.total_tracks {
-                    if diskcopy_state.verify {
-                        io.println(b"");
-                        io.println(b"Verifying . . .");
-                        diskcopy_state.current_track = 0;
-                        self.phase = DiskcopyPhase::VerifyTracks(diskcopy_state);
-                    } else {
-                        self.phase = DiskcopyPhase::Summary(diskcopy_state);
-                    }
-                    return StepResult::Continue;
-                }
-
-                let track_size =
-                    diskcopy_state.sectors_per_track as usize * diskcopy_state.sector_size as usize;
-                let buffer_offset = diskcopy_state.current_track as usize * track_size;
-                let track_data =
-                    &diskcopy_state.disk_buffer[buffer_offset..buffer_offset + track_size];
-                let lba = diskcopy_state.current_track * diskcopy_state.sectors_per_track as u32;
-
-                if disk
-                    .write_sectors(diskcopy_state.dst_da_ua, lba, track_data)
-                    .is_err()
-                {
-                    io.println(b"Write error on destination disk");
-                    return StepResult::Done(1);
-                }
-
-                diskcopy_state.current_track += 1;
-                self.phase = DiskcopyPhase::WriteTracks(diskcopy_state);
-                StepResult::Continue
-            }
-            DiskcopyPhase::VerifyTracks(mut diskcopy_state) => {
-                if diskcopy_state.current_track >= diskcopy_state.total_tracks {
-                    self.phase = DiskcopyPhase::Summary(diskcopy_state);
-                    return StepResult::Continue;
-                }
-
-                let track_size =
-                    diskcopy_state.sectors_per_track as usize * diskcopy_state.sector_size as usize;
-                let buffer_offset = diskcopy_state.current_track as usize * track_size;
-                let expected =
-                    &diskcopy_state.disk_buffer[buffer_offset..buffer_offset + track_size];
-                let lba = diskcopy_state.current_track * diskcopy_state.sectors_per_track as u32;
-
-                match disk.read_sectors(
-                    diskcopy_state.dst_da_ua,
-                    lba,
-                    diskcopy_state.sectors_per_track as u32,
-                ) {
-                    Ok(readback) => {
-                        if readback[..track_size] != expected[..track_size] {
-                            io.println(b"Verify error");
-                            return StepResult::Done(1);
-                        }
-                    }
-                    Err(_) => {
-                        io.println(b"Verify error");
-                        return StepResult::Done(1);
-                    }
-                }
-
-                diskcopy_state.current_track += 1;
-                self.phase = DiskcopyPhase::VerifyTracks(diskcopy_state);
-                StepResult::Continue
-            }
-            DiskcopyPhase::Summary(diskcopy_state) => {
-                io.println(b"");
-                io.println(b"Copy complete.");
-
-                // Invalidate destination volume cache
-                state.fat_volumes[diskcopy_state.dst_drive_index as usize] = None;
-
-                io.print(b"\r\nCopy another diskette (Y/N)?");
-                self.phase = DiskcopyPhase::PromptAnother(diskcopy_state);
-                StepResult::Continue
-            }
-            DiskcopyPhase::PromptAnother(mut diskcopy_state) => {
-                if io.memory.read_byte(KB_BUF_COUNT) == 0 {
-                    self.phase = DiskcopyPhase::PromptAnother(diskcopy_state);
-                    return StepResult::Continue;
-                }
-                let key = consume_key(io);
-                io.println(b"");
-
-                match key.to_ascii_uppercase() {
-                    b'Y' => {
-                        diskcopy_state.current_track = 0;
-                        diskcopy_state.disk_buffer.clear();
-                        if diskcopy_state.same_drive {
-                            let drive_letter = (b'A' + diskcopy_state.src_drive_index) as char;
-                            let msg = format!(
-                                "\r\nInsert SOURCE diskette in drive {}:\r\nPress any key to continue . . .",
-                                drive_letter
-                            );
-                            io.print(msg.as_bytes());
-                            self.phase = DiskcopyPhase::PromptInsertSource(diskcopy_state);
-                        } else {
-                            io.println(b"");
-                            io.println(b"Reading from source disk . . .");
-                            self.phase = DiskcopyPhase::ReadTracks(diskcopy_state);
-                        }
-                        StepResult::Continue
-                    }
-                    _ => StepResult::Done(0),
-                }
-            }
+            DiskcopyPhase::Init => self.step_init(io, disk),
+            DiskcopyPhase::PromptInsertSource(ds) => self.step_prompt_insert_source(ds, io),
+            DiskcopyPhase::ReadTracks(ds) => self.step_read_tracks(ds, io, disk),
+            DiskcopyPhase::PromptInsertDest(ds) => self.step_prompt_insert_dest(ds, io),
+            DiskcopyPhase::WriteTracks(ds) => self.step_write_tracks(ds, io, disk),
+            DiskcopyPhase::VerifyTracks(ds) => self.step_verify_tracks(ds, io, disk),
+            DiskcopyPhase::Summary(ds) => self.step_summary(ds, state, io),
+            DiskcopyPhase::PromptAnother(ds) => self.step_prompt_another(ds, io),
         }
     }
 }

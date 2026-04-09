@@ -66,6 +66,380 @@ struct RunningXcopy {
     phase: XcopyPhase,
 }
 
+impl RunningXcopy {
+    fn step_init(
+        &mut self,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        if is_help_request(&self.args) || self.args.trim_ascii().is_empty() {
+            print_help(io);
+            return StepResult::Done(0);
+        }
+        match init_xcopy(state, io, disk, &self.args) {
+            Ok(xcopy_state) => {
+                self.phase = XcopyPhase::FindNext(xcopy_state);
+                StepResult::Continue
+            }
+            Err(msg) => {
+                io.print(msg);
+                StepResult::Done(1)
+            }
+        }
+    }
+
+    fn step_find_next(
+        &mut self,
+        mut xcopy_state: XcopyState,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        let vol = match state.fat_volumes[xcopy_state.src_drive as usize].as_ref() {
+            Some(v) => v,
+            None => return StepResult::Done(1),
+        };
+
+        let result = fat_dir::find_matching(
+            vol,
+            xcopy_state.src_dir_cluster,
+            &xcopy_state.src_pattern,
+            0,
+            xcopy_state.src_search_index,
+            disk,
+        );
+
+        match result {
+            Ok(Some((entry, next_index))) => {
+                if entry.attribute & fat_dir::ATTR_DIRECTORY != 0 {
+                    xcopy_state.src_search_index = next_index;
+                    self.phase = XcopyPhase::FindNext(xcopy_state);
+                    return StepResult::Continue;
+                }
+
+                xcopy_state.src_search_index = next_index;
+
+                if xcopy_state.prompt_each {
+                    let display_name = fat_dir::fcb_to_display_name(&entry.name);
+                    for &byte in &display_name {
+                        io.output_byte(byte);
+                    }
+                    io.print(b" (Y/N)?");
+                    self.phase = XcopyPhase::PromptFile(xcopy_state, entry);
+                } else {
+                    let display_name = fat_dir::fcb_to_display_name(&entry.name);
+                    for &byte in &display_name {
+                        io.output_byte(byte);
+                    }
+                    io.println(b"");
+
+                    self.start_file_copy(&mut xcopy_state, entry);
+                }
+                StepResult::Continue
+            }
+            Ok(None) => {
+                if xcopy_state.recursive {
+                    self.phase = XcopyPhase::ScanSubdirs(xcopy_state);
+                } else {
+                    self.phase = XcopyPhase::Summary(xcopy_state.files_copied);
+                }
+                StepResult::Continue
+            }
+            Err(_) => {
+                io.println(b"File not found");
+                StepResult::Done(1)
+            }
+        }
+    }
+
+    fn step_prompt_file(
+        &mut self,
+        mut xcopy_state: XcopyState,
+        entry: fat_dir::DirEntry,
+        io: &mut IoAccess,
+    ) -> StepResult {
+        if io.memory.read_byte(KB_BUF_COUNT) == 0 {
+            self.phase = XcopyPhase::PromptFile(xcopy_state, entry);
+            return StepResult::Continue;
+        }
+        let key = consume_key(io);
+        io.output_byte(b'\r');
+        io.output_byte(b'\n');
+
+        if key == b'Y' || key == b'y' {
+            self.start_file_copy(&mut xcopy_state, entry);
+        } else {
+            self.phase = XcopyPhase::FindNext(xcopy_state);
+        }
+        StepResult::Continue
+    }
+
+    fn step_read_chunk(
+        &mut self,
+        xcopy_state: XcopyState,
+        file_state: FileCopyState,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        if file_state.src_remaining == 0 || file_state.src_cluster < 2 {
+            self.phase = XcopyPhase::FinishFile(xcopy_state, file_state);
+            return StepResult::Continue;
+        }
+
+        let vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
+            Some(v) => v,
+            None => return StepResult::Done(1),
+        };
+
+        let cluster_data = match vol.read_cluster(file_state.src_cluster, disk) {
+            Ok(d) => d,
+            Err(_) => {
+                io.println(b"Read error");
+                return StepResult::Done(1);
+            }
+        };
+
+        self.phase = XcopyPhase::WriteChunk(xcopy_state, file_state, cluster_data);
+        StepResult::Continue
+    }
+
+    fn step_write_chunk(
+        &mut self,
+        xcopy_state: XcopyState,
+        mut file_state: FileCopyState,
+        data: Vec<u8>,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        let vol = match state.fat_volumes[file_state.dst_drive as usize].as_mut() {
+            Some(v) => v,
+            None => return StepResult::Done(1),
+        };
+
+        let new_cluster = match vol.allocate_cluster(file_state.dst_last_cluster) {
+            Some(c) => c,
+            None => {
+                io.println(b"Insufficient disk space");
+                return StepResult::Done(1);
+            }
+        };
+
+        if file_state.dst_first_cluster == 0 {
+            file_state.dst_first_cluster = new_cluster;
+        }
+        file_state.dst_last_cluster = new_cluster;
+
+        let cluster_size = vol.bpb.sectors_per_cluster as usize * vol.bpb.bytes_per_sector as usize;
+        let bytes_to_write = cluster_size.min(file_state.src_remaining as usize);
+
+        let mut write_data = data;
+        write_data.resize(cluster_size, 0);
+
+        if vol.write_cluster(new_cluster, &write_data, disk).is_err() {
+            io.println(b"Write error");
+            return StepResult::Done(1);
+        }
+
+        file_state.src_remaining -= bytes_to_write as u32;
+
+        let src_vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
+            Some(v) => v,
+            None => return StepResult::Done(1),
+        };
+        file_state.src_cluster = src_vol.next_cluster(file_state.src_cluster).unwrap_or(0);
+
+        self.phase = XcopyPhase::ReadChunk(xcopy_state, file_state);
+        StepResult::Continue
+    }
+
+    fn step_finish_file(
+        &mut self,
+        mut xcopy_state: XcopyState,
+        file_state: FileCopyState,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        let vol = match state.fat_volumes[file_state.dst_drive as usize].as_mut() {
+            Some(v) => v,
+            None => return StepResult::Done(1),
+        };
+
+        if let Ok(Some(existing)) = fat_dir::find_entry(
+            vol,
+            file_state.dst_dir_cluster,
+            &file_state.dst_fcb_name,
+            disk,
+        ) {
+            if existing.start_cluster >= 2 {
+                vol.free_chain(existing.start_cluster);
+            }
+            let _ = fat_dir::delete_entry(vol, &existing, disk);
+        }
+
+        let new_entry = fat_dir::DirEntry {
+            name: file_state.dst_fcb_name,
+            attribute: file_state.src_entry.attribute & 0x27,
+            time: file_state.src_entry.time,
+            date: file_state.src_entry.date,
+            start_cluster: file_state.dst_first_cluster,
+            file_size: file_state.src_entry.file_size,
+            dir_sector: 0,
+            dir_offset: 0,
+        };
+
+        if fat_dir::create_entry(vol, file_state.dst_dir_cluster, &new_entry, disk).is_err() {
+            io.println(b"Unable to create destination");
+            return StepResult::Done(1);
+        }
+
+        let _ = vol.flush_fat(disk);
+        xcopy_state.files_copied += 1;
+
+        self.phase = XcopyPhase::FindNext(xcopy_state);
+        StepResult::Continue
+    }
+
+    fn step_scan_subdirs(
+        &mut self,
+        mut xcopy_state: XcopyState,
+        state: &mut OsState,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        // /S: scan for subdirectories in current src dir, create them in dst, push to stack
+        let vol = match state.fat_volumes[xcopy_state.src_drive as usize].as_ref() {
+            Some(v) => v,
+            None => return StepResult::Done(1),
+        };
+
+        let all_pattern = [b'?'; 11];
+        let attr_mask = fat_dir::ATTR_HIDDEN | fat_dir::ATTR_SYSTEM | fat_dir::ATTR_DIRECTORY;
+        let mut si = 0u16;
+        let mut subdirs = Vec::new();
+
+        loop {
+            let result = fat_dir::find_matching(
+                vol,
+                xcopy_state.src_dir_cluster,
+                &all_pattern,
+                attr_mask,
+                si,
+                disk,
+            );
+            match result {
+                Ok(Some((entry, next_index))) => {
+                    if entry.attribute & fat_dir::ATTR_DIRECTORY != 0
+                        && entry.name != *b".          "
+                        && entry.name != *b"..         "
+                        && entry.start_cluster >= 2
+                    {
+                        subdirs.push(entry);
+                    }
+                    si = next_index;
+                }
+                _ => break,
+            }
+        }
+
+        // For each subdir: create in dest, push to stack
+        for subdir in subdirs {
+            let dst_vol = match state.fat_volumes[xcopy_state.dst_drive as usize].as_mut() {
+                Some(v) => v,
+                None => return StepResult::Done(1),
+            };
+
+            // Check if subdir already exists in dest
+            let dst_subdir_cluster = if let Ok(Some(existing)) =
+                fat_dir::find_entry(dst_vol, xcopy_state.dst_dir_cluster, &subdir.name, disk)
+            {
+                if existing.attribute & fat_dir::ATTR_DIRECTORY != 0 {
+                    existing.start_cluster
+                } else {
+                    continue;
+                }
+            } else {
+                // Create the subdirectory in dest
+                let new_cluster = match dst_vol.allocate_cluster(0) {
+                    Some(c) => c,
+                    None => continue,
+                };
+                let cluster_size = dst_vol.bpb.sectors_per_cluster as usize
+                    * dst_vol.bpb.bytes_per_sector as usize;
+                let zeros = vec![0u8; cluster_size];
+                let _ = dst_vol.write_cluster(new_cluster, &zeros, disk);
+
+                let dot = fat_dir::DirEntry {
+                    name: *b".          ",
+                    attribute: fat_dir::ATTR_DIRECTORY,
+                    time: 0x6000,
+                    date: 0x1E21,
+                    start_cluster: new_cluster,
+                    file_size: 0,
+                    dir_sector: 0,
+                    dir_offset: 0,
+                };
+                let _ = fat_dir::create_entry(dst_vol, new_cluster, &dot, disk);
+
+                let dotdot = fat_dir::DirEntry {
+                    name: *b"..         ",
+                    attribute: fat_dir::ATTR_DIRECTORY,
+                    time: 0x6000,
+                    date: 0x1E21,
+                    start_cluster: xcopy_state.dst_dir_cluster,
+                    file_size: 0,
+                    dir_sector: 0,
+                    dir_offset: 0,
+                };
+                let _ = fat_dir::create_entry(dst_vol, new_cluster, &dotdot, disk);
+
+                let dir_entry = fat_dir::DirEntry {
+                    name: subdir.name,
+                    attribute: fat_dir::ATTR_DIRECTORY,
+                    time: subdir.time,
+                    date: subdir.date,
+                    start_cluster: new_cluster,
+                    file_size: 0,
+                    dir_sector: 0,
+                    dir_offset: 0,
+                };
+                let _ =
+                    fat_dir::create_entry(dst_vol, xcopy_state.dst_dir_cluster, &dir_entry, disk);
+                let _ = dst_vol.flush_fat(disk);
+                new_cluster
+            };
+
+            // Check /E: if not set, only copy non-empty source subdirs
+            if !xcopy_state.copy_empty_dirs {
+                let src_vol = match state.fat_volumes[xcopy_state.src_drive as usize].as_ref() {
+                    Some(v) => v,
+                    None => continue,
+                };
+                if is_directory_empty(src_vol, subdir.start_cluster, disk) {
+                    continue;
+                }
+            }
+
+            xcopy_state
+                .dir_stack
+                .push((subdir.start_cluster, dst_subdir_cluster));
+        }
+
+        // Pop next dir from stack
+        if let Some((src_cluster, dst_cluster)) = xcopy_state.dir_stack.pop() {
+            xcopy_state.src_dir_cluster = src_cluster;
+            xcopy_state.dst_dir_cluster = dst_cluster;
+            xcopy_state.src_search_index = 0;
+            self.phase = XcopyPhase::FindNext(xcopy_state);
+        } else {
+            self.phase = XcopyPhase::Summary(xcopy_state.files_copied);
+        }
+        StepResult::Continue
+    }
+}
+
 impl RunningCommand for RunningXcopy {
     fn step(
         &mut self,
@@ -75,339 +449,15 @@ impl RunningCommand for RunningXcopy {
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, XcopyPhase::Init);
         match phase {
-            XcopyPhase::Init => {
-                if is_help_request(&self.args) || self.args.trim_ascii().is_empty() {
-                    print_help(io);
-                    return StepResult::Done(0);
-                }
-                match init_xcopy(state, io, disk, &self.args) {
-                    Ok(xcopy_state) => {
-                        self.phase = XcopyPhase::FindNext(xcopy_state);
-                        StepResult::Continue
-                    }
-                    Err(msg) => {
-                        io.print(msg);
-                        StepResult::Done(1)
-                    }
-                }
+            XcopyPhase::Init => self.step_init(state, io, disk),
+            XcopyPhase::FindNext(xs) => self.step_find_next(xs, state, io, disk),
+            XcopyPhase::PromptFile(xs, entry) => self.step_prompt_file(xs, entry, io),
+            XcopyPhase::ReadChunk(xs, fs) => self.step_read_chunk(xs, fs, state, io, disk),
+            XcopyPhase::WriteChunk(xs, fs, data) => {
+                self.step_write_chunk(xs, fs, data, state, io, disk)
             }
-            XcopyPhase::FindNext(mut xcopy_state) => {
-                let vol = match state.fat_volumes[xcopy_state.src_drive as usize].as_ref() {
-                    Some(v) => v,
-                    None => return StepResult::Done(1),
-                };
-
-                let result = fat_dir::find_matching(
-                    vol,
-                    xcopy_state.src_dir_cluster,
-                    &xcopy_state.src_pattern,
-                    0,
-                    xcopy_state.src_search_index,
-                    disk,
-                );
-
-                match result {
-                    Ok(Some((entry, next_index))) => {
-                        if entry.attribute & fat_dir::ATTR_DIRECTORY != 0 {
-                            xcopy_state.src_search_index = next_index;
-                            self.phase = XcopyPhase::FindNext(xcopy_state);
-                            return StepResult::Continue;
-                        }
-
-                        xcopy_state.src_search_index = next_index;
-
-                        if xcopy_state.prompt_each {
-                            let display_name = fat_dir::fcb_to_display_name(&entry.name);
-                            for &byte in &display_name {
-                                io.output_byte(byte);
-                            }
-                            io.print(b" (Y/N)?");
-                            self.phase = XcopyPhase::PromptFile(xcopy_state, entry);
-                        } else {
-                            let display_name = fat_dir::fcb_to_display_name(&entry.name);
-                            for &byte in &display_name {
-                                io.output_byte(byte);
-                            }
-                            io.println(b"");
-
-                            self.start_file_copy(&mut xcopy_state, entry);
-                        }
-                        StepResult::Continue
-                    }
-                    Ok(None) => {
-                        if xcopy_state.recursive {
-                            self.phase = XcopyPhase::ScanSubdirs(xcopy_state);
-                        } else {
-                            self.phase = XcopyPhase::Summary(xcopy_state.files_copied);
-                        }
-                        StepResult::Continue
-                    }
-                    Err(_) => {
-                        io.println(b"File not found");
-                        StepResult::Done(1)
-                    }
-                }
-            }
-            XcopyPhase::PromptFile(mut xcopy_state, entry) => {
-                if io.memory.read_byte(KB_BUF_COUNT) == 0 {
-                    self.phase = XcopyPhase::PromptFile(xcopy_state, entry);
-                    return StepResult::Continue;
-                }
-                let key = consume_key(io);
-                io.output_byte(b'\r');
-                io.output_byte(b'\n');
-
-                if key == b'Y' || key == b'y' {
-                    self.start_file_copy(&mut xcopy_state, entry);
-                } else {
-                    self.phase = XcopyPhase::FindNext(xcopy_state);
-                }
-                StepResult::Continue
-            }
-            XcopyPhase::ReadChunk(xcopy_state, file_state) => {
-                if file_state.src_remaining == 0 || file_state.src_cluster < 2 {
-                    self.phase = XcopyPhase::FinishFile(xcopy_state, file_state);
-                    return StepResult::Continue;
-                }
-
-                let vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
-                    Some(v) => v,
-                    None => return StepResult::Done(1),
-                };
-
-                let cluster_data = match vol.read_cluster(file_state.src_cluster, disk) {
-                    Ok(d) => d,
-                    Err(_) => {
-                        io.println(b"Read error");
-                        return StepResult::Done(1);
-                    }
-                };
-
-                self.phase = XcopyPhase::WriteChunk(xcopy_state, file_state, cluster_data);
-                StepResult::Continue
-            }
-            XcopyPhase::WriteChunk(xcopy_state, mut file_state, data) => {
-                let vol = match state.fat_volumes[file_state.dst_drive as usize].as_mut() {
-                    Some(v) => v,
-                    None => return StepResult::Done(1),
-                };
-
-                let new_cluster = match vol.allocate_cluster(file_state.dst_last_cluster) {
-                    Some(c) => c,
-                    None => {
-                        io.println(b"Insufficient disk space");
-                        return StepResult::Done(1);
-                    }
-                };
-
-                if file_state.dst_first_cluster == 0 {
-                    file_state.dst_first_cluster = new_cluster;
-                }
-                file_state.dst_last_cluster = new_cluster;
-
-                let cluster_size =
-                    vol.bpb.sectors_per_cluster as usize * vol.bpb.bytes_per_sector as usize;
-                let bytes_to_write = cluster_size.min(file_state.src_remaining as usize);
-
-                let mut write_data = data;
-                write_data.resize(cluster_size, 0);
-
-                if vol.write_cluster(new_cluster, &write_data, disk).is_err() {
-                    io.println(b"Write error");
-                    return StepResult::Done(1);
-                }
-
-                file_state.src_remaining -= bytes_to_write as u32;
-
-                let src_vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
-                    Some(v) => v,
-                    None => return StepResult::Done(1),
-                };
-                file_state.src_cluster = src_vol.next_cluster(file_state.src_cluster).unwrap_or(0);
-
-                self.phase = XcopyPhase::ReadChunk(xcopy_state, file_state);
-                StepResult::Continue
-            }
-            XcopyPhase::FinishFile(mut xcopy_state, file_state) => {
-                let vol = match state.fat_volumes[file_state.dst_drive as usize].as_mut() {
-                    Some(v) => v,
-                    None => return StepResult::Done(1),
-                };
-
-                if let Ok(Some(existing)) = fat_dir::find_entry(
-                    vol,
-                    file_state.dst_dir_cluster,
-                    &file_state.dst_fcb_name,
-                    disk,
-                ) {
-                    if existing.start_cluster >= 2 {
-                        vol.free_chain(existing.start_cluster);
-                    }
-                    let _ = fat_dir::delete_entry(vol, &existing, disk);
-                }
-
-                let new_entry = fat_dir::DirEntry {
-                    name: file_state.dst_fcb_name,
-                    attribute: file_state.src_entry.attribute & 0x27,
-                    time: file_state.src_entry.time,
-                    date: file_state.src_entry.date,
-                    start_cluster: file_state.dst_first_cluster,
-                    file_size: file_state.src_entry.file_size,
-                    dir_sector: 0,
-                    dir_offset: 0,
-                };
-
-                if fat_dir::create_entry(vol, file_state.dst_dir_cluster, &new_entry, disk).is_err()
-                {
-                    io.println(b"Unable to create destination");
-                    return StepResult::Done(1);
-                }
-
-                let _ = vol.flush_fat(disk);
-                xcopy_state.files_copied += 1;
-
-                self.phase = XcopyPhase::FindNext(xcopy_state);
-                StepResult::Continue
-            }
-            XcopyPhase::ScanSubdirs(mut xcopy_state) => {
-                // /S: scan for subdirectories in current src dir, create them in dst, push to stack
-                let vol = match state.fat_volumes[xcopy_state.src_drive as usize].as_ref() {
-                    Some(v) => v,
-                    None => return StepResult::Done(1),
-                };
-
-                let all_pattern = [b'?'; 11];
-                let attr_mask =
-                    fat_dir::ATTR_HIDDEN | fat_dir::ATTR_SYSTEM | fat_dir::ATTR_DIRECTORY;
-                let mut si = 0u16;
-                let mut subdirs = Vec::new();
-
-                loop {
-                    let result = fat_dir::find_matching(
-                        vol,
-                        xcopy_state.src_dir_cluster,
-                        &all_pattern,
-                        attr_mask,
-                        si,
-                        disk,
-                    );
-                    match result {
-                        Ok(Some((entry, next_index))) => {
-                            if entry.attribute & fat_dir::ATTR_DIRECTORY != 0
-                                && entry.name != *b".          "
-                                && entry.name != *b"..         "
-                                && entry.start_cluster >= 2
-                            {
-                                subdirs.push(entry);
-                            }
-                            si = next_index;
-                        }
-                        _ => break,
-                    }
-                }
-
-                // For each subdir: create in dest, push to stack
-                for subdir in subdirs {
-                    let dst_vol = match state.fat_volumes[xcopy_state.dst_drive as usize].as_mut() {
-                        Some(v) => v,
-                        None => return StepResult::Done(1),
-                    };
-
-                    // Check if subdir already exists in dest
-                    let dst_subdir_cluster = if let Ok(Some(existing)) = fat_dir::find_entry(
-                        dst_vol,
-                        xcopy_state.dst_dir_cluster,
-                        &subdir.name,
-                        disk,
-                    ) {
-                        if existing.attribute & fat_dir::ATTR_DIRECTORY != 0 {
-                            existing.start_cluster
-                        } else {
-                            continue;
-                        }
-                    } else {
-                        // Create the subdirectory in dest
-                        let new_cluster = match dst_vol.allocate_cluster(0) {
-                            Some(c) => c,
-                            None => continue,
-                        };
-                        let cluster_size = dst_vol.bpb.sectors_per_cluster as usize
-                            * dst_vol.bpb.bytes_per_sector as usize;
-                        let zeros = vec![0u8; cluster_size];
-                        let _ = dst_vol.write_cluster(new_cluster, &zeros, disk);
-
-                        let dot = fat_dir::DirEntry {
-                            name: *b".          ",
-                            attribute: fat_dir::ATTR_DIRECTORY,
-                            time: 0x6000,
-                            date: 0x1E21,
-                            start_cluster: new_cluster,
-                            file_size: 0,
-                            dir_sector: 0,
-                            dir_offset: 0,
-                        };
-                        let _ = fat_dir::create_entry(dst_vol, new_cluster, &dot, disk);
-
-                        let dotdot = fat_dir::DirEntry {
-                            name: *b"..         ",
-                            attribute: fat_dir::ATTR_DIRECTORY,
-                            time: 0x6000,
-                            date: 0x1E21,
-                            start_cluster: xcopy_state.dst_dir_cluster,
-                            file_size: 0,
-                            dir_sector: 0,
-                            dir_offset: 0,
-                        };
-                        let _ = fat_dir::create_entry(dst_vol, new_cluster, &dotdot, disk);
-
-                        let dir_entry = fat_dir::DirEntry {
-                            name: subdir.name,
-                            attribute: fat_dir::ATTR_DIRECTORY,
-                            time: subdir.time,
-                            date: subdir.date,
-                            start_cluster: new_cluster,
-                            file_size: 0,
-                            dir_sector: 0,
-                            dir_offset: 0,
-                        };
-                        let _ = fat_dir::create_entry(
-                            dst_vol,
-                            xcopy_state.dst_dir_cluster,
-                            &dir_entry,
-                            disk,
-                        );
-                        let _ = dst_vol.flush_fat(disk);
-                        new_cluster
-                    };
-
-                    // Check /E: if not set, only copy non-empty source subdirs
-                    if !xcopy_state.copy_empty_dirs {
-                        let src_vol =
-                            match state.fat_volumes[xcopy_state.src_drive as usize].as_ref() {
-                                Some(v) => v,
-                                None => continue,
-                            };
-                        if is_directory_empty(src_vol, subdir.start_cluster, disk) {
-                            continue;
-                        }
-                    }
-
-                    xcopy_state
-                        .dir_stack
-                        .push((subdir.start_cluster, dst_subdir_cluster));
-                }
-
-                // Pop next dir from stack
-                if let Some((src_cluster, dst_cluster)) = xcopy_state.dir_stack.pop() {
-                    xcopy_state.src_dir_cluster = src_cluster;
-                    xcopy_state.dst_dir_cluster = dst_cluster;
-                    xcopy_state.src_search_index = 0;
-                    self.phase = XcopyPhase::FindNext(xcopy_state);
-                } else {
-                    self.phase = XcopyPhase::Summary(xcopy_state.files_copied);
-                }
-                StepResult::Continue
-            }
+            XcopyPhase::FinishFile(xs, fs) => self.step_finish_file(xs, fs, state, io, disk),
+            XcopyPhase::ScanSubdirs(xs) => self.step_scan_subdirs(xs, state, disk),
             XcopyPhase::Summary(count) => {
                 let msg = format!("{} File(s) copied\r\n", count);
                 io.print(msg.as_bytes());

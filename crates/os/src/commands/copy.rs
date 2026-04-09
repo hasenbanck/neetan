@@ -77,6 +77,490 @@ struct RunningCopy {
     phase: CopyPhase,
 }
 
+impl RunningCopy {
+    fn step_init(
+        &mut self,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        if is_help_request(&self.args) || self.args.trim_ascii().is_empty() {
+            print_help(io);
+            return StepResult::Done(0);
+        }
+        match init_copy(state, io, disk, &self.args) {
+            Ok(copy_state) => {
+                self.phase = CopyPhase::FindNext(copy_state);
+                StepResult::Continue
+            }
+            Err(msg) => {
+                io.print(msg);
+                StepResult::Done(1)
+            }
+        }
+    }
+
+    fn step_find_next(
+        &mut self,
+        mut copy_state: CopyState,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        if copy_state.current_source >= copy_state.sources.len() {
+            if copy_state.files_copied == 0 {
+                io.println(b"File not found");
+                return StepResult::Done(1);
+            }
+            self.phase = CopyPhase::Summary(copy_state.files_copied);
+            return StepResult::Continue;
+        }
+
+        let src = &copy_state.sources[copy_state.current_source];
+        let vol = match state.fat_volumes[src.drive as usize].as_ref() {
+            Some(v) => v,
+            None => return StepResult::Done(1),
+        };
+
+        let result = fat_dir::find_matching(
+            vol,
+            src.dir_cluster,
+            &src.pattern,
+            0,
+            copy_state.src_search_index,
+            disk,
+        );
+
+        match result {
+            Ok(Some((entry, next_index))) => {
+                if entry.attribute & fat_dir::ATTR_DIRECTORY != 0 {
+                    copy_state.src_search_index = next_index;
+                    self.phase = CopyPhase::FindNext(copy_state);
+                    return StepResult::Continue;
+                }
+
+                copy_state.src_search_index = next_index;
+
+                let dst_fcb_name = if copy_state.dst_is_dir {
+                    entry.name
+                } else {
+                    fat_dir::name_to_fcb(&copy_state.dst_path)
+                };
+
+                let display_name = fat_dir::fcb_to_display_name(&entry.name);
+                for &byte in &display_name {
+                    io.output_byte(byte);
+                }
+                io.println(b"");
+
+                let file_state = FileCopyState {
+                    src_drive: copy_state.sources[copy_state.current_source].drive,
+                    src_cluster: entry.start_cluster,
+                    src_remaining: entry.file_size,
+                    src_entry: entry,
+                    dst_drive: copy_state.dst_drive,
+                    dst_dir_cluster: copy_state.dst_dir_cluster,
+                    dst_fcb_name,
+                    dst_first_cluster: 0,
+                    dst_last_cluster: 0,
+                    dst_total_written: 0,
+                };
+
+                // Check if dest exists and /Y not set
+                if !copy_state.overwrite_all {
+                    let dst_vol = match state.fat_volumes[file_state.dst_drive as usize].as_ref() {
+                        Some(v) => v,
+                        None => return StepResult::Done(1),
+                    };
+                    if fat_dir::find_entry(
+                        dst_vol,
+                        file_state.dst_dir_cluster,
+                        &file_state.dst_fcb_name,
+                        disk,
+                    )
+                    .ok()
+                    .flatten()
+                    .is_some()
+                    {
+                        io.print(b"Overwrite (Yes/No/All)?");
+                        self.phase = CopyPhase::ConfirmOverwrite(copy_state, file_state);
+                        return StepResult::Continue;
+                    }
+                }
+
+                if file_state.src_remaining == 0 || file_state.src_cluster < 2 {
+                    self.phase = CopyPhase::FinishFile(copy_state, file_state);
+                } else {
+                    self.phase = CopyPhase::ReadChunk(copy_state, file_state);
+                }
+                StepResult::Continue
+            }
+            Ok(None) => {
+                // Move to next source spec (for non-concatenation multi-source)
+                copy_state.current_source += 1;
+                copy_state.src_search_index = 0;
+                if copy_state.current_source < copy_state.sources.len() && !copy_state.concatenating
+                {
+                    self.phase = CopyPhase::FindNext(copy_state);
+                } else if copy_state.files_copied == 0 {
+                    io.println(b"File not found");
+                    return StepResult::Done(1);
+                } else {
+                    self.phase = CopyPhase::Summary(copy_state.files_copied);
+                }
+                StepResult::Continue
+            }
+            Err(_) => {
+                io.println(b"File not found");
+                StepResult::Done(1)
+            }
+        }
+    }
+
+    fn step_confirm_overwrite(
+        &mut self,
+        mut copy_state: CopyState,
+        file_state: FileCopyState,
+        io: &mut IoAccess,
+    ) -> StepResult {
+        if io.memory.read_byte(KB_BUF_COUNT) == 0 {
+            self.phase = CopyPhase::ConfirmOverwrite(copy_state, file_state);
+            return StepResult::Continue;
+        }
+        let key = consume_key(io);
+        io.output_byte(b'\r');
+        io.output_byte(b'\n');
+
+        match key.to_ascii_uppercase() {
+            b'Y' => {
+                if file_state.src_remaining == 0 || file_state.src_cluster < 2 {
+                    self.phase = CopyPhase::FinishFile(copy_state, file_state);
+                } else {
+                    self.phase = CopyPhase::ReadChunk(copy_state, file_state);
+                }
+            }
+            b'A' => {
+                copy_state.overwrite_all = true;
+                if file_state.src_remaining == 0 || file_state.src_cluster < 2 {
+                    self.phase = CopyPhase::FinishFile(copy_state, file_state);
+                } else {
+                    self.phase = CopyPhase::ReadChunk(copy_state, file_state);
+                }
+            }
+            _ => {
+                // Skip this file
+                self.phase = CopyPhase::FindNext(copy_state);
+            }
+        }
+        StepResult::Continue
+    }
+
+    fn step_read_chunk(
+        &mut self,
+        copy_state: CopyState,
+        file_state: FileCopyState,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        if file_state.src_remaining == 0 || file_state.src_cluster < 2 {
+            if copy_state.concatenating {
+                self.phase = CopyPhase::ConcatNextSource(copy_state, file_state);
+            } else {
+                self.phase = CopyPhase::FinishFile(copy_state, file_state);
+            }
+            return StepResult::Continue;
+        }
+
+        let vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
+            Some(v) => v,
+            None => return StepResult::Done(1),
+        };
+
+        let cluster_data = match vol.read_cluster(file_state.src_cluster, disk) {
+            Ok(d) => d,
+            Err(_) => {
+                io.println(b"Read error");
+                return StepResult::Done(1);
+            }
+        };
+
+        self.phase = CopyPhase::WriteChunk(copy_state, file_state, cluster_data);
+        StepResult::Continue
+    }
+
+    fn step_write_chunk(
+        &mut self,
+        copy_state: CopyState,
+        mut file_state: FileCopyState,
+        data: Vec<u8>,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        let vol = match state.fat_volumes[file_state.dst_drive as usize].as_mut() {
+            Some(v) => v,
+            None => return StepResult::Done(1),
+        };
+
+        let new_cluster = match vol.allocate_cluster(file_state.dst_last_cluster) {
+            Some(c) => c,
+            None => {
+                io.println(b"Insufficient disk space");
+                return StepResult::Done(1);
+            }
+        };
+
+        if file_state.dst_first_cluster == 0 {
+            file_state.dst_first_cluster = new_cluster;
+        }
+        file_state.dst_last_cluster = new_cluster;
+
+        let cluster_size = vol.bpb.sectors_per_cluster as usize * vol.bpb.bytes_per_sector as usize;
+        let bytes_to_write = cluster_size.min(file_state.src_remaining as usize);
+
+        let mut write_data = data.clone();
+        write_data.resize(cluster_size, 0);
+
+        if vol.write_cluster(new_cluster, &write_data, disk).is_err() {
+            io.println(b"Write error");
+            return StepResult::Done(1);
+        }
+
+        file_state.dst_total_written += bytes_to_write as u32;
+        file_state.src_remaining -= bytes_to_write as u32;
+
+        let src_vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
+            Some(v) => v,
+            None => return StepResult::Done(1),
+        };
+        file_state.src_cluster = src_vol.next_cluster(file_state.src_cluster).unwrap_or(0);
+
+        if copy_state.verify {
+            self.phase = CopyPhase::VerifyChunk(copy_state, file_state, new_cluster, data);
+        } else {
+            self.phase = CopyPhase::ReadChunk(copy_state, file_state);
+        }
+        StepResult::Continue
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn step_verify_chunk(
+        &mut self,
+        copy_state: CopyState,
+        file_state: FileCopyState,
+        written_cluster: u16,
+        original_data: Vec<u8>,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        // /V: re-read the written cluster and compare
+        let vol = match state.fat_volumes[file_state.dst_drive as usize].as_ref() {
+            Some(v) => v,
+            None => return StepResult::Done(1),
+        };
+
+        let readback = match vol.read_cluster(written_cluster, disk) {
+            Ok(d) => d,
+            Err(_) => {
+                io.println(b"Verify error");
+                return StepResult::Done(1);
+            }
+        };
+
+        let cluster_size = vol.bpb.sectors_per_cluster as usize * vol.bpb.bytes_per_sector as usize;
+        let compare_len = cluster_size.min(original_data.len());
+        if readback[..compare_len] != original_data[..compare_len] {
+            io.println(b"Verify error");
+            return StepResult::Done(1);
+        }
+
+        self.phase = CopyPhase::ReadChunk(copy_state, file_state);
+        StepResult::Continue
+    }
+
+    fn step_finish_file(
+        &mut self,
+        mut copy_state: CopyState,
+        file_state: FileCopyState,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        let vol = match state.fat_volumes[file_state.dst_drive as usize].as_mut() {
+            Some(v) => v,
+            None => return StepResult::Done(1),
+        };
+
+        // Remove existing dest if present
+        if let Ok(Some(existing)) = fat_dir::find_entry(
+            vol,
+            file_state.dst_dir_cluster,
+            &file_state.dst_fcb_name,
+            disk,
+        ) {
+            if existing.start_cluster >= 2 {
+                vol.free_chain(existing.start_cluster);
+            }
+            let _ = fat_dir::delete_entry(vol, &existing, disk);
+        }
+
+        let new_entry = fat_dir::DirEntry {
+            name: file_state.dst_fcb_name,
+            attribute: file_state.src_entry.attribute & 0x27,
+            time: file_state.src_entry.time,
+            date: file_state.src_entry.date,
+            start_cluster: file_state.dst_first_cluster,
+            file_size: file_state.dst_total_written,
+            dir_sector: 0,
+            dir_offset: 0,
+        };
+
+        if fat_dir::create_entry(vol, file_state.dst_dir_cluster, &new_entry, disk).is_err() {
+            io.println(b"Unable to create destination");
+            return StepResult::Done(1);
+        }
+
+        let _ = vol.flush_fat(disk);
+        copy_state.files_copied += 1;
+
+        self.phase = CopyPhase::FindNext(copy_state);
+        StepResult::Continue
+    }
+
+    fn step_concat_next_source(
+        &mut self,
+        mut copy_state: CopyState,
+        mut file_state: FileCopyState,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        // Move to next source in the concatenation list
+        copy_state.current_source += 1;
+        if copy_state.current_source >= copy_state.sources.len() {
+            // All sources consumed, finish the destination file
+            self.phase = CopyPhase::FinishFile(copy_state, file_state);
+            return StepResult::Continue;
+        }
+
+        let src = &copy_state.sources[copy_state.current_source];
+        let vol = match state.fat_volumes[src.drive as usize].as_ref() {
+            Some(v) => v,
+            None => return StepResult::Done(1),
+        };
+
+        // Find the file for this source (exact match, no wildcard iteration)
+        let entry = match fat_dir::find_matching(vol, src.dir_cluster, &src.pattern, 0, 0, disk) {
+            Ok(Some((e, _))) => e,
+            _ => {
+                // Skip missing concat sources
+                self.phase = CopyPhase::ConcatNextSource(copy_state, file_state);
+                return StepResult::Continue;
+            }
+        };
+
+        let display_name = fat_dir::fcb_to_display_name(&entry.name);
+        for &byte in &display_name {
+            io.output_byte(byte);
+        }
+        io.println(b"");
+
+        file_state.src_drive = src.drive;
+        file_state.src_cluster = entry.start_cluster;
+        file_state.src_remaining = entry.file_size;
+
+        if file_state.src_remaining == 0 || file_state.src_cluster < 2 {
+            self.phase = CopyPhase::ConcatNextSource(copy_state, file_state);
+        } else {
+            self.phase = CopyPhase::ConcatRead(copy_state, file_state);
+        }
+        StepResult::Continue
+    }
+
+    fn step_concat_read(
+        &mut self,
+        copy_state: CopyState,
+        file_state: FileCopyState,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        if file_state.src_remaining == 0 || file_state.src_cluster < 2 {
+            self.phase = CopyPhase::ConcatNextSource(copy_state, file_state);
+            return StepResult::Continue;
+        }
+
+        let vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
+            Some(v) => v,
+            None => return StepResult::Done(1),
+        };
+
+        let cluster_data = match vol.read_cluster(file_state.src_cluster, disk) {
+            Ok(d) => d,
+            Err(_) => {
+                io.println(b"Read error");
+                return StepResult::Done(1);
+            }
+        };
+
+        self.phase = CopyPhase::ConcatWrite(copy_state, file_state, cluster_data);
+        StepResult::Continue
+    }
+
+    fn step_concat_write(
+        &mut self,
+        copy_state: CopyState,
+        mut file_state: FileCopyState,
+        data: Vec<u8>,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        let vol = match state.fat_volumes[file_state.dst_drive as usize].as_mut() {
+            Some(v) => v,
+            None => return StepResult::Done(1),
+        };
+
+        let new_cluster = match vol.allocate_cluster(file_state.dst_last_cluster) {
+            Some(c) => c,
+            None => {
+                io.println(b"Insufficient disk space");
+                return StepResult::Done(1);
+            }
+        };
+
+        if file_state.dst_first_cluster == 0 {
+            file_state.dst_first_cluster = new_cluster;
+        }
+        file_state.dst_last_cluster = new_cluster;
+
+        let cluster_size = vol.bpb.sectors_per_cluster as usize * vol.bpb.bytes_per_sector as usize;
+        let bytes_to_write = cluster_size.min(file_state.src_remaining as usize);
+
+        let mut write_data = data;
+        write_data.resize(cluster_size, 0);
+
+        if vol.write_cluster(new_cluster, &write_data, disk).is_err() {
+            io.println(b"Write error");
+            return StepResult::Done(1);
+        }
+
+        file_state.dst_total_written += bytes_to_write as u32;
+        file_state.src_remaining -= bytes_to_write as u32;
+
+        let src_vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
+            Some(v) => v,
+            None => return StepResult::Done(1),
+        };
+        file_state.src_cluster = src_vol.next_cluster(file_state.src_cluster).unwrap_or(0);
+
+        self.phase = CopyPhase::ConcatRead(copy_state, file_state);
+        StepResult::Continue
+    }
+}
+
 impl RunningCommand for RunningCopy {
     fn step(
         &mut self,
@@ -86,414 +570,23 @@ impl RunningCommand for RunningCopy {
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, CopyPhase::Init);
         match phase {
-            CopyPhase::Init => {
-                if is_help_request(&self.args) || self.args.trim_ascii().is_empty() {
-                    print_help(io);
-                    return StepResult::Done(0);
-                }
-                match init_copy(state, io, disk, &self.args) {
-                    Ok(copy_state) => {
-                        self.phase = CopyPhase::FindNext(copy_state);
-                        StepResult::Continue
-                    }
-                    Err(msg) => {
-                        io.print(msg);
-                        StepResult::Done(1)
-                    }
-                }
+            CopyPhase::Init => self.step_init(state, io, disk),
+            CopyPhase::FindNext(cs) => self.step_find_next(cs, state, io, disk),
+            CopyPhase::ConfirmOverwrite(cs, fs) => self.step_confirm_overwrite(cs, fs, io),
+            CopyPhase::ReadChunk(cs, fs) => self.step_read_chunk(cs, fs, state, io, disk),
+            CopyPhase::WriteChunk(cs, fs, data) => {
+                self.step_write_chunk(cs, fs, data, state, io, disk)
             }
-            CopyPhase::FindNext(mut copy_state) => {
-                if copy_state.current_source >= copy_state.sources.len() {
-                    if copy_state.files_copied == 0 {
-                        io.println(b"File not found");
-                        return StepResult::Done(1);
-                    }
-                    self.phase = CopyPhase::Summary(copy_state.files_copied);
-                    return StepResult::Continue;
-                }
-
-                let src = &copy_state.sources[copy_state.current_source];
-                let vol = match state.fat_volumes[src.drive as usize].as_ref() {
-                    Some(v) => v,
-                    None => return StepResult::Done(1),
-                };
-
-                let result = fat_dir::find_matching(
-                    vol,
-                    src.dir_cluster,
-                    &src.pattern,
-                    0,
-                    copy_state.src_search_index,
-                    disk,
-                );
-
-                match result {
-                    Ok(Some((entry, next_index))) => {
-                        if entry.attribute & fat_dir::ATTR_DIRECTORY != 0 {
-                            copy_state.src_search_index = next_index;
-                            self.phase = CopyPhase::FindNext(copy_state);
-                            return StepResult::Continue;
-                        }
-
-                        copy_state.src_search_index = next_index;
-
-                        let dst_fcb_name = if copy_state.dst_is_dir {
-                            entry.name
-                        } else {
-                            fat_dir::name_to_fcb(&copy_state.dst_path)
-                        };
-
-                        let display_name = fat_dir::fcb_to_display_name(&entry.name);
-                        for &byte in &display_name {
-                            io.output_byte(byte);
-                        }
-                        io.println(b"");
-
-                        let file_state = FileCopyState {
-                            src_drive: copy_state.sources[copy_state.current_source].drive,
-                            src_cluster: entry.start_cluster,
-                            src_remaining: entry.file_size,
-                            src_entry: entry,
-                            dst_drive: copy_state.dst_drive,
-                            dst_dir_cluster: copy_state.dst_dir_cluster,
-                            dst_fcb_name,
-                            dst_first_cluster: 0,
-                            dst_last_cluster: 0,
-                            dst_total_written: 0,
-                        };
-
-                        // Check if dest exists and /Y not set
-                        if !copy_state.overwrite_all {
-                            let dst_vol =
-                                match state.fat_volumes[file_state.dst_drive as usize].as_ref() {
-                                    Some(v) => v,
-                                    None => return StepResult::Done(1),
-                                };
-                            if fat_dir::find_entry(
-                                dst_vol,
-                                file_state.dst_dir_cluster,
-                                &file_state.dst_fcb_name,
-                                disk,
-                            )
-                            .ok()
-                            .flatten()
-                            .is_some()
-                            {
-                                io.print(b"Overwrite (Yes/No/All)?");
-                                self.phase = CopyPhase::ConfirmOverwrite(copy_state, file_state);
-                                return StepResult::Continue;
-                            }
-                        }
-
-                        if file_state.src_remaining == 0 || file_state.src_cluster < 2 {
-                            self.phase = CopyPhase::FinishFile(copy_state, file_state);
-                        } else {
-                            self.phase = CopyPhase::ReadChunk(copy_state, file_state);
-                        }
-                        StepResult::Continue
-                    }
-                    Ok(None) => {
-                        // Move to next source spec (for non-concatenation multi-source)
-                        copy_state.current_source += 1;
-                        copy_state.src_search_index = 0;
-                        if copy_state.current_source < copy_state.sources.len()
-                            && !copy_state.concatenating
-                        {
-                            self.phase = CopyPhase::FindNext(copy_state);
-                        } else if copy_state.files_copied == 0 {
-                            io.println(b"File not found");
-                            return StepResult::Done(1);
-                        } else {
-                            self.phase = CopyPhase::Summary(copy_state.files_copied);
-                        }
-                        StepResult::Continue
-                    }
-                    Err(_) => {
-                        io.println(b"File not found");
-                        StepResult::Done(1)
-                    }
-                }
+            CopyPhase::VerifyChunk(cs, fs, cluster, data) => {
+                self.step_verify_chunk(cs, fs, cluster, data, state, io, disk)
             }
-            CopyPhase::ConfirmOverwrite(mut copy_state, file_state) => {
-                if io.memory.read_byte(KB_BUF_COUNT) == 0 {
-                    self.phase = CopyPhase::ConfirmOverwrite(copy_state, file_state);
-                    return StepResult::Continue;
-                }
-                let key = consume_key(io);
-                io.output_byte(b'\r');
-                io.output_byte(b'\n');
-
-                match key.to_ascii_uppercase() {
-                    b'Y' => {
-                        if file_state.src_remaining == 0 || file_state.src_cluster < 2 {
-                            self.phase = CopyPhase::FinishFile(copy_state, file_state);
-                        } else {
-                            self.phase = CopyPhase::ReadChunk(copy_state, file_state);
-                        }
-                    }
-                    b'A' => {
-                        copy_state.overwrite_all = true;
-                        if file_state.src_remaining == 0 || file_state.src_cluster < 2 {
-                            self.phase = CopyPhase::FinishFile(copy_state, file_state);
-                        } else {
-                            self.phase = CopyPhase::ReadChunk(copy_state, file_state);
-                        }
-                    }
-                    _ => {
-                        // Skip this file
-                        self.phase = CopyPhase::FindNext(copy_state);
-                    }
-                }
-                StepResult::Continue
+            CopyPhase::FinishFile(cs, fs) => self.step_finish_file(cs, fs, state, io, disk),
+            CopyPhase::ConcatNextSource(cs, fs) => {
+                self.step_concat_next_source(cs, fs, state, io, disk)
             }
-            CopyPhase::ReadChunk(copy_state, file_state) => {
-                if file_state.src_remaining == 0 || file_state.src_cluster < 2 {
-                    if copy_state.concatenating {
-                        self.phase = CopyPhase::ConcatNextSource(copy_state, file_state);
-                    } else {
-                        self.phase = CopyPhase::FinishFile(copy_state, file_state);
-                    }
-                    return StepResult::Continue;
-                }
-
-                let vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
-                    Some(v) => v,
-                    None => return StepResult::Done(1),
-                };
-
-                let cluster_data = match vol.read_cluster(file_state.src_cluster, disk) {
-                    Ok(d) => d,
-                    Err(_) => {
-                        io.println(b"Read error");
-                        return StepResult::Done(1);
-                    }
-                };
-
-                self.phase = CopyPhase::WriteChunk(copy_state, file_state, cluster_data);
-                StepResult::Continue
-            }
-            CopyPhase::WriteChunk(copy_state, mut file_state, data) => {
-                let vol = match state.fat_volumes[file_state.dst_drive as usize].as_mut() {
-                    Some(v) => v,
-                    None => return StepResult::Done(1),
-                };
-
-                let new_cluster = match vol.allocate_cluster(file_state.dst_last_cluster) {
-                    Some(c) => c,
-                    None => {
-                        io.println(b"Insufficient disk space");
-                        return StepResult::Done(1);
-                    }
-                };
-
-                if file_state.dst_first_cluster == 0 {
-                    file_state.dst_first_cluster = new_cluster;
-                }
-                file_state.dst_last_cluster = new_cluster;
-
-                let cluster_size =
-                    vol.bpb.sectors_per_cluster as usize * vol.bpb.bytes_per_sector as usize;
-                let bytes_to_write = cluster_size.min(file_state.src_remaining as usize);
-
-                let mut write_data = data.clone();
-                write_data.resize(cluster_size, 0);
-
-                if vol.write_cluster(new_cluster, &write_data, disk).is_err() {
-                    io.println(b"Write error");
-                    return StepResult::Done(1);
-                }
-
-                file_state.dst_total_written += bytes_to_write as u32;
-                file_state.src_remaining -= bytes_to_write as u32;
-
-                let src_vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
-                    Some(v) => v,
-                    None => return StepResult::Done(1),
-                };
-                file_state.src_cluster = src_vol.next_cluster(file_state.src_cluster).unwrap_or(0);
-
-                if copy_state.verify {
-                    self.phase = CopyPhase::VerifyChunk(copy_state, file_state, new_cluster, data);
-                } else {
-                    self.phase = CopyPhase::ReadChunk(copy_state, file_state);
-                }
-                StepResult::Continue
-            }
-            CopyPhase::VerifyChunk(copy_state, file_state, written_cluster, original_data) => {
-                // /V: re-read the written cluster and compare
-                let vol = match state.fat_volumes[file_state.dst_drive as usize].as_ref() {
-                    Some(v) => v,
-                    None => return StepResult::Done(1),
-                };
-
-                let readback = match vol.read_cluster(written_cluster, disk) {
-                    Ok(d) => d,
-                    Err(_) => {
-                        io.println(b"Verify error");
-                        return StepResult::Done(1);
-                    }
-                };
-
-                let cluster_size =
-                    vol.bpb.sectors_per_cluster as usize * vol.bpb.bytes_per_sector as usize;
-                let compare_len = cluster_size.min(original_data.len());
-                if readback[..compare_len] != original_data[..compare_len] {
-                    io.println(b"Verify error");
-                    return StepResult::Done(1);
-                }
-
-                self.phase = CopyPhase::ReadChunk(copy_state, file_state);
-                StepResult::Continue
-            }
-            CopyPhase::FinishFile(mut copy_state, file_state) => {
-                let vol = match state.fat_volumes[file_state.dst_drive as usize].as_mut() {
-                    Some(v) => v,
-                    None => return StepResult::Done(1),
-                };
-
-                // Remove existing dest if present
-                if let Ok(Some(existing)) = fat_dir::find_entry(
-                    vol,
-                    file_state.dst_dir_cluster,
-                    &file_state.dst_fcb_name,
-                    disk,
-                ) {
-                    if existing.start_cluster >= 2 {
-                        vol.free_chain(existing.start_cluster);
-                    }
-                    let _ = fat_dir::delete_entry(vol, &existing, disk);
-                }
-
-                let new_entry = fat_dir::DirEntry {
-                    name: file_state.dst_fcb_name,
-                    attribute: file_state.src_entry.attribute & 0x27,
-                    time: file_state.src_entry.time,
-                    date: file_state.src_entry.date,
-                    start_cluster: file_state.dst_first_cluster,
-                    file_size: file_state.dst_total_written,
-                    dir_sector: 0,
-                    dir_offset: 0,
-                };
-
-                if fat_dir::create_entry(vol, file_state.dst_dir_cluster, &new_entry, disk).is_err()
-                {
-                    io.println(b"Unable to create destination");
-                    return StepResult::Done(1);
-                }
-
-                let _ = vol.flush_fat(disk);
-                copy_state.files_copied += 1;
-
-                self.phase = CopyPhase::FindNext(copy_state);
-                StepResult::Continue
-            }
-            CopyPhase::ConcatNextSource(mut copy_state, mut file_state) => {
-                // Move to next source in the concatenation list
-                copy_state.current_source += 1;
-                if copy_state.current_source >= copy_state.sources.len() {
-                    // All sources consumed, finish the destination file
-                    self.phase = CopyPhase::FinishFile(copy_state, file_state);
-                    return StepResult::Continue;
-                }
-
-                let src = &copy_state.sources[copy_state.current_source];
-                let vol = match state.fat_volumes[src.drive as usize].as_ref() {
-                    Some(v) => v,
-                    None => return StepResult::Done(1),
-                };
-
-                // Find the file for this source (exact match, no wildcard iteration)
-                let entry =
-                    match fat_dir::find_matching(vol, src.dir_cluster, &src.pattern, 0, 0, disk) {
-                        Ok(Some((e, _))) => e,
-                        _ => {
-                            // Skip missing concat sources
-                            self.phase = CopyPhase::ConcatNextSource(copy_state, file_state);
-                            return StepResult::Continue;
-                        }
-                    };
-
-                let display_name = fat_dir::fcb_to_display_name(&entry.name);
-                for &byte in &display_name {
-                    io.output_byte(byte);
-                }
-                io.println(b"");
-
-                file_state.src_drive = src.drive;
-                file_state.src_cluster = entry.start_cluster;
-                file_state.src_remaining = entry.file_size;
-
-                if file_state.src_remaining == 0 || file_state.src_cluster < 2 {
-                    self.phase = CopyPhase::ConcatNextSource(copy_state, file_state);
-                } else {
-                    self.phase = CopyPhase::ConcatRead(copy_state, file_state);
-                }
-                StepResult::Continue
-            }
-            CopyPhase::ConcatRead(copy_state, file_state) => {
-                if file_state.src_remaining == 0 || file_state.src_cluster < 2 {
-                    self.phase = CopyPhase::ConcatNextSource(copy_state, file_state);
-                    return StepResult::Continue;
-                }
-
-                let vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
-                    Some(v) => v,
-                    None => return StepResult::Done(1),
-                };
-
-                let cluster_data = match vol.read_cluster(file_state.src_cluster, disk) {
-                    Ok(d) => d,
-                    Err(_) => {
-                        io.println(b"Read error");
-                        return StepResult::Done(1);
-                    }
-                };
-
-                self.phase = CopyPhase::ConcatWrite(copy_state, file_state, cluster_data);
-                StepResult::Continue
-            }
-            CopyPhase::ConcatWrite(copy_state, mut file_state, data) => {
-                let vol = match state.fat_volumes[file_state.dst_drive as usize].as_mut() {
-                    Some(v) => v,
-                    None => return StepResult::Done(1),
-                };
-
-                let new_cluster = match vol.allocate_cluster(file_state.dst_last_cluster) {
-                    Some(c) => c,
-                    None => {
-                        io.println(b"Insufficient disk space");
-                        return StepResult::Done(1);
-                    }
-                };
-
-                if file_state.dst_first_cluster == 0 {
-                    file_state.dst_first_cluster = new_cluster;
-                }
-                file_state.dst_last_cluster = new_cluster;
-
-                let cluster_size =
-                    vol.bpb.sectors_per_cluster as usize * vol.bpb.bytes_per_sector as usize;
-                let bytes_to_write = cluster_size.min(file_state.src_remaining as usize);
-
-                let mut write_data = data;
-                write_data.resize(cluster_size, 0);
-
-                if vol.write_cluster(new_cluster, &write_data, disk).is_err() {
-                    io.println(b"Write error");
-                    return StepResult::Done(1);
-                }
-
-                file_state.dst_total_written += bytes_to_write as u32;
-                file_state.src_remaining -= bytes_to_write as u32;
-
-                let src_vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
-                    Some(v) => v,
-                    None => return StepResult::Done(1),
-                };
-                file_state.src_cluster = src_vol.next_cluster(file_state.src_cluster).unwrap_or(0);
-
-                self.phase = CopyPhase::ConcatRead(copy_state, file_state);
-                StepResult::Continue
+            CopyPhase::ConcatRead(cs, fs) => self.step_concat_read(cs, fs, state, io, disk),
+            CopyPhase::ConcatWrite(cs, fs, data) => {
+                self.step_concat_write(cs, fs, data, state, io, disk)
             }
             CopyPhase::Summary(count) => {
                 let msg = format!("     {:>4} file(s) copied\r\n", count);

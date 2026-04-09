@@ -106,6 +106,51 @@ impl RunningMore {
     }
 }
 
+impl RunningMore {
+    fn step_init(
+        &mut self,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        let args = self.args.trim_ascii();
+        if is_help_request(&self.args) || args.is_empty() {
+            print_help(io);
+            return StepResult::Done(0);
+        }
+
+        match init_more(state, io, disk, args) {
+            Ok(new_phase) => {
+                self.phase = new_phase;
+                StepResult::Continue
+            }
+            Err(msg) => {
+                io.print(msg);
+                StepResult::Done(1)
+            }
+        }
+    }
+
+    fn step_wait_key(&mut self, read: ReadState, io: &mut IoAccess) -> StepResult {
+        if io.memory.read_byte(KB_BUF_COUNT) == 0 {
+            self.phase = MorePhase::WaitKey(read);
+            return StepResult::Continue;
+        }
+        consume_key(io);
+        io.output_byte(b'\r');
+        for _ in 0..40 {
+            io.output_byte(b' ');
+        }
+        io.output_byte(b'\r');
+
+        self.phase = MorePhase::Outputting {
+            read,
+            lines_shown: 0,
+        };
+        StepResult::Continue
+    }
+}
+
 impl RunningCommand for RunningMore {
     fn step(
         &mut self,
@@ -115,45 +160,11 @@ impl RunningCommand for RunningMore {
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, MorePhase::Init);
         match phase {
-            MorePhase::Init => {
-                let args = self.args.trim_ascii();
-                if is_help_request(&self.args) || args.is_empty() {
-                    print_help(io);
-                    return StepResult::Done(0);
-                }
-
-                match init_more(state, io, disk, args) {
-                    Ok(new_phase) => {
-                        self.phase = new_phase;
-                        StepResult::Continue
-                    }
-                    Err(msg) => {
-                        io.print(msg);
-                        StepResult::Done(1)
-                    }
-                }
-            }
+            MorePhase::Init => self.step_init(state, io, disk),
             MorePhase::Outputting { read, lines_shown } => {
                 self.do_output(state, io, disk, read, lines_shown)
             }
-            MorePhase::WaitKey(read) => {
-                if io.memory.read_byte(KB_BUF_COUNT) == 0 {
-                    self.phase = MorePhase::WaitKey(read);
-                    return StepResult::Continue;
-                }
-                consume_key(io);
-                io.output_byte(b'\r');
-                for _ in 0..40 {
-                    io.output_byte(b' ');
-                }
-                io.output_byte(b'\r');
-
-                self.phase = MorePhase::Outputting {
-                    read,
-                    lines_shown: 0,
-                };
-                StepResult::Continue
-            }
+            MorePhase::WaitKey(read) => self.step_wait_key(read, io),
         }
     }
 }
