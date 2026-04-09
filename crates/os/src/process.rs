@@ -59,8 +59,7 @@ pub(crate) fn write_psp(
     mem.write_block(base, &zeros);
 
     // +0x00: INT 20h instruction (CD 20)
-    mem.write_byte(base + PSP_OFF_INT20, 0xCD);
-    mem.write_byte(base + PSP_OFF_INT20 + 1, 0x20);
+    mem.write_block(base + PSP_OFF_INT20, &[0xCD, 0x20]);
 
     // +0x02: Segment of memory top
     mem.write_word(base + PSP_OFF_MEM_TOP, mem_top);
@@ -92,12 +91,11 @@ pub(crate) fn write_psp(
 
     // +0x18: Job File Table (20 bytes)
     // Handles 0-4 map to SFT indices 0-4, rest = 0xFF (closed).
-    for i in 0..5u32 {
-        mem.write_byte(base + PSP_OFF_JFT + i, i as u8);
-    }
-    for i in 5..20u32 {
-        mem.write_byte(base + PSP_OFF_JFT + i, 0xFF);
-    }
+    const JFT_INIT: [u8; 20] = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    ];
+    mem.write_block(base + PSP_OFF_JFT, &JFT_INIT);
 
     // +0x2C: Environment segment
     mem.write_word(base + PSP_OFF_ENV_SEG, env_segment);
@@ -109,9 +107,7 @@ pub(crate) fn write_psp(
     write_far_ptr(mem, base + PSP_OFF_HANDLE_PTR, psp_segment, 0x0018);
 
     // +0x50: INT 21h / RETF stub (CD 21 CB)
-    mem.write_byte(base + PSP_OFF_INT21_STUB, 0xCD);
-    mem.write_byte(base + PSP_OFF_INT21_STUB + 1, 0x21);
-    mem.write_byte(base + PSP_OFF_INT21_STUB + 2, 0xCB);
+    mem.write_block(base + PSP_OFF_INT21_STUB, &[0xCD, 0x21, 0xCB]);
 
     // +0x80: Command tail (length=0, terminated by CR)
     mem.write_byte(base + PSP_OFF_CMD_TAIL_LEN, 0x00);

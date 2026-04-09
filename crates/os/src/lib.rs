@@ -852,12 +852,7 @@ impl NeetanOs {
         mem.write_byte(CRITICAL_ERROR_FLAG_ADDR, 0x00);
 
         // DBCS lead byte table (Shift-JIS ranges)
-        mem.write_byte(DBCS_TABLE_ADDR, 0x81);
-        mem.write_byte(DBCS_TABLE_ADDR + 1, 0x9F);
-        mem.write_byte(DBCS_TABLE_ADDR + 2, 0xE0);
-        mem.write_byte(DBCS_TABLE_ADDR + 3, 0xFC);
-        mem.write_byte(DBCS_TABLE_ADDR + 4, 0x00);
-        mem.write_byte(DBCS_TABLE_ADDR + 5, 0x00);
+        mem.write_block(DBCS_TABLE_ADDR, &country::DBCS_LEAD_BYTES);
 
         // FCB-SFT header (no entries)
         write_far_ptr(mem, FCB_SFT_BASE, 0xFFFF, 0xFFFF);
@@ -1319,9 +1314,7 @@ impl NeetanOs {
         mem.write_byte(free_mcb_addr, 0x5A); // 'Z' (last)
         mem.write_word(free_mcb_addr + 1, MCB_OWNER_FREE);
         mem.write_word(free_mcb_addr + 3, free_size);
-        for i in 5..16u32 {
-            mem.write_byte(free_mcb_addr + i, 0x00);
-        }
+        mem.write_block(free_mcb_addr + 5, &[0x00; 11]);
 
         // Update SYSVARS first MCB pointer (it stays the same: FIRST_MCB_SEGMENT)
     }
