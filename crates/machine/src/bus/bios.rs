@@ -94,7 +94,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x1B => self.hle_int1bh(cpu),
             0x1C => self.hle_int1ch(cpu),
             0x1F => self.hle_int1fh(cpu),
-            0x20..=0x2A | 0x2F | 0x33 | 0xDC => {
+            0x20..=0x2A | 0x2F | 0x33 | 0x67 | 0xDC | 0xFE => {
                 if let Some(mut neetan_os) = self.os.take() {
                     let mut cpu_access = OsCpuAccess(cpu);
                     let mut mem_access = OsMemoryAccess(&mut self.memory);
@@ -2831,6 +2831,8 @@ impl<T: Tracing> Pc9801Bus<T> {
         // No bootable device found (or Os selected): activate NEETAN OS HLE DOS.
         let mut neetan_os = os::NeetanOs::new();
         neetan_os.set_host_local_time_fn(self.host_local_time_fn);
+        neetan_os.set_ems_enabled(self.ems_enabled);
+        neetan_os.set_xms_enabled(self.xms_enabled);
         {
             let mut cpu_access = OsCpuAccess(cpu);
             let mut mem_access = OsMemoryAccess(&mut self.memory);

@@ -3,11 +3,9 @@
 //! Dispatched by AH register. Provides installation checks for resident
 //! services (Windows, XMS, DOSKEY, HMA).
 
-// TODO Add EMS and XMS support for the emulator (of course limited by the CPU used).
-
 use common::warn;
 
-use crate::{CdromIo, CpuAccess, MemoryAccess, NeetanOs, set_iret_carry};
+use crate::{CdromIo, CpuAccess, MemoryAccess, NeetanOs, set_iret_carry, tables};
 
 impl NeetanOs {
     /// Dispatches an INT 2Fh call based on the AH register.
@@ -178,10 +176,30 @@ impl NeetanOs {
         cpu.set_ax(cpu.ax() & 0xFF00);
     }
 
-    /// AH=43h: XMS driver installation check.
-    /// Returns AL=00h (no XMS driver installed).
+    /// AH=43h: XMS driver installation check and entry point.
     fn int2fh_43h_xms_check(&self, cpu: &mut dyn CpuAccess) {
-        cpu.set_ax(cpu.ax() & 0xFF00);
+        let al = cpu.ax() as u8;
+        let xms_active = self
+            .state
+            .memory_manager
+            .as_ref()
+            .is_some_and(|mm| mm.is_xms_enabled());
+        match al {
+            0x00 => {
+                if xms_active {
+                    cpu.set_ax((cpu.ax() & 0xFF00) | 0x0080);
+                } else {
+                    cpu.set_ax(cpu.ax() & 0xFF00);
+                }
+            }
+            0x10 => {
+                if xms_active {
+                    cpu.set_es(tables::XMS_ENTRY_STUB_SEGMENT);
+                    cpu.set_bx(tables::XMS_ENTRY_STUB_OFFSET);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// AH=48h: DOSKEY installation check.
@@ -191,9 +209,17 @@ impl NeetanOs {
     }
 
     /// AH=4Ah, AL=01h: HMA (High Memory Area) query.
-    /// Returns BX=0000h (no HMA free space).
     fn int2fh_4ah_hma_query(&self, cpu: &mut dyn CpuAccess) {
-        cpu.set_bx(0x0000);
+        let hma_free = self
+            .state
+            .memory_manager
+            .as_ref()
+            .is_some_and(|mm| mm.is_xms_enabled() && !mm.hma_is_allocated());
+        if hma_free {
+            cpu.set_bx(0xFFFF);
+        } else {
+            cpu.set_bx(0x0000);
+        }
     }
 
     /// Reads a 37-byte identifier field from the ISO 9660 Primary Volume

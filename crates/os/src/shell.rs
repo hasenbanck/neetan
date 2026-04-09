@@ -106,6 +106,7 @@ impl Shell {
             Box::new(commands::diskcopy::Diskcopy),
             Box::new(commands::format::Format),
             Box::new(commands::md::Md),
+            Box::new(commands::mem::Mem),
             Box::new(commands::more::More),
             Box::new(commands::rd::Rd),
             Box::new(commands::ren::Ren),

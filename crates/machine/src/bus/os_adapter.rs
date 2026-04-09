@@ -146,6 +146,18 @@ impl os::MemoryAccess for OsMemoryAccess<'_> {
             self.0.write_byte(address + i as u32, byte);
         }
     }
+
+    fn extended_memory_size(&self) -> u32 {
+        self.0.extended_memory_size()
+    }
+
+    fn enable_ems_page_frame(&mut self) {
+        self.0.enable_ems_page_frame();
+    }
+
+    fn enable_umb_region(&mut self) {
+        self.0.enable_umb_region();
+    }
 }
 
 pub(super) struct OsDiskIo<'a> {

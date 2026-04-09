@@ -380,12 +380,26 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     /// NEETAN OS HLE DOS instance. `None` when running with real DOS media.
     boot_device: BootDevice,
     os: Option<os::NeetanOs>,
+    /// Whether EMS expanded memory is enabled for the HLE OS.
+    ems_enabled: bool,
+    /// Whether XMS extended memory is enabled for the HLE OS.
+    xms_enabled: bool,
 }
 
 impl<T: Tracing> Pc9801Bus<T> {
     /// Sets the boot device for the HLE bootstrap.
     pub fn set_boot_device(&mut self, device: BootDevice) {
         self.boot_device = device;
+    }
+
+    /// Enables or disables EMS expanded memory for the HLE OS.
+    pub fn set_ems_enabled(&mut self, enabled: bool) {
+        self.ems_enabled = enabled;
+    }
+
+    /// Enables or disables XMS extended memory for the HLE OS.
+    pub fn set_xms_enabled(&mut self, enabled: bool) {
+        self.xms_enabled = enabled;
     }
 
     /// Enables the NEETAN OS HLE DOS subsystem.

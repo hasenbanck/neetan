@@ -35,11 +35,9 @@ fn xms_check() {
     harness::inject_and_run(&mut machine, code);
 
     let al = harness::result_byte(&machine.bus, 0);
-    // TODO: Once a XMS memory manager is provided, we must test for it's presence here.
-    // assert!(al, 0x80);
     assert_eq!(
-        al, 0x00,
-        "XMS check: AL should be 0x00 (not installed), got {:#04X}",
+        al, 0x80,
+        "XMS check: AL should be 0x80 (installed), got {:#04X}",
         al
     );
 }
@@ -80,8 +78,8 @@ fn hma_query() {
 
     let bx = harness::result_word(&machine.bus, 0);
     assert_eq!(
-        bx, 0x0000,
-        "HMA free space should be 0x0000 (no HMA), got {:#06X}",
+        bx, 0xFFFF,
+        "HMA free space should be 0xFFFF (HMA available), got {:#06X}",
         bx
     );
 }

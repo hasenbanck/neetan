@@ -707,6 +707,34 @@ pub fn find_string_in_text_vram(bus: &machine::Pc9801Bus, chars: &[u16]) -> bool
     false
 }
 
+pub fn text_vram_row_to_string(bus: &machine::Pc9801Bus, row: usize) -> String {
+    let vram = bus.text_vram();
+    let mut result = String::with_capacity(80);
+    for col in 0..80 {
+        let offset = (row * 80 + col) * 2;
+        if offset + 1 >= vram.len() {
+            break;
+        }
+        let code = u16::from_le_bytes([vram[offset], vram[offset + 1]]);
+        if (0x20..=0x7E).contains(&code) {
+            result.push(code as u8 as char);
+        } else {
+            result.push(' ');
+        }
+    }
+    result
+}
+
+pub fn find_row_containing(bus: &machine::Pc9801Bus, needle: &str) -> Option<usize> {
+    for row in 0..25 {
+        let line = text_vram_row_to_string(bus, row);
+        if line.contains(needle) {
+            return Some(row);
+        }
+    }
+    None
+}
+
 /// Creates a minimal in-memory HDD image with a FAT16 partition.
 /// The image has a PC-98 partition table at sector 1 and a FAT16 volume at the partition offset.
 /// `sector_size`: 256 or 512 bytes.

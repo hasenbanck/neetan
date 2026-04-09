@@ -5,8 +5,6 @@
 //! dispatch calls from the machine bus and delegates to per-interrupt
 //! handler modules.
 
-// TODO Properly implement a HLE EMS / XMS memory manager
-
 mod cdrom;
 mod commands;
 mod config;
@@ -90,6 +88,14 @@ pub trait MemoryAccess {
     fn read_block(&self, address: u32, buf: &mut [u8]);
     /// Bulk write from a host buffer into emulated RAM.
     fn write_block(&mut self, address: u32, data: &[u8]);
+    /// Returns the size of extended RAM in bytes (0 for V30 machines).
+    fn extended_memory_size(&self) -> u32 {
+        0
+    }
+    /// Enables the EMS page frame backing at C0000-CFFFF.
+    fn enable_ems_page_frame(&mut self) {}
+    /// Enables the UMB region backing at D0000-DFFFF.
+    fn enable_umb_region(&mut self) {}
 }
 
 /// Disk I/O for the filesystem layer.
@@ -296,6 +302,12 @@ pub(crate) struct OsState {
     /// Host local time provider (BCD-encoded).
     /// Returns `[year, month<<4|day_of_week, day, hour, minute, second]`.
     pub(crate) host_local_time_fn: fn() -> [u8; 6],
+    /// Whether EMS expanded memory is enabled.
+    pub(crate) ems_enabled: bool,
+    /// Whether XMS extended memory is enabled.
+    pub(crate) xms_enabled: bool,
+    /// Unified EMS/XMS/UMB memory manager. `None` if EMS/XMS both disabled or no extended RAM.
+    pub(crate) memory_manager: Option<memory::memory_manager::MemoryManager>,
 }
 
 pub(crate) struct BufferedInputState {
@@ -513,6 +525,9 @@ impl NeetanOs {
                 fn_key_map: build_default_fn_key_map(),
                 pending_key_bytes: std::collections::VecDeque::new(),
                 host_local_time_fn: default_host_local_time,
+                ems_enabled: true,
+                xms_enabled: true,
+                memory_manager: None,
             },
             console: console::Console::default(),
             shell: None,
@@ -527,6 +542,16 @@ impl NeetanOs {
     /// Sets the host local time provider for the OS.
     pub fn set_host_local_time_fn(&mut self, f: fn() -> [u8; 6]) {
         self.state.host_local_time_fn = f;
+    }
+
+    /// Enables or disables EMS expanded memory.
+    pub fn set_ems_enabled(&mut self, enabled: bool) {
+        self.state.ems_enabled = enabled;
+    }
+
+    /// Enables or disables XMS extended memory.
+    pub fn set_xms_enabled(&mut self, enabled: bool) {
+        self.state.xms_enabled = enabled;
     }
 
     /// Performs the DOS boot sequence: writes data structures into emulated RAM,
@@ -553,6 +578,22 @@ impl NeetanOs {
         }
 
         self.write_initial_mcb_and_process(memory);
+
+        // Initialize EMS/XMS memory manager if extended RAM is available.
+        let ext_mem_size = memory.extended_memory_size();
+        if ext_mem_size > 0 && (self.state.ems_enabled || self.state.xms_enabled) {
+            let stub_addr = tables::XMS_ENTRY_STUB_ADDR;
+            memory.write_byte(stub_addr, 0xCD);
+            memory.write_byte(stub_addr + 1, 0xFE);
+            memory.write_byte(stub_addr + 2, 0xCB);
+
+            self.state.memory_manager = Some(memory::memory_manager::MemoryManager::new(
+                ext_mem_size,
+                self.state.ems_enabled,
+                self.state.xms_enabled,
+                memory,
+            ));
+        }
 
         // Load AUTOEXEC.BAT if present on any mounted drive.
         let autoexec_lines = self.try_load_autoexec_bat(memory, device, &drives);
@@ -829,8 +870,16 @@ impl NeetanOs {
                 true
             }
             0x33 => false,
+            0x67 => {
+                self.int67h(cpu, memory);
+                true
+            }
             0xDC => {
                 self.intdch(cpu, memory);
+                true
+            }
+            0xFE => {
+                self.xms_entry(cpu, memory);
                 true
             }
             _ => false,

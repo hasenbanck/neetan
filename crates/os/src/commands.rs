@@ -15,6 +15,7 @@ pub mod diskcopy;
 pub mod echo;
 pub mod format;
 pub mod md;
+pub mod mem;
 pub mod more;
 pub mod rd;
 pub mod rem;

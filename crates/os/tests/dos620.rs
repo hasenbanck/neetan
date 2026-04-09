@@ -84,3 +84,9 @@ mod shell_exec;
 
 #[path = "dos620/virtual_drive.rs"]
 mod virtual_drive;
+
+#[path = "dos620/memory_manager_ems_xms.rs"]
+mod memory_manager_ems_xms;
+
+#[path = "dos620/commands_mem.rs"]
+mod commands_mem;

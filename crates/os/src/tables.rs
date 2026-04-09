@@ -153,6 +153,19 @@ pub const DBCS_TABLE_ADDR: u32 = DOS_DATA_BASE + DBCS_TABLE_OFFSET as u32;
 pub const FCB_SFT_OFFSET: u16 = 0x0D38;
 pub const FCB_SFT_BASE: u32 = DOS_DATA_BASE + FCB_SFT_OFFSET as u32;
 
+// XMS driver entry stub (3 bytes: INT FEh / RETF)
+pub const XMS_ENTRY_STUB_OFFSET: u16 = 0x0D44;
+pub const XMS_ENTRY_STUB_ADDR: u32 = DOS_DATA_BASE + XMS_ENTRY_STUB_OFFSET as u32;
+pub const XMS_ENTRY_STUB_SEGMENT: u16 = DOS_DATA_SEGMENT;
+
+// UMB region: MCB chain at segment D000h (64 KB at D0000-DFFFF)
+pub const UMB_FIRST_MCB_SEGMENT: u16 = 0xD000;
+pub const UMB_TOTAL_PARAGRAPHS: u16 = 0x0FFF;
+
+// EMS page frame at C0000h (4 x 16 KB physical pages)
+pub const EMS_PAGE_FRAME_SEGMENT: u16 = 0xC000;
+pub const EMS_PAGE_SIZE: u32 = 0x4000;
+
 // First MCB (sentinel)
 pub const FIRST_MCB_OFFSET: u16 = 0x0D50;
 pub const FIRST_MCB_ADDR: u32 = DOS_DATA_BASE + FIRST_MCB_OFFSET as u32;

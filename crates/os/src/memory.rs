@@ -1,5 +1,8 @@
 //! Memory Control block (MCB) chain management (allocate, free, resize).
 
+pub(crate) mod memory_manager;
+mod tlsf;
+
 use crate::{MemoryAccess, tables::*};
 
 const MCB_TYPE_M: u8 = 0x4D;
@@ -48,6 +51,10 @@ fn clear_mcb_name(mem: &mut dyn MemoryAccess, segment: u16) {
 
 fn is_valid_mcb_type(t: u8) -> bool {
     t == MCB_TYPE_M || t == MCB_TYPE_Z
+}
+
+pub(crate) fn read_mcb_size_pub(mem: &dyn MemoryAccess, segment: u16) -> u16 {
+    read_mcb_size(mem, segment)
 }
 
 /// Writes a 16-byte MCB header at the given segment.

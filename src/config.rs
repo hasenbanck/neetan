@@ -48,6 +48,8 @@ Options:
       --font-rom <PATH>         Path to font ROM file
       --soundboard <TYPE>       Sound board type: none, 26k, 86, 86+26k, sb16, sb16+26k
       --adpcm-ram <on|off>      ADPCM RAM option for PC-9801-86 (default: on)
+      --ems <on|off>            Enable EMS expanded memory (default: on)
+      --xms <on|off>            Enable XMS extended memory (default: on)
       --midi <DEVICE>           MIDI device: none, mt32, sc55 (default: none)
       --mt32-roms <PATH>        Path to MT-32 ROM directory
       --sc55-roms <PATH>        Path to SC55 ROM directory
@@ -408,6 +410,14 @@ pub fn parse_args() -> crate::Result<Action> {
                 let val = value(&flag)?;
                 config.adpcm_ram = parse_on_off(&val, &flag)?;
             }
+            "--ems" => {
+                let val = value(&flag)?;
+                config.ems = parse_on_off(&val, &flag)?;
+            }
+            "--xms" => {
+                let val = value(&flag)?;
+                config.xms = parse_on_off(&val, &flag)?;
+            }
             "--force-gdc-clock" => {
                 let val = value(&flag)?;
                 config.force_gdc_clock = Some(val.parse::<ForceGdcClock>().map_err(StringError)?);
@@ -482,6 +492,8 @@ pub struct EmulatorConfig {
     pub midi: MidiDevice,
     pub boot_device: machine::BootDevice,
     pub key_map: KeyMap,
+    pub ems: bool,
+    pub xms: bool,
 }
 
 impl Default for EmulatorConfig {
@@ -507,6 +519,8 @@ impl Default for EmulatorConfig {
             midi: MidiDevice::default(),
             boot_device: machine::BootDevice::Auto,
             key_map: KeyMap::new(),
+            ems: true,
+            xms: true,
         }
     }
 }
@@ -563,6 +577,16 @@ fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<
                 "on" => config.adpcm_ram = true,
                 "off" => config.adpcm_ram = false,
                 _ => warn!("Invalid adpcm-ram in config: {val}, expected on or off"),
+            },
+            "ems" => match val {
+                "on" => config.ems = true,
+                "off" => config.ems = false,
+                _ => warn!("Invalid ems in config: {val}, expected on or off"),
+            },
+            "xms" => match val {
+                "on" => config.xms = true,
+                "off" => config.xms = false,
+                _ => warn!("Invalid xms in config: {val}, expected on or off"),
             },
             "force-gdc-clock" => match val.parse::<ForceGdcClock>() {
                 Ok(mode) => config.force_gdc_clock = Some(mode),

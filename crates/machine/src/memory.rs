@@ -93,6 +93,18 @@ const PEGC_VRAM_SIZE: usize = 0x80000;
 /// Character generator ROM size (528 KB).
 const FONT_ROM_SIZE: usize = 0x84000;
 
+/// EMS page frame start address (C0000h). 64 KB, 4 x 16 KB physical pages.
+const EMS_PAGE_FRAME_START: u32 = 0xC0000;
+/// EMS page frame end address, inclusive (CFFFFh).
+const EMS_PAGE_FRAME_END: u32 = 0xCFFFF;
+/// EMS page frame size in bytes (64 KB).
+const EMS_PAGE_FRAME_SIZE: usize = 0x10000;
+
+/// UMB (Upper Memory Block) region start address (D0000h). 64 KB.
+const UMB_START: u32 = 0xD0000;
+/// UMB region size in bytes (64 KB).
+const UMB_REGION_SIZE: usize = 0x10000;
+
 /// Sound ROM start address (CC000h). 16 KB.
 const SOUND_ROM_START: u32 = 0xCC000;
 /// Sound ROM end address, inclusive (CFFFFh).
@@ -134,6 +146,10 @@ pub struct Pc9801MemoryState {
     pub shadow_ram: Option<Box<[u8; BIOS_ROM_SIZE]>>,
     /// Shadow RAM control register (port 0x053D). See struct-level doc.
     pub shadow_control: u8,
+    /// EMS page frame backing (64 KB at C0000-CFFFF). Enabled by the HLE memory manager.
+    pub ems_page_frame: Option<Box<[u8; EMS_PAGE_FRAME_SIZE]>>,
+    /// UMB region backing (64 KB at D0000-DFFFF). Enabled by the HLE memory manager.
+    pub umb_region: Option<Box<[u8; UMB_REGION_SIZE]>>,
 }
 
 impl fmt::Debug for Pc9801MemoryState {
@@ -176,6 +192,8 @@ impl fmt::Debug for Pc9801MemoryState {
                 "shadow_control",
                 &format_args!("{:#04X}", self.shadow_control),
             )
+            .field("ems_page_frame", &self.ems_page_frame.is_some())
+            .field("umb_region", &self.umb_region.is_some())
             .finish()
     }
 }
@@ -300,6 +318,8 @@ impl Pc9801Memory {
                 address_mask: machine_model.address_mask(),
                 shadow_ram,
                 shadow_control: 0x00,
+                ems_page_frame: None,
+                umb_region: None,
             },
             rom: vec![0u8; BIOS_ROM_SIZE]
                 .into_boxed_slice()
@@ -490,6 +510,25 @@ impl Pc9801Memory {
         self.sound_rom.is_some()
     }
 
+    /// Enables the EMS page frame backing at C0000-CFFFF (64 KB).
+    pub(crate) fn enable_ems_page_frame(&mut self) {
+        if self.state.ems_page_frame.is_none() {
+            self.state.ems_page_frame = Some(Box::new([0u8; EMS_PAGE_FRAME_SIZE]));
+        }
+    }
+
+    /// Enables the UMB region backing at D0000-DFFFF (64 KB).
+    pub(crate) fn enable_umb_region(&mut self) {
+        if self.state.umb_region.is_none() {
+            self.state.umb_region = Some(Box::new([0u8; UMB_REGION_SIZE]));
+        }
+    }
+
+    /// Returns the size of extended RAM in bytes (0 for V30 machines).
+    pub(crate) fn extended_memory_size(&self) -> u32 {
+        self.state.extended_ram.len() as u32
+    }
+
     pub(crate) fn read_byte(&self, address: u32) -> u8 {
         let address = address & self.address_mask;
         if address >= EXTENDED_RAM_START {
@@ -508,6 +547,16 @@ impl Pc9801Memory {
                 self.graphics_vram[(address - GRAPHICS_VRAM_START) as usize]
             }
             GRAPHICS_GAP_START..=GRAPHICS_GAP_END => {
+                if let Some(ref pf) = self.state.ems_page_frame
+                    && address <= EMS_PAGE_FRAME_END
+                {
+                    return pf[(address - EMS_PAGE_FRAME_START) as usize];
+                }
+                if let Some(ref umb) = self.state.umb_region
+                    && address >= UMB_START
+                {
+                    return umb[(address - UMB_START) as usize];
+                }
                 if let Some(ref rom) = self.sound_rom
                     && (SOUND_ROM_START..=SOUND_ROM_END).contains(&address)
                     && (self.state.shadow_ram.is_none() || self.sound_bios_enabled())
@@ -570,7 +619,19 @@ impl Pc9801Memory {
                 // Raw memory writes target page 0. Access/display page routing is applied by the bus.
                 self.graphics_vram[(address - GRAPHICS_VRAM_START) as usize] = value;
             }
-            GRAPHICS_GAP_START..=GRAPHICS_GAP_END => {}
+            GRAPHICS_GAP_START..=GRAPHICS_GAP_END => {
+                if let Some(ref mut pf) = self.state.ems_page_frame
+                    && address <= EMS_PAGE_FRAME_END
+                {
+                    pf[(address - EMS_PAGE_FRAME_START) as usize] = value;
+                    return;
+                }
+                if let Some(ref mut umb) = self.state.umb_region
+                    && address >= UMB_START
+                {
+                    umb[(address - UMB_START) as usize] = value;
+                }
+            }
             E_PLANE_VRAM_START..=E_PLANE_VRAM_END => {
                 if self.e_plane_enabled {
                     // Raw memory writes target page 0. Access/display page routing is applied by the bus.

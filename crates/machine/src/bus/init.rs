@@ -253,6 +253,8 @@ impl<T: Tracing> Pc9801Bus<T> {
             hle_cr3: 0,
             boot_device: BootDevice::default(),
             os: None,
+            ems_enabled: true,
+            xms_enabled: true,
         };
 
         if machine_model.has_cg_ram() {

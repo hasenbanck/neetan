@@ -123,7 +123,7 @@ int_1ch_handler:    hle_stub 0x1C            ; Timer/Calendar
 int_1fh_handler:    hle_stub 0x1F            ; Extended
 int_d2h_handler:    hle_stub 0xD2            ; Sound BIOS
 
-; --- DOS interrupt handler stubs (routed to NeetanOs when active) ---
+; --- DOS interrupt handler stubs (routed to the HLE OS when active) ---
 
 int_20h_handler:    hle_stub 0x20            ; DOS: Terminate Program
 int_21h_handler:    hle_stub 0x21            ; DOS: Function Dispatch
@@ -139,6 +139,8 @@ int_2ah_handler:    hle_stub 0x2A            ; DOS: Network / Critical Section
 int_2fh_handler:    hle_stub 0x2F            ; DOS: Multiplex
 int_33h_handler:    hle_stub 0x33            ; Mouse Driver
 int_dch_handler:    hle_stub 0xDC            ; NEC DOS Extension (IO.SYS)
+int_67h_handler:    hle_stub 0x67            ; EMS: Expanded Memory Manager
+int_feh_handler:    hle_stub 0xFE            ; XMS: Extended Memory Manager
 
 ; --- Special HLE entry points (pseudo-vectors) ---
 
@@ -146,7 +148,7 @@ itf_entry:
     mov sp, 0x7C00                              ; Safe stack before HLE stub
     hle_stub VEC_ITF_ENTRY                      ; ITF phase
 bios_init_entry:    hle_stub VEC_BIOS_INIT      ; BIOS initialization
-bootstrap_entry:    hle_stub VEC_BOOTSTRAP       ; Bootstrap loader
+bootstrap_entry:    hle_stub VEC_BOOTSTRAP      ; Bootstrap loader
 
 ; --- Vector initialization table ---
 ; (vector_number, handler_offset) pairs. The Rust-side initialization reads
@@ -200,7 +202,9 @@ vector_table:
     dw 0x2A, int_2ah_handler - BIOS_BASE_OFF   ; INT 2Ah - DOS: Network
     dw 0x2F, int_2fh_handler - BIOS_BASE_OFF   ; INT 2Fh - DOS: Multiplex
     dw 0x33, int_33h_handler - BIOS_BASE_OFF   ; INT 33h - Mouse driver
+    dw 0x67, int_67h_handler - BIOS_BASE_OFF   ; INT 67h - EMS
     dw 0xDC, int_dch_handler - BIOS_BASE_OFF   ; INT DCh - NEC DOS extension
+    dw 0xFE, int_feh_handler - BIOS_BASE_OFF   ; INT FEh - XMS entry
     dw 0xFFFF                                  ; Sentinel
 
 
