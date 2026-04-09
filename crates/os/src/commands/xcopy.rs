@@ -344,6 +344,8 @@ impl RunningXcopy {
             }
         }
 
+        let (now_time, now_date) = state.dos_timestamp_now();
+
         // For each subdir: create in dest, push to stack
         for subdir in subdirs {
             let dst_vol = match state.fat_volumes[xcopy_state.dst_drive as usize].as_mut() {
@@ -374,8 +376,8 @@ impl RunningXcopy {
                 let dot = fat_dir::DirEntry {
                     name: *b".          ",
                     attribute: fat_dir::ATTR_DIRECTORY,
-                    time: 0x6000,
-                    date: 0x1E21,
+                    time: now_time,
+                    date: now_date,
                     start_cluster: new_cluster,
                     file_size: 0,
                     dir_sector: 0,
@@ -386,8 +388,8 @@ impl RunningXcopy {
                 let dotdot = fat_dir::DirEntry {
                     name: *b"..         ",
                     attribute: fat_dir::ATTR_DIRECTORY,
-                    time: 0x6000,
-                    date: 0x1E21,
+                    time: now_time,
+                    date: now_date,
                     start_cluster: xcopy_state.dst_dir_cluster,
                     file_size: 0,
                     dir_sector: 0,

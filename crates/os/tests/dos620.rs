@@ -37,6 +37,9 @@ mod syscalls_int21h_file_io;
 #[path = "dos620/syscalls_int21h_console.rs"]
 mod syscalls_int21h_console;
 
+#[path = "dos620/syscalls_int21h_datetime.rs"]
+mod syscalls_int21h_datetime;
+
 #[path = "dos620/data_structures.rs"]
 mod data_structures;
 

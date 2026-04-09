@@ -2830,6 +2830,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         // No bootable device found (or Os selected): activate NEETAN OS HLE DOS.
         let mut neetan_os = os::NeetanOs::new();
+        neetan_os.set_host_local_time_fn(self.host_local_time_fn);
         {
             let mut cpu_access = OsCpuAccess(cpu);
             let mut mem_access = OsMemoryAccess(&mut self.memory);

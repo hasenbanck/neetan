@@ -116,9 +116,14 @@ fn md_rd_directory() {
     );
 }
 
+/// Fixed test time: 1995-01-01 12:00:00, Sunday.
+fn test_time() -> [u8; 6] {
+    [0x95, 0x10, 0x01, 0x12, 0x00, 0x00]
+}
+
 #[test]
 fn date_command() {
-    let mut machine = boot_hle();
+    let mut machine = boot_hle_with_time(Some(test_time));
     type_string(&mut machine.bus, b"CLS\r");
     run_until_prompt(&mut machine);
 
@@ -134,7 +139,7 @@ fn date_command() {
 
 #[test]
 fn time_command() {
-    let mut machine = boot_hle();
+    let mut machine = boot_hle_with_time(Some(test_time));
     type_string(&mut machine.bus, b"CLS\r");
     run_until_prompt(&mut machine);
 

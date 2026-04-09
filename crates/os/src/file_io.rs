@@ -157,6 +157,8 @@ impl NeetanOs {
                 return Err(0x0005); // access denied (Z: is read-only)
             }
 
+            let (time, date) = self.state.dos_timestamp_now();
+
             let vol = self.state.fat_volumes[drive_index as usize]
                 .as_mut()
                 .ok_or(0x000Fu16)?;
@@ -170,8 +172,6 @@ impl NeetanOs {
                 updated.file_size = 0;
                 updated.start_cluster = 0;
                 updated.attribute = attr & 0x27; // mask valid bits
-                // Set current time/date
-                let (time, date) = dos_timestamp_now();
                 updated.time = time;
                 updated.date = date;
                 fat_dir::update_entry(vol, &updated, disk)?;
@@ -190,7 +190,6 @@ impl NeetanOs {
             }
 
             // Create new entry
-            let (time, date) = dos_timestamp_now();
             let new_entry = fat_dir::DirEntry {
                 name: fcb_name,
                 attribute: attr & 0x27,
@@ -476,6 +475,8 @@ impl NeetanOs {
                 return Ok(0);
             }
 
+            let (time, date) = self.state.dos_timestamp_now();
+
             let vol = self.state.fat_volumes[drive_index as usize]
                 .as_mut()
                 .ok_or(0x000Fu16)?;
@@ -523,7 +524,6 @@ impl NeetanOs {
             write_dword(memory, sft_addr + tables::SFT_ENT_FILE_POS, position);
 
             // Update time stamp
-            let (time, date) = dos_timestamp_now();
             memory.write_word(sft_addr + tables::SFT_ENT_FILE_TIME, time);
             memory.write_word(sft_addr + tables::SFT_ENT_FILE_DATE, date);
 
@@ -1147,11 +1147,4 @@ fn ensure_cluster_at_index(
         }
     }
     Ok(current)
-}
-
-/// Returns a DOS timestamp for "now" (fixed: 1995-01-01 12:00:00).
-fn dos_timestamp_now() -> (u16, u16) {
-    // DOS date: ((year-1980)<<9) | (month<<5) | day = (15<<9)|(1<<5)|1 = 0x1E21
-    // DOS time: (hour<<11) | (min<<5) | (sec/2) = (12<<11)|(0<<5)|0 = 0x6000
-    (0x6000, 0x1E21)
 }

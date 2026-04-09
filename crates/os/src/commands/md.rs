@@ -74,6 +74,8 @@ fn create_directory(
         return Err(b"Access denied\r\n");
     }
 
+    let (time, date) = state.dos_timestamp_now();
+
     let vol = state.fat_volumes[drive_index as usize]
         .as_mut()
         .ok_or(&b"Invalid drive\r\n"[..])?;
@@ -101,8 +103,8 @@ fn create_directory(
     let dot_entry = fat_dir::DirEntry {
         name: *b".          ",
         attribute: fat_dir::ATTR_DIRECTORY,
-        time: 0x6000,
-        date: 0x1E21,
+        time,
+        date,
         start_cluster: new_cluster,
         file_size: 0,
         dir_sector: 0,
@@ -115,8 +117,8 @@ fn create_directory(
     let dotdot_entry = fat_dir::DirEntry {
         name: *b"..         ",
         attribute: fat_dir::ATTR_DIRECTORY,
-        time: 0x6000,
-        date: 0x1E21,
+        time,
+        date,
         start_cluster: parent_cluster,
         file_size: 0,
         dir_sector: 0,
@@ -129,8 +131,8 @@ fn create_directory(
     let dir_entry = fat_dir::DirEntry {
         name: fcb_name,
         attribute: fat_dir::ATTR_DIRECTORY,
-        time: 0x6000,
-        date: 0x1E21,
+        time,
+        date,
         start_cluster: new_cluster,
         file_size: 0,
         dir_sector: 0,

@@ -38,6 +38,10 @@ impl NeetanOs {
             0x1C => self.int21h_1ch_get_alloc_info(cpu, memory),
             0x25 => self.int21h_25h_set_interrupt_vector(cpu, memory),
             0x29 => self.int21h_29h_parse_filename(cpu, memory),
+            0x2A => self.int21h_2ah_get_date(cpu),
+            0x2B => self.int21h_2bh_set_date(cpu),
+            0x2C => self.int21h_2ch_get_time(cpu),
+            0x2D => self.int21h_2dh_set_time(cpu),
             0x2F => self.int21h_2fh_get_dta(cpu),
             0x30 => self.int21h_30h_get_version(cpu),
             0x33 => self.int21h_33h_extended(cpu),
@@ -753,6 +757,35 @@ impl NeetanOs {
                 set_iret_carry(cpu, memory, true);
             }
         }
+    }
+
+    /// AH=2Ah: Get system date.
+    /// Returns CX=year, DH=month, DL=day, AL=day-of-week.
+    fn int21h_2ah_get_date(&mut self, cpu: &mut dyn CpuAccess) {
+        let (year, month, day, dow) = self.state.current_date_parts();
+        cpu.set_cx(year);
+        cpu.set_dx((month << 8) | day);
+        cpu.set_ax((cpu.ax() & 0xFF00) | dow);
+    }
+
+    /// AH=2Bh: Set system date (no-op).
+    /// Returns AL=0 (success).
+    fn int21h_2bh_set_date(&mut self, cpu: &mut dyn CpuAccess) {
+        cpu.set_ax(cpu.ax() & 0xFF00);
+    }
+
+    /// AH=2Ch: Get system time.
+    /// Returns CH=hour, CL=minute, DH=second, DL=hundredths.
+    fn int21h_2ch_get_time(&mut self, cpu: &mut dyn CpuAccess) {
+        let (hour, minute, second) = self.state.current_time_parts();
+        cpu.set_cx((hour as u16) << 8 | minute as u16);
+        cpu.set_dx((second as u16) << 8);
+    }
+
+    /// AH=2Dh: Set system time (no-op).
+    /// Returns AL=0 (success).
+    fn int21h_2dh_set_time(&mut self, cpu: &mut dyn CpuAccess) {
+        cpu.set_ax(cpu.ax() & 0xFF00);
     }
 }
 

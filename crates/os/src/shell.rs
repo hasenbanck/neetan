@@ -683,12 +683,16 @@ fn render_prompt(state: &OsState, io: &mut IoAccess) {
                     io.console.process_byte(io.memory, b'$');
                 }
                 b'D' => {
-                    for &byte in b"1995-01-01" {
+                    let (year, month, day, _dow) = state.current_date_parts();
+                    let msg = format!("{:04}-{:02}-{:02}", year, month, day);
+                    for &byte in msg.as_bytes() {
                         io.console.process_byte(io.memory, byte);
                     }
                 }
                 b'T' => {
-                    for &byte in b"00:00:00" {
+                    let (hour, minute, second) = state.current_time_parts();
+                    let msg = format!("{:02}:{:02}:{:02}", hour, minute, second);
+                    for &byte in msg.as_bytes() {
                         io.console.process_byte(io.memory, byte);
                     }
                 }
@@ -1021,6 +1025,8 @@ fn write_redirect_to_file(
         return; // Z: is read-only
     }
 
+    let (time, date) = state.dos_timestamp_now();
+
     let vol = match state.fat_volumes[drive_index as usize].as_mut() {
         Some(v) => v,
         None => return,
@@ -1031,7 +1037,7 @@ fn write_redirect_to_file(
         if let Ok(Some(existing)) = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk) {
             append_to_existing_file(vol, &existing, data, disk);
         } else {
-            create_new_file_with_data(vol, dir_cluster, &fcb_name, data, disk);
+            create_new_file_with_data(vol, dir_cluster, &fcb_name, data, disk, time, date);
         }
     } else {
         // Overwrite mode: delete existing, create new
@@ -1041,7 +1047,7 @@ fn write_redirect_to_file(
             }
             let _ = fat_dir::delete_entry(vol, &existing, disk);
         }
-        create_new_file_with_data(vol, dir_cluster, &fcb_name, data, disk);
+        create_new_file_with_data(vol, dir_cluster, &fcb_name, data, disk, time, date);
     }
 
     let _ = vol.flush_fat(disk);
@@ -1053,6 +1059,8 @@ fn create_new_file_with_data(
     fcb_name: &[u8; 11],
     data: &[u8],
     disk: &mut dyn DiskIo,
+    time: u16,
+    date: u16,
 ) {
     let cluster_size = vol.bpb.sectors_per_cluster as usize * vol.bpb.bytes_per_sector as usize;
     let mut first_cluster: u16 = 0;
@@ -1079,8 +1087,8 @@ fn create_new_file_with_data(
     let new_entry = fat_dir::DirEntry {
         name: *fcb_name,
         attribute: 0x20, // archive
-        time: 0x6000,    // 12:00:00
-        date: 0x1E21,    // 1995-01-01
+        time,
+        date,
         start_cluster: first_cluster,
         file_size: data.len() as u32,
         dir_sector: 0,

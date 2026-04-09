@@ -26,7 +26,15 @@ pub fn create_hle_machine() -> machine::Pc9801Ra {
 /// Boots a machine with NEETAN OS HLE DOS (no disk images).
 /// Returns the machine after the shell prompt (`>`) is visible in text VRAM.
 pub fn boot_hle() -> machine::Pc9801Ra {
+    boot_hle_with_time(None)
+}
+
+/// Boots a machine with NEETAN OS HLE DOS and an optional fixed time provider.
+pub fn boot_hle_with_time(time_fn: Option<fn() -> [u8; 6]>) -> machine::Pc9801Ra {
     let mut machine = create_hle_machine();
+    if let Some(f) = time_fn {
+        machine.bus.set_host_local_time_fn(f);
+    }
     let mut total_cycles = 0u64;
     loop {
         total_cycles += machine.run_for(HLE_BOOT_CHECK_INTERVAL);

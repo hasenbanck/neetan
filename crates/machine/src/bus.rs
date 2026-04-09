@@ -394,7 +394,9 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// routed to the built-in Rust implementation instead of being passed
     /// through to a real DOS loaded from disk.
     pub fn enable_neetan_os(&mut self) {
-        self.os = Some(os::NeetanOs::new());
+        let mut os = os::NeetanOs::new();
+        os.set_host_local_time_fn(self.host_local_time_fn);
+        self.os = Some(os);
     }
 
     /// Loads BIOS ROM data (mapped at E8000-FFFFF, up to 96 KB).

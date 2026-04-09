@@ -26,7 +26,7 @@ struct RunningTime {
 impl RunningCommand for RunningTime {
     fn step(
         &mut self,
-        _state: &mut OsState,
+        state: &mut OsState,
         io: &mut IoAccess,
         _disk: &mut dyn DiskIo,
     ) -> StepResult {
@@ -35,11 +35,7 @@ impl RunningCommand for RunningTime {
             return StepResult::Done(0);
         }
 
-        // Hardcoded DOS time: 0x6000 = 12:00:00
-        let time: u16 = 0x6000;
-        let hour = (time >> 11) & 0x1F;
-        let minute = (time >> 5) & 0x3F;
-        let second = (time & 0x1F) * 2;
+        let (hour, minute, second) = state.current_time_parts();
 
         let msg = format!(
             "Current time is {:02}:{:02}:{:02}.00\r\n",

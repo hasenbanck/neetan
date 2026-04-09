@@ -293,12 +293,58 @@ pub(crate) struct OsState {
     /// into the programmed escape sequence from the function key map. These bytes
     /// are queued here and returned one at a time by subsequent INT 21h input calls.
     pub(crate) pending_key_bytes: std::collections::VecDeque<u8>,
+    /// Host local time provider (BCD-encoded).
+    /// Returns `[year, month<<4|day_of_week, day, hour, minute, second]`.
+    pub(crate) host_local_time_fn: fn() -> [u8; 6],
 }
 
 pub(crate) struct BufferedInputState {
     pub buffer_addr: u32,
     pub max_chars: u8,
     pub current_pos: u8,
+}
+
+fn from_bcd(value: u8) -> u8 {
+    (value >> 4) * 10 + (value & 0x0F)
+}
+
+fn default_host_local_time() -> [u8; 6] {
+    // 1995-01-01 12:00:00, Sunday
+    [0x95, 0x10, 0x01, 0x12, 0x00, 0x00]
+}
+
+impl OsState {
+    /// Returns the current time as a DOS timestamp pair `(time, date)`.
+    pub(crate) fn dos_timestamp_now(&self) -> (u16, u16) {
+        let bcd = (self.host_local_time_fn)();
+        let year = from_bcd(bcd[0]) as u16;
+        let month = (bcd[1] >> 4) as u16;
+        let day = from_bcd(bcd[2]) as u16;
+        let hour = from_bcd(bcd[3]) as u16;
+        let minute = from_bcd(bcd[4]) as u16;
+        let second = from_bcd(bcd[5]) as u16;
+        let full_year = if year < 80 { 2000 + year } else { 1900 + year };
+        let dos_date = ((full_year - 1980) << 9) | (month << 5) | day;
+        let dos_time = (hour << 11) | (minute << 5) | (second / 2);
+        (dos_time, dos_date)
+    }
+
+    /// Returns `(year, month, day, day_of_week)` from the host clock.
+    pub(crate) fn current_date_parts(&self) -> (u16, u16, u16, u16) {
+        let bcd = (self.host_local_time_fn)();
+        let year = from_bcd(bcd[0]) as u16;
+        let full_year = if year < 80 { 2000 + year } else { 1900 + year };
+        let month = (bcd[1] >> 4) as u16;
+        let dow = (bcd[1] & 0x0F) as u16;
+        let day = from_bcd(bcd[2]) as u16;
+        (full_year, month, day, dow)
+    }
+
+    /// Returns `(hour, minute, second)` from the host clock.
+    pub(crate) fn current_time_parts(&self) -> (u8, u8, u8) {
+        let bcd = (self.host_local_time_fn)();
+        (from_bcd(bcd[3]), from_bcd(bcd[4]), from_bcd(bcd[5]))
+    }
 }
 
 /// Builds the default function key map (specifier 0x0000 layout, 386 bytes).
@@ -466,6 +512,7 @@ impl NeetanOs {
                 buffered_input: None,
                 fn_key_map: build_default_fn_key_map(),
                 pending_key_bytes: std::collections::VecDeque::new(),
+                host_local_time_fn: default_host_local_time,
             },
             console: console::Console::default(),
             shell: None,
@@ -475,6 +522,11 @@ impl NeetanOs {
     /// Returns the COMMAND.COM PSP segment.
     pub fn command_com_psp(&self) -> u16 {
         self.state.current_psp
+    }
+
+    /// Sets the host local time provider for the OS.
+    pub fn set_host_local_time_fn(&mut self, f: fn() -> [u8; 6]) {
+        self.state.host_local_time_fn = f;
     }
 
     /// Performs the DOS boot sequence: writes data structures into emulated RAM,
