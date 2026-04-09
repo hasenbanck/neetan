@@ -1,10 +1,10 @@
 //! Drive trait, DiskIo trait, drive mapping, error types.
 
 pub mod fat;
-pub mod fat_bpb;
-pub mod fat_dir;
-pub mod fat_partition;
-pub mod virtual_drive;
+pub(crate) mod fat_bpb;
+pub(crate) mod fat_dir;
+pub(crate) mod fat_partition;
+pub(crate) mod virtual_drive;
 
 /// Returns true if the byte is a DBCS (Shift-JIS) lead byte.
 pub(crate) fn is_dbcs_lead_byte(b: u8) -> bool {

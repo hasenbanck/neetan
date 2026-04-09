@@ -4,7 +4,7 @@
 //! compatibility. All shell commands are built-in and resolved from the
 //! in-memory command registry - they do not exist as files on any drive.
 
-use crate::filesystem::fat_dir;
+use crate::{filesystem::fat_dir, process::COMMAND_COM_STUB};
 
 /// A virtual directory entry on the Z: drive.
 pub(crate) struct VirtualEntry {
@@ -13,6 +13,7 @@ pub(crate) struct VirtualEntry {
     pub file_size: u32,
     pub time: u16,
     pub date: u16,
+    pub content: &'static [u8],
 }
 
 /// The virtual Z: drive filesystem.
@@ -33,9 +34,10 @@ impl VirtualDrive {
         let entries = vec![VirtualEntry {
             name,
             attribute: attr,
-            file_size: 1,
+            file_size: COMMAND_COM_STUB.len() as u32,
             time,
             date,
+            content: COMMAND_COM_STUB,
         }];
 
         Self { entries }
@@ -44,6 +46,11 @@ impl VirtualDrive {
     /// Finds an entry by exact FCB name.
     pub fn find_entry(&self, name: &[u8; 11]) -> Option<&VirtualEntry> {
         self.entries.iter().find(|e| e.name == *name)
+    }
+
+    /// Returns the file content for the entry with the given FCB name.
+    pub fn file_content(&self, name: &[u8; 11]) -> Option<&[u8]> {
+        self.find_entry(name).map(|e| e.content)
     }
 
     /// Finds the next entry matching the pattern and attribute mask.

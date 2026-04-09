@@ -124,37 +124,65 @@ impl RunningDir {
         state: &mut OsState,
         disk: &mut dyn DiskIo,
     ) -> StepResult {
-        // Collect all matching entries from current directory
-        let vol = match state.fat_volumes[dir_state.drive_index as usize].as_ref() {
-            Some(v) => v,
-            None => return StepResult::Done(1),
-        };
-
         dir_state.entries.clear();
         dir_state.entry_index = 0;
-        let mut start_index = 0u16;
-        let attr_mask = fat_dir::ATTR_HIDDEN
-            | fat_dir::ATTR_SYSTEM
-            | fat_dir::ATTR_DIRECTORY
-            | fat_dir::ATTR_READ_ONLY;
 
-        loop {
-            let result = fat_dir::find_matching(
-                vol,
-                dir_state.dir_cluster,
-                &dir_state.pattern,
-                attr_mask,
-                start_index,
-                disk,
-            );
-            match result {
-                Ok(Some((entry, next_index))) => {
-                    if should_show_entry(&entry, &dir_state.attr_filter) {
-                        dir_state.entries.push(entry);
-                    }
-                    start_index = next_index;
+        if dir_state.drive_index == 25 {
+            let mut start_index = 0u16;
+            let attr_mask = fat_dir::ATTR_HIDDEN
+                | fat_dir::ATTR_SYSTEM
+                | fat_dir::ATTR_DIRECTORY
+                | fat_dir::ATTR_READ_ONLY;
+            while let Some((ventry, next_index)) =
+                state
+                    .virtual_drive
+                    .find_matching(&dir_state.pattern, attr_mask, start_index)
+            {
+                let entry = fat_dir::DirEntry {
+                    name: ventry.name,
+                    attribute: ventry.attribute,
+                    time: ventry.time,
+                    date: ventry.date,
+                    start_cluster: 0,
+                    file_size: ventry.file_size,
+                    dir_sector: 0,
+                    dir_offset: 0,
+                };
+                if should_show_entry(&entry, &dir_state.attr_filter) {
+                    dir_state.entries.push(entry);
                 }
-                _ => break,
+                start_index = next_index;
+            }
+        } else {
+            let vol = match state.fat_volumes[dir_state.drive_index as usize].as_ref() {
+                Some(v) => v,
+                None => return StepResult::Done(1),
+            };
+
+            let mut start_index = 0u16;
+            let attr_mask = fat_dir::ATTR_HIDDEN
+                | fat_dir::ATTR_SYSTEM
+                | fat_dir::ATTR_DIRECTORY
+                | fat_dir::ATTR_READ_ONLY;
+
+            loop {
+                let result = fat_dir::find_matching(
+                    vol,
+                    dir_state.dir_cluster,
+                    &dir_state.pattern,
+                    attr_mask,
+                    start_index,
+                    disk,
+                );
+                match result {
+                    Ok(Some((entry, next_index))) => {
+                        if should_show_entry(&entry, &dir_state.attr_filter) {
+                            dir_state.entries.push(entry);
+                        }
+                        start_index = next_index;
+                    }
+                    _ => break,
+                }
             }
         }
 
@@ -286,6 +314,14 @@ impl RunningDir {
     ) -> StepResult {
         // /S: find subdirectories in the entries we just listed and push them
         // We need to scan current entries for directories, excluding "." and ".."
+        if dir_state.drive_index == 25 {
+            if dir_state.total_files == 0 {
+                io.println(b"File Not Found");
+                return StepResult::Done(1);
+            }
+            self.phase = DirPhase::Footer(dir_state);
+            return StepResult::Continue;
+        }
         let vol = match state.fat_volumes[dir_state.drive_index as usize].as_ref() {
             Some(v) => v,
             None => return StepResult::Done(1),
@@ -747,6 +783,9 @@ fn format_wide(entry: &fat_dir::DirEntry, dir_state: &mut DirState, io: &mut IoA
 }
 
 fn get_volume_label(state: &OsState, drive_index: u8, disk: &mut dyn DiskIo) -> Option<String> {
+    if drive_index == 25 {
+        return None;
+    }
     let vol = state.fat_volumes[drive_index as usize].as_ref()?;
     let pattern = [b'?'; 11];
     let mut start_index = 0u16;
@@ -783,6 +822,9 @@ fn get_dir_display_path(memory: &dyn MemoryAccess, drive_index: u8) -> String {
 }
 
 fn calculate_free_space(state: &OsState, drive_index: u8) -> u64 {
+    if drive_index == 25 {
+        return 0;
+    }
     let vol = match state.fat_volumes[drive_index as usize].as_ref() {
         Some(v) => v,
         None => return 0,

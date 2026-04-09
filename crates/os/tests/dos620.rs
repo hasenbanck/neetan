@@ -78,3 +78,6 @@ mod shell_batch;
 
 #[path = "dos620/shell_exec.rs"]
 mod shell_exec;
+
+#[path = "dos620/virtual_drive.rs"]
+mod virtual_drive;

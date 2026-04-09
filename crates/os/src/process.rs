@@ -1,7 +1,7 @@
 //! Program Segment Prefix (PSP) creation, EXEC, terminate, process stack.
 
 /// COMMAND.COM code stub (assembled from `utils/os/os.asm`).
-static COMMAND_COM_STUB: &[u8] = include_bytes!("../../../utils/os/os.rom");
+pub(crate) static COMMAND_COM_STUB: &[u8] = include_bytes!("../../../utils/os/os.rom");
 
 use crate::{
     CpuAccess, DiskIo, MemoryAccess, NeetanOs, OsState,
@@ -337,6 +337,8 @@ impl NeetanOs {
         // Z: drive contains only COMMAND.COM for COMSPEC compatibility.
         // All shell commands are built-in and resolved from the command registry,
         // never through EXEC. Return file-not-found for Z: drive EXEC attempts.
+        // TODO: Support EXEC of Z:\COMMAND.COM for "COMMAND /C <cmd>" pattern.
+        //       Requires nested shell contexts and /C flag handling.
         if drive_index == 25 {
             return Err(0x0002);
         }

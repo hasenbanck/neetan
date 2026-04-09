@@ -5,6 +5,8 @@
 //! dispatch calls from the machine bus and delegates to per-interrupt
 //! handler modules.
 
+// TODO Properly implement a HLE EMS / XMS memory manager
+
 mod cdrom;
 mod commands;
 mod config;
@@ -13,7 +15,7 @@ mod console_esc;
 mod country;
 mod dos;
 mod file_io;
-mod filesystem;
+pub mod filesystem;
 mod interrupt;
 mod ioctl;
 mod memory;
@@ -1586,7 +1588,10 @@ impl OsState {
         let drive_index = drive_opt.unwrap_or(self.current_drive);
 
         if drive_index == 25 {
-            return Err(0x000F); // Z: is virtual
+            if components.is_empty() {
+                return Ok((25, 0));
+            }
+            return Err(0x0003); // Z: has no subdirectories
         }
         self.ensure_volume_mounted(drive_index, mem, disk)?;
 

@@ -3,6 +3,8 @@
 //! Dispatched by AH register. Provides installation checks for resident
 //! services (Windows, XMS, DOSKEY, HMA).
 
+// TODO Add EMS and XMS support for the emulator (of course limited by the CPU used).
+
 use common::warn;
 
 use crate::{CdromIo, CpuAccess, MemoryAccess, NeetanOs, set_iret_carry};

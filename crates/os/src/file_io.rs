@@ -4,7 +4,7 @@ use common::warn;
 
 use crate::{
     CpuAccess, DiskIo, MemoryAccess, NeetanOs, OsState,
-    filesystem::{fat_dir, split_path},
+    filesystem::{fat_dir, split_path, virtual_drive::VirtualEntry},
     set_iret_carry, tables,
 };
 
@@ -237,7 +237,17 @@ impl NeetanOs {
                 self.state.resolve_file_path(&path, memory, disk)?;
 
             if drive_index == 25 {
-                return Err(0x0005); // Z: is read-only, open not allowed
+                if open_mode != 0x00 {
+                    return Err(0x0005); // Z: is read-only
+                }
+                let ventry = self
+                    .state
+                    .virtual_drive
+                    .find_entry(&fcb_name)
+                    .ok_or(0x0002u16)?;
+                let (handle, sft_index) = self.state.allocate_handle(memory)?;
+                self.write_sft_for_virtual_file(memory, sft_index, ventry, open_mode as u16);
+                return Ok(handle as u16);
             }
 
             let vol = self.state.fat_volumes[drive_index as usize]
@@ -352,9 +362,33 @@ impl NeetanOs {
             let drive_index = (dev_info & 0x003F) as u8;
             let file_size = read_dword(memory, sft_addr + tables::SFT_ENT_FILE_SIZE);
             let mut position = read_dword(memory, sft_addr + tables::SFT_ENT_FILE_POS);
-            let start_cluster = memory.read_word(sft_addr + tables::SFT_ENT_START_CLUSTER);
 
-            if position >= file_size || count == 0 || start_cluster < 2 {
+            if position >= file_size || count == 0 {
+                return Ok(0);
+            }
+
+            if drive_index == 25 {
+                let mut name = [0u8; 11];
+                memory.read_block(sft_addr + tables::SFT_ENT_NAME, &mut name);
+                let content = self
+                    .state
+                    .virtual_drive
+                    .file_content(&name)
+                    .ok_or(0x0005u16)?;
+                let bytes_to_read = count.min(file_size - position) as usize;
+                let start = position as usize;
+                let end = (start + bytes_to_read).min(content.len());
+                let actual = end.saturating_sub(start);
+                if actual > 0 {
+                    memory.write_block(buf_addr, &content[start..end]);
+                }
+                position += actual as u32;
+                write_dword(memory, sft_addr + tables::SFT_ENT_FILE_POS, position);
+                return Ok(actual as u16);
+            }
+
+            let start_cluster = memory.read_word(sft_addr + tables::SFT_ENT_START_CLUSTER);
+            if start_cluster < 2 {
                 return Ok(0);
             }
 
@@ -1028,6 +1062,42 @@ impl NeetanOs {
             sft_addr + tables::SFT_ENT_DIR_INDEX,
             (entry.dir_offset / fat_dir::DIR_ENTRY_SIZE as u16) as u8,
         );
+        mem.write_block(sft_addr + tables::SFT_ENT_NAME, &entry.name);
+        mem.write_word(sft_addr + tables::SFT_ENT_PSP_OWNER, self.state.current_psp);
+    }
+
+    /// Helper: populates an SFT entry for a virtual Z: drive file.
+    fn write_sft_for_virtual_file(
+        &self,
+        mem: &mut dyn MemoryAccess,
+        sft_index: u8,
+        entry: &VirtualEntry,
+        open_mode: u16,
+    ) {
+        let sft_addr = match self.state.sft_entry_addr(sft_index) {
+            Some(a) => a,
+            None => return,
+        };
+
+        mem.write_word(sft_addr + tables::SFT_ENT_REF_COUNT, 1);
+        mem.write_word(sft_addr + tables::SFT_ENT_OPEN_MODE, open_mode);
+        mem.write_byte(sft_addr + tables::SFT_ENT_FILE_ATTR, entry.attribute);
+        mem.write_word(sft_addr + tables::SFT_ENT_DEV_INFO, 25);
+        tables::write_far_ptr(
+            mem,
+            sft_addr + tables::SFT_ENT_DEV_PTR,
+            tables::DOS_DATA_SEGMENT,
+            tables::DEV_NUL_OFFSET,
+        );
+        mem.write_word(sft_addr + tables::SFT_ENT_START_CLUSTER, 0);
+        mem.write_word(sft_addr + tables::SFT_ENT_FILE_TIME, entry.time);
+        mem.write_word(sft_addr + tables::SFT_ENT_FILE_DATE, entry.date);
+        write_dword(mem, sft_addr + tables::SFT_ENT_FILE_SIZE, entry.file_size);
+        write_dword(mem, sft_addr + tables::SFT_ENT_FILE_POS, 0);
+        mem.write_word(sft_addr + tables::SFT_ENT_REL_CLUSTER, 0);
+        mem.write_word(sft_addr + tables::SFT_ENT_CUR_CLUSTER, 0);
+        mem.write_word(sft_addr + tables::SFT_ENT_DIR_SECTOR, 0);
+        mem.write_byte(sft_addr + tables::SFT_ENT_DIR_INDEX, 0);
         mem.write_block(sft_addr + tables::SFT_ENT_NAME, &entry.name);
         mem.write_word(sft_addr + tables::SFT_ENT_PSP_OWNER, self.state.current_psp);
     }
