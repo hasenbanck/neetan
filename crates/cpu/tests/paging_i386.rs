@@ -979,16 +979,6 @@ fn paging_fault_on_code_fetch() {
     let pte_index = PG_CODE_BASE >> 12;
     write_dword_at(&mut bus, PG_PAGE_TABLE_0 + pte_index * 4, 0);
 
-    // But the #PF handler is also in the code page! We need the handler
-    // page to remain mapped. The handler is at PG_CODE_BASE + PG_PF_HANDLER_IP.
-    // Since PG_PF_HANDLER_IP = 0x9000, the handler is in a different page
-    // (code base + 0x9000 = 0x59000, page index 0x59).
-    // Actually with 16-bit segments and limit 0xFFFF, the handler at
-    // CS:PG_PF_HANDLER_IP uses linear address PG_CODE_BASE + PG_PF_HANDLER_IP.
-    // PG_CODE_BASE = 0x50000, PG_PF_HANDLER_IP = 0x9000.
-    // Linear = 0x59000, page = 0x59. This is a different page from 0x50 (code IP=0).
-    // So unmapping page 0x50 is fine - the handler at page 0x59 stays mapped.
-
     cpu.step(&mut bus); // fetch faults
     cpu.step(&mut bus); // HLT in #PF handler
 

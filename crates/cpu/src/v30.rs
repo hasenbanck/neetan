@@ -468,4 +468,13 @@ impl common::Cpu for V30 {
     fn cpu_type(&self) -> common::CpuType {
         common::CpuType::V30
     }
+
+    fn load_segment_real_mode(&mut self, seg: common::SegmentRegister, selector: u16) {
+        match seg {
+            common::SegmentRegister::ES => self.state.set_es(selector),
+            common::SegmentRegister::CS => self.state.set_cs(selector),
+            common::SegmentRegister::SS => self.state.set_ss(selector),
+            common::SegmentRegister::DS => self.state.set_ds(selector),
+        }
+    }
 }

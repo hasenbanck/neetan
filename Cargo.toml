@@ -16,6 +16,7 @@ cpu = { path = "crates/cpu" }
 device = { path = "crates/device" }
 graphics_engine = { path = "crates/graphics_engine" }
 machine = { path = "crates/machine" }
+os = { path = "crates/os" }
 resampler = { path = "crates/resampler" }
 sdl3 = { path = "crates/sdl3" }
 softfloat = { path = "crates/softfloat" }
@@ -103,6 +104,10 @@ opt-level = 3
 codegen-units = 1
 
 [profile.dev.package.nuked_sc55_oxide]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.os]
 opt-level = 3
 codegen-units = 1
 

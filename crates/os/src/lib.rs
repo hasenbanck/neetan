@@ -1,0 +1,1907 @@
+//! NEETAN OS - HLE DOS implementation for PC-98.
+//!
+//! Provides a high-level emulation of MS-DOS 6.20 compatible OS services
+//! for the PC-9801 series. The `NeetanOs` struct receives DOS interrupt
+//! dispatch calls from the machine bus and delegates to per-interrupt
+//! handler modules.
+
+mod cdrom;
+mod commands;
+mod config;
+mod console;
+mod console_esc;
+mod country;
+mod dos;
+mod file_io;
+pub mod filesystem;
+mod interrupt;
+mod ioctl;
+mod memory;
+mod process;
+mod shell;
+mod state;
+pub mod tables;
+
+/// CPU register access for the OS.
+///
+/// Implemented by the machine crate's bridge adapter, wrapping `common::Cpu`.
+pub trait CpuAccess {
+    /// Returns the AX register.
+    fn ax(&self) -> u16;
+    /// Sets the AX register.
+    fn set_ax(&mut self, value: u16);
+    /// Returns the BX register.
+    fn bx(&self) -> u16;
+    /// Sets the BX register.
+    fn set_bx(&mut self, value: u16);
+    /// Returns the CX register.
+    fn cx(&self) -> u16;
+    /// Sets the CX register.
+    fn set_cx(&mut self, value: u16);
+    /// Returns the DX register.
+    fn dx(&self) -> u16;
+    /// Sets the DX register.
+    fn set_dx(&mut self, value: u16);
+    /// Returns the SI register.
+    fn si(&self) -> u16;
+    /// Sets the SI register.
+    fn set_si(&mut self, value: u16);
+    /// Returns the DI register.
+    fn di(&self) -> u16;
+    /// Sets the DI register.
+    fn set_di(&mut self, value: u16);
+    /// Returns the DS segment register.
+    fn ds(&self) -> u16;
+    /// Sets the DS segment register.
+    fn set_ds(&mut self, value: u16);
+    /// Returns the ES segment register.
+    fn es(&self) -> u16;
+    /// Sets the ES segment register.
+    fn set_es(&mut self, value: u16);
+    /// Returns the SS segment register.
+    fn ss(&self) -> u16;
+    /// Sets the SS segment register.
+    fn set_ss(&mut self, value: u16);
+    /// Returns the SP register.
+    fn sp(&self) -> u16;
+    /// Sets the SP register.
+    fn set_sp(&mut self, value: u16);
+    /// Returns the CS segment register.
+    fn cs(&self) -> u16;
+    /// Sets the carry flag in the IRET frame.
+    fn set_carry(&mut self, carry: bool);
+}
+
+/// Emulated memory access for the OS.
+///
+/// Implemented by the machine crate's bridge adapter, wrapping `Pc9801Memory`.
+pub trait MemoryAccess {
+    /// Reads a byte from the given linear address.
+    fn read_byte(&self, address: u32) -> u8;
+    /// Writes a byte to the given linear address.
+    fn write_byte(&mut self, address: u32, value: u8);
+    /// Reads a 16-bit word (little-endian) from the given linear address.
+    fn read_word(&self, address: u32) -> u16;
+    /// Writes a 16-bit word (little-endian) to the given linear address.
+    fn write_word(&mut self, address: u32, value: u16);
+    /// Bulk read from emulated RAM into a host buffer.
+    fn read_block(&self, address: u32, buf: &mut [u8]);
+    /// Bulk write from a host buffer into emulated RAM.
+    fn write_block(&mut self, address: u32, data: &[u8]);
+    /// Returns the size of extended RAM in bytes (0 for V30 machines).
+    fn extended_memory_size(&self) -> u32 {
+        0
+    }
+    /// Enables the EMS page frame backing at C0000-CFFFF.
+    fn enable_ems_page_frame(&mut self) {}
+    /// Enables the UMB region backing at D0000-DFFFF.
+    fn enable_umb_region(&mut self) {}
+}
+
+/// Disk I/O for the filesystem layer.
+///
+/// Abstracts access to floppy and hard disk images through the machine bus.
+pub trait DiskIo {
+    /// Read sectors from a physical drive.
+    /// `drive_da`: device address (0x90 for FD0, 0x80 for HDD0, etc.)
+    /// `lba`: logical block address (0-based)
+    /// `count`: number of sectors to read
+    fn read_sectors(&mut self, drive_da: u8, lba: u32, count: u32) -> Result<Vec<u8>, u8>;
+    /// Write sectors to a physical drive.
+    fn write_sectors(&mut self, drive_da: u8, lba: u32, data: &[u8]) -> Result<(), u8>;
+    /// Get the sector size for a drive (typically 512 for HDD, 512 or 1024 for FDD).
+    fn sector_size(&self, drive_da: u8) -> Option<u16>;
+    /// Get total sector count for a drive.
+    fn total_sectors(&self, drive_da: u8) -> Option<u32>;
+    /// Get drive geometry (cylinders, heads, sectors_per_track).
+    /// Needed for HDD partition table CHS-to-LBA conversion.
+    fn drive_geometry(&self, drive_da: u8) -> Option<(u16, u8, u8)>;
+}
+
+/// CD-ROM access for the MSCDEX layer.
+///
+/// Abstracts CD-ROM data access, TOC queries, and audio playback control.
+/// Implemented by the machine crate's adapter, delegating to `CdImage` and
+/// `CdAudioPlayer` on the IDE controller.
+pub trait CdromIo {
+    /// Returns true if the machine model has a CD-ROM drive.
+    fn cdrom_present(&self) -> bool;
+    /// Returns true if a disc is loaded in the drive.
+    fn cdrom_media_loaded(&self) -> bool;
+
+    /// Reads 2048 bytes of user data (cooked) from the given LBA.
+    fn read_sector_cooked(&self, lba: u32, buf: &mut [u8]) -> Option<usize>;
+    /// Reads a full raw sector (2352 bytes) from the given LBA.
+    fn read_sector_raw(&self, lba: u32, buf: &mut [u8]) -> Option<usize>;
+
+    /// Returns the number of tracks on the disc.
+    fn track_count(&self) -> u8;
+    /// Returns info for a 1-based track number.
+    fn track_info(&self, track_number: u8) -> Option<CdromTrackInfo>;
+    /// Returns the LBA of the lead-out area (end of last track).
+    fn leadout_lba(&self) -> u32;
+    /// Returns the total addressable sector count.
+    fn total_sectors(&self) -> u32;
+
+    /// Starts audio playback from `start_lba` for `sector_count` sectors.
+    fn audio_play(&mut self, start_lba: u32, sector_count: u32);
+    /// Pauses audio playback (if playing).
+    fn audio_stop(&mut self);
+    /// Resumes audio playback (if paused).
+    fn audio_resume(&mut self);
+    /// Returns current audio playback state and positions.
+    fn audio_state(&self) -> CdAudioStatus;
+    /// Returns current audio channel mapping and volumes.
+    fn audio_channel_info(&self) -> AudioChannelInfo;
+    /// Sets audio channel mapping and volumes.
+    fn set_audio_channel_info(&mut self, info: &AudioChannelInfo);
+}
+
+/// Track metadata returned by `CdromIo::track_info`.
+pub struct CdromTrackInfo {
+    /// LBA of the track start (INDEX 01).
+    pub start_lba: u32,
+    /// Track type (data or audio).
+    pub track_type: CdromTrackType,
+    /// ADR/Control byte (0x14 = data, 0x10 = audio).
+    pub control: u8,
+}
+
+/// CD-ROM track type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CdromTrackType {
+    /// Data track.
+    Data,
+    /// Audio track (CD-DA).
+    Audio,
+}
+
+/// Current audio playback state.
+pub struct CdAudioStatus {
+    /// Playback state.
+    pub state: CdAudioState,
+    /// Current playback position (LBA).
+    pub current_lba: u32,
+    /// Start of the current play range (LBA).
+    pub start_lba: u32,
+    /// End of the current play range (LBA).
+    pub end_lba: u32,
+}
+
+/// CD audio state enum for the OS layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CdAudioState {
+    /// Not playing.
+    Stopped,
+    /// Currently playing.
+    Playing,
+    /// Paused.
+    Paused,
+}
+
+/// Audio channel mapping and volume info.
+pub struct AudioChannelInfo {
+    /// Which input channel (0 or 1) feeds each of the four output slots.
+    pub input_channel: [u8; 4],
+    /// Volume for each of the four output slots (0-255).
+    pub volume: [u8; 4],
+}
+
+/// Console I/O for commands and the shell.
+///
+/// Abstracts keyboard input and text output through the machine's display.
+pub trait ConsoleIo {
+    /// Write a character to the console at the current cursor position.
+    fn write_char(&mut self, ch: u8);
+    /// Write a string to the console.
+    fn write_str(&mut self, s: &[u8]);
+    /// Read a character from the keyboard buffer (blocking).
+    fn read_char(&mut self) -> u8;
+    /// Check if a character is available in the keyboard buffer.
+    fn char_available(&self) -> bool;
+    /// Read a scan code + character pair (for special keys like arrows).
+    fn read_key(&mut self) -> (u8, u8);
+    /// Get current cursor position.
+    fn cursor_position(&self) -> (u8, u8);
+    /// Set cursor position.
+    fn set_cursor_position(&mut self, row: u8, col: u8);
+    /// Scroll the screen up by one line.
+    fn scroll_up(&mut self);
+    /// Clear the screen.
+    fn clear_screen(&mut self);
+    /// Get the screen dimensions.
+    fn screen_size(&self) -> (u8, u8);
+}
+
+/// Information about a discovered drive for CDS/DPB/DAUA population.
+struct DriveInfo {
+    /// 0-based drive index (0=A, 1=B, ..., 25=Z).
+    drive_index: u8,
+    /// Device address (0x90=1MB FDD0, 0x80=HDD0, 0x00=virtual).
+    da_ua: u8,
+    /// True for the virtual Z: drive.
+    is_virtual: bool,
+}
+
+/// State accessible to commands during step() execution.
+///
+/// Split from `NeetanOs` so `RunningCommand::step()` can borrow this mutably
+/// while `Shell` holds the `Box<dyn RunningCommand>`.
+pub(crate) struct OsState {
+    /// Linear address of SYSVARS (List of Lists) in emulated RAM.
+    pub(crate) sysvars_base: u32,
+    /// Linear address of the InDOS flag byte.
+    pub(crate) indos_addr: u32,
+    /// Boot drive number (1=A, 2=B, ...). Default is 26 (Z:).
+    pub(crate) boot_drive: u8,
+    /// DOS version reported to programs: (major, minor) = (6, 20).
+    pub(crate) version: (u8, u8),
+    /// Segment of the current PSP (set during boot and EXEC).
+    pub(crate) current_psp: u16,
+    /// Current default drive (0-based: 0=A, 1=B, ...).
+    pub(crate) current_drive: u8,
+    /// DTA (Disk Transfer Area) segment.
+    pub(crate) dta_segment: u16,
+    /// DTA (Disk Transfer Area) offset.
+    pub(crate) dta_offset: u16,
+    /// Ctrl-Break check state (false=off, true=on).
+    pub(crate) ctrl_break: bool,
+    /// Switch character (default 0x2F = '/').
+    pub(crate) switch_char: u8,
+    /// Memory allocation strategy (0=first fit, 1=best fit, 2=last fit).
+    pub(crate) allocation_strategy: u16,
+    /// Exit code from last terminated child process.
+    pub(crate) last_return_code: u8,
+    /// Termination type of last child (0=normal, 1=ctrl-C, 2=critical error, 3=TSR).
+    pub(crate) last_termination_type: u8,
+    /// Linear address of DBCS lead byte table in emulated RAM.
+    pub(crate) dbcs_table_addr: u32,
+    /// Mounted FAT volumes, indexed by drive number (0=A..25=Z). Lazy-mounted.
+    pub(crate) fat_volumes: Vec<Option<filesystem::fat::FatVolume>>,
+    /// Base address of the second SFT block in emulated RAM.
+    pub(crate) sft2_base: u32,
+    /// Virtual Z: drive.
+    pub(crate) virtual_drive: filesystem::virtual_drive::VirtualDrive,
+    /// Process stack for nested EXEC calls.
+    pub(crate) process_stack: Vec<process::ProcessContext>,
+    /// Country code from CONFIG.SYS (default 81 = Japan).
+    pub(crate) country_code: u16,
+    /// MSCDEX state (activated by DEVICE=NECCD.SYS in CONFIG.SYS).
+    pub(crate) mscdex: cdrom::MscdexState,
+    /// Number of entries in the second SFT block (dynamic, based on FILES=).
+    pub(crate) sft2_count: u16,
+    /// Pending buffered input state for INT 21h AH=0Ah.
+    pub(crate) buffered_input: Option<BufferedInputState>,
+    /// Function key escape code storage for INT DCh CL=0x0C/0x0D (786 bytes).
+    pub(crate) fn_key_map: Vec<u8>,
+    /// Pending bytes from function key / arrow key expansion. When an extended
+    /// key (ch=0x00) is read from the keyboard buffer, NEC DOS IO.SYS expands it
+    /// into the programmed escape sequence from the function key map. These bytes
+    /// are queued here and returned one at a time by subsequent INT 21h input calls.
+    pub(crate) pending_key_bytes: std::collections::VecDeque<u8>,
+    /// Host local time provider (BCD-encoded).
+    /// Returns `[year, month<<4|day_of_week, day, hour, minute, second]`.
+    pub(crate) host_local_time_fn: fn() -> [u8; 6],
+    /// Whether EMS expanded memory is enabled.
+    pub(crate) ems_enabled: bool,
+    /// Whether XMS extended memory is enabled.
+    pub(crate) xms_enabled: bool,
+    /// Unified EMS/XMS/UMB memory manager. `None` if EMS/XMS both disabled or no extended RAM.
+    pub(crate) memory_manager: Option<memory::memory_manager::MemoryManager>,
+}
+
+pub(crate) struct BufferedInputState {
+    pub buffer_addr: u32,
+    pub max_chars: u8,
+    pub current_pos: u8,
+}
+
+fn from_bcd(value: u8) -> u8 {
+    (value >> 4) * 10 + (value & 0x0F)
+}
+
+fn default_host_local_time() -> [u8; 6] {
+    // 1995-01-01 12:00:00, Sunday
+    [0x95, 0x10, 0x01, 0x12, 0x00, 0x00]
+}
+
+impl OsState {
+    /// Returns the current time as a DOS timestamp pair `(time, date)`.
+    pub(crate) fn dos_timestamp_now(&self) -> (u16, u16) {
+        let bcd = (self.host_local_time_fn)();
+        let year = from_bcd(bcd[0]) as u16;
+        let month = (bcd[1] >> 4) as u16;
+        let day = from_bcd(bcd[2]) as u16;
+        let hour = from_bcd(bcd[3]) as u16;
+        let minute = from_bcd(bcd[4]) as u16;
+        let second = from_bcd(bcd[5]) as u16;
+        let full_year = if year < 80 { 2000 + year } else { 1900 + year };
+        let dos_date = ((full_year - 1980) << 9) | (month << 5) | day;
+        let dos_time = (hour << 11) | (minute << 5) | (second / 2);
+        (dos_time, dos_date)
+    }
+
+    /// Returns `(year, month, day, day_of_week)` from the host clock.
+    pub(crate) fn current_date_parts(&self) -> (u16, u16, u16, u16) {
+        let bcd = (self.host_local_time_fn)();
+        let year = from_bcd(bcd[0]) as u16;
+        let full_year = if year < 80 { 2000 + year } else { 1900 + year };
+        let month = (bcd[1] >> 4) as u16;
+        let dow = (bcd[1] & 0x0F) as u16;
+        let day = from_bcd(bcd[2]) as u16;
+        (full_year, month, day, dow)
+    }
+
+    /// Returns `(hour, minute, second)` from the host clock.
+    pub(crate) fn current_time_parts(&self) -> (u8, u8, u8) {
+        let bcd = (self.host_local_time_fn)();
+        (from_bcd(bcd[3]), from_bcd(bcd[4]), from_bcd(bcd[5]))
+    }
+}
+
+/// Builds the default function key map (specifier 0x0000 layout, 386 bytes).
+///
+/// Layout: F1-F10 (10x16), Shift+F1-F10 (10x16), then 11 editing keys (11x6).
+/// The editing keys are: ROLL UP, ROLL DOWN, INS, DEL, UP, LEFT, RIGHT, DOWN,
+/// HOME/CLR, HELP, SHIFT+HOME/CLR.
+///
+/// Values extracted from real MS-DOS 6.20 via INT DCh CL=0x0C AX=0x0000
+/// (see machine crate test `fnkey_oracle::read_dos620_default_fnkey_map`).
+fn build_default_fn_key_map() -> Vec<u8> {
+    let mut map = vec![0u8; 786];
+
+    // F1-F10: 16 bytes each. Byte 0 = 0xFE means bytes 1-5 are display-only,
+    // and the actual input sequence starts at byte 6.
+    #[rustfmt::skip]
+    let fkey_defaults: [&[u8]; 10] = [
+        b"\xfe\x43\x31\x20\x20\x20\x1b\x53",         // F1:  display "C1   ", input ESC S
+        b"\xfe\x43\x57\x20\x20\x20\x1b\x54",         // F2:  display "CW   ", input ESC T
+        b"\xfe\x43\x55\x20\x20\x20\x1b\x55",         // F3:  display "CU   ", input ESC U
+        b"\xfe\x43\x44\x20\x20\x20\x1b\x56",         // F4:  display "CD   ", input ESC V
+        b"\xfe\x43\x52\x20\x20\x20\x1b\x57",         // F5:  display "CR   ", input ESC W
+        b"\xfe\x45\x4c\x20\x20\x20\x1b\x45",         // F6:  display "EL   ", input ESC E
+        b"\xfe\x4e\x57\x4c\x20\x20\x1b\x4a",         // F7:  display "NWL  ", input ESC J
+        b"\xfe\x49\x4e\x53\x20\x20\x1b\x50",         // F8:  display "INS  ", input ESC P
+        b"\xfe\x52\x45\x50\x20\x20\x1b\x51",         // F9:  display "REP  ", input ESC Q
+        b"\xfe\x20\x5e\x5a\x20\x20\x1b\x5a",         // F10: display " ^Z  ", input ESC Z
+    ];
+    for (i, seq) in fkey_defaults.iter().enumerate() {
+        let offset = i * 16;
+        map[offset..offset + seq.len()].copy_from_slice(seq);
+    }
+
+    // Shift+F1-F10: 16 bytes each.
+    #[rustfmt::skip]
+    let shift_fkey_defaults: [&[u8]; 10] = [
+        b"\x64\x69\x72\x20\x61\x3a\x0d",             // Shift+F1: "dir a:\r"
+        b"\x64\x69\x72\x20\x62\x3a\x0d",             // Shift+F2: "dir b:\r"
+        b"\x63\x6f\x70\x79\x20",                     // Shift+F3: "copy "
+        b"\x64\x65\x6c\x20",                         // Shift+F4: "del "
+        b"\x72\x65\x6e\x20",                         // Shift+F5: "ren "
+        b"\x63\x68\x6b\x64\x73\x6b\x20\x61\x3a\x0d", // Shift+F6: "chkdsk a:\r"
+        b"\x63\x68\x6b\x64\x73\x6b\x20\x62\x3a\x0d", // Shift+F7: "chkdsk b:\r"
+        b"\x74\x79\x70\x65\x20",                     // Shift+F8: "type "
+        b"\x64\x61\x74\x65\x0d",                     // Shift+F9: "date\r"
+        b"\x74\x69\x6d\x65\x0d",                     // Shift+F10: "time\r"
+    ];
+    for (i, seq) in shift_fkey_defaults.iter().enumerate() {
+        let offset = 160 + i * 16;
+        map[offset..offset + seq.len()].copy_from_slice(seq);
+    }
+
+    // Editing keys at offset 320 (after 20 function keys * 16 bytes each).
+    // Each editing key has a 6-byte slot (5 data + NUL).
+    let editing_defaults: [&[u8]; 11] = [
+        b"",         // ROLL UP (empty)
+        b"",         // ROLL DOWN (empty)
+        b"\x1b\x50", // INS = ESC P
+        b"\x1b\x44", // DEL = ESC D
+        b"\x0b",     // UP = 0x0B (VT)
+        b"\x08",     // LEFT = 0x08 (BS)
+        b"\x0c",     // RIGHT = 0x0C (FF)
+        b"\x0a",     // DOWN = 0x0A (LF)
+        b"\x1a",     // HOME/CLR = 0x1A (SUB)
+        b"",         // HELP (empty)
+        b"\x1e",     // SHIFT+HOME = 0x1E (RS)
+    ];
+    for (i, seq) in editing_defaults.iter().enumerate() {
+        let offset = 320 + i * 6;
+        map[offset..offset + seq.len()].copy_from_slice(seq);
+    }
+
+    map
+}
+
+/// Data source for input redirection (`<`).
+pub(crate) struct RedirectInput {
+    pub data: Vec<u8>,
+    pub position: usize,
+}
+
+/// Bundles `Console` + `MemoryAccess` for shell and command I/O.
+///
+/// When `redirect_output` is `Some`, command output is captured into the
+/// buffer instead of being sent to the console. When `redirect_input` is
+/// `Some`, commands read from the buffer instead of the keyboard.
+pub(crate) struct IoAccess<'a> {
+    pub console: &'a mut console::Console,
+    pub memory: &'a mut dyn MemoryAccess,
+    pub redirect_output: Option<Vec<u8>>,
+    pub redirect_input: Option<RedirectInput>,
+}
+
+impl IoAccess<'_> {
+    /// Writes a byte to the current output target (redirect buffer or console).
+    pub(crate) fn output_byte(&mut self, byte: u8) {
+        if let Some(ref mut buf) = self.redirect_output {
+            buf.push(byte);
+        } else {
+            self.console.process_byte(self.memory, byte);
+        }
+    }
+
+    /// Prints the given message to the current output target.
+    pub(crate) fn print(&mut self, msg: &[u8]) {
+        for &byte in msg {
+            self.output_byte(byte);
+        }
+    }
+
+    /// Prints the given message followed by a CR+LF to the current output target.
+    pub(crate) fn println(&mut self, msg: &[u8]) {
+        self.print(msg);
+        self.output_byte(b'\r');
+        self.output_byte(b'\n');
+    }
+}
+
+/// The NEETAN OS HLE DOS instance.
+///
+/// Holds all DOS state: memory management, file handles, process info, etc.
+/// Created when no bootable media is found, then called via `dispatch()` on
+/// each DOS interrupt.
+pub struct NeetanOs {
+    /// DOS state accessible to commands.
+    pub(crate) state: OsState,
+    /// Console output state (cursor tracking, ESC parser).
+    pub(crate) console: console::Console,
+    /// Shell state machine, `None` before boot completes.
+    pub(crate) shell: Option<shell::Shell>,
+}
+
+impl Default for NeetanOs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NeetanOs {
+    /// Creates a new NeetanOs instance.
+    pub fn new() -> Self {
+        Self {
+            state: OsState {
+                sysvars_base: tables::SYSVARS_BASE,
+                indos_addr: tables::INDOS_FLAG_ADDR,
+                boot_drive: 26,
+                version: (6, 20),
+                current_psp: 0,
+                current_drive: 0,
+                dta_segment: 0,
+                dta_offset: 0x0080,
+                ctrl_break: false,
+                switch_char: 0x2F,
+                allocation_strategy: 0,
+                last_return_code: 0,
+                last_termination_type: 0,
+                dbcs_table_addr: 0,
+                fat_volumes: (0..26).map(|_| None).collect(),
+                sft2_base: 0,
+                virtual_drive: filesystem::virtual_drive::VirtualDrive::new(),
+                process_stack: Vec::new(),
+                country_code: 81,
+                mscdex: cdrom::MscdexState::new(),
+                sft2_count: 15,
+                buffered_input: None,
+                fn_key_map: build_default_fn_key_map(),
+                pending_key_bytes: std::collections::VecDeque::new(),
+                host_local_time_fn: default_host_local_time,
+                ems_enabled: true,
+                xms_enabled: true,
+                memory_manager: None,
+            },
+            console: console::Console::default(),
+            shell: None,
+        }
+    }
+
+    /// Returns the COMMAND.COM PSP segment.
+    pub fn command_com_psp(&self) -> u16 {
+        self.state.current_psp
+    }
+
+    /// Sets the host local time provider for the OS.
+    pub fn set_host_local_time_fn(&mut self, f: fn() -> [u8; 6]) {
+        self.state.host_local_time_fn = f;
+    }
+
+    /// Enables or disables EMS expanded memory.
+    pub fn set_ems_enabled(&mut self, enabled: bool) {
+        self.state.ems_enabled = enabled;
+    }
+
+    /// Enables or disables XMS extended memory.
+    pub fn set_xms_enabled(&mut self, enabled: bool) {
+        self.state.xms_enabled = enabled;
+    }
+
+    /// Performs the DOS boot sequence: writes data structures into emulated RAM,
+    /// mounts drives, parses CONFIG.SYS, and creates the COMMAND.COM process.
+    pub fn boot(
+        &mut self,
+        _cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        device: &mut (impl DiskIo + CdromIo),
+        _console: &mut dyn ConsoleIo,
+    ) {
+        self.write_dos_data_structures(memory);
+        self.write_iosys_work_area(memory);
+        let drives = Self::discover_drives(memory);
+        self.write_drive_structures(memory, &drives);
+
+        // Parse CONFIG.SYS if present on any mounted drive.
+        let cfg = self.try_parse_config_sys(memory, device, &drives);
+        self.apply_config(&cfg, memory);
+
+        // Set up CD-ROM drive Q: if the machine has a CD-ROM.
+        if device.cdrom_present() {
+            self.write_cdrom_drive(memory);
+        }
+
+        self.write_initial_mcb_and_process(memory);
+
+        // Initialize EMS/XMS memory manager if extended RAM is available.
+        let ext_mem_size = memory.extended_memory_size();
+        if ext_mem_size > 0 && (self.state.ems_enabled || self.state.xms_enabled) {
+            let stub_addr = tables::XMS_ENTRY_STUB_ADDR;
+            memory.write_byte(stub_addr, 0xCD);
+            memory.write_byte(stub_addr + 1, 0xFE);
+            memory.write_byte(stub_addr + 2, 0xCB);
+
+            self.state.memory_manager = Some(memory::memory_manager::MemoryManager::new(
+                ext_mem_size,
+                self.state.ems_enabled,
+                self.state.xms_enabled,
+                memory,
+            ));
+        }
+
+        // Load AUTOEXEC.BAT if present on any mounted drive.
+        let autoexec_lines = self.try_load_autoexec_bat(memory, device, &drives);
+
+        let psp = self.state.current_psp;
+        if let Some((lines, bat_path)) = autoexec_lines {
+            self.shell = Some(shell::Shell::new_with_autoexec(psp, lines, bat_path));
+        } else {
+            self.shell = Some(shell::Shell::new(psp));
+        }
+    }
+
+    /// Searches mounted drives for CONFIG.SYS and parses it.
+    fn try_parse_config_sys(
+        &mut self,
+        memory: &dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+        drives: &[DriveInfo],
+    ) -> config::ConfigSys {
+        for drive in drives {
+            if drive.is_virtual {
+                continue;
+            }
+            if self
+                .state
+                .ensure_volume_mounted(drive.drive_index, memory, disk)
+                .is_err()
+            {
+                continue;
+            }
+            let vol = match self.state.fat_volumes[drive.drive_index as usize].as_ref() {
+                Some(v) => v,
+                None => continue,
+            };
+            let fcb_name = filesystem::fat_dir::name_to_fcb(b"CONFIG.SYS");
+            let entry = match filesystem::fat_dir::find_entry(vol, 0, &fcb_name, disk) {
+                Ok(Some(e)) => e,
+                _ => continue,
+            };
+            if entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY != 0 {
+                continue;
+            }
+            if let Ok(data) = process::read_file_data(vol, &entry, disk) {
+                return config::parse_config_sys(&data);
+            }
+        }
+        config::ConfigSys::default()
+    }
+
+    /// Applies parsed CONFIG.SYS values to OsState and SYSVARS in memory.
+    fn apply_config(&mut self, cfg: &config::ConfigSys, memory: &mut dyn MemoryAccess) {
+        // FILES= -> SFT2 entry count
+        let sft2_count = cfg.files.saturating_sub(tables::SFT_INITIAL_COUNT);
+        self.state.sft2_count = sft2_count.max(1);
+
+        // BUFFERS=
+        memory.write_word(
+            self.state.sysvars_base + tables::SYSVARS_OFF_BUFFERS,
+            cfg.buffers,
+        );
+
+        // LASTDRIVE=
+        memory.write_byte(
+            self.state.sysvars_base + tables::SYSVARS_OFF_LASTDRIVE,
+            cfg.lastdrive,
+        );
+
+        // COUNTRY=
+        self.state.country_code = cfg.country;
+
+        // BREAK=
+        self.state.ctrl_break = cfg.ctrl_break;
+
+        // DEVICE=NECCD.SYS -> override device name
+        if let Some(ref name) = cfg.cdrom_device_name {
+            let mut padded = name.clone();
+            padded.resize(8, b' ');
+            self.state.mscdex.device_name = padded;
+        }
+    }
+
+    /// Searches mounted drives for AUTOEXEC.BAT and loads its lines.
+    fn try_load_autoexec_bat(
+        &mut self,
+        memory: &dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+        drives: &[DriveInfo],
+    ) -> Option<(Vec<Vec<u8>>, Vec<u8>)> {
+        for drive in drives {
+            if drive.is_virtual {
+                continue;
+            }
+            if self
+                .state
+                .ensure_volume_mounted(drive.drive_index, memory, disk)
+                .is_err()
+            {
+                continue;
+            }
+            let vol = match self.state.fat_volumes[drive.drive_index as usize].as_ref() {
+                Some(v) => v,
+                None => continue,
+            };
+            let fcb_name = filesystem::fat_dir::name_to_fcb(b"AUTOEXEC.BAT");
+            let entry = match filesystem::fat_dir::find_entry(vol, 0, &fcb_name, disk) {
+                Ok(Some(e)) => e,
+                _ => continue,
+            };
+            if entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY != 0 {
+                continue;
+            }
+            if let Ok(data) = process::read_file_data(vol, &entry, disk) {
+                let lines = shell::batch::split_bat_lines(&data);
+                let drive_letter = b'A' + drive.drive_index;
+                let mut bat_path = vec![drive_letter, b':', b'\\'];
+                bat_path.extend_from_slice(b"AUTOEXEC.BAT");
+                return Some((lines, bat_path));
+            }
+        }
+        None
+    }
+
+    /// INT 21h AH=FFh: Shell prompt/command cycle step.
+    ///
+    /// Takes the shell out of `self.shell`, creates an `IoAccess` from
+    /// `self.console` + the `memory` parameter, and calls `shell.step()`.
+    /// This cleanly splits borrows between `self.state`, `self.console`,
+    /// and `self.shell`.
+    ///
+    /// After `shell.step()`, if an external program EXEC is pending, we build
+    /// the parameter block and perform the EXEC here (where we have access to
+    /// the full `NeetanOs` process infrastructure).
+    pub(crate) fn int21h_ffh_shell_step(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) {
+        let mut shell = self.shell.take().expect("shell not initialized");
+        {
+            let mut io = IoAccess {
+                console: &mut self.console,
+                memory,
+                redirect_output: None,
+                redirect_input: None,
+            };
+            shell.step(&mut self.state, &mut io, disk);
+        }
+
+        // Handle pending EXEC from shell dispatch.
+        if let Some(exec) = shell.pending_exec.take()
+            && let Err(error_code) = self.exec_from_shell(cpu, memory, disk, &exec.path, &exec.args)
+        {
+            let msg = format!("Error loading program ({})\r\n", error_code);
+            for &byte in msg.as_bytes() {
+                self.console.process_byte(memory, byte);
+            }
+            shell.last_exit_code = 1;
+            shell.phase = shell::ShellPhase::ShowPrompt;
+        }
+
+        self.shell = Some(shell);
+    }
+
+    /// Performs EXEC for an external program launched from the shell.
+    ///
+    /// Writes the program filename and command tail into a scratch area in
+    /// COMMAND.COM's memory, builds the EXEC parameter block, and delegates
+    /// to `exec_load_and_execute()`.
+    fn exec_from_shell(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        mem: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+        path: &[u8],
+        args: &[u8],
+    ) -> Result<(), u16> {
+        // Use the area after COMMAND.COM's code stub (PSP:010Fh) for scratch data.
+        let psp_base = (self.state.current_psp as u32) << 4;
+        let scratch_base = psp_base + 0x010F;
+
+        // Write ASCIIZ filename at scratch_base (max 127 chars + NUL to stay in bounds)
+        let filename_addr = scratch_base;
+        let path_len = path.len().min(127);
+        mem.write_block(filename_addr, &path[..path_len]);
+        mem.write_byte(filename_addr + path_len as u32, 0x00);
+
+        // Write command tail at scratch_base + 128
+        let tail_addr = scratch_base + 128;
+        let tail_len = args.len().min(126) as u8;
+        mem.write_byte(tail_addr, tail_len);
+        if tail_len > 0 {
+            mem.write_block(tail_addr + 1, &args[..tail_len as usize]);
+        }
+        mem.write_byte(tail_addr + 1 + tail_len as u32, 0x0D);
+
+        // Write EXEC parameter block at scratch_base + 256
+        let pb_addr = scratch_base + 256;
+        // env_seg = 0 (inherit parent environment)
+        mem.write_word(pb_addr, 0x0000);
+        // cmd_tail pointer: seg:off relative to COMMAND.COM PSP
+        let tail_seg = self.state.current_psp;
+        let tail_off = 0x010Fu16 + 128;
+        mem.write_word(pb_addr + 2, tail_off);
+        mem.write_word(pb_addr + 4, tail_seg);
+        // FCB1 and FCB2 point to default FCBs at PSP:005Ch and PSP:006Ch
+        mem.write_word(pb_addr + 6, 0x005C);
+        mem.write_word(pb_addr + 8, self.state.current_psp);
+        mem.write_word(pb_addr + 10, 0x006C);
+        mem.write_word(pb_addr + 12, self.state.current_psp);
+
+        // Set up CPU registers for EXEC: DS:DX = filename, ES:BX = parameter block
+        cpu.set_ds(self.state.current_psp);
+        cpu.set_dx(0x010F);
+        cpu.set_es(self.state.current_psp);
+        cpu.set_bx(0x010F + 256);
+        cpu.set_ax(0x4B00);
+
+        self.exec_load_and_execute(cpu, mem, disk)
+    }
+
+    /// Dispatches a DOS/OS interrupt to the appropriate handler.
+    ///
+    /// `vector`: interrupt number (0x20-0x2F, 0x33, 0xDC).
+    /// Returns `true` if the interrupt was handled, `false` if the vector
+    /// should fall through to the default IRET behavior.
+    pub fn dispatch(
+        &mut self,
+        vector: u8,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        device: &mut (impl DiskIo + CdromIo),
+        _console: &mut dyn ConsoleIo,
+    ) -> bool {
+        match vector {
+            0x20 => {
+                self.int20h(cpu, memory);
+                true
+            }
+            0x21 => {
+                self.int21h(cpu, memory, device);
+                true
+            }
+            0x22 => false,
+            0x23 => false,
+            0x24 => false,
+            0x25 => {
+                self.int25h(cpu, memory, device);
+                true
+            }
+            0x26 => {
+                self.int26h(cpu, memory, device);
+                true
+            }
+            0x27 => {
+                self.int27h(cpu, memory);
+                true
+            }
+            0x28 => {
+                self.int28h(cpu, memory);
+                true
+            }
+            0x29 => {
+                self.int29h(cpu, memory);
+                true
+            }
+            0x2A => {
+                // INT 2Ah: Network / Critical Section.
+                // All subfunctions are no-ops (stubs for compatibility)
+                true
+            }
+            0x2F => {
+                self.int2fh(cpu, memory, device);
+                true
+            }
+            0x33 => false,
+            0x67 => {
+                self.int67h(cpu, memory);
+                true
+            }
+            0xDC => {
+                self.intdch(cpu, memory);
+                true
+            }
+            0xFE => {
+                self.xms_entry(cpu, memory);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Writes SYSVARS, device chain, SFT, CDS, DPB, buffers, MCB into emulated RAM.
+    fn write_dos_data_structures(&self, mem: &mut dyn MemoryAccess) {
+        use tables::*;
+
+        // Zero the DOS data area.
+        let zeros = vec![0u8; (FIRST_MCB_ADDR + 16 - DOS_DATA_BASE) as usize];
+        mem.write_block(DOS_DATA_BASE, &zeros);
+
+        // SYSVARS -2: first MCB segment
+        mem.write_word(SYSVARS_BASE - 2, FIRST_MCB_SEGMENT);
+
+        // SYSVARS fields
+        let (dpb_seg, dpb_off) = dos_data_far(DPB_OFFSET);
+        write_far_ptr(mem, SYSVARS_BASE + SYSVARS_OFF_DPB_PTR, dpb_seg, dpb_off);
+
+        let (sft_seg, sft_off) = dos_data_far(SFT_OFFSET);
+        write_far_ptr(mem, SYSVARS_BASE + SYSVARS_OFF_SFT_PTR, sft_seg, sft_off);
+
+        let (clock_seg, clock_off) = dos_data_far(DEV_CLOCK_OFFSET);
+        write_far_ptr(
+            mem,
+            SYSVARS_BASE + SYSVARS_OFF_CLOCK_PTR,
+            clock_seg,
+            clock_off,
+        );
+
+        let (con_seg, con_off) = dos_data_far(DEV_CON_OFFSET);
+        write_far_ptr(mem, SYSVARS_BASE + SYSVARS_OFF_CON_PTR, con_seg, con_off);
+
+        // MAX_SECTOR is set later by write_drive_structures().
+
+        let (buf_seg, buf_off) = dos_data_far(DISK_BUFFER_OFFSET);
+        write_far_ptr(mem, SYSVARS_BASE + SYSVARS_OFF_BUFFER_PTR, buf_seg, buf_off);
+
+        let (cds_seg, cds_off) = dos_data_far(CDS_OFFSET);
+        write_far_ptr(mem, SYSVARS_BASE + SYSVARS_OFF_CDS_PTR, cds_seg, cds_off);
+
+        let (fcb_seg, fcb_off) = dos_data_far(FCB_SFT_OFFSET);
+        write_far_ptr(
+            mem,
+            SYSVARS_BASE + SYSVARS_OFF_FCB_SFT_PTR,
+            fcb_seg,
+            fcb_off,
+        );
+
+        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_PROT_FCBS, 0);
+        // BLOCK_DEVS is set later by write_drive_structures().
+        mem.write_byte(SYSVARS_BASE + SYSVARS_OFF_LASTDRIVE, 26);
+
+        // JOIN drives = 0
+        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_JOIN_DRIVES, 0);
+        // SETVER list = NULL
+        write_far_ptr(mem, SYSVARS_BASE + SYSVARS_OFF_SETVER_PTR, 0, 0);
+        // BUFFERS
+        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_BUFFERS, 15);
+        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_LOOKAHEAD, 0);
+        mem.write_byte(SYSVARS_BASE + SYSVARS_OFF_BOOT_DRIVE, self.state.boot_drive);
+        mem.write_byte(SYSVARS_BASE + SYSVARS_OFF_386_FLAG, 0x01);
+        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_EXT_MEM, 0);
+
+        // Device chain
+        self.write_device_chain(mem);
+
+        // SFT
+        self.write_sft(mem);
+
+        // CDS and DPB are populated by write_drive_structures().
+
+        // Disk buffer header + one buffer
+        self.write_disk_buffer(mem);
+
+        // InDOS flag and critical error flag
+        mem.write_byte(INDOS_FLAG_ADDR, 0x00);
+        mem.write_byte(CRITICAL_ERROR_FLAG_ADDR, 0x00);
+
+        // DBCS lead byte table (Shift-JIS ranges)
+        mem.write_block(DBCS_TABLE_ADDR, &country::DBCS_LEAD_BYTES);
+
+        // FCB-SFT header (no entries)
+        write_far_ptr(mem, FCB_SFT_BASE, 0xFFFF, 0xFFFF);
+        mem.write_word(FCB_SFT_BASE + 4, 0);
+    }
+
+    /// Writes the device header chain: NUL -> CON -> $AID#NEC -> MS$KANJI.
+    /// CLOCK is separate (not in chain, only referenced by SYSVARS+0x08).
+    fn write_device_chain(&self, mem: &mut dyn MemoryAccess) {
+        use tables::*;
+
+        let base = DOS_DATA_BASE;
+
+        // NUL (embedded at SYSVARS+0x22) -> CON
+        write_device_header(
+            mem,
+            base + DEV_NUL_OFFSET as u32,
+            DOS_DATA_SEGMENT,
+            DEV_CON_OFFSET,
+            DEVATTR_CHAR | DEVATTR_NUL,
+            b"NUL     ",
+        );
+
+        // CON -> $AID#NEC
+        write_device_header(
+            mem,
+            base + DEV_CON_OFFSET as u32,
+            DOS_DATA_SEGMENT,
+            DEV_AID_NEC_OFFSET,
+            DEVATTR_CHAR | DEVATTR_STDIN | DEVATTR_STDOUT | DEVATTR_SPECIAL,
+            b"CON     ",
+        );
+
+        // CLOCK (not in chain)
+        write_device_header(
+            mem,
+            base + DEV_CLOCK_OFFSET as u32,
+            0xFFFF,
+            0xFFFF,
+            DEVATTR_CHAR | DEVATTR_CLOCK,
+            b"CLOCK   ",
+        );
+
+        // $AID#NEC -> MS$KANJI
+        write_device_header(
+            mem,
+            base + DEV_AID_NEC_OFFSET as u32,
+            DOS_DATA_SEGMENT,
+            DEV_MS_KANJI_OFFSET,
+            DEVATTR_CHAR,
+            b"$AID#NEC",
+        );
+
+        // MS$KANJI (end of chain)
+        write_device_header(
+            mem,
+            base + DEV_MS_KANJI_OFFSET as u32,
+            0xFFFF,
+            0xFFFF,
+            DEVATTR_CHAR,
+            b"MS$KANJI",
+        );
+    }
+
+    /// Writes the SFT header and 5 standard file entries.
+    fn write_sft(&self, mem: &mut dyn MemoryAccess) {
+        use tables::*;
+
+        // SFT header: next = FFFF:FFFF, count = 5
+        write_far_ptr(mem, SFT_BASE, 0xFFFF, 0xFFFF);
+        mem.write_word(SFT_BASE + 4, 5);
+
+        let entries_base = SFT_BASE + SFT_HEADER_SIZE;
+
+        // CON device pointer (far ptr)
+        let con_addr = DOS_DATA_BASE + DEV_CON_OFFSET as u32;
+        let con_seg = DOS_DATA_SEGMENT;
+        let con_off = DEV_CON_OFFSET;
+
+        // Standard handles: stdin(0), stdout(1), stderr(2) -> CON
+        for i in 0..3u32 {
+            let entry = entries_base + i * SFT_ENTRY_SIZE;
+            mem.write_word(entry + SFT_ENT_REF_COUNT, 1);
+            mem.write_word(entry + SFT_ENT_OPEN_MODE, 0x0002); // read/write
+            mem.write_byte(entry + SFT_ENT_FILE_ATTR, 0x00);
+            mem.write_word(
+                entry + SFT_ENT_DEV_INFO,
+                SFT_DEVINFO_CHAR | SFT_DEVINFO_SPECIAL | SFT_DEVINFO_STDIN | SFT_DEVINFO_STDOUT,
+            );
+            write_far_ptr(mem, entry + SFT_ENT_DEV_PTR, con_seg, con_off);
+            mem.write_block(entry + SFT_ENT_NAME, b"CON        ");
+        }
+
+        // Handle 3: AUX (stub)
+        {
+            let entry = entries_base + 3 * SFT_ENTRY_SIZE;
+            mem.write_word(entry + SFT_ENT_REF_COUNT, 1);
+            mem.write_word(entry + SFT_ENT_OPEN_MODE, 0x0002);
+            mem.write_byte(entry + SFT_ENT_FILE_ATTR, 0x00);
+            mem.write_word(entry + SFT_ENT_DEV_INFO, SFT_DEVINFO_CHAR);
+            // Point to NUL device as a safe fallback
+            let nul_off = DEV_NUL_OFFSET;
+            write_far_ptr(mem, entry + SFT_ENT_DEV_PTR, DOS_DATA_SEGMENT, nul_off);
+            mem.write_block(entry + SFT_ENT_NAME, b"AUX        ");
+        }
+
+        // Handle 4: PRN (stub)
+        {
+            let entry = entries_base + 4 * SFT_ENTRY_SIZE;
+            mem.write_word(entry + SFT_ENT_REF_COUNT, 1);
+            mem.write_word(entry + SFT_ENT_OPEN_MODE, 0x0002);
+            mem.write_byte(entry + SFT_ENT_FILE_ATTR, 0x00);
+            mem.write_word(entry + SFT_ENT_DEV_INFO, SFT_DEVINFO_CHAR);
+            let nul_off = DEV_NUL_OFFSET;
+            write_far_ptr(mem, entry + SFT_ENT_DEV_PTR, DOS_DATA_SEGMENT, nul_off);
+            mem.write_block(entry + SFT_ENT_NAME, b"PRN        ");
+        }
+
+        // Suppress unused variable warning.
+        let _ = con_addr;
+    }
+
+    /// Reads the BDA DISK_EQUIP word to discover equipped drives and assigns
+    /// drive letters following the PC-98 floppy-first convention.
+    fn discover_drives(mem: &dyn MemoryAccess) -> Vec<DriveInfo> {
+        use tables::*;
+
+        let disk_equip = mem.read_word(BDA_DISK_EQUIP);
+        let mut drives = Vec::new();
+        let mut next_index: u8 = 0;
+
+        // 1MB FDD units (bits 0-3 of disk_equip).
+        for unit in 0..4u8 {
+            if disk_equip & (1 << unit) != 0 {
+                drives.push(DriveInfo {
+                    drive_index: next_index,
+                    da_ua: 0x90 + unit,
+                    is_virtual: false,
+                });
+                next_index += 1;
+            }
+        }
+
+        // 640KB FDD units (bits 12-15 of disk_equip).
+        for unit in 0..4u8 {
+            if disk_equip & (1 << (12 + unit)) != 0 {
+                drives.push(DriveInfo {
+                    drive_index: next_index,
+                    da_ua: 0x70 + unit,
+                    is_virtual: false,
+                });
+                next_index += 1;
+            }
+        }
+
+        // HDD units (bits 8-11 of disk_equip).
+        for unit in 0..4u8 {
+            if disk_equip & (1 << (8 + unit)) != 0 {
+                drives.push(DriveInfo {
+                    drive_index: next_index,
+                    da_ua: 0x80 + unit,
+                    is_virtual: false,
+                });
+                next_index += 1;
+            }
+        }
+
+        // Z: virtual drive is always present.
+        drives.push(DriveInfo {
+            drive_index: 25,
+            da_ua: 0x00,
+            is_virtual: true,
+        });
+
+        drives
+    }
+
+    /// Populates CDS entries, DPB chain, DA/UA mapping tables, and SYSVARS
+    /// counters based on the discovered drives.
+    fn write_drive_structures(&self, mem: &mut dyn MemoryAccess, drives: &[DriveInfo]) {
+        use tables::*;
+
+        let mut max_sector_size: u16 = 512;
+
+        for (chain_index, drive) in drives.iter().enumerate() {
+            // DA/UA mapping table (16 bytes at 0060:006Ch, drives A:-P:).
+            if drive.drive_index < 16 {
+                mem.write_byte(
+                    IOSYS_BASE + IOSYS_OFF_DAUA_TABLE + drive.drive_index as u32,
+                    drive.da_ua,
+                );
+            }
+
+            // Extended DA/UA table (52 bytes at 0060:2C86h, 2 bytes per drive).
+            let ext_offset = IOSYS_BASE + IOSYS_OFF_EXT_DAUA_TABLE + (drive.drive_index as u32) * 2;
+            mem.write_byte(ext_offset, 0x00); // attribute
+            mem.write_byte(ext_offset + 1, drive.da_ua);
+
+            // DPB entry.
+            let dpb_addr = DPB_BASE + (chain_index as u32) * DPB_ENTRY_SIZE;
+            self.write_dpb_for_drive(mem, dpb_addr, drive);
+
+            // Track max sector size across all DPBs.
+            let bytes_per_sector = mem.read_word(dpb_addr + DPB_OFF_BYTES_PER_SECTOR);
+            if bytes_per_sector > max_sector_size {
+                max_sector_size = bytes_per_sector;
+            }
+
+            // Chain to next DPB or terminate.
+            if chain_index + 1 < drives.len() {
+                let next_addr = DPB_BASE + ((chain_index + 1) as u32) * DPB_ENTRY_SIZE;
+                let next_off = DPB_OFFSET + ((chain_index + 1) as u16) * (DPB_ENTRY_SIZE as u16);
+                write_far_ptr(mem, dpb_addr + DPB_OFF_NEXT_DPB, DOS_DATA_SEGMENT, next_off);
+                let _ = next_addr;
+            } else {
+                write_far_ptr(mem, dpb_addr + DPB_OFF_NEXT_DPB, 0xFFFF, 0xFFFF);
+            }
+
+            // CDS entry.
+            let cds_addr = CDS_BASE + (drive.drive_index as u32) * CDS_ENTRY_SIZE;
+            let drive_letter = b'A' + drive.drive_index;
+
+            // Path: "X:\"
+            mem.write_byte(cds_addr + CDS_OFF_PATH, drive_letter);
+            mem.write_byte(cds_addr + CDS_OFF_PATH + 1, b':');
+            mem.write_byte(cds_addr + CDS_OFF_PATH + 2, b'\\');
+
+            // Flags.
+            let flags = if drive.is_virtual {
+                CDS_FLAG_NETWORK
+            } else {
+                CDS_FLAG_PHYSICAL
+            };
+            mem.write_word(cds_addr + CDS_OFF_FLAGS, flags);
+
+            // DPB pointer.
+            let dpb_off = DPB_OFFSET + (chain_index as u16) * (DPB_ENTRY_SIZE as u16);
+            write_far_ptr(mem, cds_addr + CDS_OFF_DPB_PTR, DOS_DATA_SEGMENT, dpb_off);
+
+            // Backslash offset (points past "X:").
+            mem.write_word(cds_addr + CDS_OFF_BACKSLASH_OFFSET, 2);
+        }
+
+        // Update SYSVARS.
+        mem.write_byte(SYSVARS_BASE + SYSVARS_OFF_BLOCK_DEVS, drives.len() as u8);
+        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_MAX_SECTOR, max_sector_size);
+    }
+
+    /// Writes the CDS entry for the CD-ROM drive (Q:).
+    fn write_cdrom_drive(&self, mem: &mut dyn MemoryAccess) {
+        use tables::*;
+
+        let drive_index = self.state.mscdex.drive_letter as u32;
+        let cds_addr = CDS_BASE + drive_index * CDS_ENTRY_SIZE;
+        let drive_letter = b'A' + self.state.mscdex.drive_letter;
+
+        // Path: "Q:\"
+        mem.write_byte(cds_addr + CDS_OFF_PATH, drive_letter);
+        mem.write_byte(cds_addr + CDS_OFF_PATH + 1, b':');
+        mem.write_byte(cds_addr + CDS_OFF_PATH + 2, b'\\');
+
+        // CD-ROM drives use the NETWORK flag (same as MSCDEX convention).
+        mem.write_word(cds_addr + CDS_OFF_FLAGS, CDS_FLAG_NETWORK);
+
+        // Backslash offset (points past "Q:").
+        mem.write_word(cds_addr + CDS_OFF_BACKSLASH_OFFSET, 2);
+    }
+
+    /// Writes a single DPB entry with geometry appropriate for the drive type.
+    fn write_dpb_for_drive(&self, mem: &mut dyn MemoryAccess, dpb_addr: u32, drive: &DriveInfo) {
+        use tables::*;
+
+        mem.write_byte(dpb_addr + DPB_OFF_DRIVE_NUM, drive.drive_index);
+
+        // Determine unit number from DA/UA low nibble.
+        let unit_num = drive.da_ua & 0x0F;
+        mem.write_byte(dpb_addr + DPB_OFF_UNIT_NUM, unit_num);
+
+        if drive.is_virtual {
+            // Virtual Z: drive: minimal geometry.
+            mem.write_word(dpb_addr + DPB_OFF_BYTES_PER_SECTOR, 512);
+            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_MASK, 0); // 1 sector/cluster - 1
+            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_SHIFT, 0);
+            mem.write_word(dpb_addr + DPB_OFF_RESERVED_SECTORS, 1);
+            mem.write_byte(dpb_addr + DPB_OFF_NUM_FATS, 1);
+            mem.write_word(dpb_addr + DPB_OFF_ROOT_ENTRIES, 16);
+            mem.write_word(dpb_addr + DPB_OFF_FIRST_DATA_SECTOR, 3);
+            mem.write_word(dpb_addr + DPB_OFF_MAX_CLUSTER, 2);
+            mem.write_word(dpb_addr + DPB_OFF_SECTORS_PER_FAT, 1);
+            mem.write_word(dpb_addr + DPB_OFF_FIRST_ROOT_SECTOR, 2);
+            mem.write_byte(dpb_addr + DPB_OFF_MEDIA_DESC, 0xF8);
+            mem.write_byte(dpb_addr + DPB_OFF_ACCESS_FLAG, 0x00);
+        } else if drive.da_ua & 0xF0 == 0x70 {
+            // 640KB FDD (2DD): 512 bytes/sector.
+            mem.write_word(dpb_addr + DPB_OFF_BYTES_PER_SECTOR, 512);
+            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_MASK, 1); // 2 sectors/cluster - 1
+            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_SHIFT, 1);
+            mem.write_word(dpb_addr + DPB_OFF_RESERVED_SECTORS, 1);
+            mem.write_byte(dpb_addr + DPB_OFF_NUM_FATS, 2);
+            mem.write_word(dpb_addr + DPB_OFF_ROOT_ENTRIES, 112);
+            mem.write_word(dpb_addr + DPB_OFF_FIRST_DATA_SECTOR, 14);
+            mem.write_word(dpb_addr + DPB_OFF_MAX_CLUSTER, 1231);
+            mem.write_word(dpb_addr + DPB_OFF_SECTORS_PER_FAT, 3);
+            mem.write_word(dpb_addr + DPB_OFF_FIRST_ROOT_SECTOR, 7);
+            mem.write_byte(dpb_addr + DPB_OFF_MEDIA_DESC, 0xFE);
+            mem.write_byte(dpb_addr + DPB_OFF_ACCESS_FLAG, 0xFF);
+        } else if drive.da_ua & 0xF0 == 0x80 {
+            // HDD: 512 bytes/sector, default geometry.
+            mem.write_word(dpb_addr + DPB_OFF_BYTES_PER_SECTOR, 512);
+            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_MASK, 3); // 4 sectors/cluster - 1
+            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_SHIFT, 2);
+            mem.write_word(dpb_addr + DPB_OFF_RESERVED_SECTORS, 1);
+            mem.write_byte(dpb_addr + DPB_OFF_NUM_FATS, 2);
+            mem.write_word(dpb_addr + DPB_OFF_ROOT_ENTRIES, 512);
+            mem.write_word(dpb_addr + DPB_OFF_FIRST_DATA_SECTOR, 69);
+            mem.write_word(dpb_addr + DPB_OFF_MAX_CLUSTER, 4080);
+            mem.write_word(dpb_addr + DPB_OFF_SECTORS_PER_FAT, 8);
+            mem.write_word(dpb_addr + DPB_OFF_FIRST_ROOT_SECTOR, 17);
+            mem.write_byte(dpb_addr + DPB_OFF_MEDIA_DESC, 0xF8);
+            mem.write_byte(dpb_addr + DPB_OFF_ACCESS_FLAG, 0xFF);
+        } else if drive.da_ua & 0xF0 == 0x90 {
+            // 1MB FDD (2HD): 1024 bytes/sector, PC-98 standard.
+            mem.write_word(dpb_addr + DPB_OFF_BYTES_PER_SECTOR, 1024);
+            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_MASK, 0); // 1 sector/cluster - 1
+            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_SHIFT, 0);
+            mem.write_word(dpb_addr + DPB_OFF_RESERVED_SECTORS, 1);
+            mem.write_byte(dpb_addr + DPB_OFF_NUM_FATS, 2);
+            mem.write_word(dpb_addr + DPB_OFF_ROOT_ENTRIES, 192);
+            mem.write_word(dpb_addr + DPB_OFF_FIRST_DATA_SECTOR, 11);
+            mem.write_word(dpb_addr + DPB_OFF_MAX_CLUSTER, 1223);
+            mem.write_word(dpb_addr + DPB_OFF_SECTORS_PER_FAT, 2);
+            mem.write_word(dpb_addr + DPB_OFF_FIRST_ROOT_SECTOR, 5);
+            mem.write_byte(dpb_addr + DPB_OFF_MEDIA_DESC, 0xFE);
+            mem.write_byte(dpb_addr + DPB_OFF_ACCESS_FLAG, 0xFF);
+        } else {
+            panic!(
+                "Unknown device type DA/UA {:#04X} for drive {}",
+                drive.da_ua,
+                (b'A' + drive.drive_index) as char
+            );
+        }
+
+        // Device header pointer -> NUL device (placeholder).
+        write_far_ptr(
+            mem,
+            dpb_addr + DPB_OFF_DEVICE_PTR,
+            DOS_DATA_SEGMENT,
+            DEV_NUL_OFFSET,
+        );
+    }
+
+    /// Writes a minimal disk buffer header with one empty 512-byte buffer.
+    fn write_disk_buffer(&self, mem: &mut dyn MemoryAccess) {
+        use tables::*;
+
+        // Buffer header: next = FFFF:FFFF, drive = 0xFF (none), rest = 0
+        write_far_ptr(mem, DISK_BUFFER_BASE, 0xFFFF, 0xFFFF);
+        mem.write_byte(DISK_BUFFER_BASE + 4, 0xFF); // drive
+        // Remaining header bytes and buffer data are already zero from memset.
+    }
+
+    /// Creates the MCB chain with SFT2 block, environment block, PSP, and COMMAND.COM.
+    fn write_initial_mcb_and_process(&mut self, mem: &mut dyn MemoryAccess) {
+        memory::write_initial_mcb_chain(mem);
+        process::write_environment_block(mem, tables::ENV_SEGMENT);
+        // Write temporary PSP/COMMAND.COM (will be relocated by write_sft2_block)
+        process::write_psp(
+            mem,
+            tables::PSP_SEGMENT,
+            tables::PSP_SEGMENT,
+            tables::ENV_SEGMENT,
+            tables::MEMORY_TOP_SEGMENT,
+        );
+        process::write_command_com_stub(mem, tables::PSP_SEGMENT);
+        self.state.current_psp = tables::PSP_SEGMENT;
+
+        // Allocate SFT2 block (this relocates COMMAND.COM MCB and PSP)
+        self.write_sft2_block(mem);
+
+        self.state.current_drive = self.state.boot_drive.saturating_sub(1);
+        self.state.dta_segment = self.state.current_psp;
+        self.state.dta_offset = 0x0080;
+        self.state.dbcs_table_addr = tables::DBCS_TABLE_ADDR;
+
+        // Push root COMMAND.COM context (zeroed return addresses; terminating
+        // the root process is an error).
+        self.state.process_stack.push(process::ProcessContext {
+            psp_segment: self.state.current_psp,
+            return_ss: 0,
+            return_sp: 0,
+            saved_dta_seg: self.state.dta_segment,
+            saved_dta_off: self.state.dta_offset,
+        });
+    }
+
+    /// Allocates a second SFT block (chained from the first) for additional handles.
+    /// The number of entries is determined by `self.state.sft2_count` (from FILES=).
+    fn write_sft2_block(&mut self, mem: &mut dyn MemoryAccess) {
+        use tables::*;
+
+        let sft2_entry_count = self.state.sft2_count;
+        // SFT2 needs: header(6) + entry_count * 59 bytes, rounded up to paragraphs.
+        let sft2_bytes = SFT_HEADER_SIZE as u16 + sft2_entry_count * SFT_ENTRY_SIZE as u16;
+        let sft2_paragraphs: u16 = sft2_bytes.div_ceil(16);
+
+        // Rewrite MCB chain to include SFT2 block.
+        // Current chain: ENV_MCB -> COMMAND_MCB -> FREE_MCB
+        // New chain: ENV_MCB -> SFT2_MCB -> COMMAND_MCB -> FREE_MCB
+        let sft2_mcb_segment = ENV_SEGMENT + ENV_BLOCK_PARAGRAPHS;
+        let sft2_data_segment = sft2_mcb_segment + 1;
+        let new_command_mcb_segment = sft2_data_segment + sft2_paragraphs;
+        let new_psp_segment = new_command_mcb_segment + 1;
+        let new_free_mcb_segment = new_psp_segment + COMMAND_BLOCK_PARAGRAPHS;
+
+        // Rewrite ENV MCB: type='M', point to SFT2 MCB
+        let env_mcb_addr = (FIRST_MCB_SEGMENT as u32) << 4;
+        mem.write_byte(env_mcb_addr, 0x4D); // 'M' (not last)
+
+        // Write SFT2 MCB
+        let sft2_mcb_addr = (sft2_mcb_segment as u32) << 4;
+        mem.write_byte(sft2_mcb_addr, 0x4D); // 'M'
+        mem.write_word(sft2_mcb_addr + 1, MCB_OWNER_DOS);
+        mem.write_word(sft2_mcb_addr + 3, sft2_paragraphs);
+        mem.write_block(sft2_mcb_addr + 8, b"FILES\x00\x00\x00");
+
+        // Write SFT2 header + entries
+        let sft2_base = (sft2_data_segment as u32) << 4;
+        self.state.sft2_base = sft2_base;
+        tables::write_far_ptr(mem, sft2_base, 0xFFFF, 0xFFFF);
+        mem.write_word(sft2_base + 4, sft2_entry_count);
+        // Zero all entries
+        let zero_data = vec![0u8; (sft2_entry_count as usize) * (SFT_ENTRY_SIZE as usize)];
+        mem.write_block(sft2_base + SFT_HEADER_SIZE, &zero_data);
+
+        // Update first SFT's next-ptr to point to SFT2
+        tables::write_far_ptr(mem, SFT_BASE, sft2_data_segment, 0x0000);
+
+        // Rewrite COMMAND.COM MCB at new location
+        let cmd_mcb_addr = (new_command_mcb_segment as u32) << 4;
+        mem.write_byte(cmd_mcb_addr, 0x4D); // 'M'
+        mem.write_word(cmd_mcb_addr + 1, new_psp_segment);
+        mem.write_word(cmd_mcb_addr + 3, COMMAND_BLOCK_PARAGRAPHS);
+        mem.write_block(cmd_mcb_addr + 8, b"COMMAND\x00");
+
+        // Rewrite PSP and command stub at new PSP segment
+        process::write_psp(
+            mem,
+            new_psp_segment,
+            new_psp_segment,
+            ENV_SEGMENT,
+            MEMORY_TOP_SEGMENT,
+        );
+        process::write_command_com_stub(mem, new_psp_segment);
+        self.state.current_psp = new_psp_segment;
+
+        // Rewrite free MCB at new location
+        let free_mcb_addr = (new_free_mcb_segment as u32) << 4;
+        let free_size = MEMORY_TOP_SEGMENT - new_free_mcb_segment - 1;
+        mem.write_byte(free_mcb_addr, 0x5A); // 'Z' (last)
+        mem.write_word(free_mcb_addr + 1, MCB_OWNER_FREE);
+        mem.write_word(free_mcb_addr + 3, free_size);
+        mem.write_block(free_mcb_addr + 5, &[0x00; 11]);
+
+        // Update SYSVARS first MCB pointer (it stays the same: FIRST_MCB_SEGMENT)
+    }
+
+    /// Populates the IO.SYS work area at segment 0060h.
+    fn write_iosys_work_area(&self, mem: &mut dyn MemoryAccess) {
+        use tables::*;
+
+        let base = IOSYS_BASE;
+
+        // MS-DOS product number (0x0100+ range for MS-DOS 5.0+, 0x0102 = NEC MS DOS 6.20)
+        mem.write_word(base + IOSYS_OFF_PRODUCT_NUMBER, 0x0102);
+        mem.write_byte(base + IOSYS_OFF_INTERNAL_REVISION, 0x00);
+
+        mem.write_byte(base + IOSYS_OFF_EMM_BANK_FLAG, 0x00);
+        mem.write_byte(base + IOSYS_OFF_EXT_MEM_128K, 0x00);
+        mem.write_byte(base + IOSYS_OFF_FD_DUPLICATE, 0x00);
+
+        // RS-232C default: 9600 baud (1001), 8N1 (11=8bit, 0=no parity, 01=1stop)
+        // Bits: 0000_1001_0100_1100 = 0x094C
+        mem.write_word(base + IOSYS_OFF_AUX_PROTOCOL, 0x094C);
+
+        // DA/UA mapping table: populated by write_drive_structures().
+
+        // Kanji/graph mode
+        mem.write_byte(base + IOSYS_OFF_KANJI_MODE, 0x01); // Shift-JIS kanji mode
+        mem.write_byte(base + IOSYS_OFF_GRAPH_CHAR, 0x20);
+        mem.write_byte(base + IOSYS_OFF_SHIFT_FN_CHAR, 0x20);
+
+        mem.write_byte(base + IOSYS_OFF_STOP_REENTRY, 0x00);
+        mem.write_byte(base + IOSYS_OFF_INTDC_FLAG, 0x00);
+        mem.write_byte(base + IOSYS_OFF_SPECIAL_INPUT, 0x00);
+        mem.write_byte(base + IOSYS_OFF_PRINTER_ECHO, 0x00);
+        mem.write_byte(base + IOSYS_OFF_SOFTKEY_FLAGS, 0x00);
+
+        // Display / cursor state
+        mem.write_byte(base + IOSYS_OFF_CURSOR_Y, 0x00);
+        mem.write_byte(base + IOSYS_OFF_FNKEY_DISPLAY, 0x01); // show function keys
+        mem.write_byte(base + IOSYS_OFF_SCROLL_LOWER, 24); // bottom row
+        mem.write_byte(base + IOSYS_OFF_SCREEN_LINES, 0x01); // 25-line mode
+        mem.write_byte(base + IOSYS_OFF_CLEAR_ATTR, 0xE1); // white-on-black
+        mem.write_byte(base + IOSYS_OFF_KANJI_HI_FLAG, 0x00);
+        mem.write_byte(base + IOSYS_OFF_KANJI_HI_BYTE, 0x00);
+        mem.write_byte(base + IOSYS_OFF_LINE_WRAP, 0x00); // wrap at column 80
+        mem.write_byte(base + IOSYS_OFF_SCROLL_SPEED, 0x00); // normal
+        mem.write_byte(base + IOSYS_OFF_CLEAR_CHAR, 0x20); // space
+        mem.write_byte(base + IOSYS_OFF_CURSOR_VISIBLE, 0x01); // shown
+        mem.write_byte(base + IOSYS_OFF_CURSOR_X, 0x00);
+        mem.write_byte(base + IOSYS_OFF_DISPLAY_ATTR, 0xE1); // white-on-black
+        mem.write_byte(base + IOSYS_OFF_SCROLL_UPPER, 0x00);
+        mem.write_word(base + IOSYS_OFF_SCROLL_WAIT, 0x0001); // normal speed
+
+        // Saved cursor
+        mem.write_byte(base + IOSYS_OFF_SAVED_CURSOR_Y, 0x00);
+        mem.write_byte(base + IOSYS_OFF_SAVED_CURSOR_X, 0x00);
+        mem.write_byte(base + IOSYS_OFF_SAVED_CURSOR_ATTR, 0xE1);
+
+        mem.write_byte(base + IOSYS_OFF_LAST_DRIVE_UNIT, 0x00);
+        mem.write_byte(base + IOSYS_OFF_FD_DUPLICATE2, 0x00);
+        mem.write_word(base + IOSYS_OFF_EXT_ATTR_DISPLAY, 0x0000);
+        mem.write_word(base + IOSYS_OFF_EXT_ATTR_CLEAR, 0x0000);
+
+        mem.write_word(base + IOSYS_OFF_EXT_ATTR_MODE, 0x0000); // PC mode
+        mem.write_word(base + IOSYS_OFF_TEXT_MODE, 0x0000); // 25-line gapped
+
+        // DA/UA pointer -> points to the DA/UA table itself
+        tables::write_far_ptr(
+            mem,
+            base + IOSYS_OFF_DAUA_PTR,
+            IOSYS_SEGMENT,
+            IOSYS_OFF_DAUA_TABLE as u16,
+        );
+    }
+}
+
+impl OsState {
+    /// Returns the SFT entry base address for a given SFT index (0-based).
+    pub(crate) fn sft_entry_addr(&self, sft_index: u8) -> Option<u32> {
+        use tables::*;
+        let total = SFT_INITIAL_COUNT + self.sft2_count;
+        if (sft_index as u16) < SFT_INITIAL_COUNT {
+            Some(SFT_BASE + SFT_HEADER_SIZE + sft_index as u32 * SFT_ENTRY_SIZE)
+        } else if (sft_index as u16) < total {
+            let local = sft_index as u32 - SFT_INITIAL_COUNT as u32;
+            Some(self.sft2_base + SFT_HEADER_SIZE + local * SFT_ENTRY_SIZE)
+        } else {
+            None
+        }
+    }
+
+    /// Reads the PSP JFT to find the SFT index for a file handle.
+    pub(crate) fn handle_to_sft_index(
+        &self,
+        handle: u16,
+        mem: &dyn MemoryAccess,
+    ) -> Result<u8, u16> {
+        let psp_base = (self.current_psp as u32) << 4;
+        if handle >= 20 {
+            return Err(0x0006); // invalid handle
+        }
+        let jft_entry = mem.read_byte(psp_base + tables::PSP_OFF_JFT + handle as u32);
+        if jft_entry == 0xFF {
+            return Err(0x0006);
+        }
+        Ok(jft_entry)
+    }
+
+    /// Allocates a free JFT slot and a free SFT entry. Returns (handle, sft_index).
+    pub(crate) fn allocate_handle(&self, mem: &mut dyn MemoryAccess) -> Result<(u8, u8), u16> {
+        let psp_base = (self.current_psp as u32) << 4;
+
+        // Find free JFT slot
+        let mut free_handle = None;
+        for h in 0..20u8 {
+            let jft_entry = mem.read_byte(psp_base + tables::PSP_OFF_JFT + h as u32);
+            if jft_entry == 0xFF {
+                free_handle = Some(h);
+                break;
+            }
+        }
+        let handle = free_handle.ok_or(0x0004u16)?; // too many open files
+
+        // Find free SFT entry (skip first 5 device entries)
+        let mut free_sft = None;
+        let total_count = tables::SFT_INITIAL_COUNT + self.sft2_count;
+        for idx in tables::SFT_INITIAL_COUNT..total_count {
+            if let Some(addr) = self.sft_entry_addr(idx as u8) {
+                let ref_count = mem.read_word(addr + tables::SFT_ENT_REF_COUNT);
+                if ref_count == 0 {
+                    free_sft = Some(idx as u8);
+                    break;
+                }
+            }
+        }
+        let sft_index = free_sft.ok_or(0x0004u16)?;
+
+        // Link handle to SFT entry
+        mem.write_byte(psp_base + tables::PSP_OFF_JFT + handle as u32, sft_index);
+
+        Ok((handle, sft_index))
+    }
+
+    /// Frees a handle: sets JFT entry to 0xFF, decrements SFT ref_count.
+    pub(crate) fn free_handle(&self, handle: u16, mem: &mut dyn MemoryAccess) {
+        let psp_base = (self.current_psp as u32) << 4;
+        if handle >= 20 {
+            return;
+        }
+        let sft_index = mem.read_byte(psp_base + tables::PSP_OFF_JFT + handle as u32);
+        if sft_index == 0xFF {
+            return;
+        }
+        mem.write_byte(psp_base + tables::PSP_OFF_JFT + handle as u32, 0xFF);
+        if let Some(sft_addr) = self.sft_entry_addr(sft_index) {
+            let ref_count = mem.read_word(sft_addr + tables::SFT_ENT_REF_COUNT);
+            if ref_count > 0 {
+                mem.write_word(sft_addr + tables::SFT_ENT_REF_COUNT, ref_count - 1);
+            }
+        }
+    }
+
+    /// Ensures a FAT volume is mounted for the given drive. Lazy-mounts on first access.
+    pub(crate) fn ensure_volume_mounted(
+        &mut self,
+        drive_index: u8,
+        mem: &dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) -> Result<(), u16> {
+        if drive_index >= 26 || drive_index == 25 {
+            return Err(0x000F); // invalid drive (Z: is virtual)
+        }
+        if self.fat_volumes[drive_index as usize].is_some() {
+            return Ok(());
+        }
+
+        // Look up DA/UA from IO.SYS table
+        let da_ua =
+            mem.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DAUA_TABLE + drive_index as u32);
+        if da_ua == 0 {
+            return Err(0x000F); // no drive
+        }
+
+        let partition_offset = if da_ua & 0xF0 == 0x80 {
+            // HDD: need to read partition table
+            filesystem::fat_partition::find_partition_offset(da_ua, disk)?
+        } else {
+            0 // Floppy: no partition offset
+        };
+
+        let vol = filesystem::fat::FatVolume::mount(da_ua, partition_offset, disk)
+            .map_err(|_| 0x001Fu16)?;
+        self.fat_volumes[drive_index as usize] = Some(vol);
+        Ok(())
+    }
+
+    /// Reads an ASCIIZ string from emulated memory.
+    pub(crate) fn read_asciiz(mem: &dyn MemoryAccess, addr: u32, max_len: usize) -> Vec<u8> {
+        let mut result = Vec::new();
+        for i in 0..max_len as u32 {
+            let byte = mem.read_byte(addr + i);
+            if byte == 0 {
+                break;
+            }
+            result.push(byte);
+        }
+        result
+    }
+
+    /// Resolves a path to (drive_index, directory_cluster, fcb_name).
+    /// If the path has no explicit drive, uses current_drive.
+    pub(crate) fn resolve_file_path(
+        &mut self,
+        path: &[u8],
+        mem: &dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) -> Result<(u8, u16, [u8; 11]), u16> {
+        let (drive_opt, components, _is_absolute) = filesystem::split_path(path);
+        let drive_index = drive_opt.unwrap_or(self.current_drive);
+
+        if components.is_empty() {
+            return Err(0x0002); // file not found
+        }
+
+        // Ensure volume is mounted
+        if drive_index != 25 {
+            self.ensure_volume_mounted(drive_index, mem, disk)?;
+        }
+
+        // Walk directory components (all but last)
+        let mut dir_cluster: u16 = 0; // root
+        if components.len() > 1 {
+            let vol = self.fat_volumes[drive_index as usize]
+                .as_ref()
+                .ok_or(0x000Fu16)?;
+            for component in &components[..components.len() - 1] {
+                let fcb = filesystem::fat_dir::name_to_fcb(component);
+                let entry = filesystem::fat_dir::find_entry(vol, dir_cluster, &fcb, disk)?
+                    .ok_or(0x0003u16)?; // path not found
+                if entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY == 0 {
+                    return Err(0x0003);
+                }
+                dir_cluster = entry.start_cluster;
+            }
+        }
+
+        let filename = components.last().unwrap();
+        let fcb_name = filesystem::fat_dir::name_to_fcb(filename);
+
+        Ok((drive_index, dir_cluster, fcb_name))
+    }
+
+    /// Resolves a path to a directory, returning `(drive_index, dir_cluster)`.
+    /// Walks all path components (unlike `resolve_file_path` which splits off the last).
+    /// An empty path or just a drive letter returns the current directory for that drive.
+    pub(crate) fn resolve_dir_path(
+        &mut self,
+        path: &[u8],
+        mem: &dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) -> Result<(u8, u16), u16> {
+        let (drive_opt, components, is_absolute) = filesystem::split_path(path);
+        let drive_index = drive_opt.unwrap_or(self.current_drive);
+
+        if drive_index == 25 {
+            if components.is_empty() {
+                return Ok((25, 0));
+            }
+            return Err(0x0003); // Z: has no subdirectories
+        }
+        self.ensure_volume_mounted(drive_index, mem, disk)?;
+
+        let vol = self.fat_volumes[drive_index as usize]
+            .as_ref()
+            .ok_or(0x000Fu16)?;
+
+        // Determine starting cluster
+        let start_cluster = if is_absolute || components.is_empty() {
+            if components.is_empty() && !is_absolute {
+                // No path given - resolve current directory from CDS
+                self.current_dir_cluster(drive_index, mem, disk)?
+            } else {
+                0u16 // root
+            }
+        } else {
+            // Relative path - start from current directory
+            self.current_dir_cluster(drive_index, mem, disk)?
+        };
+
+        // Walk each component
+        let mut dir_cluster = start_cluster;
+        for component in &components {
+            let fcb = filesystem::fat_dir::name_to_fcb(component);
+            let entry =
+                filesystem::fat_dir::find_entry(vol, dir_cluster, &fcb, disk)?.ok_or(0x0003u16)?;
+            if entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY == 0 {
+                return Err(0x0003); // path not found (not a directory)
+            }
+            dir_cluster = entry.start_cluster;
+        }
+
+        Ok((drive_index, dir_cluster))
+    }
+
+    /// Returns the cluster number of the current directory for a drive by
+    /// reading the CDS path and walking from root.
+    fn current_dir_cluster(
+        &self,
+        drive_index: u8,
+        mem: &dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) -> Result<u16, u16> {
+        let cds_addr = tables::CDS_BASE + (drive_index as u32) * tables::CDS_ENTRY_SIZE;
+        let mut cds_path = Vec::new();
+        for i in 0..67u32 {
+            let byte = mem.read_byte(cds_addr + tables::CDS_OFF_PATH + i);
+            if byte == 0 {
+                break;
+            }
+            cds_path.push(byte);
+        }
+
+        // CDS path is like "A:\" or "A:\DIR\SUB" - skip drive and root backslash
+        let (_, components, _) = filesystem::split_path(&cds_path);
+        let vol = self.fat_volumes[drive_index as usize]
+            .as_ref()
+            .ok_or(0x000Fu16)?;
+
+        let mut dir_cluster = 0u16; // start at root
+        for component in &components {
+            let fcb = filesystem::fat_dir::name_to_fcb(component);
+            if let Some(entry) = filesystem::fat_dir::find_entry(vol, dir_cluster, &fcb, disk)?
+                && entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY != 0
+            {
+                dir_cluster = entry.start_cluster;
+            }
+        }
+
+        Ok(dir_cluster)
+    }
+
+    /// Changes the current directory for a drive.
+    /// `path_bytes` is a raw path like `\DIR`, `C:\DIR`, or `SUBDIR`.
+    pub(crate) fn change_directory(
+        &mut self,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+        path_bytes: &[u8],
+    ) -> Result<(), u16> {
+        if path_bytes.is_empty() {
+            return Err(0x0003); // path not found
+        }
+
+        // Parse drive letter
+        let (drive_index, path_start) = if path_bytes.len() >= 2 && path_bytes[1] == b':' {
+            let letter = path_bytes[0].to_ascii_uppercase();
+            if !letter.is_ascii_uppercase() {
+                return Err(0x0003);
+            }
+            (letter - b'A', 2)
+        } else {
+            (self.current_drive, 0)
+        };
+
+        // Validate drive has a CDS entry
+        let cds_addr = tables::CDS_BASE + (drive_index as u32) * tables::CDS_ENTRY_SIZE;
+        let cds_flags = memory.read_word(cds_addr + tables::CDS_OFF_FLAGS);
+        if cds_flags == 0 {
+            return Err(0x000F); // invalid drive
+        }
+
+        // Build new path
+        let remaining = &path_bytes[path_start..];
+        let mut new_path = Vec::with_capacity(67);
+        new_path.push(b'A' + drive_index);
+        new_path.push(b':');
+
+        if remaining.is_empty() || remaining[0] == b'\\' {
+            if remaining.is_empty() {
+                new_path.push(b'\\');
+            } else {
+                new_path.extend_from_slice(remaining);
+            }
+        } else {
+            // Relative path: read current path from CDS
+            let mut current = Vec::new();
+            for i in 0..67u32 {
+                let byte = memory.read_byte(cds_addr + tables::CDS_OFF_PATH + i);
+                if byte == 0 {
+                    break;
+                }
+                current.push(byte);
+            }
+            if current.len() > 2 {
+                new_path.extend_from_slice(&current[2..]);
+            } else {
+                new_path.push(b'\\');
+            }
+            if new_path.last() != Some(&b'\\') {
+                new_path.push(b'\\');
+            }
+            new_path.extend_from_slice(remaining);
+        }
+
+        let normalized = dos::normalize_path(&new_path);
+
+        let final_path = if normalized.len() > 3 && normalized.last() == Some(&b'\\') {
+            &normalized[..normalized.len() - 1]
+        } else {
+            &normalized
+        };
+
+        if final_path.len() > 67 {
+            return Err(0x0003);
+        }
+
+        // Validate that the target directory exists on disk.
+        // Root directory (e.g. "A:\") always exists, skip validation.
+        if final_path.len() > 3 {
+            if drive_index == 25 {
+                // Z: is a virtual drive with no filesystem
+                return Err(0x0003);
+            }
+            self.ensure_volume_mounted(drive_index, memory, disk)?;
+            let vol = self.fat_volumes[drive_index as usize]
+                .as_ref()
+                .ok_or(0x000Fu16)?;
+            let (_, components, _) = filesystem::split_path(final_path);
+            let mut dir_cluster = 0u16;
+            for component in &components {
+                let fcb = filesystem::fat_dir::name_to_fcb(component);
+                let entry = filesystem::fat_dir::find_entry(vol, dir_cluster, &fcb, disk)?
+                    .ok_or(0x0003u16)?;
+                if entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY == 0 {
+                    return Err(0x0003);
+                }
+                dir_cluster = entry.start_cluster;
+            }
+        }
+
+        // Write path to CDS entry
+        for i in 0..67u32 {
+            if (i as usize) < final_path.len() {
+                memory.write_byte(cds_addr + tables::CDS_OFF_PATH + i, final_path[i as usize]);
+            } else {
+                memory.write_byte(cds_addr + tables::CDS_OFF_PATH + i, 0x00);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Writes the carry flag into the IRET frame on the stack.
+pub(crate) fn set_iret_carry(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, carry: bool) {
+    let flags_addr = ((cpu.ss() as u32) << 4) + cpu.sp() as u32 + 4;
+    let mut flags = mem.read_word(flags_addr);
+    if carry {
+        flags |= 0x0001;
+    } else {
+        flags &= !0x0001;
+    }
+    mem.write_word(flags_addr, flags);
+}
+
+pub(crate) fn set_iret_zf(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, zero: bool) {
+    let flags_addr = ((cpu.ss() as u32) << 4) + cpu.sp() as u32 + 4;
+    let mut flags = mem.read_word(flags_addr);
+    if zero {
+        flags |= 0x0040;
+    } else {
+        flags &= !0x0040;
+    }
+    mem.write_word(flags_addr, flags);
+}
+
+pub(crate) fn adjust_iret_ip(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, delta: i16) {
+    let ip_addr = ((cpu.ss() as u32) << 4) + cpu.sp() as u32;
+    let ip = mem.read_word(ip_addr);
+    mem.write_word(ip_addr, ip.wrapping_add(delta as u16));
+}

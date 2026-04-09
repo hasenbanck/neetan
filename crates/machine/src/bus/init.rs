@@ -29,8 +29,8 @@ use device::{
 use crate::{
     ClockConfig, Pc9801Bus, Tracing,
     bus::{
-        DMA_ACCESS_CTRL_20BIT, GRCG_WAIT_CYCLES, MOUSE_TIMER_DEFAULT_SETTING, MOUSE_TIMER_IRQ_LINE,
-        TRAM_WAIT_CYCLES, VRAM_WAIT_CYCLES, default_local_time,
+        BootDevice, DMA_ACCESS_CTRL_20BIT, GRCG_WAIT_CYCLES, MOUSE_TIMER_DEFAULT_SETTING,
+        MOUSE_TIMER_IRQ_LINE, TRAM_WAIT_CYCLES, VRAM_WAIT_CYCLES, default_local_time,
     },
     memory::Pc9801Memory,
 };
@@ -251,6 +251,10 @@ impl<T: Tracing> Pc9801Bus<T> {
             fdd_seek_cylinder: [0; 4],
             hle_cr0: 0,
             hle_cr3: 0,
+            boot_device: BootDevice::default(),
+            os: None,
+            ems_enabled: true,
+            xms_enabled: true,
         };
 
         if machine_model.has_cg_ram() {

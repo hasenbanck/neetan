@@ -26,7 +26,11 @@ use device::{
 pub use machine::{Machine, Pc9801Ra, Pc9801Vm, Pc9801Vx, Pc9821Ap, Pc9821As};
 pub use trace::{NoTracing, Tracing};
 
-pub use crate::{bus::Pc9801Bus, config::ClockConfig, memory::Pc9801MemoryState};
+pub use crate::{
+    bus::{BootDevice, Pc9801Bus},
+    config::ClockConfig,
+    memory::Pc9801MemoryState,
+};
 
 /// CPU state snapshot, discriminated by CPU type.
 #[allow(clippy::large_enum_variant)]

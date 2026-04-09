@@ -20,6 +20,7 @@ pub use lle::{IdeAction, IdePhase};
 
 pub use crate::disk_hle::{buffer_address, drive_index, sector_position, transfer_size};
 use crate::{
+    cd_audio::CdAudioPlayer,
     cdrom::CdImage,
     disk::{HddGeometry, HddImage},
 };
@@ -44,6 +45,7 @@ pub struct IdeController {
     // Channel 1: ATAPI CD-ROM.
     cdrom: Option<CdImage>,
     atapi_state: atapi::AtapiState,
+    cd_audio_player: CdAudioPlayer,
     work_area_mapped: bool,
 }
 
@@ -66,6 +68,7 @@ impl IdeController {
             drive_dirty: [false, false],
             cdrom: None,
             atapi_state: atapi::AtapiState::new(),
+            cd_audio_player: CdAudioPlayer::new(44100),
             work_area_mapped: false,
         }
     }
@@ -93,6 +96,7 @@ impl IdeController {
 
     /// Ejects the CD-ROM image from channel 1.
     pub fn eject_cdrom(&mut self) {
+        self.cd_audio_player.reset();
         self.cdrom = None;
         self.atapi_state.media_ejected();
     }
@@ -100,6 +104,43 @@ impl IdeController {
     /// Returns true if a CD-ROM image is loaded.
     pub fn has_cdrom(&self) -> bool {
         self.cdrom.is_some()
+    }
+
+    /// Returns a reference to the loaded CD-ROM image, if any.
+    pub fn cdrom_image(&self) -> Option<&CdImage> {
+        self.cdrom.as_ref()
+    }
+
+    /// Returns a mutable reference to the CD audio player.
+    pub fn cd_audio_player_mut(&mut self) -> &mut CdAudioPlayer {
+        &mut self.cd_audio_player
+    }
+
+    /// Returns a reference to the CD audio player.
+    pub fn cd_audio_player(&self) -> &CdAudioPlayer {
+        &self.cd_audio_player
+    }
+
+    /// Generates CD audio samples, borrowing the CD image and audio player
+    /// simultaneously from within the controller.
+    pub fn generate_cd_audio_samples(&mut self, volume: f32, output: &mut [f32]) {
+        if let Some(ref cdrom) = self.cdrom {
+            self.cd_audio_player.generate_samples(cdrom, volume, output);
+        }
+    }
+
+    /// Starts CD audio playback, splitting the internal borrow.
+    pub fn play_cd_audio(&mut self, start_lba: u32, sector_count: u32) {
+        if let Some(ref cdrom) = self.cdrom {
+            self.cd_audio_player.play(cdrom, start_lba, sector_count);
+        }
+    }
+
+    /// Resumes CD audio playback, splitting the internal borrow.
+    pub fn resume_cd_audio(&mut self) {
+        if let Some(ref cdrom) = self.cdrom {
+            self.cd_audio_player.resume(cdrom);
+        }
     }
 
     /// Returns true if the specified HDD slot (0 or 1) has a drive image loaded.
@@ -326,6 +367,42 @@ impl IdeController {
     /// Returns the geometry of the selected drive, if present.
     pub fn drive_geometry(&self, drive: usize) -> Option<HddGeometry> {
         self.drives.get(drive)?.as_ref().map(|drive| drive.geometry)
+    }
+
+    /// Reads a single sector by LBA, returning a copy of the data.
+    pub fn read_sector_raw(&self, drive: usize, lba: u32) -> Option<Vec<u8>> {
+        self.drives
+            .get(drive)?
+            .as_ref()?
+            .read_sector(lba)
+            .map(|data| data.to_vec())
+    }
+
+    /// Writes a single sector by LBA. Returns true on success.
+    pub fn write_sector_raw(&mut self, drive: usize, lba: u32, data: &[u8]) -> bool {
+        if let Some(Some(image)) = self.drives.get_mut(drive)
+            && image.write_sector(lba, data)
+        {
+            self.drive_dirty[drive] = true;
+            return true;
+        }
+        false
+    }
+
+    /// Returns the sector size for the given drive.
+    pub fn sector_size_for_drive(&self, drive: usize) -> Option<u16> {
+        self.drives
+            .get(drive)?
+            .as_ref()
+            .map(|image| image.geometry.sector_size)
+    }
+
+    /// Returns the total sector count for the given drive.
+    pub fn total_sectors_for_drive(&self, drive: usize) -> Option<u32> {
+        self.drives
+            .get(drive)?
+            .as_ref()
+            .map(|image| image.geometry.total_sectors())
     }
 
     /// Reads a byte from the expansion ROM at the given offset.
@@ -594,7 +671,9 @@ impl IdeController {
             IdePhase::PacketCommand => {
                 let complete = self.atapi_state.receive_packet_word(value);
                 if complete {
-                    let (has_data, is_error) = self.atapi_state.execute_packet(self.cdrom.as_ref());
+                    let (has_data, is_error) = self
+                        .atapi_state
+                        .execute_packet(self.cdrom.as_ref(), &mut self.cd_audio_player);
                     if is_error {
                         self.lle_controller.atapi_command_error(&self.atapi_state);
                     } else if has_data {
@@ -1260,9 +1339,16 @@ mod tests {
         u16::from(even_byte) | (u16::from(odd_byte) << 8)
     }
 
-    fn send_sub_channel_cdb(ide: &mut IdeController, sub_q: bool, format: u8, alloc_len: u16) {
+    fn send_sub_channel_cdb(
+        ide: &mut IdeController,
+        sub_q: bool,
+        format: u8,
+        alloc_len: u16,
+        msf: bool,
+    ) {
         let sub_q_byte = if sub_q { 0x40u8 } else { 0x00u8 };
-        ide.write_data_word(cdb_word(0x42, 0x00));
+        let byte1 = if msf { 0x02u8 } else { 0x00u8 };
+        ide.write_data_word(cdb_word(0x42, byte1));
         ide.write_data_word(cdb_word(sub_q_byte, format));
         ide.write_data_word(cdb_word(0x00, 0x00));
         ide.write_data_word(cdb_word(0x00, (alloc_len >> 8) as u8));
@@ -1287,7 +1373,7 @@ mod tests {
         ide.atapi_state.media_changed = false;
 
         setup_atapi_for_packet(&mut ide, 0xFFFE);
-        send_sub_channel_cdb(&mut ide, false, 0x00, 16);
+        send_sub_channel_cdb(&mut ide, false, 0x00, 16, false);
 
         // Should return 4-byte minimal response.
         let (word0, _) = ide.read_data_word();
@@ -1306,7 +1392,7 @@ mod tests {
         ide.atapi_state.media_changed = false;
 
         setup_atapi_for_packet(&mut ide, 0xFFFE);
-        send_sub_channel_cdb(&mut ide, true, 0x01, 16);
+        send_sub_channel_cdb(&mut ide, true, 0x01, 16, false);
 
         // Read 8 words (16 bytes).
         let mut data = [0u16; 8];
@@ -1334,7 +1420,7 @@ mod tests {
         ide.atapi_state.bcd_msf_mode = true;
 
         setup_atapi_for_packet(&mut ide, 0xFFFE);
-        send_sub_channel_cdb(&mut ide, true, 0x01, 16);
+        send_sub_channel_cdb(&mut ide, true, 0x01, 16, true);
 
         let mut data = [0u16; 8];
         for word in data.iter_mut() {

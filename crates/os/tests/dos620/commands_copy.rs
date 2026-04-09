@@ -1,0 +1,203 @@
+use crate::harness::*;
+
+#[test]
+fn copy_single_file() {
+    let mut machine = boot_hle_with_floppy();
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    type_string_long(&mut machine, b"COPY TESTFILE.TXT COPIED.TXT\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    type_string_long(&mut machine, b"TYPE COPIED.TXT\r");
+    run_until_prompt(&mut machine);
+
+    let hello = [
+        0x0048, 0x0045, 0x004C, 0x004C, 0x004F, 0x0020, 0x0057, 0x004F, 0x0052, 0x004C, 0x0044,
+    ]; // "HELLO WORLD"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &hello),
+        "TYPE of copied file should show 'HELLO WORLD'"
+    );
+}
+
+#[test]
+fn copy_file_count() {
+    let mut machine = boot_hle_with_floppy();
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    type_string_long(&mut machine, b"COPY TESTFILE.TXT COPY2.TXT\r");
+    run_until_prompt(&mut machine);
+
+    let copied = [0x0063, 0x006F, 0x0070, 0x0069, 0x0065, 0x0064]; // "copied"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &copied),
+        "COPY should show 'copied' message"
+    );
+}
+
+#[test]
+fn copy_nonexistent_source() {
+    let mut machine = boot_hle_with_floppy();
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    type_string_long(&mut machine, b"COPY NOFILE.TXT DEST.TXT\r");
+    run_until_prompt(&mut machine);
+
+    let not_found = [
+        0x006E, 0x006F, 0x0074, 0x0020, 0x0066, 0x006F, 0x0075, 0x006E, 0x0064,
+    ]; // "not found"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &not_found),
+        "COPY of nonexistent file should show error"
+    );
+}
+
+#[test]
+fn copy_with_verify() {
+    let mut machine = boot_hle_with_floppy();
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    // COPY /V should copy and verify
+    type_string_long(&mut machine, b"COPY /V TESTFILE.TXT VERIFIED.TXT\r");
+    run_until_prompt(&mut machine);
+
+    let copied = [0x0063, 0x006F, 0x0070, 0x0069, 0x0065, 0x0064]; // "copied"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &copied),
+        "COPY /V should show 'copied' message"
+    );
+
+    // Verify the file content is correct
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    type_string_long(&mut machine, b"TYPE VERIFIED.TXT\r");
+    run_until_prompt(&mut machine);
+
+    let hello = [
+        0x0048, 0x0045, 0x004C, 0x004C, 0x004F, 0x0020, 0x0057, 0x004F, 0x0052, 0x004C, 0x0044,
+    ]; // "HELLO WORLD"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &hello),
+        "Verified copy should contain 'HELLO WORLD'"
+    );
+}
+
+#[test]
+fn copy_overwrite_with_y_flag() {
+    let mut machine = boot_hle_with_floppy();
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    // First copy
+    type_string_long(&mut machine, b"COPY TESTFILE.TXT DEST.TXT\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    // Copy again with /Y -- should overwrite without prompting
+    type_string_long(&mut machine, b"COPY /Y TESTFILE.TXT DEST.TXT\r");
+    run_until_prompt(&mut machine);
+
+    let copied = [0x0063, 0x006F, 0x0070, 0x0069, 0x0065, 0x0064]; // "copied"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &copied),
+        "COPY /Y should overwrite and show 'copied'"
+    );
+}
+
+#[test]
+fn copy_concatenation() {
+    let mut machine = boot_hle_with_floppy();
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    // Create a second file
+    type_string_long(&mut machine, b"COPY TESTFILE.TXT PART2.TXT\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    // Concatenate: COPY TESTFILE.TXT+PART2.TXT JOINED.TXT
+    type_string_long(&mut machine, b"COPY TESTFILE.TXT+PART2.TXT JOINED.TXT\r");
+    run_until_prompt(&mut machine);
+
+    let copied = [0x0063, 0x006F, 0x0070, 0x0069, 0x0065, 0x0064]; // "copied"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &copied),
+        "COPY with + concatenation should show 'copied'"
+    );
+
+    // Verify the joined file exists via DIR
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+    type_string(&mut machine.bus, b"DIR\r");
+    run_until_prompt(&mut machine);
+
+    let joined = [0x004A, 0x004F, 0x0049, 0x004E, 0x0045, 0x0044]; // "JOINED"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &joined),
+        "JOINED.TXT should appear in DIR after concatenation"
+    );
+}
+
+#[test]
+fn xcopy_recursive() {
+    let mut machine = boot_hle_with_floppy();
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    // Create source structure: SRCDIR with a file
+    type_string(&mut machine.bus, b"MD SRCDIR\r");
+    run_until_prompt(&mut machine);
+
+    type_string_long(&mut machine, b"COPY TESTFILE.TXT SRCDIR\r");
+    run_until_prompt(&mut machine);
+
+    // Create dest dir
+    type_string(&mut machine.bus, b"MD DSTDIR\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    // XCOPY /S SRCDIR DSTDIR should copy files recursively
+    type_string_long(&mut machine, b"XCOPY SRCDIR DSTDIR\r");
+    run_until_prompt(&mut machine);
+
+    // Should show "File(s) copied"
+    let copied_msg = [0x0063, 0x006F, 0x0070, 0x0069, 0x0065, 0x0064]; // "copied"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &copied_msg),
+        "XCOPY should show 'copied' message"
+    );
+
+    // Verify file is in DSTDIR
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+    type_string(&mut machine.bus, b"DIR DSTDIR\r");
+    run_until_prompt(&mut machine);
+
+    let testfile = [
+        0x0054, 0x0045, 0x0053, 0x0054, 0x0046, 0x0049, 0x004C, 0x0045,
+    ]; // "TESTFILE"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &testfile),
+        "XCOPY should have copied TESTFILE.TXT into DSTDIR"
+    );
+}

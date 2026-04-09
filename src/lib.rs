@@ -873,6 +873,19 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
 
     let mut bus: machine::Pc9801Bus<Tracer> = machine::Pc9801Bus::new(model, sample_rate);
     bus.set_host_local_time_fn(host_local_time_bcd);
+    bus.set_boot_device(config.boot_device);
+
+    // EMS / XMS configuration when using a 286+ CPU and the HLE OS
+    match config.machine {
+        MachineModel::PC9801VM => { /* The VM has no extended / expanded memory */ }
+        MachineModel::PC9801VX
+        | MachineModel::PC9801RA
+        | MachineModel::PC9821AS
+        | MachineModel::PC9821AP => {
+            bus.set_ems_enabled(config.ems);
+            bus.set_xms_enabled(config.xms);
+        }
+    }
 
     // GDC clock rate configuration logic
     match (model.has_pegc(), model.has_egc(), config.force_gdc_clock) {

@@ -208,10 +208,6 @@ mod tests {
 
         // The shift register outputs reg[7] first (seconds), then reg[6], etc.
         // Bits come out MSB-first within each byte due to the bit indexing.
-        // Actually, let's verify against the register layout.
-        // pos=63 is bit 0 of reg[7], pos=62 is bit 1, ..., pos=56 is bit 7.
-        // So within each byte, bits come out LSB first.
-        // Let me reconstruct properly.
         let mut reconstructed = [0u8; 6];
         for (i, bit) in bits.iter().enumerate() {
             let byte_idx = 5 - (i / 8); // reg[7] down to reg[2]

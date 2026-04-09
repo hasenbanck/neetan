@@ -67,6 +67,7 @@ neetan <COMMAND>
 | `--midi <DEVICE>`            | MIDI device: `none`, `mt32`, `sc55`                                      | `none`     |
 | `--mt32-roms <PATH>`         | Path to MT-32 ROM directory (requires `mt32` feature)                    | -          |
 | `--sc55-roms <PATH>`         | Path to SC-55 ROM directory (requires `sc55` feature)                    | -          |
+| `--boot-device <DEVICE>`     | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2`, `os`                | `auto`     |
 | `--printer <PATH>`           | Output file for printer (must exist)                                     | -          |
 | `-h, --help`                 | Print help                                                               | -          |
 | `-V, --version`              | Print version                                                            | -          |

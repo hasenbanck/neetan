@@ -492,6 +492,19 @@ pub trait Bus {
     }
 }
 
+/// Segment register identifiers for cross-CPU-generation HLE operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SegmentRegister {
+    /// Extra segment.
+    ES,
+    /// Code segment.
+    CS,
+    /// Stack segment.
+    SS,
+    /// Data segment.
+    DS,
+}
+
 /// Trait representing an emulated CPU.
 ///
 /// Each CPU generation (V30, i286, i386, i486) provides its own implementation
@@ -641,6 +654,14 @@ pub trait Cpu {
 
     /// Returns the CPU generation.
     fn cpu_type(&self) -> CpuType;
+
+    /// Loads a segment register with real-mode descriptor cache update.
+    ///
+    /// Unlike `set_ss`/`set_ds`/`set_es` which only set the selector value,
+    /// this method also updates the segment descriptor cache (base = selector << 4,
+    /// limit = 0xFFFF). Use this when HLE code changes segment registers at runtime
+    /// and the CPU must use the new base for subsequent memory accesses.
+    fn load_segment_real_mode(&mut self, seg: SegmentRegister, selector: u16);
 
     /// Returns CR0 (control register 0). Only meaningful for 386+.
     fn cr0(&self) -> u32 {

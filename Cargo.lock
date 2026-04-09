@@ -123,6 +123,7 @@ dependencies = [
  "common",
  "cpu",
  "device",
+ "os",
  "resampler",
 ]
 
@@ -170,6 +171,16 @@ version = "0.1.0"
 dependencies = [
  "common",
  "resampler",
+]
+
+[[package]]
+name = "os"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "cpu",
+ "device",
+ "machine",
 ]
 
 [[package]]

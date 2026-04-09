@@ -861,8 +861,6 @@ fn egc_srcmask_partial_length() {
     }
 }
 
-// --- Compare-read source selection tests ---
-
 #[test]
 fn egc_compare_read_bgc_source() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
@@ -950,8 +948,6 @@ fn egc_compare_read_fgc_vs_bgc() {
     let result = bus.read_byte(VRAM_B);
     assert_eq!(result, 0x00, "BGC source does not match VRAM color 5");
 }
-
-// --- Multi-step shift pipeline tests ---
 
 #[test]
 fn egc_multi_word_blit_no_shift() {
@@ -1083,8 +1079,6 @@ fn egc_shift_descending_no_shift() {
     assert_eq!(read_plane_word(&bus, VRAM_E, 2), 0xF00D, "E desc copy");
 }
 
-// --- ROP operation tests ---
-
 #[test]
 fn egc_rop_xor_src_dst() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
@@ -1158,16 +1152,6 @@ fn egc_rop_ope_nd_pattern_only() {
     // fg=0xA -> fgc=[0x0000, 0xFFFF, 0x0000, 0xFFFF].
     write_egc_register_word(&mut bus, 0x06, 0xA);
     write_egc_register_word(&mut bus, 0x02, 0x4000);
-    // ope=0x080A: ROP=0x0A (ope_nd path): result = P & ~S | 0 = P & ~S.
-    // Actually 0x0A = bit3(P & ~S) | bit1(~P & ~S) -> simplified: ~S.
-    // Wait, 0x0A = 0b00001010: bit3=1 (P & ~S), bit1=1 (~P & ~S) -> ~S regardless of P.
-    // But ope_nd requires !uses_dest && uses_pat. Let me verify:
-    // uses_dest: (0x08!=0x02)=yes. So this is NOT ope_nd actually.
-    // Let me use 0x0C instead: 0b00001100: bit3=1(P&~S&D), bit2=1(~P&~S&D) -> ~S & D.
-    // Actually let me just use ROP=0xA0: 0b10100000: bit7=1(P&S&D), bit5=1(P&S&~D) -> P & S.
-    // For ope_nd: uses_dest=false, uses_pat=true.
-    // ROP 0xA0: bit7(P&S&D),bit5(P&S&~D) -> D doesn't matter -> P & S. uses_dest=false.
-    // uses_pat: bit7!=bit6(0)? 0x80!=0x40 -> yes for bit7=1,bit6=0. So uses_pat=true.
     write_egc_register_word(&mut bus, 0x04, 0x08A0);
     write_egc_register_word(&mut bus, 0x0C, 0x0000);
     write_egc_register_word(&mut bus, 0x0E, 0x000F);
@@ -1199,41 +1183,6 @@ fn egc_rop_ope_np_no_pattern() {
 
     setup_egc(&mut bus);
 
-    // ope=0x0822: ROP=0x22 = ~S & D (ope_np path).
-    // 0x22 = 0b00100010: bit5=1(P&S&~D)? No, bit5=1 means 0x20.
-    // 0x22 = bit5=1(0x20: S&~D in np context? No...)
-    // Actually for ope_np: bit7=S&D, bit5=S&~D, bit3=~S&D, bit1=~S&~D.
-    // Wait, let me re-read the code. ope_np uses: bit7(S&D), bit5(S&~D), bit3(~S&D), bit1(~S&~D).
-    // Hmm, code says: 0x80->S&D, 0x20->S&~D, 0x08->~S&D, 0x02->~S&~D.
-    // 0x22 = 0x20|0x02 = (S&~D) | (~S&~D) = ~D.
-    // Let me use 0x0C instead: 0x0C = 0x08|0x04. But 0x04 maps to ~P&~S&D in full...
-    // For ope_np it's: 0x08->~S&D. 0x04 isn't used in ope_np.
-    // Let me just use ROP=0x0A -> but earlier analysis showed ope_np needs uses_dest && !uses_pat.
-    // ROP 0x22 = 0b00100010:
-    //   uses_dest: (bit7!=bit5)->(0!=1)=true OR (bit6!=bit4)->(0!=0)=false OR (bit3!=bit1)->(0!=1)=true
-    //   uses_pat: (bit7!=bit6)->(0!=0)=false, (bit5!=bit4)->(1!=0)=true. So uses_pat=true.
-    //   This means 0x22 goes to ope_xx, not ope_np.
-    // For pure ope_np we need !uses_pat: all pairs (bit7,bit6), (bit5,bit4), (bit3,bit2), (bit1,bit0) must be equal.
-    // That means bits come in pairs. 0xCC = 0b11001100: pairs (1,1)(0,0)(1,1)(0,0) -> each pair equal -> !uses_pat.
-    // uses_dest: (0x80!=0x20)->(1!=0)=true. Yes.
-    // 0xCC: in ope_np: bit7(S&D)=1, bit5(S&~D)=0, bit3(~S&D)=1, bit1(~S&~D)=0 -> S&D | ~S&D = D.
-    // That's boring. Let me use 0x44 = 0b01000100: pairs (0,1)(0,0)(0,1)(0,0) -> !uses_pat.
-    // Hmm wait, uses_pat checks (bit7!=bit6), i.e., 0!=1 -> true. So 0x44 uses_pat.
-    // I need pairs to be equal: bits 7,6 same; bits 5,4 same; bits 3,2 same; bits 1,0 same.
-    // Valid ope_np ROPs: 0x00, 0x0A, 0x50, 0x5A, 0xA0, 0xAA, 0xF0, 0xFA, 0x05, 0x0F, 0x55, 0x5F, 0xA5, 0xAF, 0xF5, 0xFF
-    // Hmm, let me recalculate. uses_pat checks if ANY of these pairs differ:
-    //   bit7!=bit6, bit5!=bit4, bit3!=bit2, bit1!=bit0
-    // For !uses_pat, ALL pairs must be equal. So ROP byte bits: b7=b6, b5=b4, b3=b2, b1=b0.
-    // This means each pair of bits is 00 or 11. The ROP is determined by 4 bits: (b7, b5, b3, b1).
-    // And uses_dest requires at least one of: b7!=b5, b6!=b4, b3!=b1, b2!=b0.
-    // Since b7=b6, b5=b4, b3=b2, b1=b0, this simplifies to: b7!=b5 or b3!=b1.
-    // Let's pick: b7=1,b5=0,b3=1,b1=0 -> S&D | ~S&D = D. (boring)
-    // b7=1,b5=0,b3=0,b1=0 -> S&D -> 0xC0. pairs: (1,1)(0,0)(0,0)(0,0) -> !uses_pat. uses_dest: b7!=b5=yes.
-    // Hmm 0xC0 is already a fast-path. Let me use 0xC0 differently...
-    // Actually 0xC0 hits the fast path. Let me find one that doesn't.
-    // b7=0,b5=1,b3=0,b1=0 -> S&~D -> pairs: (0,0)(1,1)(0,0)(0,0) = 0x30.
-    // 0x30 doesn't have a fast path. uses_dest: b7!=b5->0!=1->yes. uses_pat: all pairs equal->no. -> ope_np!
-    // ope_np for 0x30: bit7(S&D)=0, bit5(S&~D)=1, bit3(~S&D)=0, bit1(~S&~D)=0 -> S & ~D.
     write_egc_register_word(&mut bus, 0x04, 0x0830);
     write_egc_register_word(&mut bus, 0x0C, 0x0000);
     write_egc_register_word(&mut bus, 0x0E, 0x000F);
@@ -1248,8 +1197,6 @@ fn egc_rop_ope_np_no_pattern() {
         assert_eq!(read_plane_word(&bus, base, 2), 0x00F0, "S&~D result");
     }
 }
-
-// --- Other EGC mode tests ---
 
 #[test]
 fn egc_cpu_source_shift() {

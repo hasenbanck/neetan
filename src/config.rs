@@ -48,9 +48,12 @@ Options:
       --font-rom <PATH>         Path to font ROM file
       --soundboard <TYPE>       Sound board type: none, 26k, 86, 86+26k, sb16, sb16+26k
       --adpcm-ram <on|off>      ADPCM RAM option for PC-9801-86 (default: on)
+      --ems <on|off>            Enable EMS expanded memory (default: on)
+      --xms <on|off>            Enable XMS extended memory (default: on)
       --midi <DEVICE>           MIDI device: none, mt32, sc55 (default: none)
       --mt32-roms <PATH>        Path to MT-32 ROM directory
       --sc55-roms <PATH>        Path to SC55 ROM directory
+      --boot-device <DEVICE>    Boot device: auto, fdd1, fdd2, hdd1, hdd2, os (default: auto)
       --printer <PATH>          Output file for printer (must exist)
   -h, --help                    Print help
   -V, --version                 Print version
@@ -407,6 +410,14 @@ pub fn parse_args() -> crate::Result<Action> {
                 let val = value(&flag)?;
                 config.adpcm_ram = parse_on_off(&val, &flag)?;
             }
+            "--ems" => {
+                let val = value(&flag)?;
+                config.ems = parse_on_off(&val, &flag)?;
+            }
+            "--xms" => {
+                let val = value(&flag)?;
+                config.xms = parse_on_off(&val, &flag)?;
+            }
             "--force-gdc-clock" => {
                 let val = value(&flag)?;
                 config.force_gdc_clock = Some(val.parse::<ForceGdcClock>().map_err(StringError)?);
@@ -417,6 +428,10 @@ pub fn parse_args() -> crate::Result<Action> {
             "--midi" => {
                 let val = value(&flag)?;
                 config.midi = val.parse::<MidiDevice>().map_err(StringError)?;
+            }
+            "--boot-device" => {
+                let val = value(&flag)?;
+                config.boot_device = val.parse::<machine::BootDevice>().map_err(StringError)?;
             }
             other => bail!("unknown argument: {other}"),
         }
@@ -475,7 +490,10 @@ pub struct EmulatorConfig {
     pub mt32_roms: Option<PathBuf>,
     pub sc55_roms: Option<PathBuf>,
     pub midi: MidiDevice,
+    pub boot_device: machine::BootDevice,
     pub key_map: KeyMap,
+    pub ems: bool,
+    pub xms: bool,
 }
 
 impl Default for EmulatorConfig {
@@ -499,7 +517,10 @@ impl Default for EmulatorConfig {
             mt32_roms: None,
             sc55_roms: None,
             midi: MidiDevice::default(),
+            boot_device: machine::BootDevice::Auto,
             key_map: KeyMap::new(),
+            ems: true,
+            xms: true,
         }
     }
 }
@@ -557,6 +578,16 @@ fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<
                 "off" => config.adpcm_ram = false,
                 _ => warn!("Invalid adpcm-ram in config: {val}, expected on or off"),
             },
+            "ems" => match val {
+                "on" => config.ems = true,
+                "off" => config.ems = false,
+                _ => warn!("Invalid ems in config: {val}, expected on or off"),
+            },
+            "xms" => match val {
+                "on" => config.xms = true,
+                "off" => config.xms = false,
+                _ => warn!("Invalid xms in config: {val}, expected on or off"),
+            },
             "force-gdc-clock" => match val.parse::<ForceGdcClock>() {
                 Ok(mode) => config.force_gdc_clock = Some(mode),
                 Err(_) => warn!("Invalid force-gdc-clock in config: {val}, expected 2.5 or 5"),
@@ -567,6 +598,10 @@ fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<
             "midi" => match val.parse::<MidiDevice>() {
                 Ok(device) => config.midi = device,
                 Err(_) => warn!("Unknown MIDI device in config: {val}"),
+            },
+            "boot-device" => match val.parse::<machine::BootDevice>() {
+                Ok(device) => config.boot_device = device,
+                Err(_) => warn!("Unknown boot device in config: {val}"),
             },
             key if key.starts_with("key.") => {
                 let host_name = &key[4..];

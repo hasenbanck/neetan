@@ -2537,4 +2537,15 @@ impl<const CPU_MODEL: u8> common::Cpu for I386<CPU_MODEL> {
     fn cr3(&self) -> u32 {
         self.state.cr3
     }
+
+    fn load_segment_real_mode(&mut self, seg: common::SegmentRegister, selector: u16) {
+        let seg32 = match seg {
+            common::SegmentRegister::ES => SegReg32::ES,
+            common::SegmentRegister::CS => SegReg32::CS,
+            common::SegmentRegister::SS => SegReg32::SS,
+            common::SegmentRegister::DS => SegReg32::DS,
+        };
+        self.state.sregs[seg32 as usize] = selector;
+        self.set_real_segment_cache(seg32, selector);
+    }
 }
