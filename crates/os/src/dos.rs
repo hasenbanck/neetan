@@ -15,6 +15,10 @@ impl NeetanOs {
         memory: &mut dyn MemoryAccess,
         disk: &mut dyn DiskIo,
     ) {
+        let indos_addr = self.state.indos_addr;
+        let indos = memory.read_byte(indos_addr);
+        memory.write_byte(indos_addr, indos.wrapping_add(1));
+
         let ah = (cpu.ax() >> 8) as u8;
         match ah {
             0x00 => self.terminate_process(cpu, memory, 0, 0),
@@ -75,6 +79,9 @@ impl NeetanOs {
             0xFF => self.int21h_ffh_shell_step(cpu, memory, disk),
             _ => warn!("INT 21h AH={ah:#04X} is unimplemented"),
         }
+
+        let indos = memory.read_byte(indos_addr);
+        memory.write_byte(indos_addr, indos.wrapping_sub(1));
     }
 
     /// AH=02h: Display character.

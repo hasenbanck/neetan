@@ -218,7 +218,6 @@ impl fmt::Debug for Pc9801MemoryState {
 /// - bit 2: BIOS RAM access enable (0=enabled, 1=disabled)
 ///   - RA2: controls E0000-FFFFF, RA21: controls C0000-FFFFF
 /// - bit 1: BIOS RAM/ROM select (0=ROM, 1=RAM) for E8000-FFFFF
-// TODO(pc98-deferred): Move graphics page routing into memory once DMA/EGC page behavior is modeled.
 pub(crate) struct Pc9801Memory {
     /// Embedded state for save/restore.
     pub(crate) state: Pc9801MemoryState,

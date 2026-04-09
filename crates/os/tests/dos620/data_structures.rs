@@ -175,18 +175,14 @@ fn indos_flag_is_zero_at_idle() {
     let segment = harness::result_word(&machine.bus, 2);
     let indos_addr = harness::far_to_linear(segment, offset);
 
-    // TODO: Use the old assertion once the we have a prompt:
-    // // After boot, COMMAND.COM sits inside an INT 21h call (reading keyboard input),
-    // // so InDOS is 1. Our injected code calls INT 21h/34h which increments InDOS to 2
-    // // then decrements back to 1 on return. The original COMMAND.COM increment is never
-    // // unwound because we hijacked the CPU.
-
-    // With HLE boot, the CPU halts after setting up data structures.
-    // No COMMAND.COM is actively running, so InDOS should be 0.
+    // In HLE mode, all INT 21h calls (including the shell's AH=FFh step)
+    // complete instantly: InDOS is incremented on entry and decremented on
+    // return within the same handler invocation. When inject_and_run takes
+    // over the CPU between iterations of COMMAND.COM's stub loop, InDOS is 0.
     let indos_value = harness::read_byte(&machine.bus, indos_addr);
     assert_eq!(
         indos_value, 0,
-        "InDOS flag should be 0 (HLE boot halts without active INT 21h), got {}",
+        "InDOS flag should be 0 (HLE INT 21h calls complete instantly), got {}",
         indos_value
     );
 }
