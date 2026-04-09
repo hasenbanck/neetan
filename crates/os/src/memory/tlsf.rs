@@ -220,11 +220,13 @@ impl TlsfAllocator {
     }
 
     /// Check if the allocator is empty (has no active allocations).
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.alloc_count == 0
     }
 
     /// Get the number of active allocations.
+    #[cfg(test)]
     pub(crate) fn allocation_count(&self) -> u32 {
         self.alloc_count
     }
@@ -294,6 +296,7 @@ impl TlsfAllocator {
     /// Get the size of an allocation.
     ///
     /// Returns `None` if the allocation metadata is invalid.
+    #[cfg(test)]
     pub(crate) fn allocation_size(&self, allocation: Allocation) -> Option<u32> {
         self.nodes
             .get(allocation.node_index as usize)
