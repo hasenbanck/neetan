@@ -1089,26 +1089,17 @@ pub fn type_string(bus: &mut machine::Pc9801Bus, text: &[u8]) {
     }
 }
 
-pub const SCAN_DELETE: u8 = 0x38;
-pub const SCAN_UP: u8 = 0x39;
-pub const SCAN_LEFT: u8 = 0x3A;
+pub const SCAN_DELETE: u8 = 0x39;
+pub const SCAN_UP: u8 = 0x3A;
+pub const SCAN_LEFT: u8 = 0x3B;
 
-/// Injects a special key (extended key) into the PC-98 keyboard buffer.
-/// The character code is set to 0x00 and the scan code to the given value.
-pub fn type_special_key(bus: &mut machine::Pc9801Bus, scan_code: u8) {
-    let count = bus.read_byte_direct(0x0528);
-    if count >= 0x10 {
-        panic!("keyboard buffer full while injecting special key");
-    }
-    let tail = read_word(bus, 0x0526) as u32;
-    bus.write_byte(tail, 0x00);
-    bus.write_byte(tail + 1, scan_code);
-    let mut new_tail = tail + 2;
-    if new_tail >= 0x0522 {
-        new_tail = 0x0502;
-    }
-    write_word_raw(bus, 0x0526, new_tail as u16);
-    bus.write_byte(0x0528, count + 1);
+/// Injects a special key through the PC-98 keyboard pipeline.
+/// Pushes make and break scancodes via the keyboard controller, then runs
+/// the machine so the BIOS INT 09h handler processes them into KB_BUF.
+pub fn type_special_key(machine: &mut machine::Pc9801Ra, scan_code: u8) {
+    machine.bus.push_keyboard_scancode(scan_code); // press down
+    machine.bus.push_keyboard_scancode(scan_code | 0x80); // release
+    machine.run_for(100_000);
 }
 
 fn write_word_raw(bus: &mut machine::Pc9801Bus, addr: u32, value: u16) {

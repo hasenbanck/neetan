@@ -322,9 +322,10 @@ fn flush_and_invoke_0ch() {
 fn extended_key_07h_arrow_up_returns_vt() {
     let mut machine = harness::boot_hle();
 
-    // Inject arrow-up key using real PC-98 hardware scan code (0x3A)
+    // Inject arrow-up key using real PC-98 hardware scan code (0x3A).
     const PC98_SCAN_UP: u8 = 0x3A;
-    type_special_key(&mut machine.bus, PC98_SCAN_UP);
+    machine.bus.push_keyboard_scancode(PC98_SCAN_UP);
+    machine.bus.push_keyboard_scancode(PC98_SCAN_UP | 0x80);
 
     const RES_LO: u8 = (INJECT_RESULT_OFFSET & 0xFF) as u8;
     const RES_HI: u8 = (INJECT_RESULT_OFFSET >> 8) as u8;

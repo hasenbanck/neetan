@@ -35,14 +35,14 @@ pub(crate) struct PendingExec {
     pub args: Vec<u8>,
 }
 
-const SCAN_INSERT: u8 = 0x37;
-const SCAN_DELETE: u8 = 0x38;
-const SCAN_UP: u8 = 0x39;
-const SCAN_LEFT: u8 = 0x3A;
-const SCAN_RIGHT: u8 = 0x3B;
-const SCAN_DOWN: u8 = 0x3C;
-const SCAN_HOME: u8 = 0x3D;
-const SCAN_END: u8 = 0x3E;
+const SCAN_INSERT: u8 = 0x38;
+const SCAN_DELETE: u8 = 0x39;
+const SCAN_UP: u8 = 0x3A;
+const SCAN_LEFT: u8 = 0x3B;
+const SCAN_RIGHT: u8 = 0x3C;
+const SCAN_DOWN: u8 = 0x3D;
+const SCAN_HOME: u8 = 0x3E;
+const SCAN_END: u8 = 0x3F;
 
 pub(crate) struct LineEditor {
     buffer: Vec<u8>,

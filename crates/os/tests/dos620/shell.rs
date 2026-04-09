@@ -119,9 +119,9 @@ fn shell_line_editing() {
     // Type "VEER", move left twice, delete the extra 'E', then press Enter.
     // This should produce "VER" which executes the version command.
     type_string(&mut machine.bus, b"VEER");
-    type_special_key(&mut machine.bus, SCAN_LEFT);
-    type_special_key(&mut machine.bus, SCAN_LEFT);
-    type_special_key(&mut machine.bus, SCAN_DELETE);
+    type_special_key(&mut machine, SCAN_LEFT);
+    type_special_key(&mut machine, SCAN_LEFT);
+    type_special_key(&mut machine, SCAN_DELETE);
     type_string(&mut machine.bus, b"\r");
     run_until_prompt(&mut machine);
 
@@ -145,8 +145,8 @@ fn shell_history() {
     run_until_prompt(&mut machine);
 
     // Press up arrow twice (past CLS to VER), then Enter.
-    type_special_key(&mut machine.bus, SCAN_UP);
-    type_special_key(&mut machine.bus, SCAN_UP);
+    type_special_key(&mut machine, SCAN_UP);
+    type_special_key(&mut machine, SCAN_UP);
     type_string(&mut machine.bus, b"\r");
     run_until_prompt(&mut machine);
 
