@@ -2,7 +2,7 @@
 
 use crate::{
     DiskIo, IoAccess, OsState,
-    commands::{Command, RunningCommand, StepResult},
+    commands::{Command, RunningCommand, StepResult, is_help_request},
     tables,
 };
 
@@ -37,6 +37,11 @@ impl RunningCommand for RunningCd {
     ) -> StepResult {
         let args = self.args.trim_ascii();
 
+        if is_help_request(&self.args) {
+            print_help(io);
+            return StepResult::Done(0);
+        }
+
         if args.is_empty() {
             print_current_directory(state, io);
             return StepResult::Done(0);
@@ -45,11 +50,22 @@ impl RunningCommand for RunningCd {
         match state.change_directory(io.memory, disk, args) {
             Ok(()) => StepResult::Done(0),
             Err(_) => {
-                io.print_msg(b"Invalid directory\r\n");
+                io.println(b"Invalid directory");
                 StepResult::Done(1)
             }
         }
     }
+}
+
+fn print_help(io: &mut IoAccess) {
+    io.println(b"Displays the name of or changes the current directory.");
+    io.println(b"");
+    io.println(b"CD [path]");
+    io.println(b"CHDIR [path]");
+    io.println(b"");
+    io.println(b"  path  Specifies the directory to change to.");
+    io.println(b"");
+    io.println(b"Type CD without parameters to display the current directory.");
 }
 
 fn print_current_directory(state: &OsState, io: &mut IoAccess) {
@@ -63,10 +79,10 @@ fn print_current_directory(state: &OsState, io: &mut IoAccess) {
         }
         path.push(byte);
     }
+    path.push(b'\r');
+    path.push(b'\n');
 
     for &byte in &path {
         io.output_byte(byte);
     }
-    io.output_byte(b'\r');
-    io.output_byte(b'\n');
 }

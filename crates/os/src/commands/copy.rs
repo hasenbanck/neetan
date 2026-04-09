@@ -2,7 +2,7 @@
 
 use crate::{
     DiskIo, IoAccess, OsState,
-    commands::{Command, RunningCommand, StepResult},
+    commands::{Command, RunningCommand, StepResult, is_help_request},
     filesystem::fat_dir,
 };
 
@@ -86,20 +86,26 @@ impl RunningCommand for RunningCopy {
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, CopyPhase::Init);
         match phase {
-            CopyPhase::Init => match init_copy(state, io, disk, &self.args) {
-                Ok(copy_state) => {
-                    self.phase = CopyPhase::FindNext(copy_state);
-                    StepResult::Continue
+            CopyPhase::Init => {
+                if is_help_request(&self.args) || self.args.trim_ascii().is_empty() {
+                    print_help(io);
+                    return StepResult::Done(0);
                 }
-                Err(msg) => {
-                    io.print_msg(msg);
-                    StepResult::Done(1)
+                match init_copy(state, io, disk, &self.args) {
+                    Ok(copy_state) => {
+                        self.phase = CopyPhase::FindNext(copy_state);
+                        StepResult::Continue
+                    }
+                    Err(msg) => {
+                        io.print(msg);
+                        StepResult::Done(1)
+                    }
                 }
-            },
+            }
             CopyPhase::FindNext(mut copy_state) => {
                 if copy_state.current_source >= copy_state.sources.len() {
                     if copy_state.files_copied == 0 {
-                        io.print_msg(b"File not found\r\n");
+                        io.println(b"File not found");
                         return StepResult::Done(1);
                     }
                     self.phase = CopyPhase::Summary(copy_state.files_copied);
@@ -141,7 +147,7 @@ impl RunningCommand for RunningCopy {
                         for &byte in &display_name {
                             io.output_byte(byte);
                         }
-                        io.print_msg(b"\r\n");
+                        io.println(b"");
 
                         let file_state = FileCopyState {
                             src_drive: copy_state.sources[copy_state.current_source].drive,
@@ -173,7 +179,7 @@ impl RunningCommand for RunningCopy {
                             .flatten()
                             .is_some()
                             {
-                                io.print_msg(b"Overwrite (Yes/No/All)?");
+                                io.print(b"Overwrite (Yes/No/All)?");
                                 self.phase = CopyPhase::ConfirmOverwrite(copy_state, file_state);
                                 return StepResult::Continue;
                             }
@@ -195,7 +201,7 @@ impl RunningCommand for RunningCopy {
                         {
                             self.phase = CopyPhase::FindNext(copy_state);
                         } else if copy_state.files_copied == 0 {
-                            io.print_msg(b"File not found\r\n");
+                            io.println(b"File not found");
                             return StepResult::Done(1);
                         } else {
                             self.phase = CopyPhase::Summary(copy_state.files_copied);
@@ -203,7 +209,7 @@ impl RunningCommand for RunningCopy {
                         StepResult::Continue
                     }
                     Err(_) => {
-                        io.print_msg(b"File not found\r\n");
+                        io.println(b"File not found");
                         StepResult::Done(1)
                     }
                 }
@@ -258,7 +264,7 @@ impl RunningCommand for RunningCopy {
                 let cluster_data = match vol.read_cluster(file_state.src_cluster, disk) {
                     Ok(d) => d,
                     Err(_) => {
-                        io.print_msg(b"Read error\r\n");
+                        io.println(b"Read error");
                         return StepResult::Done(1);
                     }
                 };
@@ -275,7 +281,7 @@ impl RunningCommand for RunningCopy {
                 let new_cluster = match vol.allocate_cluster(file_state.dst_last_cluster) {
                     Some(c) => c,
                     None => {
-                        io.print_msg(b"Insufficient disk space\r\n");
+                        io.println(b"Insufficient disk space");
                         return StepResult::Done(1);
                     }
                 };
@@ -293,7 +299,7 @@ impl RunningCommand for RunningCopy {
                 write_data.resize(cluster_size, 0);
 
                 if vol.write_cluster(new_cluster, &write_data, disk).is_err() {
-                    io.print_msg(b"Write error\r\n");
+                    io.println(b"Write error");
                     return StepResult::Done(1);
                 }
 
@@ -323,7 +329,7 @@ impl RunningCommand for RunningCopy {
                 let readback = match vol.read_cluster(written_cluster, disk) {
                     Ok(d) => d,
                     Err(_) => {
-                        io.print_msg(b"Verify error\r\n");
+                        io.println(b"Verify error");
                         return StepResult::Done(1);
                     }
                 };
@@ -332,7 +338,7 @@ impl RunningCommand for RunningCopy {
                     vol.bpb.sectors_per_cluster as usize * vol.bpb.bytes_per_sector as usize;
                 let compare_len = cluster_size.min(original_data.len());
                 if readback[..compare_len] != original_data[..compare_len] {
-                    io.print_msg(b"Verify error\r\n");
+                    io.println(b"Verify error");
                     return StepResult::Done(1);
                 }
 
@@ -371,7 +377,7 @@ impl RunningCommand for RunningCopy {
 
                 if fat_dir::create_entry(vol, file_state.dst_dir_cluster, &new_entry, disk).is_err()
                 {
-                    io.print_msg(b"Unable to create destination\r\n");
+                    io.println(b"Unable to create destination");
                     return StepResult::Done(1);
                 }
 
@@ -411,7 +417,7 @@ impl RunningCommand for RunningCopy {
                 for &byte in &display_name {
                     io.output_byte(byte);
                 }
-                io.print_msg(b"\r\n");
+                io.println(b"");
 
                 file_state.src_drive = src.drive;
                 file_state.src_cluster = entry.start_cluster;
@@ -438,7 +444,7 @@ impl RunningCommand for RunningCopy {
                 let cluster_data = match vol.read_cluster(file_state.src_cluster, disk) {
                     Ok(d) => d,
                     Err(_) => {
-                        io.print_msg(b"Read error\r\n");
+                        io.println(b"Read error");
                         return StepResult::Done(1);
                     }
                 };
@@ -455,7 +461,7 @@ impl RunningCommand for RunningCopy {
                 let new_cluster = match vol.allocate_cluster(file_state.dst_last_cluster) {
                     Some(c) => c,
                     None => {
-                        io.print_msg(b"Insufficient disk space\r\n");
+                        io.println(b"Insufficient disk space");
                         return StepResult::Done(1);
                     }
                 };
@@ -473,7 +479,7 @@ impl RunningCommand for RunningCopy {
                 write_data.resize(cluster_size, 0);
 
                 if vol.write_cluster(new_cluster, &write_data, disk).is_err() {
-                    io.print_msg(b"Write error\r\n");
+                    io.println(b"Write error");
                     return StepResult::Done(1);
                 }
 
@@ -491,11 +497,21 @@ impl RunningCommand for RunningCopy {
             }
             CopyPhase::Summary(count) => {
                 let msg = format!("     {:>4} file(s) copied\r\n", count);
-                io.print_msg(msg.as_bytes());
+                io.print(msg.as_bytes());
                 StepResult::Done(0)
             }
         }
     }
+}
+
+fn print_help(io: &mut IoAccess) {
+    io.println(b"Copies one or more files to another location.");
+    io.println(b"");
+    io.println(b"COPY [/V] [/Y] source destination");
+    io.println(b"COPY [/V] [/Y] source1+source2[+...] destination");
+    io.println(b"");
+    io.println(b"  /V  Verifies that new files are written correctly.");
+    io.println(b"  /Y  Overwrites existing files without prompting.");
 }
 
 fn init_copy(

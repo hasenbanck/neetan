@@ -2,7 +2,7 @@
 
 use crate::{
     DiskIo, IoAccess, OsState,
-    commands::{Command, RunningCommand, StepResult},
+    commands::{Command, RunningCommand, StepResult, is_help_request},
     filesystem::fat_dir,
 };
 
@@ -36,19 +36,28 @@ impl RunningCommand for RunningMd {
         disk: &mut dyn DiskIo,
     ) -> StepResult {
         let args = self.args.trim_ascii();
-        if args.is_empty() {
-            io.print_msg(b"Required parameter missing\r\n");
-            return StepResult::Done(1);
+        if is_help_request(&self.args) || args.is_empty() {
+            print_help(io);
+            return StepResult::Done(0);
         }
 
         match create_directory(state, io, disk, args) {
             Ok(()) => StepResult::Done(0),
             Err(msg) => {
-                io.print_msg(msg);
+                io.print(msg);
                 StepResult::Done(1)
             }
         }
     }
+}
+
+fn print_help(io: &mut IoAccess) {
+    io.println(b"Creates a directory.");
+    io.println(b"");
+    io.println(b"MD path");
+    io.println(b"MKDIR path");
+    io.println(b"");
+    io.println(b"  path  Specifies the directory to create.");
 }
 
 fn create_directory(

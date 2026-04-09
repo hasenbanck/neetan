@@ -2,7 +2,7 @@
 
 use crate::{
     DiskIo, IoAccess, OsState,
-    commands::{Command, RunningCommand, StepResult},
+    commands::{Command, RunningCommand, StepResult, is_help_request},
 };
 
 pub(crate) struct Ver;
@@ -12,12 +12,16 @@ impl Command for Ver {
         "VER"
     }
 
-    fn start(&self, _args: &[u8]) -> Box<dyn RunningCommand> {
-        Box::new(RunningVer)
+    fn start(&self, args: &[u8]) -> Box<dyn RunningCommand> {
+        Box::new(RunningVer {
+            args: args.to_vec(),
+        })
     }
 }
 
-struct RunningVer;
+struct RunningVer {
+    args: Vec<u8>,
+}
 
 impl RunningCommand for RunningVer {
     fn step(
@@ -26,6 +30,11 @@ impl RunningCommand for RunningVer {
         io: &mut IoAccess,
         _disk: &mut dyn DiskIo,
     ) -> StepResult {
+        if is_help_request(&self.args) {
+            print_help(io);
+            return StepResult::Done(0);
+        }
+
         let (major, minor) = state.version;
         let msg = format!("Neetan OS Version {}.{}\r\n\r\n", major, minor);
         for &byte in msg.as_bytes() {
@@ -33,4 +42,10 @@ impl RunningCommand for RunningVer {
         }
         StepResult::Done(0)
     }
+}
+
+fn print_help(io: &mut IoAccess) {
+    io.println(b"Displays the operating system version.");
+    io.println(b"");
+    io.println(b"VER");
 }

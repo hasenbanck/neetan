@@ -2,7 +2,7 @@
 
 use crate::{
     DiskIo, IoAccess, MemoryAccess, OsState,
-    commands::{Command, RunningCommand, StepResult},
+    commands::{Command, RunningCommand, StepResult, is_help_request},
     filesystem::fat_dir,
     tables,
 };
@@ -104,16 +104,22 @@ impl RunningCommand for RunningDir {
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, DirPhase::Init);
         match phase {
-            DirPhase::Init => match init_dir(state, io, disk, &self.args) {
-                Ok(dir_state) => {
-                    self.phase = DirPhase::CollectEntries(dir_state);
-                    StepResult::Continue
+            DirPhase::Init => {
+                if is_help_request(&self.args) {
+                    print_help(io);
+                    return StepResult::Done(0);
                 }
-                Err(msg) => {
-                    io.print_msg(msg);
-                    StepResult::Done(1)
+                match init_dir(state, io, disk, &self.args) {
+                    Ok(dir_state) => {
+                        self.phase = DirPhase::CollectEntries(dir_state);
+                        StepResult::Continue
+                    }
+                    Err(msg) => {
+                        io.print(msg);
+                        StepResult::Done(1)
+                    }
                 }
-            },
+            }
             DirPhase::CollectEntries(mut dir_state) => {
                 // Collect all matching entries from current directory
                 let vol = match state.fat_volumes[dir_state.drive_index as usize].as_ref() {
@@ -163,10 +169,10 @@ impl RunningCommand for RunningDir {
                     let label = get_volume_label(state, dir_state.drive_index, disk);
                     if let Some(label) = label {
                         let msg = format!(" Volume in drive {} is {}\r\n", drive_letter, label);
-                        io.print_msg(msg.as_bytes());
+                        io.print(msg.as_bytes());
                     } else {
                         let msg = format!(" Volume in drive {} has no label\r\n", drive_letter);
-                        io.print_msg(msg.as_bytes());
+                        io.print(msg.as_bytes());
                     }
 
                     let dir_path = if dir_state.current_path.is_empty() {
@@ -175,7 +181,7 @@ impl RunningCommand for RunningDir {
                         String::from_utf8_lossy(&dir_state.current_path).into_owned()
                     };
                     let msg = format!(" Directory of {}\r\n\r\n", dir_path);
-                    io.print_msg(msg.as_bytes());
+                    io.print(msg.as_bytes());
                 }
                 self.phase = DirPhase::Listing(dir_state);
                 StepResult::Continue
@@ -184,7 +190,7 @@ impl RunningCommand for RunningDir {
                 if dir_state.entry_index >= dir_state.entries.len() {
                     // Done with this directory's entries
                     if dir_state.wide && dir_state.wide_col > 0 {
-                        io.print_msg(b"\r\n");
+                        io.println(b"");
                         dir_state.wide_col = 0;
                     }
 
@@ -192,7 +198,7 @@ impl RunningCommand for RunningDir {
                         self.phase = DirPhase::NextSubdir(dir_state);
                     } else {
                         if dir_state.total_files == 0 {
-                            io.print_msg(b"File Not Found\r\n");
+                            io.println(b"File Not Found");
                             return StepResult::Done(1);
                         }
                         self.phase = DirPhase::Footer(dir_state);
@@ -244,11 +250,11 @@ impl RunningCommand for RunningDir {
                         "{:>9} file(s) {:>12} bytes\r\n",
                         dir_state.total_files, dir_state.total_bytes
                     );
-                    io.print_msg(msg.as_bytes());
+                    io.print(msg.as_bytes());
 
                     let free_bytes = calculate_free_space(state, dir_state.drive_index);
                     let msg = format!("{:>25} bytes free\r\n", free_bytes);
-                    io.print_msg(msg.as_bytes());
+                    io.print(msg.as_bytes());
                 }
                 StepResult::Done(0)
             }
@@ -308,13 +314,13 @@ impl RunningCommand for RunningDir {
                     dir_state.dir_cluster = cluster;
                     dir_state.current_path = path;
                     if !dir_state.bare {
-                        io.print_msg(b"\r\n");
+                        io.println(b"");
                     }
                     self.phase = DirPhase::CollectEntries(dir_state);
                 } else {
                     // No more subdirs
                     if dir_state.total_files == 0 {
-                        io.print_msg(b"File Not Found\r\n");
+                        io.println(b"File Not Found");
                         return StepResult::Done(1);
                     }
                     self.phase = DirPhase::Footer(dir_state);
@@ -323,6 +329,23 @@ impl RunningCommand for RunningDir {
             }
         }
     }
+}
+
+fn print_help(io: &mut IoAccess) {
+    io.println(b"Displays a list of files and subdirectories.");
+    io.println(b"");
+    io.println(b"DIR [path] [/W] [/B] [/P] [/S] [/O:sortorder] [/A:attributes]");
+    io.println(b"");
+    io.println(b"  path    Specifies drive, directory, or files to list.");
+    io.println(b"  /W      Uses wide list format.");
+    io.println(b"  /B      Uses bare format (no heading or summary).");
+    io.println(b"  /P      Pauses after each screenful.");
+    io.println(b"  /S      Displays files in specified directory and all");
+    io.println(b"          subdirectories.");
+    io.println(b"  /O:     Sort order: N by name, E by extension, S by size,");
+    io.println(b"          D by date. Prefix with - for descending.");
+    io.println(b"  /A:     Display files with specified attributes:");
+    io.println(b"          H hidden, S system, D directories, R read-only.");
 }
 
 fn should_show_entry(entry: &fat_dir::DirEntry, filter: &AttrFilter) -> bool {
@@ -619,10 +642,10 @@ fn format_standard(entry: &fat_dir::DirEntry, io: &mut IoAccess) {
     }
 
     if entry.attribute & fat_dir::ATTR_DIRECTORY != 0 {
-        io.print_msg(b"     <DIR>   ");
+        io.print(b"     <DIR>   ");
     } else {
         let size_str = format!("{:>10} ", entry.file_size);
-        io.print_msg(size_str.as_bytes());
+        io.print(size_str.as_bytes());
     }
 
     // Date: MM-DD-YY
@@ -630,7 +653,7 @@ fn format_standard(entry: &fat_dir::DirEntry, io: &mut IoAccess) {
     let month = (entry.date >> 5) & 0x0F;
     let day = entry.date & 0x1F;
     let date_str = format!("{:02}-{:02}-{:02}", month, day, year % 100);
-    io.print_msg(date_str.as_bytes());
+    io.print(date_str.as_bytes());
     io.output_byte(b' ');
     io.output_byte(b' ');
 
@@ -638,9 +661,9 @@ fn format_standard(entry: &fat_dir::DirEntry, io: &mut IoAccess) {
     let hour = (entry.time >> 11) & 0x1F;
     let minute = (entry.time >> 5) & 0x3F;
     let time_str = format!("{:02}:{:02}", hour, minute);
-    io.print_msg(time_str.as_bytes());
+    io.print(time_str.as_bytes());
 
-    io.print_msg(b"\r\n");
+    io.println(b"");
 }
 
 fn format_bare(entry: &fat_dir::DirEntry, io: &mut IoAccess) {
@@ -648,7 +671,7 @@ fn format_bare(entry: &fat_dir::DirEntry, io: &mut IoAccess) {
     for &byte in &display_name {
         io.output_byte(byte);
     }
-    io.print_msg(b"\r\n");
+    io.println(b"");
 }
 
 fn format_wide(entry: &fat_dir::DirEntry, dir_state: &mut DirState, io: &mut IoAccess) {
@@ -676,7 +699,7 @@ fn format_wide(entry: &fat_dir::DirEntry, dir_state: &mut DirState, io: &mut IoA
 
     dir_state.wide_col += 1;
     if dir_state.wide_col >= 5 {
-        io.print_msg(b"\r\n");
+        io.println(b"");
         dir_state.wide_col = 0;
     }
 }

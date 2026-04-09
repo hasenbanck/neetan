@@ -2,7 +2,7 @@
 
 use crate::{
     DiskIo, IoAccess, OsState,
-    commands::{Command, RunningCommand, StepResult},
+    commands::{Command, RunningCommand, StepResult, is_help_request},
     filesystem::fat_dir,
 };
 
@@ -75,16 +75,22 @@ impl RunningCommand for RunningXcopy {
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, XcopyPhase::Init);
         match phase {
-            XcopyPhase::Init => match init_xcopy(state, io, disk, &self.args) {
-                Ok(xcopy_state) => {
-                    self.phase = XcopyPhase::FindNext(xcopy_state);
-                    StepResult::Continue
+            XcopyPhase::Init => {
+                if is_help_request(&self.args) || self.args.trim_ascii().is_empty() {
+                    print_help(io);
+                    return StepResult::Done(0);
                 }
-                Err(msg) => {
-                    io.print_msg(msg);
-                    StepResult::Done(1)
+                match init_xcopy(state, io, disk, &self.args) {
+                    Ok(xcopy_state) => {
+                        self.phase = XcopyPhase::FindNext(xcopy_state);
+                        StepResult::Continue
+                    }
+                    Err(msg) => {
+                        io.print(msg);
+                        StepResult::Done(1)
+                    }
                 }
-            },
+            }
             XcopyPhase::FindNext(mut xcopy_state) => {
                 let vol = match state.fat_volumes[xcopy_state.src_drive as usize].as_ref() {
                     Some(v) => v,
@@ -115,14 +121,14 @@ impl RunningCommand for RunningXcopy {
                             for &byte in &display_name {
                                 io.output_byte(byte);
                             }
-                            io.print_msg(b" (Y/N)?");
+                            io.print(b" (Y/N)?");
                             self.phase = XcopyPhase::PromptFile(xcopy_state, entry);
                         } else {
                             let display_name = fat_dir::fcb_to_display_name(&entry.name);
                             for &byte in &display_name {
                                 io.output_byte(byte);
                             }
-                            io.print_msg(b"\r\n");
+                            io.println(b"");
 
                             self.start_file_copy(&mut xcopy_state, entry);
                         }
@@ -137,7 +143,7 @@ impl RunningCommand for RunningXcopy {
                         StepResult::Continue
                     }
                     Err(_) => {
-                        io.print_msg(b"File not found\r\n");
+                        io.println(b"File not found");
                         StepResult::Done(1)
                     }
                 }
@@ -172,7 +178,7 @@ impl RunningCommand for RunningXcopy {
                 let cluster_data = match vol.read_cluster(file_state.src_cluster, disk) {
                     Ok(d) => d,
                     Err(_) => {
-                        io.print_msg(b"Read error\r\n");
+                        io.println(b"Read error");
                         return StepResult::Done(1);
                     }
                 };
@@ -189,7 +195,7 @@ impl RunningCommand for RunningXcopy {
                 let new_cluster = match vol.allocate_cluster(file_state.dst_last_cluster) {
                     Some(c) => c,
                     None => {
-                        io.print_msg(b"Insufficient disk space\r\n");
+                        io.println(b"Insufficient disk space");
                         return StepResult::Done(1);
                     }
                 };
@@ -207,7 +213,7 @@ impl RunningCommand for RunningXcopy {
                 write_data.resize(cluster_size, 0);
 
                 if vol.write_cluster(new_cluster, &write_data, disk).is_err() {
-                    io.print_msg(b"Write error\r\n");
+                    io.println(b"Write error");
                     return StepResult::Done(1);
                 }
 
@@ -253,7 +259,7 @@ impl RunningCommand for RunningXcopy {
 
                 if fat_dir::create_entry(vol, file_state.dst_dir_cluster, &new_entry, disk).is_err()
                 {
-                    io.print_msg(b"Unable to create destination\r\n");
+                    io.println(b"Unable to create destination");
                     return StepResult::Done(1);
                 }
 
@@ -404,7 +410,7 @@ impl RunningCommand for RunningXcopy {
             }
             XcopyPhase::Summary(count) => {
                 let msg = format!("{} File(s) copied\r\n", count);
-                io.print_msg(msg.as_bytes());
+                io.print(msg.as_bytes());
                 StepResult::Done(0)
             }
         }
@@ -452,6 +458,20 @@ impl RunningXcopy {
             self.phase = XcopyPhase::ReadChunk(taken, file_state);
         }
     }
+}
+
+fn print_help(io: &mut IoAccess) {
+    io.println(b"Copies files and directory trees.");
+    io.println(b"");
+    io.println(b"XCOPY source destination [/S] [/E] [/P]");
+    io.println(b"");
+    io.println(b"  source       Specifies the file(s) to copy.");
+    io.println(b"  destination  Specifies the location of the new files.");
+    io.println(b"  /S           Copies directories and subdirectories except");
+    io.println(b"               empty ones.");
+    io.println(b"  /E           Copies directories and subdirectories, including");
+    io.println(b"               empty ones. Same as /S /E.");
+    io.println(b"  /P           Prompts before copying each file.");
 }
 
 fn is_directory_empty(

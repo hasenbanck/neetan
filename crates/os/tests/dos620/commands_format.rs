@@ -67,12 +67,13 @@ fn format_no_drive_argument() {
     type_string(&mut machine.bus, b"FORMAT\r");
     run_until_prompt(&mut machine);
 
-    let missing = [
-        0x0052, 0x0065, 0x0071, 0x0075, 0x0069, 0x0072, 0x0065, 0x0064,
-    ]; // "Required"
+    let help = [
+        0x0046, 0x004F, 0x0052, 0x004D, 0x0041, 0x0054, 0x0020, 0x0064,
+        0x0072, 0x0069, 0x0076, 0x0065, 0x003A,
+    ]; // "FORMAT drive:"
     assert!(
-        find_string_in_text_vram(&machine.bus, &missing),
-        "FORMAT with no args should show 'Required parameter missing'"
+        find_string_in_text_vram(&machine.bus, &help),
+        "FORMAT with no args should show help text"
     );
 }
 

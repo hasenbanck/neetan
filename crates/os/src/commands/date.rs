@@ -2,7 +2,7 @@
 
 use crate::{
     DiskIo, IoAccess, OsState,
-    commands::{Command, RunningCommand, StepResult},
+    commands::{Command, RunningCommand, StepResult, is_help_request},
 };
 
 pub(crate) struct Date;
@@ -12,12 +12,16 @@ impl Command for Date {
         "DATE"
     }
 
-    fn start(&self, _args: &[u8]) -> Box<dyn RunningCommand> {
-        Box::new(RunningDate)
+    fn start(&self, args: &[u8]) -> Box<dyn RunningCommand> {
+        Box::new(RunningDate {
+            args: args.to_vec(),
+        })
     }
 }
 
-struct RunningDate;
+struct RunningDate {
+    args: Vec<u8>,
+}
 
 impl RunningCommand for RunningDate {
     fn step(
@@ -26,6 +30,11 @@ impl RunningCommand for RunningDate {
         io: &mut IoAccess,
         _disk: &mut dyn DiskIo,
     ) -> StepResult {
+        if is_help_request(&self.args) {
+            print_help(io);
+            return StepResult::Done(0);
+        }
+
         // Hardcoded DOS date: 0x1E21 = 1995-01-01
         let date: u16 = 0x1E21;
         let year = ((date >> 9) & 0x7F) + 1980;
@@ -53,6 +62,12 @@ impl RunningCommand for RunningDate {
         }
         StepResult::Done(0)
     }
+}
+
+fn print_help(io: &mut IoAccess) {
+    io.println(b"Displays the date.");
+    io.println(b"");
+    io.println(b"DATE");
 }
 
 /// Zeller-like day-of-week calculation. Returns 0=Sun, 1=Mon, ..., 6=Sat.

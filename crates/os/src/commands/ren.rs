@@ -2,7 +2,7 @@
 
 use crate::{
     DiskIo, IoAccess, OsState,
-    commands::{Command, RunningCommand, StepResult},
+    commands::{Command, RunningCommand, StepResult, is_help_request},
     filesystem::fat_dir,
 };
 
@@ -36,16 +36,16 @@ impl RunningCommand for RunningRen {
         disk: &mut dyn DiskIo,
     ) -> StepResult {
         let args = self.args.trim_ascii();
-        if args.is_empty() {
-            io.print_msg(b"Required parameter missing\r\n");
-            return StepResult::Done(1);
+        if is_help_request(&self.args) || args.is_empty() {
+            print_help(io);
+            return StepResult::Done(0);
         }
 
         // Split into source and dest
         let (source, dest) = match split_two_args(args) {
             Some(pair) => pair,
             None => {
-                io.print_msg(b"Required parameter missing\r\n");
+                io.println(b"Required parameter missing");
                 return StepResult::Done(1);
             }
         };
@@ -53,11 +53,21 @@ impl RunningCommand for RunningRen {
         match rename_files(state, io, disk, source, dest) {
             Ok(()) => StepResult::Done(0),
             Err(msg) => {
-                io.print_msg(msg);
+                io.print(msg);
                 StepResult::Done(1)
             }
         }
     }
+}
+
+fn print_help(io: &mut IoAccess) {
+    io.println(b"Renames a file or files.");
+    io.println(b"");
+    io.println(b"REN oldname newname");
+    io.println(b"RENAME oldname newname");
+    io.println(b"");
+    io.println(b"  oldname  Specifies the file(s) to rename. Wildcards allowed.");
+    io.println(b"  newname  Specifies the new name for the file(s).");
 }
 
 fn split_two_args(args: &[u8]) -> Option<(&[u8], &[u8])> {
@@ -118,7 +128,7 @@ fn rename_files(
                         .map_err(|_| &b"Duplicate file name or file not found\r\n"[..])?
                         .is_some()
                     {
-                        io.print_msg(b"Duplicate file name or file not found\r\n");
+                        io.println(b"Duplicate file name or file not found");
                         start_index = next_index;
                         continue;
                     }

@@ -210,7 +210,7 @@ impl BatchState {
 
         // Echo the line if echo is on and not suppressed
         if self.echo_on && !suppress_echo {
-            io.print_msg(&effective_line);
+            io.print(&effective_line);
             io.console.process_byte(io.memory, b'\r');
             io.console.process_byte(io.memory, b'\n');
         }
@@ -247,7 +247,7 @@ impl BatchState {
 
         // PAUSE
         if upper == b"PAUSE" || upper.starts_with(b"PAUSE ") {
-            io.print_msg(b"Press any key to continue . . .\r\n");
+            io.println(b"Press any key to continue . . .");
             self.paused = true;
             return BatchStepResult::Continue;
         }
@@ -264,7 +264,7 @@ impl BatchState {
             if let Some(target) = self.find_label(label) {
                 self.current_line = target + 1; // skip the label line itself
             } else {
-                io.print_msg(b"Label not found\r\n");
+                io.println(b"Label not found");
                 return BatchStepResult::Finished;
             }
             return BatchStepResult::Continue;
@@ -410,14 +410,14 @@ impl BatchState {
             match state.resolve_file_path(&full_name, io.memory, disk) {
                 Ok(r) => r,
                 Err(_) => {
-                    io.print_msg(b"Batch file not found\r\n");
+                    io.println(b"Batch file not found");
                     self.current_line += 1;
                     return;
                 }
             };
 
         if drive_index == 25 {
-            io.print_msg(b"Access denied\r\n");
+            io.println(b"Access denied");
             self.current_line += 1;
             return;
         }
@@ -433,7 +433,7 @@ impl BatchState {
         let entry = match fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk) {
             Ok(Some(e)) => e,
             _ => {
-                io.print_msg(b"Batch file not found\r\n");
+                io.println(b"Batch file not found");
                 self.current_line += 1;
                 return;
             }
@@ -442,7 +442,7 @@ impl BatchState {
         let new_lines = match load_bat_file(vol, &entry, disk) {
             Ok(l) => l,
             Err(_) => {
-                io.print_msg(b"Error reading batch file\r\n");
+                io.println(b"Error reading batch file");
                 self.current_line += 1;
                 return;
             }

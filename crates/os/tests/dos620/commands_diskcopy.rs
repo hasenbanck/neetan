@@ -62,11 +62,11 @@ fn diskcopy_no_arguments() {
     type_string(&mut machine.bus, b"DISKCOPY\r");
     run_until_prompt(&mut machine);
 
-    let missing = [
-        0x0052, 0x0065, 0x0071, 0x0075, 0x0069, 0x0072, 0x0065, 0x0064,
-    ]; // "Required"
+    let help = [
+        0x0044, 0x0049, 0x0053, 0x004B, 0x0043, 0x004F, 0x0050, 0x0059,
+    ]; // "DISKCOPY"
     assert!(
-        find_string_in_text_vram(&machine.bus, &missing),
-        "DISKCOPY with no args should show 'Required parameter missing'"
+        find_string_in_text_vram(&machine.bus, &help),
+        "DISKCOPY with no args should show help text"
     );
 }

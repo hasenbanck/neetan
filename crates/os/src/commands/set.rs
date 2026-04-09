@@ -2,7 +2,7 @@
 
 use crate::{
     DiskIo, IoAccess, OsState,
-    commands::{Command, RunningCommand, StepResult},
+    commands::{Command, RunningCommand, StepResult, is_help_request},
     tables,
 };
 
@@ -33,6 +33,11 @@ impl RunningCommand for RunningSet {
     ) -> StepResult {
         let args = self.args.trim_ascii();
 
+        if is_help_request(&self.args) {
+            print_help(io);
+            return StepResult::Done(0);
+        }
+
         if args.is_empty() {
             dump_environment(state, io);
             return StepResult::Done(0);
@@ -50,6 +55,18 @@ impl RunningCommand for RunningSet {
 
         StepResult::Done(0)
     }
+}
+
+fn print_help(io: &mut IoAccess) {
+    io.println(b"Displays, sets, or removes environment variables.");
+    io.println(b"");
+    io.println(b"SET [variable=[value]]");
+    io.println(b"");
+    io.println(b"  variable  Specifies the environment variable name.");
+    io.println(b"  value     Specifies the value to assign. If omitted, the");
+    io.println(b"            variable is removed.");
+    io.println(b"");
+    io.println(b"Type SET without parameters to display all variables.");
 }
 
 fn env_base(state: &OsState, memory: &dyn crate::MemoryAccess) -> u32 {

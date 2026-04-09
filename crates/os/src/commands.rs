@@ -58,3 +58,9 @@ pub(crate) trait RunningCommand {
     fn step(&mut self, state: &mut OsState, io: &mut IoAccess, disk: &mut dyn DiskIo)
     -> StepResult;
 }
+
+pub(crate) fn is_help_request(args: &[u8]) -> bool {
+    args.trim_ascii()
+        .split(|&b| b == b' ' || b == b'\t')
+        .any(|token| token == b"/?")
+}

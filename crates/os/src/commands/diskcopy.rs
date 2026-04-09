@@ -2,7 +2,7 @@
 
 use crate::{
     DiskIo, IoAccess, OsState,
-    commands::{Command, RunningCommand, StepResult},
+    commands::{Command, RunningCommand, StepResult, is_help_request},
     filesystem, tables,
 };
 
@@ -62,34 +62,43 @@ impl RunningCommand for RunningDiskcopy {
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, DiskcopyPhase::Init);
         match phase {
-            DiskcopyPhase::Init => match init_diskcopy(io, disk, &self.args) {
-                Ok(diskcopy_state) => {
-                    if diskcopy_state.same_drive {
-                        let drive_letter = (b'A' + diskcopy_state.src_drive_index) as char;
-                        let msg = format!(
-                            "Insert SOURCE diskette in drive {}:\r\nPress any key to continue . . .",
-                            drive_letter
-                        );
-                        io.print_msg(msg.as_bytes());
-                        self.phase = DiskcopyPhase::PromptInsertSource(diskcopy_state);
-                    } else {
-                        io.print_msg(b"\r\nReading from source disk . . .\r\n");
-                        self.phase = DiskcopyPhase::ReadTracks(diskcopy_state);
+            DiskcopyPhase::Init => {
+                if is_help_request(&self.args) || self.args.trim_ascii().is_empty() {
+                    print_help(io);
+                    return StepResult::Done(0);
+                }
+                match init_diskcopy(io, disk, &self.args) {
+                    Ok(diskcopy_state) => {
+                        if diskcopy_state.same_drive {
+                            let drive_letter = (b'A' + diskcopy_state.src_drive_index) as char;
+                            let msg = format!(
+                                "Insert SOURCE diskette in drive {}:\r\nPress any key to continue . . .",
+                                drive_letter
+                            );
+                            io.print(msg.as_bytes());
+                            self.phase = DiskcopyPhase::PromptInsertSource(diskcopy_state);
+                        } else {
+                            io.println(b"");
+                            io.println(b"Reading from source disk . . .");
+                            self.phase = DiskcopyPhase::ReadTracks(diskcopy_state);
+                        }
+                        StepResult::Continue
                     }
-                    StepResult::Continue
+                    Err(msg) => {
+                        io.print(msg);
+                        StepResult::Done(1)
+                    }
                 }
-                Err(msg) => {
-                    io.print_msg(msg);
-                    StepResult::Done(1)
-                }
-            },
+            }
             DiskcopyPhase::PromptInsertSource(diskcopy_state) => {
                 if io.memory.read_byte(KB_BUF_COUNT) == 0 {
                     self.phase = DiskcopyPhase::PromptInsertSource(diskcopy_state);
                     return StepResult::Continue;
                 }
                 consume_key(io);
-                io.print_msg(b"\r\n\r\nReading from source disk . . .\r\n");
+                io.println(b"");
+                io.println(b"");
+                io.println(b"Reading from source disk . . .");
                 self.phase = DiskcopyPhase::ReadTracks(diskcopy_state);
                 StepResult::Continue
             }
@@ -101,11 +110,12 @@ impl RunningCommand for RunningDiskcopy {
                             "\r\nInsert DESTINATION diskette in drive {}:\r\nPress any key to continue . . .",
                             drive_letter
                         );
-                        io.print_msg(msg.as_bytes());
+                        io.print(msg.as_bytes());
                         diskcopy_state.current_track = 0;
                         self.phase = DiskcopyPhase::PromptInsertDest(diskcopy_state);
                     } else {
-                        io.print_msg(b"\r\nWriting to destination disk . . .\r\n");
+                        io.println(b"");
+                        io.println(b"Writing to destination disk . . .");
                         diskcopy_state.current_track = 0;
                         self.phase = DiskcopyPhase::WriteTracks(diskcopy_state);
                     }
@@ -125,7 +135,7 @@ impl RunningCommand for RunningDiskcopy {
                         StepResult::Continue
                     }
                     Err(_) => {
-                        io.print_msg(b"Read error on source disk\r\n");
+                        io.println(b"Read error on source disk");
                         StepResult::Done(1)
                     }
                 }
@@ -136,14 +146,17 @@ impl RunningCommand for RunningDiskcopy {
                     return StepResult::Continue;
                 }
                 consume_key(io);
-                io.print_msg(b"\r\n\r\nWriting to destination disk . . .\r\n");
+                io.println(b"");
+                io.println(b"");
+                io.println(b"Writing to destination disk . . .");
                 self.phase = DiskcopyPhase::WriteTracks(diskcopy_state);
                 StepResult::Continue
             }
             DiskcopyPhase::WriteTracks(mut diskcopy_state) => {
                 if diskcopy_state.current_track >= diskcopy_state.total_tracks {
                     if diskcopy_state.verify {
-                        io.print_msg(b"\r\nVerifying . . .\r\n");
+                        io.println(b"");
+                        io.println(b"Verifying . . .");
                         diskcopy_state.current_track = 0;
                         self.phase = DiskcopyPhase::VerifyTracks(diskcopy_state);
                     } else {
@@ -163,7 +176,7 @@ impl RunningCommand for RunningDiskcopy {
                     .write_sectors(diskcopy_state.dst_da_ua, lba, track_data)
                     .is_err()
                 {
-                    io.print_msg(b"Write error on destination disk\r\n");
+                    io.println(b"Write error on destination disk");
                     return StepResult::Done(1);
                 }
 
@@ -191,12 +204,12 @@ impl RunningCommand for RunningDiskcopy {
                 ) {
                     Ok(readback) => {
                         if readback[..track_size] != expected[..track_size] {
-                            io.print_msg(b"Verify error\r\n");
+                            io.println(b"Verify error");
                             return StepResult::Done(1);
                         }
                     }
                     Err(_) => {
-                        io.print_msg(b"Verify error\r\n");
+                        io.println(b"Verify error");
                         return StepResult::Done(1);
                     }
                 }
@@ -206,12 +219,13 @@ impl RunningCommand for RunningDiskcopy {
                 StepResult::Continue
             }
             DiskcopyPhase::Summary(diskcopy_state) => {
-                io.print_msg(b"\r\nCopy complete.\r\n");
+                io.println(b"");
+                io.println(b"Copy complete.");
 
                 // Invalidate destination volume cache
                 state.fat_volumes[diskcopy_state.dst_drive_index as usize] = None;
 
-                io.print_msg(b"\r\nCopy another diskette (Y/N)?");
+                io.print(b"\r\nCopy another diskette (Y/N)?");
                 self.phase = DiskcopyPhase::PromptAnother(diskcopy_state);
                 StepResult::Continue
             }
@@ -221,7 +235,7 @@ impl RunningCommand for RunningDiskcopy {
                     return StepResult::Continue;
                 }
                 let key = consume_key(io);
-                io.print_msg(b"\r\n");
+                io.println(b"");
 
                 match key.to_ascii_uppercase() {
                     b'Y' => {
@@ -233,10 +247,11 @@ impl RunningCommand for RunningDiskcopy {
                                 "\r\nInsert SOURCE diskette in drive {}:\r\nPress any key to continue . . .",
                                 drive_letter
                             );
-                            io.print_msg(msg.as_bytes());
+                            io.print(msg.as_bytes());
                             self.phase = DiskcopyPhase::PromptInsertSource(diskcopy_state);
                         } else {
-                            io.print_msg(b"\r\nReading from source disk . . .\r\n");
+                            io.println(b"");
+                            io.println(b"Reading from source disk . . .");
                             self.phase = DiskcopyPhase::ReadTracks(diskcopy_state);
                         }
                         StepResult::Continue
@@ -246,6 +261,16 @@ impl RunningCommand for RunningDiskcopy {
             }
         }
     }
+}
+
+fn print_help(io: &mut IoAccess) {
+    io.println(b"Copies the contents of one floppy disk to another.");
+    io.println(b"");
+    io.println(b"DISKCOPY [/V] source: [destination:]");
+    io.println(b"");
+    io.println(b"  source:       Drive containing the source disk.");
+    io.println(b"  destination:  Drive for the destination disk.");
+    io.println(b"  /V            Verifies that the copy is made correctly.");
 }
 
 fn init_diskcopy(

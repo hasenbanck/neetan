@@ -2,7 +2,7 @@
 
 use crate::{
     DiskIo, IoAccess, OsState,
-    commands::{Command, RunningCommand, StepResult},
+    commands::{Command, RunningCommand, StepResult, is_help_request},
     filesystem::fat_dir,
 };
 
@@ -98,9 +98,9 @@ impl RunningCommand for RunningType {
         match phase {
             TypePhase::Init => {
                 let args = self.args.trim_ascii();
-                if args.is_empty() {
-                    io.print_msg(b"Required parameter missing\r\n");
-                    return StepResult::Done(1);
+                if is_help_request(&self.args) || args.is_empty() {
+                    print_help(io);
+                    return StepResult::Done(0);
                 }
 
                 match init_type(state, io, disk, args) {
@@ -109,7 +109,7 @@ impl RunningCommand for RunningType {
                         StepResult::Continue
                     }
                     Err(msg) => {
-                        io.print_msg(msg);
+                        io.print(msg);
                         StepResult::Done(1)
                     }
                 }
@@ -117,6 +117,14 @@ impl RunningCommand for RunningType {
             TypePhase::Outputting(read) => self.do_output(state, io, disk, read),
         }
     }
+}
+
+fn print_help(io: &mut IoAccess) {
+    io.println(b"Displays the contents of a text file.");
+    io.println(b"");
+    io.println(b"TYPE filename");
+    io.println(b"");
+    io.println(b"  filename  Specifies the file to display.");
 }
 
 fn init_type(

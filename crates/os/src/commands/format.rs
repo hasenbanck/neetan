@@ -2,7 +2,7 @@
 
 use crate::{
     DiskIo, IoAccess, OsState,
-    commands::{Command, RunningCommand, StepResult},
+    commands::{Command, RunningCommand, StepResult, is_help_request},
     filesystem, tables,
 };
 
@@ -148,29 +148,35 @@ impl RunningCommand for RunningFormat {
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, FormatPhase::Init);
         match phase {
-            FormatPhase::Init => match init_format(state, io, disk, &self.args) {
-                Ok(format_state) => {
-                    let drive_letter = (b'A' + format_state.drive_index) as char;
-                    let msg = format!(
-                        "\r\nWARNING, ALL DATA ON DRIVE {}: WILL BE LOST!\r\nProceed with Format (Y/N)?",
-                        drive_letter
-                    );
-                    io.print_msg(msg.as_bytes());
-                    self.phase = FormatPhase::Confirm(format_state);
-                    StepResult::Continue
+            FormatPhase::Init => {
+                if is_help_request(&self.args) || self.args.trim_ascii().is_empty() {
+                    print_help(io);
+                    return StepResult::Done(0);
                 }
-                Err(msg) => {
-                    io.print_msg(msg);
-                    StepResult::Done(1)
+                match init_format(state, io, disk, &self.args) {
+                    Ok(format_state) => {
+                        let drive_letter = (b'A' + format_state.drive_index) as char;
+                        let msg = format!(
+                            "\r\nWARNING, ALL DATA ON DRIVE {}: WILL BE LOST!\r\nProceed with Format (Y/N)?",
+                            drive_letter
+                        );
+                        io.print(msg.as_bytes());
+                        self.phase = FormatPhase::Confirm(format_state);
+                        StepResult::Continue
+                    }
+                    Err(msg) => {
+                        io.print(msg);
+                        StepResult::Done(1)
+                    }
                 }
-            },
+            }
             FormatPhase::Confirm(format_state) => {
                 if io.memory.read_byte(KB_BUF_COUNT) == 0 {
                     self.phase = FormatPhase::Confirm(format_state);
                     return StepResult::Continue;
                 }
                 let key = consume_key(io);
-                io.print_msg(b"\r\n");
+                io.println(b"");
 
                 match key.to_ascii_uppercase() {
                     b'Y' => {
@@ -184,7 +190,7 @@ impl RunningCommand for RunningFormat {
                         StepResult::Continue
                     }
                     _ => {
-                        io.print_msg(b"Format terminated.\r\n");
+                        io.println(b"Format terminated.");
                         StepResult::Done(0)
                     }
                 }
@@ -204,7 +210,7 @@ impl RunningCommand for RunningFormat {
                     .write_sectors(format_state.da_ua, lba, &fill_data)
                     .is_err()
                 {
-                    io.print_msg(b"Write error during format\r\n");
+                    io.println(b"Write error during format");
                     return StepResult::Done(1);
                 }
 
@@ -218,7 +224,7 @@ impl RunningCommand for RunningFormat {
                 // Sector 0: IPL (clear to zeros)
                 let ipl = vec![0u8; ss];
                 if disk.write_sectors(format_state.da_ua, 0, &ipl).is_err() {
-                    io.print_msg(b"Write error\r\n");
+                    io.println(b"Write error");
                     return StepResult::Done(1);
                 }
 
@@ -259,7 +265,7 @@ impl RunningCommand for RunningFormat {
                     .write_sectors(format_state.da_ua, 1, &part_sector)
                     .is_err()
                 {
-                    io.print_msg(b"Write error\r\n");
+                    io.println(b"Write error");
                     return StepResult::Done(1);
                 }
 
@@ -300,7 +306,7 @@ impl RunningCommand for RunningFormat {
                         .write_sectors(format_state.da_ua, format_state.partition_offset, &boot)
                         .is_err()
                     {
-                        io.print_msg(b"Write error\r\n");
+                        io.println(b"Write error");
                         return StepResult::Done(1);
                     }
                 } else {
@@ -326,7 +332,7 @@ impl RunningCommand for RunningFormat {
                     boot[26..28].copy_from_slice(&(format_state.heads as u16).to_le_bytes());
 
                     if disk.write_sectors(format_state.da_ua, 0, &boot).is_err() {
-                        io.print_msg(b"Write error\r\n");
+                        io.println(b"Write error");
                         return StepResult::Done(1);
                     }
                 }
@@ -370,7 +376,7 @@ impl RunningCommand for RunningFormat {
                         .write_sectors(format_state.da_ua, fat_lba, &fat_data)
                         .is_err()
                     {
-                        io.print_msg(b"Write error\r\n");
+                        io.println(b"Write error");
                         return StepResult::Done(1);
                     }
                 }
@@ -404,7 +410,7 @@ impl RunningCommand for RunningFormat {
                     .write_sectors(format_state.da_ua, root_base, &root_data)
                     .is_err()
                 {
-                    io.print_msg(b"Write error\r\n");
+                    io.println(b"Write error");
                     return StepResult::Done(1);
                 }
 
@@ -431,7 +437,7 @@ impl RunningCommand for RunningFormat {
                     )
                     .is_err()
                 {
-                    io.print_msg(b"Verify error\r\n");
+                    io.println(b"Verify error");
                     return StepResult::Done(1);
                 }
 
@@ -464,11 +470,12 @@ impl RunningCommand for RunningFormat {
                 let data_sectors = volume_sectors.saturating_sub(system_sectors);
                 let available_bytes = data_sectors as u64 * format_state.sector_size as u64;
 
-                io.print_msg(b"Format complete.\r\n\r\n");
+                io.println(b"Format complete.");
+                io.println(b"");
                 let msg = format!("  {:>12} bytes total disk space\r\n", total_bytes);
-                io.print_msg(msg.as_bytes());
+                io.print(msg.as_bytes());
                 let msg = format!("  {:>12} bytes available on disk\r\n", available_bytes);
-                io.print_msg(msg.as_bytes());
+                io.print(msg.as_bytes());
 
                 // Invalidate cached volume so next access re-mounts from fresh disk
                 state.fat_volumes[format_state.drive_index as usize] = None;
@@ -477,6 +484,16 @@ impl RunningCommand for RunningFormat {
             }
         }
     }
+}
+
+fn print_help(io: &mut IoAccess) {
+    io.println(b"Formats a disk for use with the operating system.");
+    io.println(b"");
+    io.println(b"FORMAT drive: [/Q] [/V]");
+    io.println(b"");
+    io.println(b"  drive:  Specifies the drive to format.");
+    io.println(b"  /Q      Performs a quick format.");
+    io.println(b"  /V      Verifies sectors after formatting.");
 }
 
 fn init_format(

@@ -401,10 +401,17 @@ impl IoAccess<'_> {
     }
 
     /// Prints the given message to the current output target.
-    pub(crate) fn print_msg(&mut self, msg: &[u8]) {
+    pub(crate) fn print(&mut self, msg: &[u8]) {
         for &byte in msg {
             self.output_byte(byte);
         }
+    }
+
+    /// Prints the given message followed by a CR+LF to the current output target.
+    pub(crate) fn println(&mut self, msg: &[u8]) {
+        self.print(msg);
+        self.output_byte(b'\r');
+        self.output_byte(b'\n');
     }
 }
 

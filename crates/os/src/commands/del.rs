@@ -2,7 +2,7 @@
 
 use crate::{
     DiskIo, IoAccess, OsState,
-    commands::{Command, RunningCommand, StepResult},
+    commands::{Command, RunningCommand, StepResult, is_help_request},
     filesystem::fat_dir,
 };
 
@@ -60,9 +60,9 @@ impl RunningCommand for RunningDel {
         match phase {
             DelPhase::Init => {
                 let args = self.args.trim_ascii().to_vec();
-                if args.is_empty() {
-                    io.print_msg(b"Required parameter missing\r\n");
-                    return StepResult::Done(1);
+                if is_help_request(&args) || args.is_empty() {
+                    print_help(io);
+                    return StepResult::Done(0);
                 }
 
                 let (path, has_prompt) = parse_switches(&args);
@@ -72,13 +72,13 @@ impl RunningCommand for RunningDel {
                     match state.resolve_file_path(&path, io.memory, disk) {
                         Ok(r) => r,
                         Err(_) => {
-                            io.print_msg(b"File not found\r\n");
+                            io.println(b"File not found");
                             return StepResult::Done(1);
                         }
                     };
 
                 if drive_index == 25 {
-                    io.print_msg(b"Access denied\r\n");
+                    io.println(b"Access denied");
                     return StepResult::Done(1);
                 }
 
@@ -100,7 +100,7 @@ impl RunningCommand for RunningDel {
                 let is_all_wildcard = filename_part == b"*.*" || filename_part == b"*";
 
                 if is_all_wildcard && !has_prompt {
-                    io.print_msg(b"All files in directory will be deleted!\r\nAre you sure (Y/N)?");
+                    io.print(b"All files in directory will be deleted!\r\nAre you sure (Y/N)?");
                     self.phase = DelPhase::ConfirmAll(del_state);
                 } else {
                     self.phase = DelPhase::DeleteNext(del_state);
@@ -158,7 +158,7 @@ impl RunningCommand for RunningDel {
                             for &b in &display {
                                 io.output_byte(b);
                             }
-                            io.print_msg(b", Delete (Y/N)?");
+                            io.print(b", Delete (Y/N)?");
                             self.phase = DelPhase::PromptFile(del_state, entry);
                         } else {
                             // No prompt: delete immediately
@@ -178,14 +178,14 @@ impl RunningCommand for RunningDel {
                     }
                     Ok(None) => {
                         if !del_state.deleted_any {
-                            io.print_msg(b"File not found\r\n");
+                            io.println(b"File not found");
                             return StepResult::Done(1);
                         }
                         self.phase = DelPhase::Flush(del_state);
                         StepResult::Continue
                     }
                     Err(_) => {
-                        io.print_msg(b"File not found\r\n");
+                        io.println(b"File not found");
                         StepResult::Done(1)
                     }
                 }
@@ -224,6 +224,17 @@ impl RunningCommand for RunningDel {
             }
         }
     }
+}
+
+fn print_help(io: &mut IoAccess) {
+    io.println(b"Deletes one or more files.");
+    io.println(b"");
+    io.println(b"DEL [/P] filename");
+    io.println(b"ERASE [/P] filename");
+    io.println(b"");
+    io.println(b"  filename  Specifies the file(s) to delete. Use wildcards to");
+    io.println(b"            delete multiple files.");
+    io.println(b"  /P        Prompts for confirmation before deleting each file.");
 }
 
 fn parse_switches(args: &[u8]) -> (&[u8], bool) {

@@ -2,7 +2,7 @@
 
 use crate::{
     DiskIo, IoAccess, OsState,
-    commands::{Command, RunningCommand, StepResult},
+    commands::{Command, RunningCommand, StepResult, is_help_request},
     filesystem::fat_dir,
 };
 
@@ -36,19 +36,29 @@ impl RunningCommand for RunningRd {
         disk: &mut dyn DiskIo,
     ) -> StepResult {
         let args = self.args.trim_ascii();
-        if args.is_empty() {
-            io.print_msg(b"Required parameter missing\r\n");
-            return StepResult::Done(1);
+        if is_help_request(&self.args) || args.is_empty() {
+            print_help(io);
+            return StepResult::Done(0);
         }
 
         match remove_directory(state, io, disk, args) {
             Ok(()) => StepResult::Done(0),
             Err(msg) => {
-                io.print_msg(msg);
+                io.print(msg);
                 StepResult::Done(1)
             }
         }
     }
+}
+
+fn print_help(io: &mut IoAccess) {
+    io.println(b"Removes a directory.");
+    io.println(b"");
+    io.println(b"RD path");
+    io.println(b"RMDIR path");
+    io.println(b"");
+    io.println(b"  path  Specifies the directory to remove. The directory must");
+    io.println(b"        be empty before it can be removed.");
 }
 
 fn remove_directory(

@@ -164,7 +164,7 @@ impl Shell {
                 if !self.boot_banner_shown {
                     let (major, minor) = state.version;
                     let msg = format!("Neetan OS Version {}.{}\r\n\r\n", major, minor);
-                    io.print_msg(msg.as_bytes());
+                    io.print(msg.as_bytes());
                     self.boot_banner_shown = true;
                 }
                 if let Some(drive) = self.pending_drive_change.take() {
@@ -413,7 +413,7 @@ impl Shell {
                     self.pipe_input = Some(data);
                 }
                 Err(msg) => {
-                    io.print_msg(msg);
+                    io.print(msg);
                     self.current_redirect = None;
                     self.redirect_buffer = None;
                     return ShellPhase::ShowPrompt;
@@ -470,7 +470,7 @@ impl Shell {
             let cds_addr = tables::CDS_BASE + (drive_index as u32) * tables::CDS_ENTRY_SIZE;
             let cds_flags = io.memory.read_word(cds_addr + tables::CDS_OFF_FLAGS);
             if cds_flags == 0 {
-                io.print_msg(b"Invalid drive\r\n");
+                io.println(b"Invalid drive");
                 self.last_exit_code = 1;
                 return ShellPhase::ShowPrompt;
             }
@@ -486,7 +486,7 @@ impl Shell {
                     b"\r\n",
                 ]
                 .concat();
-                io.print_msg(&msg);
+                io.print(&msg);
                 self.last_exit_code = 1;
                 return ShellPhase::ShowPrompt;
             }
@@ -522,7 +522,7 @@ impl Shell {
                     return ShellPhase::ExecutingBatch(Box::new(bat_state));
                 }
                 Err(_) => {
-                    io.print_msg(b"Error reading batch file\r\n");
+                    io.println(b"Error reading batch file");
                     return ShellPhase::ShowPrompt;
                 }
             }
@@ -538,7 +538,7 @@ impl Shell {
             return ShellPhase::WaitingForChild;
         }
 
-        io.print_msg(b"Bad command or file name\r\n");
+        io.println(b"Bad command or file name");
         self.last_exit_code = 1;
 
         ShellPhase::ShowPrompt
@@ -574,7 +574,7 @@ impl Shell {
                     self.pipe_input = Some(data);
                 }
                 Err(msg) => {
-                    io.print_msg(msg);
+                    io.print(msg);
                     self.current_redirect = None;
                     self.redirect_buffer = None;
                     return ShellPhase::ShowPrompt;

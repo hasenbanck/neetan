@@ -2,7 +2,7 @@
 
 use crate::{
     DiskIo, IoAccess, OsState,
-    commands::{Command, RunningCommand, StepResult},
+    commands::{Command, RunningCommand, StepResult, is_help_request},
 };
 
 pub(crate) struct Cls;
@@ -12,12 +12,16 @@ impl Command for Cls {
         "CLS"
     }
 
-    fn start(&self, _args: &[u8]) -> Box<dyn RunningCommand> {
-        Box::new(RunningCls)
+    fn start(&self, args: &[u8]) -> Box<dyn RunningCommand> {
+        Box::new(RunningCls {
+            args: args.to_vec(),
+        })
     }
 }
 
-struct RunningCls;
+struct RunningCls {
+    args: Vec<u8>,
+}
 
 impl RunningCommand for RunningCls {
     fn step(
@@ -26,7 +30,17 @@ impl RunningCommand for RunningCls {
         io: &mut IoAccess,
         _disk: &mut dyn DiskIo,
     ) -> StepResult {
+        if is_help_request(&self.args) {
+            print_help(io);
+            return StepResult::Done(0);
+        }
         io.console.clear_screen(io.memory);
         StepResult::Done(0)
     }
+}
+
+fn print_help(io: &mut IoAccess) {
+    io.println(b"Clears the screen.");
+    io.println(b"");
+    io.println(b"CLS");
 }

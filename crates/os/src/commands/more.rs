@@ -2,7 +2,7 @@
 
 use crate::{
     DiskIo, IoAccess, OsState,
-    commands::{Command, RunningCommand, StepResult},
+    commands::{Command, RunningCommand, StepResult, is_help_request},
     filesystem::fat_dir,
 };
 
@@ -67,7 +67,7 @@ impl RunningMore {
                 if byte == b'\n' {
                     lines_shown += 1;
                     if lines_shown >= LINES_PER_PAGE {
-                        io.print_msg(b"-- More --");
+                        io.print(b"-- More --");
                         read.offset += 1;
                         read.remaining -= 1;
                         self.phase = MorePhase::WaitKey(read);
@@ -117,9 +117,9 @@ impl RunningCommand for RunningMore {
         match phase {
             MorePhase::Init => {
                 let args = self.args.trim_ascii();
-                if args.is_empty() {
-                    io.print_msg(b"Required parameter missing\r\n");
-                    return StepResult::Done(1);
+                if is_help_request(&self.args) || args.is_empty() {
+                    print_help(io);
+                    return StepResult::Done(0);
                 }
 
                 match init_more(state, io, disk, args) {
@@ -128,7 +128,7 @@ impl RunningCommand for RunningMore {
                         StepResult::Continue
                     }
                     Err(msg) => {
-                        io.print_msg(msg);
+                        io.print(msg);
                         StepResult::Done(1)
                     }
                 }
@@ -156,6 +156,14 @@ impl RunningCommand for RunningMore {
             }
         }
     }
+}
+
+fn print_help(io: &mut IoAccess) {
+    io.println(b"Displays output one screen at a time.");
+    io.println(b"");
+    io.println(b"MORE filename");
+    io.println(b"");
+    io.println(b"  filename  Specifies the file to display.");
 }
 
 fn init_more(

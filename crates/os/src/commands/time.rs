@@ -2,7 +2,7 @@
 
 use crate::{
     DiskIo, IoAccess, OsState,
-    commands::{Command, RunningCommand, StepResult},
+    commands::{Command, RunningCommand, StepResult, is_help_request},
 };
 
 pub(crate) struct Time;
@@ -12,12 +12,16 @@ impl Command for Time {
         "TIME"
     }
 
-    fn start(&self, _args: &[u8]) -> Box<dyn RunningCommand> {
-        Box::new(RunningTime)
+    fn start(&self, args: &[u8]) -> Box<dyn RunningCommand> {
+        Box::new(RunningTime {
+            args: args.to_vec(),
+        })
     }
 }
 
-struct RunningTime;
+struct RunningTime {
+    args: Vec<u8>,
+}
 
 impl RunningCommand for RunningTime {
     fn step(
@@ -26,6 +30,11 @@ impl RunningCommand for RunningTime {
         io: &mut IoAccess,
         _disk: &mut dyn DiskIo,
     ) -> StepResult {
+        if is_help_request(&self.args) {
+            print_help(io);
+            return StepResult::Done(0);
+        }
+
         // Hardcoded DOS time: 0x6000 = 12:00:00
         let time: u16 = 0x6000;
         let hour = (time >> 11) & 0x1F;
@@ -41,4 +50,10 @@ impl RunningCommand for RunningTime {
         }
         StepResult::Done(0)
     }
+}
+
+fn print_help(io: &mut IoAccess) {
+    io.println(b"Displays the time.");
+    io.println(b"");
+    io.println(b"TIME");
 }
