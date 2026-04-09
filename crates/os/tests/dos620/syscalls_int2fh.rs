@@ -476,3 +476,382 @@ fn mscdex_ioctl_volume_size() {
         "Volume size should be 200 sectors, got {total_sectors}"
     );
 }
+
+#[test]
+fn mscdex_get_drive_device_list() {
+    let mut machine = harness::boot_hle_with_cdrom();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0x8C, 0xD8,                         // MOV AX, DS
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xBB, 0x00, 0x02,                   // MOV BX, 0200h
+        0xB8, 0x01, 0x15,                   // MOV AX, 1501h
+        0xCD, 0x2F,                         // INT 2Fh
+        0xBE, 0x00, 0x02,                   // MOV SI, 0200h
+        0xBF, 0x00, 0x01,                   // MOV DI, 0100h
+        0xB9, 0x05, 0x00,                   // MOV CX, 5
+        0xF3, 0xA4,                         // REP MOVSB
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(&mut machine, code, harness::INJECT_BUDGET);
+
+    let subunit = harness::result_byte(&machine.bus, 0);
+    let header_off = harness::result_word(&machine.bus, 1);
+    let header_seg = harness::result_word(&machine.bus, 3);
+    assert_eq!(subunit, 0, "Subunit should be 0, got {subunit}");
+    assert_eq!(
+        header_off, 0x0000,
+        "Device header offset should be 0000h, got {header_off:#06X}"
+    );
+    assert_eq!(
+        header_seg, 0x0000,
+        "Device header segment should be 0000h, got {header_seg:#06X}"
+    );
+}
+
+#[test]
+fn mscdex_get_copyright_filename() {
+    let mut machine = harness::boot_hle_with_cdrom();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0x8C, 0xD8,                         // MOV AX, DS
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xBB, 0x00, 0x02,                   // MOV BX, 0200h
+        0xB9, 0x10, 0x00,                   // MOV CX, 16 (Q:)
+        0xB8, 0x02, 0x15,                   // MOV AX, 1502h
+        0xCD, 0x2F,                         // INT 2Fh
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX (flags)
+        0xBE, 0x00, 0x02,                   // MOV SI, 0200h
+        0xBF, 0x02, 0x01,                   // MOV DI, 0102h
+        0xB9, 0x26, 0x00,                   // MOV CX, 38
+        0xF3, 0xA4,                         // REP MOVSB
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(&mut machine, code, harness::INJECT_BUDGET);
+
+    let flags = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "CF should be clear on success, flags={flags:#06X}"
+    );
+    let expected = b"COPYRIGHT.TXT;1";
+    for (i, &expected_byte) in expected.iter().enumerate() {
+        let actual = harness::result_byte(&machine.bus, 2 + i as u32);
+        assert_eq!(
+            actual, expected_byte,
+            "Copyright byte {i}: expected {:#04X}, got {actual:#04X}",
+            expected_byte
+        );
+    }
+    let null_term = harness::result_byte(&machine.bus, 2 + 37);
+    assert_eq!(null_term, 0, "Null terminator at byte 37, got {null_term}");
+}
+
+#[test]
+fn mscdex_get_abstract_filename() {
+    let mut machine = harness::boot_hle_with_cdrom();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0x8C, 0xD8,                         // MOV AX, DS
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xBB, 0x00, 0x02,                   // MOV BX, 0200h
+        0xB9, 0x10, 0x00,                   // MOV CX, 16 (Q:)
+        0xB8, 0x03, 0x15,                   // MOV AX, 1503h
+        0xCD, 0x2F,                         // INT 2Fh
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX (flags)
+        0xBE, 0x00, 0x02,                   // MOV SI, 0200h
+        0xBF, 0x02, 0x01,                   // MOV DI, 0102h
+        0xB9, 0x26, 0x00,                   // MOV CX, 38
+        0xF3, 0xA4,                         // REP MOVSB
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(&mut machine, code, harness::INJECT_BUDGET);
+
+    let flags = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "CF should be clear on success, flags={flags:#06X}"
+    );
+    let expected = b"ABSTRACT.TXT;1";
+    for (i, &expected_byte) in expected.iter().enumerate() {
+        let actual = harness::result_byte(&machine.bus, 2 + i as u32);
+        assert_eq!(
+            actual, expected_byte,
+            "Abstract byte {i}: expected {:#04X}, got {actual:#04X}",
+            expected_byte
+        );
+    }
+}
+
+#[test]
+fn mscdex_get_bibliographic_filename() {
+    let mut machine = harness::boot_hle_with_cdrom();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0x8C, 0xD8,                         // MOV AX, DS
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xBB, 0x00, 0x02,                   // MOV BX, 0200h
+        0xB9, 0x10, 0x00,                   // MOV CX, 16 (Q:)
+        0xB8, 0x04, 0x15,                   // MOV AX, 1504h
+        0xCD, 0x2F,                         // INT 2Fh
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX (flags)
+        0xBE, 0x00, 0x02,                   // MOV SI, 0200h
+        0xBF, 0x02, 0x01,                   // MOV DI, 0102h
+        0xB9, 0x26, 0x00,                   // MOV CX, 38
+        0xF3, 0xA4,                         // REP MOVSB
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(&mut machine, code, harness::INJECT_BUDGET);
+
+    let flags = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "CF should be clear on success, flags={flags:#06X}"
+    );
+    let expected = b"BIBLIO.TXT;1";
+    for (i, &expected_byte) in expected.iter().enumerate() {
+        let actual = harness::result_byte(&machine.bus, 2 + i as u32);
+        assert_eq!(
+            actual, expected_byte,
+            "Bibliographic byte {i}: expected {:#04X}, got {actual:#04X}",
+            expected_byte
+        );
+    }
+}
+
+#[test]
+fn mscdex_get_copyright_invalid_drive() {
+    let mut machine = harness::boot_hle_with_cdrom();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0x8C, 0xD8,                         // MOV AX, DS
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xBB, 0x00, 0x02,                   // MOV BX, 0200h
+        0xB9, 0x00, 0x00,                   // MOV CX, 0 (A: -- invalid)
+        0xB8, 0x02, 0x15,                   // MOV AX, 1502h
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX (error code)
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0102h], AX (flags)
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(&mut machine, code, harness::INJECT_BUDGET);
+
+    let ax = harness::result_word(&machine.bus, 0);
+    let flags = harness::result_word(&machine.bus, 2);
+    assert_ne!(
+        flags & 0x0001,
+        0,
+        "CF should be set on invalid drive, flags={flags:#06X}"
+    );
+    assert_eq!(ax, 15, "AX should be 15 (invalid drive), got {ax}");
+}
+
+#[test]
+fn mscdex_read_vtoc_pvd() {
+    let mut machine = harness::boot_hle_with_cdrom();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0x8C, 0xD8,                         // MOV AX, DS
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xBB, 0x00, 0x02,                   // MOV BX, 0200h
+        0xB9, 0x10, 0x00,                   // MOV CX, 16 (Q:)
+        0xBA, 0x00, 0x00,                   // MOV DX, 0 (sector index 0 = LBA 16)
+        0xB8, 0x05, 0x15,                   // MOV AX, 1505h
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX (VD type)
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0102h], AX (flags)
+        // Copy first 6 bytes of buffer to result area.
+        0xBE, 0x00, 0x02,                   // MOV SI, 0200h
+        0xBF, 0x04, 0x01,                   // MOV DI, 0104h
+        0xB9, 0x06, 0x00,                   // MOV CX, 6
+        0xF3, 0xA4,                         // REP MOVSB
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(&mut machine, code, harness::INJECT_BUDGET);
+
+    let ax = harness::result_word(&machine.bus, 0);
+    let flags = harness::result_word(&machine.bus, 2);
+    assert_eq!(ax, 1, "AX should be 1 (standard VD), got {ax}");
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "CF should be clear on success, flags={flags:#06X}"
+    );
+    let vd_type = harness::result_byte(&machine.bus, 4);
+    assert_eq!(vd_type, 1, "VD type byte should be 1 (PVD), got {vd_type}");
+    let expected_id = b"CD001";
+    for (i, &expected_byte) in expected_id.iter().enumerate() {
+        let actual = harness::result_byte(&machine.bus, 5 + i as u32);
+        assert_eq!(
+            actual, expected_byte,
+            "CD001 byte {i}: expected {:#04X}, got {actual:#04X}",
+            expected_byte
+        );
+    }
+}
+
+#[test]
+fn mscdex_read_vtoc_terminator() {
+    let mut machine = harness::boot_hle_with_cdrom();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0x8C, 0xD8,                         // MOV AX, DS
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xBB, 0x00, 0x02,                   // MOV BX, 0200h
+        0xB9, 0x10, 0x00,                   // MOV CX, 16 (Q:)
+        0xBA, 0x01, 0x00,                   // MOV DX, 1 (sector index 1 = LBA 17)
+        0xB8, 0x05, 0x15,                   // MOV AX, 1505h
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0102h], AX (flags)
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(&mut machine, code, harness::INJECT_BUDGET);
+
+    let ax = harness::result_word(&machine.bus, 0);
+    let flags = harness::result_word(&machine.bus, 2);
+    assert_eq!(ax, 0x00FF, "AX should be 00FFh (terminator), got {ax:#06X}");
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "CF should be clear on success, flags={flags:#06X}"
+    );
+}
+
+#[test]
+fn mscdex_absolute_disk_read() {
+    let mut machine = harness::boot_hle_with_cdrom();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0x8C, 0xD8,                         // MOV AX, DS
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xBB, 0x00, 0x02,                   // MOV BX, 0200h
+        0xB9, 0x10, 0x00,                   // MOV CX, 16 (Q:)
+        0xBA, 0x01, 0x00,                   // MOV DX, 1 (1 sector)
+        0x31, 0xF6,                         // XOR SI, SI (start LBA high = 0)
+        0x31, 0xFF,                         // XOR DI, DI (start LBA low = 0)
+        0xB8, 0x08, 0x15,                   // MOV AX, 1508h
+        0xCD, 0x2F,                         // INT 2Fh
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX (flags)
+        0xA0, 0x00, 0x02,                   // MOV AL, [0200h]
+        0xA2, 0x02, 0x01,                   // MOV [0102h], AL (first data byte)
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(&mut machine, code, harness::INJECT_BUDGET);
+
+    let flags = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "CF should be clear on success, flags={flags:#06X}"
+    );
+    let first_byte = harness::result_byte(&machine.bus, 2);
+    assert_eq!(
+        first_byte, 0x11,
+        "First data byte should be 0x11 (sector 0 fill), got {first_byte:#04X}"
+    );
+}
+
+#[test]
+fn mscdex_absolute_disk_read_multi() {
+    let mut machine = harness::boot_hle_with_cdrom();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0x8C, 0xD8,                         // MOV AX, DS
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xBB, 0x00, 0x02,                   // MOV BX, 0200h
+        0xB9, 0x10, 0x00,                   // MOV CX, 16 (Q:)
+        0xBA, 0x02, 0x00,                   // MOV DX, 2 (2 sectors)
+        0x31, 0xF6,                         // XOR SI, SI
+        0x31, 0xFF,                         // XOR DI, DI
+        0xB8, 0x08, 0x15,                   // MOV AX, 1508h
+        0xCD, 0x2F,                         // INT 2Fh
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX (flags)
+        // First byte of sector 0.
+        0xA0, 0x00, 0x02,                   // MOV AL, [0200h]
+        0xA2, 0x02, 0x01,                   // MOV [0102h], AL
+        // First byte of sector 1 (at buffer + 2048 = 0200h + 0800h = 0A00h).
+        0xA0, 0x00, 0x0A,                   // MOV AL, [0A00h]
+        0xA2, 0x03, 0x01,                   // MOV [0103h], AL
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(&mut machine, code, harness::INJECT_BUDGET);
+
+    let flags = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "CF should be clear on success, flags={flags:#06X}"
+    );
+    let byte_sector0 = harness::result_byte(&machine.bus, 2);
+    let byte_sector1 = harness::result_byte(&machine.bus, 3);
+    assert_eq!(
+        byte_sector0, 0x11,
+        "Sector 0 first byte should be 0x11, got {byte_sector0:#04X}"
+    );
+    assert_eq!(
+        byte_sector1, 0x11,
+        "Sector 1 first byte should be 0x11, got {byte_sector1:#04X}"
+    );
+}
+
+#[test]
+fn mscdex_absolute_disk_read_invalid_drive() {
+    let mut machine = harness::boot_hle_with_cdrom();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0x8C, 0xD8,                         // MOV AX, DS
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xBB, 0x00, 0x02,                   // MOV BX, 0200h
+        0xB9, 0x00, 0x00,                   // MOV CX, 0 (A: -- invalid)
+        0xBA, 0x01, 0x00,                   // MOV DX, 1
+        0x31, 0xF6,                         // XOR SI, SI
+        0x31, 0xFF,                         // XOR DI, DI
+        0xB8, 0x08, 0x15,                   // MOV AX, 1508h
+        0xCD, 0x2F,                         // INT 2Fh
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX (error code)
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0102h], AX (flags)
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(&mut machine, code, harness::INJECT_BUDGET);
+
+    let ax = harness::result_word(&machine.bus, 0);
+    let flags = harness::result_word(&machine.bus, 2);
+    assert_ne!(
+        flags & 0x0001,
+        0,
+        "CF should be set on invalid drive, flags={flags:#06X}"
+    );
+    assert_eq!(ax, 15, "AX should be 15 (invalid drive), got {ax}");
+}

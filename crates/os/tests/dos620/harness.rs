@@ -1000,7 +1000,7 @@ pub fn create_test_cdimage() -> device::cdrom::CdImage {
 "#;
     // Track 1: 150 raw data sectors (2352 bytes each, with sync+header+user data).
     let mut bin_data = Vec::with_capacity(2352 * 200);
-    for _ in 0..150 {
+    for sector_index in 0..150u32 {
         let mut sector = vec![0u8; 2352];
         // Minimal sync pattern.
         sector[0] = 0x00;
@@ -1009,9 +1009,44 @@ pub fn create_test_cdimage() -> device::cdrom::CdImage {
         }
         sector[11] = 0x00;
         sector[15] = 0x01; // Mode 1.
-        // User data filled with 0x11.
-        for b in &mut sector[16..16 + 2048] {
-            *b = 0x11;
+
+        let user_data = &mut sector[16..16 + 2048];
+        match sector_index {
+            16 => {
+                // ISO 9660 Primary Volume Descriptor.
+                user_data[0] = 1; // Type: PVD.
+                user_data[1..6].copy_from_slice(b"CD001");
+                user_data[6] = 1; // Version.
+                // Copyright file identifier at PVD offset 702 (37 bytes, space-padded).
+                let copyright = b"COPYRIGHT.TXT;1";
+                user_data[702..702 + copyright.len()].copy_from_slice(copyright);
+                for b in &mut user_data[702 + copyright.len()..702 + 37] {
+                    *b = b' ';
+                }
+                // Abstract file identifier at PVD offset 739 (37 bytes, space-padded).
+                let abstract_id = b"ABSTRACT.TXT;1";
+                user_data[739..739 + abstract_id.len()].copy_from_slice(abstract_id);
+                for b in &mut user_data[739 + abstract_id.len()..739 + 37] {
+                    *b = b' ';
+                }
+                // Bibliographic file identifier at PVD offset 776 (37 bytes, space-padded).
+                let biblio = b"BIBLIO.TXT;1";
+                user_data[776..776 + biblio.len()].copy_from_slice(biblio);
+                for b in &mut user_data[776 + biblio.len()..776 + 37] {
+                    *b = b' ';
+                }
+            }
+            17 => {
+                // Volume Descriptor Set Terminator.
+                user_data[0] = 0xFF; // Type: Terminator.
+                user_data[1..6].copy_from_slice(b"CD001");
+                user_data[6] = 1; // Version.
+            }
+            _ => {
+                for b in user_data.iter_mut() {
+                    *b = 0x11;
+                }
+            }
         }
         bin_data.extend_from_slice(&sector);
     }

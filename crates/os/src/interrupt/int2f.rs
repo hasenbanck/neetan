@@ -5,7 +5,7 @@
 
 use common::warn;
 
-use crate::{CdromIo, CpuAccess, MemoryAccess, NeetanOs};
+use crate::{CdromIo, CpuAccess, MemoryAccess, NeetanOs, set_iret_carry};
 
 impl NeetanOs {
     /// Dispatches an INT 2Fh call based on the AH register.
@@ -44,6 +44,96 @@ impl NeetanOs {
                     cpu.set_bx(0);
                 }
             }
+            0x01 => {
+                // Get CD-ROM drive device list.
+                if cdrom.cdrom_present() {
+                    let buffer_addr = (cpu.es() as u32) << 4 | cpu.bx() as u32;
+                    memory.write_byte(buffer_addr, 0); // Subunit 0.
+                    memory.write_word(buffer_addr + 1, 0x0000); // Device header offset.
+                    memory.write_word(buffer_addr + 3, 0x0000); // Device header segment.
+                }
+            }
+            0x02 => {
+                // Get copyright file name from PVD.
+                self.mscdex_read_pvd_field(cpu, memory, cdrom, 702);
+            }
+            0x03 => {
+                // Get abstract file name from PVD.
+                self.mscdex_read_pvd_field(cpu, memory, cdrom, 739);
+            }
+            0x04 => {
+                // Get bibliographic doc file name from PVD.
+                self.mscdex_read_pvd_field(cpu, memory, cdrom, 776);
+            }
+            0x05 => {
+                // Read VTOC (Volume Descriptor).
+                let drive = cpu.cx() as u8;
+                if drive != self.state.mscdex.drive_letter {
+                    cpu.set_ax(15);
+                    set_iret_carry(cpu, memory, true);
+                    return;
+                }
+                if !cdrom.cdrom_media_loaded() {
+                    cpu.set_ax(21);
+                    set_iret_carry(cpu, memory, true);
+                    return;
+                }
+                let sector_index = cpu.dx() as u32;
+                let lba = 16 + sector_index;
+                let buffer_addr = (cpu.es() as u32) << 4 | cpu.bx() as u32;
+                let mut sector_buf = [0u8; 2048];
+                match cdrom.read_sector_cooked(lba, &mut sector_buf) {
+                    Some(n) => {
+                        memory.write_block(buffer_addr, &sector_buf[..n]);
+                        let vd_type = sector_buf[0];
+                        let result = match vd_type {
+                            1 => 1,
+                            0xFF => 0xFF,
+                            _ => 0,
+                        };
+                        cpu.set_ax(result);
+                        set_iret_carry(cpu, memory, false);
+                    }
+                    None => {
+                        cpu.set_ax(21);
+                        set_iret_carry(cpu, memory, true);
+                    }
+                }
+            }
+            0x06 | 0x07 | 0x09 | 0x0A => {
+                // Debugging on/off, absolute disk write, reserved: no-op.
+            }
+            0x08 => {
+                // Absolute disk read.
+                let drive = cpu.cx() as u8;
+                if drive != self.state.mscdex.drive_letter {
+                    cpu.set_ax(15);
+                    set_iret_carry(cpu, memory, true);
+                    return;
+                }
+                if !cdrom.cdrom_media_loaded() {
+                    cpu.set_ax(21);
+                    set_iret_carry(cpu, memory, true);
+                    return;
+                }
+                let sector_count = cpu.dx() as u32;
+                let start_lba = ((cpu.si() as u32) << 16) | cpu.di() as u32;
+                let buffer_addr = (cpu.es() as u32) << 4 | cpu.bx() as u32;
+                let mut sector_buf = [0u8; 2048];
+                for i in 0..sector_count {
+                    match cdrom.read_sector_cooked(start_lba + i, &mut sector_buf) {
+                        Some(n) => {
+                            memory.write_block(buffer_addr + i * 2048, &sector_buf[..n]);
+                        }
+                        None => {
+                            cpu.set_ax(21);
+                            set_iret_carry(cpu, memory, true);
+                            return;
+                        }
+                    }
+                }
+                set_iret_carry(cpu, memory, false);
+            }
             0x0B => {
                 // CD-ROM drive check.
                 let drive = cpu.cx() as u8;
@@ -55,8 +145,8 @@ impl NeetanOs {
                 }
             }
             0x0C => {
-                // MSCDEX version.
-                cpu.set_bx(0x020A); // Version 2.10.
+                // MSCDEX version: 2.10.
+                cpu.set_bx(0x020A);
             }
             0x0D => {
                 // Get CD-ROM drive letters.
@@ -102,5 +192,38 @@ impl NeetanOs {
     /// Returns BX=0000h (no HMA free space).
     fn int2fh_4ah_hma_query(&self, cpu: &mut dyn CpuAccess) {
         cpu.set_bx(0x0000);
+    }
+
+    /// Reads a 37-byte identifier field from the ISO 9660 Primary Volume
+    /// Descriptor and writes it (null-terminated) to the caller's buffer.
+    /// Used by subfunctions 02h (copyright), 03h (abstract), 04h (bibliographic).
+    fn mscdex_read_pvd_field(
+        &self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        cdrom: &dyn CdromIo,
+        pvd_offset: usize,
+    ) {
+        let drive = cpu.cx() as u8;
+        if drive != self.state.mscdex.drive_letter {
+            cpu.set_ax(15);
+            set_iret_carry(cpu, memory, true);
+            return;
+        }
+        if !cdrom.cdrom_media_loaded() {
+            cpu.set_ax(21);
+            set_iret_carry(cpu, memory, true);
+            return;
+        }
+        let mut sector_buf = [0u8; 2048];
+        if cdrom.read_sector_cooked(16, &mut sector_buf).is_none() {
+            cpu.set_ax(21);
+            set_iret_carry(cpu, memory, true);
+            return;
+        }
+        let buffer_addr = (cpu.es() as u32) << 4 | cpu.bx() as u32;
+        memory.write_block(buffer_addr, &sector_buf[pvd_offset..pvd_offset + 37]);
+        memory.write_byte(buffer_addr + 37, 0);
+        set_iret_carry(cpu, memory, false);
     }
 }
