@@ -90,3 +90,6 @@ mod memory_manager_ems_xms;
 
 #[path = "dos620/commands_mem.rs"]
 mod commands_mem;
+
+#[path = "dos620/multiplex_interrupt.rs"]
+mod multiplex_interrupt;
