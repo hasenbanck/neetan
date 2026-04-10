@@ -1905,4 +1905,54 @@ mod tests {
         let (even, _) = read_vram_char(&memory, 0, 0);
         assert_ne!(even, b'A', "row 0 should have been scrolled away");
     }
+
+    #[test]
+    fn esc_equal_cursor_position() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+        // ESC = 0x25 0x2A -> row 5, col 10
+        feed_str(&mut console, &mut memory, "\x1b=\x25\x2A");
+        assert_cursor(&console, &memory, 5, 10);
+    }
+
+    #[test]
+    fn esc_equal_origin() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+        console.set_cursor(&mut memory, 10, 20);
+        // ESC = 0x20 0x20 -> row 0, col 0
+        feed_str(&mut console, &mut memory, "\x1b=\x20\x20");
+        assert_cursor(&console, &memory, 0, 0);
+    }
+
+    #[test]
+    fn esc_equal_clamp_below_0x20() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+        console.set_cursor(&mut memory, 10, 20);
+        // Both bytes < 0x20: should clamp to (0, 0).
+        feed_str(&mut console, &mut memory, "\x1b=\x10\x10");
+        assert_cursor(&console, &memory, 0, 0);
+    }
+
+    #[test]
+    fn esc_equal_clamp_to_screen() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+        // ESC = 0x7F 0x7F -> row 95, col 95: clamped to (24, 79).
+        feed_str(&mut console, &mut memory, "\x1b=\x7F\x7F");
+        assert_cursor(&console, &memory, 24, 79);
+    }
+
+    #[test]
+    fn esc_equal_preserves_content() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+        console.process_byte(&mut memory, b'A');
+        // ESC = to row 2 col 5.
+        feed_str(&mut console, &mut memory, "\x1b=\x22\x25");
+        assert_cursor(&console, &memory, 2, 5);
+        let (even, _) = read_vram_char(&memory, 0, 0);
+        assert_eq!(even, b'A', "'A' at (0,0) should be preserved");
+    }
 }

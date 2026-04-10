@@ -11,6 +11,8 @@ pub(crate) enum EscState {
     GotCsiQuestion,
     GotCsiGreater,
     GotEscRightParen,
+    GotEscEqual,
+    GotEscEqualRow,
 }
 
 #[derive(Clone, Debug)]
@@ -71,6 +73,8 @@ impl Console {
             EscState::GotCsiQuestion => self.esc_process_csi_param(memory, byte, true),
             EscState::GotCsiGreater => self.esc_process_csi_param(memory, byte, false),
             EscState::GotEscRightParen => self.esc_process_right_paren(memory, byte),
+            EscState::GotEscEqual => self.esc_process_equal_row(byte),
+            EscState::GotEscEqualRow => self.esc_process_equal_col(memory, byte),
         }
     }
 
@@ -98,6 +102,9 @@ impl Console {
             }
             b')' => {
                 self.esc_parser.state = EscState::GotEscRightParen;
+            }
+            b'=' => {
+                self.esc_parser.state = EscState::GotEscEqual;
             }
             _ => {
                 // Unknown ESC sequence: output the byte as a literal.
@@ -184,6 +191,20 @@ impl Console {
             }
             _ => {}
         }
+        self.esc_parser.reset();
+    }
+
+    fn esc_process_equal_row(&mut self, byte: u8) {
+        self.esc_parser.params[0] = byte as u16;
+        self.esc_parser.state = EscState::GotEscEqualRow;
+    }
+
+    fn esc_process_equal_col(&mut self, memory: &mut dyn MemoryAccess, byte: u8) {
+        let raw_row = self.esc_parser.params[0] as u8;
+        let raw_col = byte;
+        let row = raw_row.saturating_sub(0x20);
+        let col = raw_col.saturating_sub(0x20);
+        self.set_cursor_position(memory, row, col);
         self.esc_parser.reset();
     }
 

@@ -320,3 +320,90 @@ fn intdch_10h_09h_cursor_left_n_cols() {
     assert_eq!(row, 5, "AH=09h should preserve row");
     assert_eq!(col, 7, "AH=09h DL=3 should move cursor left 3 columns");
 }
+
+#[test]
+fn intdch_0fh_enable_ctrl_fn() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // AX=0000h: enable CTRL+Fn for application.
+        0xB9, 0x0F, 0x00,       // MOV CX, 000Fh (CL=0Fh)
+        0xB8, 0x00, 0x00,       // MOV AX, 0000h
+        0xCD, 0xDC,             // INT DCh
+        // AX=8000h: read CTRL+Fn state.
+        0xB8, 0x00, 0x80,       // MOV AX, 8000h
+        0xCD, 0xDC,             // INT DCh
+        0xA3, 0x00, 0x01,       // MOV [0100h], AX
+        0xFA, 0xF4,             // CLI; HLT
+    ];
+    inject_and_run(&mut machine, code);
+    let ax = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        ax, 0x0000,
+        "after AX=0000h, read-back should be 0000h (app has control)"
+    );
+}
+
+#[test]
+fn intdch_0fh_disable_ctrl_fn() {
+    let mut machine = harness::boot_hle();
+    // First enable, then disable.
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB9, 0x0F, 0x00,       // MOV CX, 000Fh
+        0xB8, 0x00, 0x00,       // MOV AX, 0000h (enable)
+        0xCD, 0xDC,             // INT DCh
+        0xB8, 0x01, 0x00,       // MOV AX, 0001h (disable)
+        0xCD, 0xDC,             // INT DCh
+        0xB8, 0x00, 0x80,       // MOV AX, 8000h (read)
+        0xCD, 0xDC,             // INT DCh
+        0xA3, 0x00, 0x01,       // MOV [0100h], AX
+        0xFA, 0xF4,             // CLI; HLT
+    ];
+    inject_and_run(&mut machine, code);
+    let ax = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        ax, 0x0001,
+        "after AX=0001h, read-back should be 0001h (DOS has control)"
+    );
+}
+
+#[test]
+fn intdch_0fh_enable_ctrl_xfer() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB9, 0x0F, 0x00,       // MOV CX, 000Fh
+        0xB8, 0x02, 0x00,       // MOV AX, 0002h (enable CTRL+XFER/NFER)
+        0xCD, 0xDC,             // INT DCh
+        0xB8, 0x02, 0x80,       // MOV AX, 8002h (read CTRL+XFER/NFER state)
+        0xCD, 0xDC,             // INT DCh
+        0xA3, 0x00, 0x01,       // MOV [0100h], AX
+        0xFA, 0xF4,             // CLI; HLT
+    ];
+    inject_and_run(&mut machine, code);
+    let ax = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        ax, 0x0000,
+        "after AX=0002h, read-back should be 0000h (app has control)"
+    );
+}
+
+#[test]
+fn intdch_0fh_default_state() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB9, 0x0F, 0x00,       // MOV CX, 000Fh
+        0xB8, 0x00, 0x80,       // MOV AX, 8000h (read CTRL+Fn state)
+        0xCD, 0xDC,             // INT DCh
+        0xA3, 0x00, 0x01,       // MOV [0100h], AX
+        0xFA, 0xF4,             // CLI; HLT
+    ];
+    inject_and_run(&mut machine, code);
+    let ax = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        ax, 0x0001,
+        "default state should be 0001h (DOS has control)"
+    );
+}
