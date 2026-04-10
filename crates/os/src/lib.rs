@@ -571,6 +571,17 @@ impl NeetanOs {
         let drives = Self::discover_drives(memory);
         self.write_drive_structures(memory, &drives);
 
+        // Boot to the first physical drive that has media, otherwise Z:.
+        if let Some(first) = drives.iter().find(|d| !d.is_virtual)
+            && DiskIo::total_sectors(device, first.da_ua).is_some()
+        {
+            self.state.boot_drive = first.drive_index + 1;
+            memory.write_byte(
+                tables::SYSVARS_BASE + tables::SYSVARS_OFF_BOOT_DRIVE,
+                self.state.boot_drive,
+            );
+        }
+
         // Parse CONFIG.SYS if present on any mounted drive.
         let cfg = self.try_parse_config_sys(memory, device, &drives);
         self.apply_config(&cfg, memory);
@@ -1089,47 +1100,67 @@ impl NeetanOs {
     }
 
     /// Reads the BDA DISK_EQUIP word to discover equipped drives and assigns
-    /// drive letters following the PC-98 floppy-first convention.
+    /// drive letters following the PC-98 HDD-first convention.
+    ///
+    /// When HDDs are present they get A:, B: and floppies always start at C:.
+    /// When no HDDs exist, floppies get A:, B:, C:, D: sequentially.
     fn discover_drives(mem: &dyn MemoryAccess) -> Vec<DriveInfo> {
         use tables::*;
 
         let disk_equip = mem.read_word(BDA_DISK_EQUIP);
-        let mut drives = Vec::new();
-        let mut next_index: u8 = 0;
+
+        let mut fdd_dauas: Vec<u8> = Vec::new();
+        let mut hdd_dauas: Vec<u8> = Vec::new();
 
         // 1MB FDD units (bits 0-3 of disk_equip).
         for unit in 0..4u8 {
             if disk_equip & (1 << unit) != 0 {
-                drives.push(DriveInfo {
-                    drive_index: next_index,
-                    da_ua: 0x90 + unit,
-                    is_virtual: false,
-                });
-                next_index += 1;
+                fdd_dauas.push(0x90 + unit);
             }
         }
 
         // 640KB FDD units (bits 12-15 of disk_equip).
         for unit in 0..4u8 {
             if disk_equip & (1 << (12 + unit)) != 0 {
-                drives.push(DriveInfo {
-                    drive_index: next_index,
-                    da_ua: 0x70 + unit,
-                    is_virtual: false,
-                });
-                next_index += 1;
+                fdd_dauas.push(0x70 + unit);
             }
         }
 
         // HDD units (bits 8-11 of disk_equip).
         for unit in 0..4u8 {
             if disk_equip & (1 << (8 + unit)) != 0 {
+                hdd_dauas.push(0x80 + unit);
+            }
+        }
+
+        let mut drives = Vec::new();
+
+        if !hdd_dauas.is_empty() {
+            // PC-98 DOS convention: HDDs get A:, B:, and the secondary type
+            // (floppies) always starts at C: (index 2) or later.
+            for (i, da_ua) in hdd_dauas.iter().enumerate() {
                 drives.push(DriveInfo {
-                    drive_index: next_index,
-                    da_ua: 0x80 + unit,
+                    drive_index: i as u8,
+                    da_ua: *da_ua,
                     is_virtual: false,
                 });
-                next_index += 1;
+            }
+            let fdd_start = hdd_dauas.len().max(2);
+            for (i, da_ua) in fdd_dauas.iter().enumerate() {
+                drives.push(DriveInfo {
+                    drive_index: (fdd_start + i) as u8,
+                    da_ua: *da_ua,
+                    is_virtual: false,
+                });
+            }
+        } else {
+            // No HDDs: floppies get A:, B:, C:, D: sequentially.
+            for (i, da_ua) in fdd_dauas.iter().enumerate() {
+                drives.push(DriveInfo {
+                    drive_index: i as u8,
+                    da_ua: *da_ua,
+                    is_virtual: false,
+                });
             }
         }
 
