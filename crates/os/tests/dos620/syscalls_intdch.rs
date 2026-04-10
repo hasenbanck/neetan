@@ -407,3 +407,60 @@ fn intdch_0fh_default_state() {
         "default state should be 0001h (DOS has control)"
     );
 }
+
+#[test]
+fn intdch_0dh_write_extended_read_basic_extracts_correctly() {
+    let mut machine = harness::boot_hle();
+
+    // Fill a 786-byte extended-format source buffer at DS:0200h.
+    // Extended layout:
+    //   0-159:   F1-F10 (160 bytes)
+    //   160-239: VF1-VF5 (80 bytes, skipped on read-back)
+    //   240-399: Shift+F1-F10 (160 bytes)
+    //   400-479: Shift+VF1-VF5 (80 bytes, skipped)
+    //   480-545: Editing keys (66 bytes)
+    //   546-705: Ctrl+F1-F10 (160 bytes, skipped)
+    //   706-785: Ctrl+VF1-VF5 (80 bytes, skipped)
+    let src_base = INJECT_CODE_BASE + 0x0200;
+    let pattern: Vec<u8> = (0..786).map(|i| ((i % 251) + 1) as u8).collect();
+    harness::write_bytes(&mut machine.bus, src_base, &pattern);
+
+    // Write with AX=0xFF (extended), read back with AX=0x0000 (basic 386 bytes).
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB9, 0x0D, 0x00,       // MOV CX, 000Dh
+        0xB8, 0xFF, 0x00,       // MOV AX, 00FFh
+        0xBA, 0x00, 0x02,       // MOV DX, 0200h
+        0xCD, 0xDC,             // INT DCh
+        0xB9, 0x0C, 0x00,       // MOV CX, 000Ch
+        0xB8, 0x00, 0x00,       // MOV AX, 0000h
+        0xBA, 0x00, 0x05,       // MOV DX, 0500h
+        0xCD, 0xDC,             // INT DCh
+        0xFA, 0xF4,             // CLI; HLT
+    ];
+    inject_and_run(&mut machine, code);
+
+    let dst_base = INJECT_CODE_BASE + 0x0500;
+
+    // Basic layout read-back (386 bytes):
+    //   0-159: F1-F10 -- should match extended offset 0-159
+    for i in 0..160u32 {
+        let expected = pattern[i as usize]; // ext offset 0-159
+        let actual = machine.bus.read_byte_direct(dst_base + i);
+        assert_eq!(actual, expected, "F1-F10 byte {i}");
+    }
+
+    // 160-319: Shift+F1-F10 -- should match extended offset 240-399
+    for i in 0..160u32 {
+        let expected = pattern[(240 + i) as usize]; // ext offset 240+
+        let actual = machine.bus.read_byte_direct(dst_base + 160 + i);
+        assert_eq!(actual, expected, "Shift+F1-F10 byte {i}");
+    }
+
+    // 320-385: Editing keys -- should match extended offset 480-545
+    for i in 0..66u32 {
+        let expected = pattern[(480 + i) as usize]; // ext offset 480+
+        let actual = machine.bus.read_byte_direct(dst_base + 320 + i);
+        assert_eq!(actual, expected, "Editing key byte {i}");
+    }
+}
