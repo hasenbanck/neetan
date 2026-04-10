@@ -294,10 +294,14 @@ impl BatchState {
                 }
                 BatchStepResult::Continue
             }
-            super::ShellPhase::ExecutingBatch(_) => {
-                // Nested batch without CALL should replace current batch
-                // but for simplicity we just advance
-                self.current_line += 1;
+            super::ShellPhase::ExecutingBatch(new_batch) => {
+                // In DOS, invoking a batch from another batch without CALL
+                // replaces the current batch (no return to the caller).
+                self.lines = new_batch.lines;
+                self.current_line = 0;
+                self.params = new_batch.params;
+                self.bat_path = new_batch.bat_path;
+                self.echo_on = new_batch.echo_on;
                 BatchStepResult::Continue
             }
             _ => {
@@ -501,10 +505,14 @@ pub(crate) fn load_bat_file(
 }
 
 /// Splits raw file data into lines on \r\n or \n.
+/// Stops at Ctrl-Z (0x1A), the DOS end-of-file marker.
 pub(crate) fn split_bat_lines(data: &[u8]) -> Vec<Vec<u8>> {
     let mut lines = Vec::new();
     let mut current = Vec::new();
     for &byte in data {
+        if byte == 0x1A {
+            break;
+        }
         if byte == b'\n' {
             lines.push(current);
             current = Vec::new();
