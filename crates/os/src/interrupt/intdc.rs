@@ -218,12 +218,36 @@ impl NeetanOs {
 
     /// CL=0Ch: Read programmable function key mapping.
     /// AX = key specifier, DS:DX = destination buffer.
+    ///
+    /// Internal fn_key_map uses the basic layout (386 bytes):
+    ///   0-159: F1-F10 (10x16), 160-319: Shift+F1-F10 (10x16), 320-385: editing (11x6).
+    /// AX=0xFF uses the extended layout (786 bytes) which inserts VF and Ctrl+F
+    /// groups between the basic groups.
     fn intdch_0ch_read_fnkey_map(&self, cpu: &dyn CpuAccess, memory: &mut dyn MemoryAccess) {
         let key_specifier = cpu.ax();
         let buffer_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
 
+        if key_specifier == 0x00FF {
+            // Extended format: repack basic layout into extended wire format.
+            // F1-F10 (160 bytes) at ext offset 0
+            self.copy_fnkey_to_buffer(memory, buffer_addr, 0, 0, 160);
+            // VF1-VF5 (80 bytes, zeros) at ext offset 160
+            self.zero_buffer(memory, buffer_addr, 160, 80);
+            // Shift+F1-F10 (160 bytes) at ext offset 240
+            self.copy_fnkey_to_buffer(memory, buffer_addr, 240, 160, 160);
+            // Shift+VF1-VF5 (80 bytes, zeros) at ext offset 400
+            self.zero_buffer(memory, buffer_addr, 400, 80);
+            // Editing keys (66 bytes) at ext offset 480
+            self.copy_fnkey_to_buffer(memory, buffer_addr, 480, 320, 66);
+            // Ctrl+F1-F10 (160 bytes, zeros) at ext offset 546
+            self.zero_buffer(memory, buffer_addr, 546, 160);
+            // Ctrl+VF1-VF5 (80 bytes, zeros) at ext offset 706
+            self.zero_buffer(memory, buffer_addr, 706, 80);
+            return;
+        }
+
         let (src_offset, length) = match key_specifier {
-            0x0000 => (0, 786),
+            0x0000 => (0, 386),
             0x0001..=0x000A => {
                 let idx = (key_specifier - 1) as usize;
                 (idx * 16, 16)
@@ -239,14 +263,37 @@ impl NeetanOs {
             _ => return,
         };
 
+        self.copy_fnkey_to_buffer(memory, buffer_addr, 0, src_offset, length);
+    }
+
+    fn copy_fnkey_to_buffer(
+        &self,
+        memory: &mut dyn MemoryAccess,
+        buffer_addr: u32,
+        buf_offset: usize,
+        map_offset: usize,
+        length: usize,
+    ) {
         for i in 0..length {
             let byte = self
                 .state
                 .fn_key_map
-                .get(src_offset + i)
+                .get(map_offset + i)
                 .copied()
                 .unwrap_or(0);
-            memory.write_byte(buffer_addr + i as u32, byte);
+            memory.write_byte(buffer_addr + (buf_offset + i) as u32, byte);
+        }
+    }
+
+    fn zero_buffer(
+        &self,
+        memory: &mut dyn MemoryAccess,
+        buffer_addr: u32,
+        buf_offset: usize,
+        length: usize,
+    ) {
+        for i in 0..length {
+            memory.write_byte(buffer_addr + (buf_offset + i) as u32, 0);
         }
     }
 
@@ -275,8 +322,22 @@ impl NeetanOs {
         let key_specifier = cpu.ax();
         let buffer_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
 
+        if key_specifier == 0x00FF {
+            // Extended format: unpack extended wire format into basic layout.
+            // F1-F10 (160 bytes) from ext offset 0
+            self.copy_buffer_to_fnkey(memory, buffer_addr, 0, 0, 160);
+            // Skip VF1-VF5 at ext offset 160 (80 bytes)
+            // Shift+F1-F10 (160 bytes) from ext offset 240
+            self.copy_buffer_to_fnkey(memory, buffer_addr, 240, 160, 160);
+            // Skip Shift+VF1-VF5 at ext offset 400 (80 bytes)
+            // Editing keys (66 bytes) from ext offset 480
+            self.copy_buffer_to_fnkey(memory, buffer_addr, 480, 320, 66);
+            // Skip Ctrl+F1-F10 at ext offset 546 and Ctrl+VF1-VF5 at ext offset 706
+            return;
+        }
+
         let (dst_offset, length) = match key_specifier {
-            0x0000 => (0, 786),
+            0x0000 => (0, 386),
             0x0001..=0x000A => {
                 let idx = (key_specifier - 1) as usize;
                 (idx * 16, 16)
@@ -295,6 +356,22 @@ impl NeetanOs {
         for i in 0..length {
             let byte = memory.read_byte(buffer_addr + i as u32);
             if let Some(dest) = self.state.fn_key_map.get_mut(dst_offset + i) {
+                *dest = byte;
+            }
+        }
+    }
+
+    fn copy_buffer_to_fnkey(
+        &mut self,
+        memory: &dyn MemoryAccess,
+        buffer_addr: u32,
+        buf_offset: usize,
+        map_offset: usize,
+        length: usize,
+    ) {
+        for i in 0..length {
+            let byte = memory.read_byte(buffer_addr + (buf_offset + i) as u32);
+            if let Some(dest) = self.state.fn_key_map.get_mut(map_offset + i) {
                 *dest = byte;
             }
         }
