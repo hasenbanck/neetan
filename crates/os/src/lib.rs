@@ -370,7 +370,7 @@ impl OsState {
 /// Values extracted from real MS-DOS 6.20 via INT DCh CL=0x0C AX=0x0000
 /// (see machine crate test `fnkey_oracle::read_dos620_default_fnkey_map`).
 fn build_default_fn_key_map() -> Vec<u8> {
-    let mut map = vec![0u8; 786];
+    let mut map = vec![0u8; 386];
 
     // F1-F10: 16 bytes each. Byte 0 = 0xFE means bytes 1-5 are display-only,
     // and the actual input sequence starts at byte 6.
