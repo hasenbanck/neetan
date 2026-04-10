@@ -530,7 +530,7 @@ impl Shell {
         }
 
         // Try external program (.COM or .EXE)
-        if let Some(full_path) = find_external_program(trimmed, &cmd_upper, state, io.memory, disk)
+        if let Some(full_path) = find_external_program(cmd_name, &cmd_upper, state, io.memory, disk)
         {
             self.pending_exec = Some(PendingExec {
                 path: full_path,
