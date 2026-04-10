@@ -16,6 +16,7 @@ impl NeetanOs {
             0x00..=0x08 => {}
             0x0C => self.intdch_0ch_read_fnkey_map(cpu, memory),
             0x0D => self.intdch_0dh_write_fnkey_map(cpu, memory),
+            0x0F => self.intdch_0fh_softkey_control(cpu, memory),
             0x10 => self.intdch_10h_console(cpu, memory),
             0x12 => self.intdch_12h_system_identification(cpu, memory),
             0x13 => self.intdch_13h_daua_mapping_buffer(cpu, memory),
@@ -246,6 +247,25 @@ impl NeetanOs {
                 .copied()
                 .unwrap_or(0);
             memory.write_byte(buffer_addr + i as u32, byte);
+        }
+    }
+
+    /// CL=0Fh: CTRL+function key soft-key control.
+    /// AX = subfunction: 0000h/0001h set/clear CTRL+Fn,
+    /// 0002h/0003h set/clear CTRL+XFER/NFER,
+    /// 8000h/8002h read state.
+    fn intdch_0fh_softkey_control(&self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
+        let ax = cpu.ax();
+        let addr = tables::IOSYS_BASE + tables::IOSYS_OFF_SOFTKEY_FLAGS;
+        let flags = memory.read_byte(addr);
+        match ax {
+            0x0000 => memory.write_byte(addr, flags | 0x01),
+            0x0001 => memory.write_byte(addr, flags & !0x01),
+            0x0002 => memory.write_byte(addr, flags | 0x02),
+            0x0003 => memory.write_byte(addr, flags & !0x02),
+            0x8000 => cpu.set_ax(if flags & 0x01 != 0 { 0x0000 } else { 0x0001 }),
+            0x8002 => cpu.set_ax(if flags & 0x02 != 0 { 0x0000 } else { 0x0001 }),
+            _ => {}
         }
     }
 
