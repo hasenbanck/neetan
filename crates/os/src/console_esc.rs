@@ -240,8 +240,11 @@ impl Console {
             }
             b'J' => {
                 let mode = self.esc_parser.param(0, 0);
-                if mode == 2 {
-                    self.clear_screen(memory);
+                match mode {
+                    0 => self.clear_screen_from_cursor(memory),
+                    1 => self.clear_screen_to_cursor(memory),
+                    2 => self.clear_screen(memory),
+                    _ => {}
                 }
             }
             b'K' => {

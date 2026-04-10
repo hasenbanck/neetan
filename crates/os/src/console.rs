@@ -226,6 +226,53 @@ impl Console {
         self.set_cursor(memory, 0, 0);
     }
 
+    pub(crate) fn clear_screen_from_cursor(&self, memory: &mut dyn MemoryAccess) {
+        let row = self.cursor_row(memory);
+        let col = self.cursor_col(memory);
+        let lower = self.scroll_lower(memory);
+        let clear_ch = self.clear_char(memory);
+        let clear_at = self.clear_attr(memory);
+        let jis = JisChar::from_u16(clear_ch as u16);
+        let (even, odd) = jis.to_vram_bytes();
+        for c in col..COLUMNS {
+            let addr = vram_char_addr(row, c);
+            memory.write_byte(addr, even);
+            memory.write_byte(addr + 1, odd);
+            memory.write_word(vram_attr_addr(row, c), clear_at as u16);
+        }
+        for r in (row + 1)..=lower {
+            for c in 0..COLUMNS {
+                let addr = vram_char_addr(r, c);
+                memory.write_byte(addr, even);
+                memory.write_byte(addr + 1, odd);
+                memory.write_word(vram_attr_addr(r, c), clear_at as u16);
+            }
+        }
+    }
+
+    pub(crate) fn clear_screen_to_cursor(&self, memory: &mut dyn MemoryAccess) {
+        let row = self.cursor_row(memory);
+        let col = self.cursor_col(memory);
+        let clear_ch = self.clear_char(memory);
+        let clear_at = self.clear_attr(memory);
+        let jis = JisChar::from_u16(clear_ch as u16);
+        let (even, odd) = jis.to_vram_bytes();
+        for r in 0..row {
+            for c in 0..COLUMNS {
+                let addr = vram_char_addr(r, c);
+                memory.write_byte(addr, even);
+                memory.write_byte(addr + 1, odd);
+                memory.write_word(vram_attr_addr(r, c), clear_at as u16);
+            }
+        }
+        for c in 0..=col {
+            let addr = vram_char_addr(row, c);
+            memory.write_byte(addr, even);
+            memory.write_byte(addr + 1, odd);
+            memory.write_word(vram_attr_addr(row, c), clear_at as u16);
+        }
+    }
+
     pub(crate) fn clear_line_from_cursor(&self, memory: &mut dyn MemoryAccess) {
         let row = self.cursor_row(memory);
         let col = self.cursor_col(memory);
@@ -1506,14 +1553,61 @@ mod tests {
     }
 
     #[test]
-    fn esc_csi_0j_ignored() {
+    fn esc_csi_0j_clears_from_cursor() {
         let mut console = make_console();
         let mut memory = make_memory();
-        fill_row(&mut memory, 0, b'A');
+        for r in 0..25 {
+            fill_row(&mut memory, r, b'X');
+        }
         console.set_cursor(&mut memory, 5, 10);
         feed_str(&mut console, &mut memory, "\x1b[0J");
-        // Mode 0 is not implemented, row 0 should still have 'A'.
-        assert_vram_char(&memory, 0, 0, b'A', 0x00);
+        // Rows 0-4 preserved.
+        assert_vram_char(&memory, 0, 0, b'X', 0x00);
+        assert_vram_char(&memory, 4, 79, b'X', 0x00);
+        // Row 5 cols 0-9 preserved, 10-79 cleared.
+        assert_vram_char(&memory, 5, 9, b'X', 0x00);
+        assert_vram_clear(&memory, 5, 10, 79);
+        // Rows 6-24 cleared.
+        assert_vram_clear(&memory, 6, 0, 79);
+        assert_vram_clear(&memory, 24, 0, 79);
+        // Cursor unchanged.
+        assert_cursor(&console, &memory, 5, 10);
+    }
+
+    #[test]
+    fn esc_csi_j_default_clears_from_cursor() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+        for r in 0..25 {
+            fill_row(&mut memory, r, b'X');
+        }
+        console.set_cursor(&mut memory, 3, 0);
+        // ESC[J with no parameter defaults to mode 0.
+        feed_str(&mut console, &mut memory, "\x1b[J");
+        assert_vram_char(&memory, 2, 79, b'X', 0x00);
+        assert_vram_clear(&memory, 3, 0, 79);
+        assert_vram_clear(&memory, 24, 0, 79);
+        assert_cursor(&console, &memory, 3, 0);
+    }
+
+    #[test]
+    fn esc_csi_1j_clears_to_cursor() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+        for r in 0..25 {
+            fill_row(&mut memory, r, b'X');
+        }
+        console.set_cursor(&mut memory, 5, 10);
+        feed_str(&mut console, &mut memory, "\x1b[1J");
+        // Rows 0-4 cleared.
+        assert_vram_clear(&memory, 0, 0, 79);
+        assert_vram_clear(&memory, 4, 0, 79);
+        // Row 5 cols 0-10 cleared, 11-79 preserved.
+        assert_vram_clear(&memory, 5, 0, 10);
+        assert_vram_char(&memory, 5, 11, b'X', 0x00);
+        // Rows 6-24 preserved.
+        assert_vram_char(&memory, 6, 0, b'X', 0x00);
+        assert_vram_char(&memory, 24, 79, b'X', 0x00);
         assert_cursor(&console, &memory, 5, 10);
     }
 
