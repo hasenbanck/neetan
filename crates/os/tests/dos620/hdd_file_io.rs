@@ -280,3 +280,15 @@ fn ide_hdd_256_create_write_read_delete() {
     let mut machine = harness::boot_hle_with_ide_hdd(256);
     run_hdd_write_tests(&mut machine, b"A");
 }
+
+#[test]
+fn sasi_hdd_mismatched_sectors_open_read_lseek() {
+    let mut machine = harness::boot_hle_with_sasi_hdd_mismatched_sectors();
+    run_hdd_file_io_tests(&mut machine, b"A");
+}
+
+#[test]
+fn sasi_hdd_mismatched_sectors_create_write_read_delete() {
+    let mut machine = harness::boot_hle_with_sasi_hdd_mismatched_sectors();
+    run_hdd_write_tests(&mut machine, b"A");
+}

@@ -248,3 +248,42 @@ fn dir_recursive() {
         "DIR /S should show SUB directory"
     );
 }
+
+#[test]
+fn dir_in_subdirectory_shows_subdir_content() {
+    let mut machine = boot_hle_with_floppy();
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    // Create a subdirectory and change into it.
+    type_string(&mut machine.bus, b"MD SUB\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CD SUB\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"DIR\r");
+    run_until_prompt(&mut machine);
+
+    // COMMAND.COM lives in the root directory only. It must NOT appear
+    // when listing the subdirectory (regression: resolve_file_path used to
+    // always start from root instead of the current directory).
+    let command_com = [
+        0x0043, 0x004F, 0x004D, 0x004D, 0x0041, 0x004E, 0x0044, 0x0020, 0x0020, 0x0043, 0x004F,
+        0x004D,
+    ]; // "COMMAND  COM"
+    assert!(
+        !find_string_in_text_vram(&machine.bus, &command_com),
+        "DIR inside subdirectory must not list COMMAND.COM from root"
+    );
+
+    // The prompt should confirm we are in A:\SUB.
+    let sub_prompt: [u16; 7] = [0x0041, 0x003A, 0x005C, 0x0053, 0x0055, 0x0042, 0x003E]; // "A:\SUB>"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &sub_prompt),
+        "Prompt should show A:\\SUB>"
+    );
+}

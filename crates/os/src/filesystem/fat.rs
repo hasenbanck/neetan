@@ -13,23 +13,36 @@ pub(crate) struct FatVolume {
     pub is_fat16: bool,
     fat_cache: Vec<u8>,
     fat_dirty: bool,
+    /// Ratio of BPB logical sector size to physical sector size.
+    /// On PC-98 SASI HDDs this can be 4 (1024-byte BPB / 256-byte physical).
+    sector_ratio: u32,
 }
 
 impl FatVolume {
     /// Mounts a FAT volume by reading the boot sector and loading the FAT.
+    ///
+    /// `partition_offset` is in physical sectors.  The BPB may declare a
+    /// larger logical sector size (e.g. 1024 bytes on a 256-byte SASI HDD).
+    /// All internal LBA calculations account for this ratio.
     pub fn mount(drive_da: u8, partition_offset: u32, disk: &mut dyn DiskIo) -> Result<Self, u16> {
+        let physical_sector_size = disk.sector_size(drive_da).ok_or(0x001Fu16)?;
+
+        // Read enough physical sectors to cover at least 512 bytes (minimum BPB).
+        let boot_phys_count = (512u32).div_ceil(physical_sector_size as u32);
         let boot_sector = disk
-            .read_sectors(drive_da, partition_offset, 1)
+            .read_sectors(drive_da, partition_offset, boot_phys_count)
             .map_err(|_| 0x001Fu16)?;
         let bpb = Bpb::parse(&boot_sector).ok_or(0x001Fu16)?;
+
+        let sector_ratio = bpb.bytes_per_sector as u32 / physical_sector_size as u32;
 
         let first_root_sector = bpb.first_root_sector();
         let first_data_sector = bpb.first_data_sector();
         let data_cluster_count = bpb.data_cluster_count();
         let is_fat16 = bpb.is_fat16();
 
-        let fat_start = partition_offset + bpb.reserved_sectors as u32;
-        let fat_sectors = bpb.sectors_per_fat as u32;
+        let fat_start = partition_offset + bpb.reserved_sectors as u32 * sector_ratio;
+        let fat_sectors = bpb.sectors_per_fat as u32 * sector_ratio;
         let fat_data = disk
             .read_sectors(drive_da, fat_start, fat_sectors)
             .map_err(|_| 0x001Fu16)?;
@@ -44,6 +57,7 @@ impl FatVolume {
             is_fat16,
             fat_cache: fat_data,
             fat_dirty: false,
+            sector_ratio,
         })
     }
 
@@ -140,19 +154,24 @@ impl FatVolume {
         }
     }
 
-    /// Converts a cluster number to an absolute LBA sector number.
+    /// Ratio of BPB logical sector size to physical sector size.
+    pub fn sector_ratio(&self) -> u32 {
+        self.sector_ratio
+    }
+
+    /// Converts a cluster number to an absolute physical LBA.
     pub fn cluster_to_lba(&self, cluster: u16) -> u32 {
         self.partition_offset
-            + self.first_data_sector
-            + (cluster as u32 - 2) * self.bpb.sectors_per_cluster as u32
+            + self.first_data_sector * self.sector_ratio
+            + (cluster as u32 - 2) * self.bpb.sectors_per_cluster as u32 * self.sector_ratio
     }
 
-    /// Returns the absolute LBA of the first root directory sector.
+    /// Returns the absolute physical LBA of the first root directory sector.
     pub fn root_dir_lba(&self) -> u32 {
-        self.partition_offset + self.first_root_sector
+        self.partition_offset + self.first_root_sector * self.sector_ratio
     }
 
-    /// Number of sectors in the root directory.
+    /// Number of BPB logical sectors in the root directory.
     pub fn root_dir_sectors(&self) -> u32 {
         self.bpb.root_dir_sectors()
     }
@@ -160,7 +179,7 @@ impl FatVolume {
     /// Reads a single cluster (all sectors) into a Vec.
     pub fn read_cluster(&self, cluster: u16, disk: &mut dyn DiskIo) -> Result<Vec<u8>, u16> {
         let lba = self.cluster_to_lba(cluster);
-        let count = self.bpb.sectors_per_cluster as u32;
+        let count = self.bpb.sectors_per_cluster as u32 * self.sector_ratio;
         disk.read_sectors(self.drive_da, lba, count)
             .map_err(|_| 0x001F)
     }
@@ -177,13 +196,13 @@ impl FatVolume {
             .map_err(|_| 0x001F)
     }
 
-    /// Reads a single sector at an absolute LBA.
+    /// Reads one BPB logical sector at a physical LBA.
     pub fn read_sector_abs(&self, abs_lba: u32, disk: &mut dyn DiskIo) -> Result<Vec<u8>, u16> {
-        disk.read_sectors(self.drive_da, abs_lba, 1)
+        disk.read_sectors(self.drive_da, abs_lba, self.sector_ratio)
             .map_err(|_| 0x001F)
     }
 
-    /// Writes a single sector at an absolute LBA.
+    /// Writes one BPB logical sector at a physical LBA.
     pub fn write_sector_abs(
         &self,
         abs_lba: u32,
@@ -201,8 +220,8 @@ impl FatVolume {
         }
         for fat_idx in 0..self.bpb.num_fats as u32 {
             let fat_start = self.partition_offset
-                + self.bpb.reserved_sectors as u32
-                + fat_idx * self.bpb.sectors_per_fat as u32;
+                + self.bpb.reserved_sectors as u32 * self.sector_ratio
+                + fat_idx * self.bpb.sectors_per_fat as u32 * self.sector_ratio;
             disk.write_sectors(self.drive_da, fat_start, &self.fat_cache)
                 .map_err(|_| 0x001Fu16)?;
         }
