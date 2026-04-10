@@ -251,6 +251,30 @@ impl MachineModel {
             Self::PC9821AS | Self::PC9821AP => true,
         }
     }
+
+    /// Whether this machine supports EMS expanded memory.
+    pub const fn ems_compatible(self) -> bool {
+        match self {
+            Self::PC9801VM => false,
+            Self::PC9801VX | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => true,
+        }
+    }
+
+    /// Whether this machine supports XMS extended memory.
+    pub const fn xms_compatible(self) -> bool {
+        match self {
+            Self::PC9801VM => false,
+            Self::PC9801VX | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => true,
+        }
+    }
+
+    /// Whether this machine supports 32-bit XMS super functions (0x88-0x8F).
+    pub const fn xms_32_compatible(self) -> bool {
+        match self {
+            Self::PC9801VM | Self::PC9801VX => false,
+            Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => true,
+        }
+    }
 }
 
 impl std::fmt::Display for MachineModel {
@@ -767,6 +791,46 @@ pub trait Cpu {
     #[inline]
     fn set_dl(&mut self, v: u8) {
         self.set_dx((self.dx() & 0xFF00) | u16::from(v));
+    }
+
+    /// Returns the EAX register (32-bit). Defaults to zero-extending AX.
+    fn eax(&self) -> u32 {
+        self.ax() as u32
+    }
+
+    /// Sets the EAX register (32-bit). Defaults to setting the low 16 bits.
+    fn set_eax(&mut self, v: u32) {
+        self.set_ax(v as u16);
+    }
+
+    /// Returns the EBX register (32-bit). Defaults to zero-extending BX.
+    fn ebx(&self) -> u32 {
+        self.bx() as u32
+    }
+
+    /// Sets the EBX register (32-bit). Defaults to setting the low 16 bits.
+    fn set_ebx(&mut self, v: u32) {
+        self.set_bx(v as u16);
+    }
+
+    /// Returns the ECX register (32-bit). Defaults to zero-extending CX.
+    fn ecx(&self) -> u32 {
+        self.cx() as u32
+    }
+
+    /// Sets the ECX register (32-bit). Defaults to setting the low 16 bits.
+    fn set_ecx(&mut self, v: u32) {
+        self.set_cx(v as u16);
+    }
+
+    /// Returns the EDX register (32-bit). Defaults to zero-extending DX.
+    fn edx(&self) -> u32 {
+        self.dx() as u32
+    }
+
+    /// Sets the EDX register (32-bit). Defaults to setting the low 16 bits.
+    fn set_edx(&mut self, v: u32) {
+        self.set_dx(v as u16);
     }
 }
 

@@ -176,6 +176,80 @@ impl NeetanOs {
                     }
                 }
             }
+            0x88 => {
+                if !mm.is_xms_32_enabled() {
+                    cpu.set_ax(0);
+                    cpu.set_bx((cpu.bx() & 0xFF00) | 0x0080);
+                    return;
+                }
+                let (largest, total) = mm.xms_query_free_32();
+                cpu.set_eax(largest);
+                cpu.set_edx(total);
+                cpu.set_ecx(
+                    crate::memory::memory_manager::EXTENDED_RAM_BASE
+                        + mm.extended_memory_size_bytes()
+                        - 1,
+                );
+                if total == 0 {
+                    cpu.set_bx((cpu.bx() & 0xFF00) | 0x00A0);
+                } else {
+                    cpu.set_bx(cpu.bx() & 0xFF00);
+                }
+            }
+            0x89 => {
+                if !mm.is_xms_32_enabled() {
+                    cpu.set_ax(0);
+                    cpu.set_bx((cpu.bx() & 0xFF00) | 0x0080);
+                    return;
+                }
+                let size_kb = cpu.edx();
+                match mm.xms_allocate_32(size_kb) {
+                    Ok(handle) => {
+                        cpu.set_ax(1);
+                        cpu.set_dx(handle);
+                    }
+                    Err(code) => {
+                        cpu.set_ax(0);
+                        cpu.set_bx((cpu.bx() & 0xFF00) | code as u16);
+                    }
+                }
+            }
+            0x8E => {
+                if !mm.is_xms_32_enabled() {
+                    cpu.set_ax(0);
+                    cpu.set_bx((cpu.bx() & 0xFF00) | 0x0080);
+                    return;
+                }
+                let handle = cpu.dx();
+                match mm.xms_handle_info_32(handle) {
+                    Ok((lock_count, free_handles, size_kb)) => {
+                        cpu.set_ax(1);
+                        cpu.set_bx((lock_count as u16) << 8);
+                        cpu.set_cx(free_handles);
+                        cpu.set_edx(size_kb);
+                    }
+                    Err(code) => {
+                        cpu.set_ax(0);
+                        cpu.set_bx((cpu.bx() & 0xFF00) | code as u16);
+                    }
+                }
+            }
+            0x8F => {
+                if !mm.is_xms_32_enabled() {
+                    cpu.set_ax(0);
+                    cpu.set_bx((cpu.bx() & 0xFF00) | 0x0080);
+                    return;
+                }
+                let new_size = cpu.ebx();
+                let handle = cpu.dx();
+                match mm.xms_reallocate_32(handle, new_size) {
+                    Ok(()) => cpu.set_ax(1),
+                    Err(code) => {
+                        cpu.set_ax(0);
+                        cpu.set_bx((cpu.bx() & 0xFF00) | code as u16);
+                    }
+                }
+            }
             _ => {
                 cpu.set_ax(0);
                 cpu.set_bx((cpu.bx() & 0xFF00) | 0x0080);
