@@ -10,7 +10,7 @@ use device::{floppy::D88MediaType, i8253_pit::PIT_FLAG_I, upd7220_gdc::GdcScroll
 
 use super::{
     BootDevice, Pc9801Bus,
-    os_adapter::{OsConsoleIo, OsCpuAccess, OsDiskIo, OsMemoryAccess},
+    os_adapter::{OsCpuAccess, OsDiskIo, OsMemoryAccess},
 };
 use crate::{memory::Pc9801Memory, trace::Tracing};
 
@@ -103,14 +103,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                         sasi: &mut self.sasi,
                         ide: &mut self.ide,
                     };
-                    let mut console_io = OsConsoleIo;
-                    neetan_os.dispatch(
-                        vector,
-                        &mut cpu_access,
-                        &mut mem_access,
-                        &mut disk_io,
-                        &mut console_io,
-                    );
+                    neetan_os.dispatch(vector, &mut cpu_access, &mut mem_access, &mut disk_io);
                     self.os = Some(neetan_os);
                     self.sync_cursor();
                 }
@@ -2833,6 +2826,8 @@ impl<T: Tracing> Pc9801Bus<T> {
         neetan_os.set_host_local_time_fn(self.host_local_time_fn);
         neetan_os.set_ems_enabled(self.ems_enabled);
         neetan_os.set_xms_enabled(self.xms_enabled);
+        neetan_os.set_xms_32_enabled(self.xms_32_enabled);
+
         {
             let mut cpu_access = OsCpuAccess(cpu);
             let mut mem_access = OsMemoryAccess(&mut self.memory);
@@ -2841,13 +2836,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 sasi: &mut self.sasi,
                 ide: &mut self.ide,
             };
-            let mut console_io = OsConsoleIo;
-            neetan_os.boot(
-                &mut cpu_access,
-                &mut mem_access,
-                &mut disk_io,
-                &mut console_io,
-            );
+            neetan_os.boot(&mut cpu_access, &mut mem_access, &mut disk_io);
         }
 
         // Enable GDC hardware cursor for HLE OS.

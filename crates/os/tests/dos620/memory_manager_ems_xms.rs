@@ -1049,3 +1049,319 @@ fn test_ems_and_xms_share_pool() {
         xms_ax
     );
 }
+
+#[test]
+fn test_ems_5b00_get_alternate_map_register_set() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x00, 0x5B,                   // MOV AX, 5B00h
+        0xCD, 0x67,                         // INT 67h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let ah = harness::result_byte(&machine.bus, 1);
+    let bl = harness::result_byte(&machine.bus, 2);
+    assert_eq!(ah, 0x00, "AH should be 0 (success), got {:#04X}", ah);
+    assert_eq!(bl, 0x00, "BL should be 0 (software mode), got {:#04X}", bl);
+}
+
+#[test]
+fn test_ems_5b02_get_alternate_map_save_array_size() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x02, 0x5B,                   // MOV AX, 5B02h
+        0xCD, 0x67,                         // INT 67h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0x89, 0x16, 0x02, 0x01,             // MOV [0x0102], DX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let ah = harness::result_byte(&machine.bus, 1);
+    let size = harness::result_word(&machine.bus, 2);
+    assert_eq!(ah, 0x00, "AH should be 0 (success), got {:#04X}", ah);
+    assert!(size > 0, "Save array size should be > 0, got {}", size);
+}
+
+#[test]
+fn test_ems_5b03_allocate_alternate_map_register_set() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x03, 0x5B,                   // MOV AX, 5B03h
+        0xCD, 0x67,                         // INT 67h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let ah = harness::result_byte(&machine.bus, 1);
+    let bl = harness::result_byte(&machine.bus, 2);
+    assert_eq!(ah, 0x00, "AH should be 0 (success), got {:#04X}", ah);
+    assert_eq!(bl, 0x00, "BL should be 0 (software mode), got {:#04X}", bl);
+}
+
+#[test]
+fn test_ems_5b01_set_alternate_map_register_set_invalid() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Try to set alternate register set 1 (not supported)
+        0xBB, 0x01, 0x00,                   // MOV BX, 0001h (set 1)
+        0xB8, 0x01, 0x5B,                   // MOV AX, 5B01h
+        0xCD, 0x67,                         // INT 67h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let ah = harness::result_byte(&machine.bus, 1);
+    assert_eq!(
+        ah, 0x9C,
+        "AH should be 0x9C (not supported), got {:#04X}",
+        ah
+    );
+}
+
+#[test]
+fn test_ems_5c_prepare_warm_boot() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x5C,                         // MOV AH, 5Ch
+        0xCD, 0x67,                         // INT 67h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let ah = harness::result_byte(&machine.bus, 1);
+    assert_eq!(ah, 0x00, "AH should be 0 (success), got {:#04X}", ah);
+}
+
+#[test]
+fn test_ems_5d00_enable_os_function_set() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // First call: BX:CX = 0, should return access key
+        0xBB, 0x00, 0x00,                   // MOV BX, 0
+        0xB9, 0x00, 0x00,                   // MOV CX, 0
+        0xB8, 0x00, 0x5D,                   // MOV AX, 5D00h
+        0xCD, 0x67,                         // INT 67h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (key high)
+        0x89, 0x0E, 0x04, 0x01,             // MOV [0x0104], CX (key low)
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let ah = harness::result_byte(&machine.bus, 1);
+    let key_hi = harness::result_word(&machine.bus, 2);
+    let key_lo = harness::result_word(&machine.bus, 4);
+    assert_eq!(ah, 0x00, "AH should be 0 (success), got {:#04X}", ah);
+    let key = ((key_hi as u32) << 16) | key_lo as u32;
+    assert_ne!(key, 0, "Access key should be non-zero");
+}
+
+#[test]
+fn test_ems_5d01_disable_os_function_set() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Enable first to get key
+        0xBB, 0x00, 0x00,                   // MOV BX, 0
+        0xB9, 0x00, 0x00,                   // MOV CX, 0
+        0xB8, 0x00, 0x5D,                   // MOV AX, 5D00h
+        0xCD, 0x67,                         // INT 67h
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (key high)
+        0x89, 0x0E, 0x04, 0x01,             // MOV [0x0104], CX (key low)
+        // Disable using returned key
+        0x8B, 0x1E, 0x02, 0x01,             // MOV BX, [key high]
+        0x8B, 0x0E, 0x04, 0x01,             // MOV CX, [key low]
+        0xB8, 0x01, 0x5D,                   // MOV AX, 5D01h
+        0xCD, 0x67,                         // INT 67h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let ah = harness::result_byte(&machine.bus, 1);
+    assert_eq!(ah, 0x00, "AH should be 0 (success), got {:#04X}", ah);
+}
+
+#[test]
+fn test_ems_5d02_return_os_access_key() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Enable first to get key
+        0xBB, 0x00, 0x00,                   // MOV BX, 0
+        0xB9, 0x00, 0x00,                   // MOV CX, 0
+        0xB8, 0x00, 0x5D,                   // MOV AX, 5D00h
+        0xCD, 0x67,                         // INT 67h
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (key high)
+        0x89, 0x0E, 0x04, 0x01,             // MOV [0x0104], CX (key low)
+        // Return key
+        0x8B, 0x1E, 0x02, 0x01,             // MOV BX, [key high]
+        0x8B, 0x0E, 0x04, 0x01,             // MOV CX, [key low]
+        0xB8, 0x02, 0x5D,                   // MOV AX, 5D02h
+        0xCD, 0x67,                         // INT 67h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let ah = harness::result_byte(&machine.bus, 1);
+    assert_eq!(ah, 0x00, "AH should be 0 (success), got {:#04X}", ah);
+}
+
+#[test]
+fn test_xms_88_query_any_free_extended_memory() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x88,                         // MOV AH, 88h
+        0xCD, 0xFE,                         // INT FEh
+        // Store EAX (largest free KB) as dword at [0x0100]
+        0x66, 0xA3, 0x00, 0x01,             // MOV [0x0100], EAX
+        // Store EDX (total free KB) as dword at [0x0104]
+        0x66, 0x89, 0x16, 0x04, 0x01,       // MOV [0x0104], EDX
+        // Store ECX (highest address) as dword at [0x0108]
+        0x66, 0x89, 0x0E, 0x08, 0x01,       // MOV [0x0108], ECX
+        // Store BL (error code) at [0x010C]
+        0x88, 0x1E, 0x0C, 0x01,             // MOV [0x010C], BL
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let largest = harness::result_dword(&machine.bus, 0);
+    let total = harness::result_dword(&machine.bus, 4);
+    let highest = harness::result_dword(&machine.bus, 8);
+    let bl = harness::result_byte(&machine.bus, 0x0C);
+    assert_eq!(bl, 0x00, "BL should be 0 (no error), got {:#04X}", bl);
+    assert!(
+        largest > 0,
+        "Largest free block should be > 0, got {}",
+        largest
+    );
+    assert!(total > 0, "Total free should be > 0, got {}", total);
+    assert!(
+        highest >= 0x100000,
+        "Highest address should be >= 1MB, got {:#X}",
+        highest
+    );
+}
+
+#[test]
+fn test_xms_89_allocate_any_extended_memory() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Set EDX = 64 (allocate 64 KB)
+        0x66, 0xBA, 0x40, 0x00, 0x00, 0x00, // MOV EDX, 64
+        0xB4, 0x89,                         // MOV AH, 89h
+        0xCD, 0xFE,                         // INT FEh
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (1=success)
+        0x89, 0x16, 0x02, 0x01,             // MOV [0x0102], DX (handle)
+        // Free the handle
+        0x8B, 0x16, 0x02, 0x01,             // MOV DX, [handle]
+        0xB4, 0x0A,                         // MOV AH, 0Ah
+        0xCD, 0xFE,                         // INT FEh
+        0xA3, 0x04, 0x01,                   // MOV [0x0104], AX (1=success)
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let alloc_ax = harness::result_word(&machine.bus, 0);
+    let handle = harness::result_word(&machine.bus, 2);
+    let free_ax = harness::result_word(&machine.bus, 4);
+    assert_eq!(alloc_ax, 1, "Allocate should succeed, AX={}", alloc_ax);
+    assert!(handle >= 1, "Handle should be >= 1, got {}", handle);
+    assert_eq!(free_ax, 1, "Free should succeed, AX={}", free_ax);
+}
+
+#[test]
+fn test_xms_8e_get_extended_handle_info() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Allocate 64 KB via 32-bit function
+        0x66, 0xBA, 0x40, 0x00, 0x00, 0x00, // MOV EDX, 64
+        0xB4, 0x89,                         // MOV AH, 89h
+        0xCD, 0xFE,                         // INT FEh
+        0x89, 0x16, 0x06, 0x01,             // MOV [0x0106], DX (handle)
+        // Query handle info via 0x8E
+        0x8B, 0x16, 0x06, 0x01,             // MOV DX, [handle]
+        0xB4, 0x8E,                         // MOV AH, 8Eh
+        0xCD, 0xFE,                         // INT FEh
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (1=success)
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (BH=lock count)
+        0x89, 0x0E, 0x04, 0x01,             // MOV [0x0104], CX (free handles)
+        0x66, 0x89, 0x16, 0x08, 0x01,       // MOV [0x0108], EDX (size KB, 32-bit)
+        // Clean up
+        0x8B, 0x16, 0x06, 0x01,             // MOV DX, [handle]
+        0xB4, 0x0A,                         // MOV AH, 0Ah
+        0xCD, 0xFE,                         // INT FEh
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let ax = harness::result_word(&machine.bus, 0);
+    let bh = harness::result_byte(&machine.bus, 3);
+    let free_handles = harness::result_word(&machine.bus, 4);
+    let size_kb = harness::result_dword(&machine.bus, 8);
+    assert_eq!(ax, 1, "Query should succeed, AX={}", ax);
+    assert_eq!(bh, 0, "Lock count should be 0, got {}", bh);
+    assert!(
+        free_handles > 0,
+        "Free handles should be > 0, got {}",
+        free_handles
+    );
+    assert_eq!(size_kb, 64, "Size should be 64 KB, got {}", size_kb);
+}
+
+#[test]
+fn test_xms_8f_reallocate_any_extended_memory() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Allocate 64 KB via 32-bit function
+        0x66, 0xBA, 0x40, 0x00, 0x00, 0x00, // MOV EDX, 64
+        0xB4, 0x89,                         // MOV AH, 89h
+        0xCD, 0xFE,                         // INT FEh
+        0x89, 0x16, 0x06, 0x01,             // MOV [0x0106], DX (handle)
+        // Reallocate to 128 KB via 0x8F (EBX = new size)
+        0x66, 0xBB, 0x80, 0x00, 0x00, 0x00, // MOV EBX, 128
+        0x8B, 0x16, 0x06, 0x01,             // MOV DX, [handle]
+        0xB4, 0x8F,                         // MOV AH, 8Fh
+        0xCD, 0xFE,                         // INT FEh
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (1=success)
+        // Verify new size via 0x8E
+        0x8B, 0x16, 0x06, 0x01,             // MOV DX, [handle]
+        0xB4, 0x8E,                         // MOV AH, 8Eh
+        0xCD, 0xFE,                         // INT FEh
+        0x66, 0x89, 0x16, 0x02, 0x01,       // MOV [0x0102], EDX (size KB)
+        // Clean up
+        0x8B, 0x16, 0x06, 0x01,             // MOV DX, [handle]
+        0xB4, 0x0A,                         // MOV AH, 0Ah
+        0xCD, 0xFE,                         // INT FEh
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let realloc_ax = harness::result_word(&machine.bus, 0);
+    let new_size = harness::result_dword(&machine.bus, 2);
+    assert_eq!(
+        realloc_ax, 1,
+        "Reallocate should succeed, AX={}",
+        realloc_ax
+    );
+    assert_eq!(new_size, 128, "New size should be 128 KB, got {}", new_size);
+}

@@ -384,6 +384,8 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     ems_enabled: bool,
     /// Whether XMS extended memory is enabled for the HLE OS.
     xms_enabled: bool,
+    /// Whether 32-bit XMS super functions (0x88-0x8F) are enabled.
+    xms_32_enabled: bool,
 }
 
 impl<T: Tracing> Pc9801Bus<T> {
@@ -400,6 +402,11 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// Enables or disables XMS extended memory for the HLE OS.
     pub fn set_xms_enabled(&mut self, enabled: bool) {
         self.xms_enabled = enabled;
+    }
+
+    /// Enables or disables 32-bit XMS super functions (0x88-0x8F).
+    pub fn set_xms_32_enabled(&mut self, enabled: bool) {
+        self.xms_32_enabled = enabled;
     }
 
     /// Enables the NEETAN OS HLE DOS subsystem.

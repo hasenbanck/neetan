@@ -111,6 +111,38 @@ impl<C: Cpu> os::CpuAccess for OsCpuAccess<'_, C> {
         }
         self.0.set_flags(flags);
     }
+
+    fn eax(&self) -> u32 {
+        self.0.eax()
+    }
+
+    fn set_eax(&mut self, value: u32) {
+        self.0.set_eax(value);
+    }
+
+    fn ebx(&self) -> u32 {
+        self.0.ebx()
+    }
+
+    fn set_ebx(&mut self, value: u32) {
+        self.0.set_ebx(value);
+    }
+
+    fn ecx(&self) -> u32 {
+        self.0.ecx()
+    }
+
+    fn set_ecx(&mut self, value: u32) {
+        self.0.set_ecx(value);
+    }
+
+    fn edx(&self) -> u32 {
+        self.0.edx()
+    }
+
+    fn set_edx(&mut self, value: u32) {
+        self.0.set_edx(value);
+    }
 }
 
 pub(super) struct OsMemoryAccess<'a>(pub &'a mut Pc9801Memory);
@@ -454,49 +486,5 @@ impl os::CdromIo for OsDiskIo<'_> {
                 input_channel: info.input_channel,
                 volume: info.volume,
             });
-    }
-}
-
-pub(super) struct OsConsoleIo;
-
-impl os::ConsoleIo for OsConsoleIo {
-    fn write_char(&mut self, _ch: u8) {
-        unimplemented!("OsConsoleIo::write_char()")
-    }
-
-    fn write_str(&mut self, _s: &[u8]) {
-        unimplemented!("OsConsoleIo::write_str()")
-    }
-
-    fn read_char(&mut self) -> u8 {
-        unimplemented!("OsConsoleIo::read_char()")
-    }
-
-    fn char_available(&self) -> bool {
-        unimplemented!("OsConsoleIo::char_available()")
-    }
-
-    fn read_key(&mut self) -> (u8, u8) {
-        unimplemented!("OsConsoleIo::read_key()")
-    }
-
-    fn cursor_position(&self) -> (u8, u8) {
-        unimplemented!("OsConsoleIo::cursor_position()")
-    }
-
-    fn set_cursor_position(&mut self, _row: u8, _col: u8) {
-        unimplemented!("OsConsoleIo::set_cursor_position()")
-    }
-
-    fn scroll_up(&mut self) {
-        unimplemented!("OsConsoleIo::scroll_up()")
-    }
-
-    fn clear_screen(&mut self) {
-        unimplemented!("OsConsoleIo::clear_screen()")
-    }
-
-    fn screen_size(&self) -> (u8, u8) {
-        unimplemented!("OsConsoleIo::screen_size()")
     }
 }

@@ -70,6 +70,38 @@ pub trait CpuAccess {
     fn cs(&self) -> u16;
     /// Sets the carry flag in the IRET frame.
     fn set_carry(&mut self, carry: bool);
+    /// Returns the EAX register (32-bit). Defaults to zero-extending AX.
+    fn eax(&self) -> u32 {
+        self.ax() as u32
+    }
+    /// Sets the EAX register (32-bit). Defaults to setting AX.
+    fn set_eax(&mut self, value: u32) {
+        self.set_ax(value as u16);
+    }
+    /// Returns the EBX register (32-bit). Defaults to zero-extending BX.
+    fn ebx(&self) -> u32 {
+        self.bx() as u32
+    }
+    /// Sets the EBX register (32-bit). Defaults to setting BX.
+    fn set_ebx(&mut self, value: u32) {
+        self.set_bx(value as u16);
+    }
+    /// Returns the ECX register (32-bit). Defaults to zero-extending CX.
+    fn ecx(&self) -> u32 {
+        self.cx() as u32
+    }
+    /// Sets the ECX register (32-bit). Defaults to setting CX.
+    fn set_ecx(&mut self, value: u32) {
+        self.set_cx(value as u16);
+    }
+    /// Returns the EDX register (32-bit). Defaults to zero-extending DX.
+    fn edx(&self) -> u32 {
+        self.dx() as u32
+    }
+    /// Sets the EDX register (32-bit). Defaults to setting DX.
+    fn set_edx(&mut self, value: u32) {
+        self.set_dx(value as u16);
+    }
 }
 
 /// Emulated memory access for the OS.
@@ -308,6 +340,8 @@ pub(crate) struct OsState {
     pub(crate) ems_enabled: bool,
     /// Whether XMS extended memory is enabled.
     pub(crate) xms_enabled: bool,
+    /// Whether 32-bit XMS super functions (0x88-0x8F) are available (386+ only).
+    pub(crate) xms_32_enabled: bool,
     /// Unified EMS/XMS/UMB memory manager. `None` if EMS/XMS both disabled or no extended RAM.
     pub(crate) memory_manager: Option<memory::memory_manager::MemoryManager>,
 }
@@ -530,6 +564,7 @@ impl NeetanOs {
                 host_local_time_fn: default_host_local_time,
                 ems_enabled: true,
                 xms_enabled: true,
+                xms_32_enabled: false,
                 memory_manager: None,
             },
             console: console::Console::default(),
@@ -557,6 +592,11 @@ impl NeetanOs {
         self.state.xms_enabled = enabled;
     }
 
+    /// Enables or disables 32-bit XMS super functions (0x88-0x8F). Requires 386+ CPU.
+    pub fn set_xms_32_enabled(&mut self, enabled: bool) {
+        self.state.xms_32_enabled = enabled;
+    }
+
     /// Performs the DOS boot sequence: writes data structures into emulated RAM,
     /// mounts drives, parses CONFIG.SYS, and creates the COMMAND.COM process.
     pub fn boot(
@@ -564,7 +604,6 @@ impl NeetanOs {
         _cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
         device: &mut (impl DiskIo + CdromIo),
-        _console: &mut dyn ConsoleIo,
     ) {
         self.write_dos_data_structures(memory);
         self.write_iosys_work_area(memory);
@@ -605,6 +644,7 @@ impl NeetanOs {
                 ext_mem_size,
                 self.state.ems_enabled,
                 self.state.xms_enabled,
+                self.state.xms_32_enabled,
                 memory,
             ));
         }
@@ -840,7 +880,6 @@ impl NeetanOs {
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
         device: &mut (impl DiskIo + CdromIo),
-        _console: &mut dyn ConsoleIo,
     ) -> bool {
         match vector {
             0x20 => {

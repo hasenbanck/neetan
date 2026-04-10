@@ -403,6 +403,129 @@ impl NeetanOs {
                     }
                 }
             }
+            0x5B => {
+                let al = cpu.ax() as u8;
+                match al {
+                    0x00 => {
+                        cpu.set_bx(cpu.bx() & 0xFF00);
+                        let dest_addr = ((cpu.es() as u32) << 4) + cpu.di() as u32;
+                        let map = mm.ems_get_page_map();
+                        for (i, slot) in map.iter().enumerate() {
+                            let addr = dest_addr + (i as u32) * 4;
+                            match slot {
+                                Some(m) => {
+                                    memory.write_word(addr, m.handle);
+                                    memory.write_word(addr + 2, m.logical_page);
+                                }
+                                None => {
+                                    memory.write_word(addr, 0xFFFF);
+                                    memory.write_word(addr + 2, 0xFFFF);
+                                }
+                            }
+                        }
+                        cpu.set_ax(cpu.ax() & 0x00FF);
+                    }
+                    0x01 => {
+                        let bl = cpu.bx() as u8;
+                        if bl != 0 {
+                            cpu.set_ax((cpu.ax() & 0x00FF) | 0x9C00);
+                        } else {
+                            let src_addr = ((cpu.es() as u32) << 4) + cpu.di() as u32;
+                            let map = read_page_map_from_memory(mm, memory, src_addr);
+                            mm.ems_set_page_map(map, memory);
+                            cpu.set_ax(cpu.ax() & 0x00FF);
+                        }
+                    }
+                    0x02 => {
+                        cpu.set_dx(mm.ems_page_map_size());
+                        cpu.set_ax(cpu.ax() & 0x00FF);
+                    }
+                    0x03 => {
+                        cpu.set_bx(cpu.bx() & 0xFF00);
+                        cpu.set_ax(cpu.ax() & 0x00FF);
+                    }
+                    0x04 => {
+                        let bl = cpu.bx() as u8;
+                        if bl == 0 {
+                            cpu.set_ax(cpu.ax() & 0x00FF);
+                        } else {
+                            cpu.set_ax((cpu.ax() & 0x00FF) | 0x9C00);
+                        }
+                    }
+                    0x05 => {
+                        cpu.set_bx(cpu.bx() & 0xFF00);
+                        cpu.set_ax(cpu.ax() & 0x00FF);
+                    }
+                    0x06 | 0x07 => {
+                        cpu.set_ax((cpu.ax() & 0x00FF) | 0x9E00);
+                    }
+                    0x08 => {
+                        let bl = cpu.bx() as u8;
+                        if bl == 0 {
+                            cpu.set_ax(cpu.ax() & 0x00FF);
+                        } else {
+                            cpu.set_ax((cpu.ax() & 0x00FF) | 0x9C00);
+                        }
+                    }
+                    _ => {
+                        cpu.set_ax((cpu.ax() & 0x00FF) | 0x8F00);
+                    }
+                }
+            }
+            0x5C => {
+                cpu.set_ax(cpu.ax() & 0x00FF);
+            }
+            0x5D => {
+                let al = cpu.ax() as u8;
+                match al {
+                    0x00 => {
+                        let provided_key = ((cpu.bx() as u32) << 16) | cpu.cx() as u32;
+                        match mm.ems_enable_os_functions(provided_key) {
+                            Ok(Some(key)) => {
+                                cpu.set_bx((key >> 16) as u16);
+                                cpu.set_cx(key as u16);
+                                cpu.set_ax(cpu.ax() & 0x00FF);
+                            }
+                            Ok(None) => {
+                                cpu.set_ax(cpu.ax() & 0x00FF);
+                            }
+                            Err(code) => {
+                                cpu.set_ax((cpu.ax() & 0x00FF) | ((code as u16) << 8));
+                            }
+                        }
+                    }
+                    0x01 => {
+                        let provided_key = ((cpu.bx() as u32) << 16) | cpu.cx() as u32;
+                        match mm.ems_disable_os_functions(provided_key) {
+                            Ok(Some(key)) => {
+                                cpu.set_bx((key >> 16) as u16);
+                                cpu.set_cx(key as u16);
+                                cpu.set_ax(cpu.ax() & 0x00FF);
+                            }
+                            Ok(None) => {
+                                cpu.set_ax(cpu.ax() & 0x00FF);
+                            }
+                            Err(code) => {
+                                cpu.set_ax((cpu.ax() & 0x00FF) | ((code as u16) << 8));
+                            }
+                        }
+                    }
+                    0x02 => {
+                        let provided_key = ((cpu.bx() as u32) << 16) | cpu.cx() as u32;
+                        match mm.ems_return_os_access_key(provided_key) {
+                            Ok(()) => {
+                                cpu.set_ax(cpu.ax() & 0x00FF);
+                            }
+                            Err(code) => {
+                                cpu.set_ax((cpu.ax() & 0x00FF) | ((code as u16) << 8));
+                            }
+                        }
+                    }
+                    _ => {
+                        cpu.set_ax((cpu.ax() & 0x00FF) | 0x8F00);
+                    }
+                }
+            }
             _ => {
                 cpu.set_ax((cpu.ax() & 0x00FF) | 0x8400);
             }

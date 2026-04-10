@@ -2441,6 +2441,38 @@ impl<const CPU_MODEL: u8> common::Cpu for I386<CPU_MODEL> {
         self.state.set_edx(upper | v as u32);
     }
 
+    fn eax(&self) -> u32 {
+        self.state.eax()
+    }
+
+    fn set_eax(&mut self, v: u32) {
+        self.state.set_eax(v);
+    }
+
+    fn ebx(&self) -> u32 {
+        self.state.ebx()
+    }
+
+    fn set_ebx(&mut self, v: u32) {
+        self.state.set_ebx(v);
+    }
+
+    fn ecx(&self) -> u32 {
+        self.state.ecx()
+    }
+
+    fn set_ecx(&mut self, v: u32) {
+        self.state.set_ecx(v);
+    }
+
+    fn edx(&self) -> u32 {
+        self.state.edx()
+    }
+
+    fn set_edx(&mut self, v: u32) {
+        self.state.set_edx(v);
+    }
+
     fn sp(&self) -> u16 {
         self.state.esp() as u16
     }

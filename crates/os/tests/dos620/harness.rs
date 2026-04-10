@@ -20,6 +20,7 @@ pub fn create_hle_machine() -> machine::Pc9801Ra {
         machine::Pc9801Bus::new(MachineModel::PC9801RA, 48000),
     );
     machine.bus.load_font_rom(FONT_ROM_DATA);
+    machine.bus.set_xms_32_enabled(true);
     machine
 }
 
@@ -622,6 +623,12 @@ pub fn result_byte(bus: &machine::Pc9801Bus, offset: u32) -> u8 {
 
 pub fn result_word(bus: &machine::Pc9801Bus, offset: u32) -> u16 {
     read_word(bus, INJECT_RESULT_BASE + offset)
+}
+
+pub fn result_dword(bus: &machine::Pc9801Bus, offset: u32) -> u32 {
+    let lo = result_word(bus, offset) as u32;
+    let hi = result_word(bus, offset + 2) as u32;
+    lo | (hi << 16)
 }
 
 pub fn get_sysvars_address(machine: &mut machine::Pc9801Ra) -> u32 {

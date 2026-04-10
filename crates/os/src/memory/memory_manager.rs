@@ -54,7 +54,7 @@ impl EmsHandle {
 struct XmsHandle {
     active: bool,
     allocation: Option<Allocation>,
-    size_kb: u16,
+    size_kb: u32,
     lock_count: u8,
 }
 
@@ -78,10 +78,14 @@ pub(crate) struct MemoryManager {
     ems_page_mapping: [Option<EmsMapping>; PHYSICAL_PAGES],
 
     xms_enabled: bool,
+    xms_32_enabled: bool,
     xms_handles: Vec<XmsHandle>,
     hma_allocated: bool,
 
     umb_enabled: bool,
+
+    ems_os_access_key: Option<u32>,
+    ems_os_functions_enabled: bool,
 }
 
 impl MemoryManager {
@@ -89,6 +93,7 @@ impl MemoryManager {
         extended_memory_size: u32,
         ems_enabled: bool,
         xms_enabled: bool,
+        xms_32_enabled: bool,
         mem: &mut dyn MemoryAccess,
     ) -> Self {
         let allocator = TlsfAllocator::new(extended_memory_size);
@@ -127,9 +132,12 @@ impl MemoryManager {
             ems_handles,
             ems_page_mapping: [None; PHYSICAL_PAGES],
             xms_enabled,
+            xms_32_enabled,
             xms_handles,
             hma_allocated: false,
             umb_enabled,
+            ems_os_access_key: None,
+            ems_os_functions_enabled: false,
         }
     }
 
@@ -151,7 +159,7 @@ impl MemoryManager {
         let mut total: u32 = 0;
         for handle in &self.xms_handles {
             if handle.active {
-                total += handle.size_kb as u32;
+                total += handle.size_kb;
             }
         }
         total
@@ -648,7 +656,7 @@ impl MemoryManager {
         let handle = &mut self.xms_handles[handle_index as usize];
         handle.active = true;
         handle.allocation = Some(allocation);
-        handle.size_kb = size_kb;
+        handle.size_kb = size_kb as u32;
         handle.lock_count = 0;
         Ok(handle_index + 1)
     }
@@ -692,7 +700,7 @@ impl MemoryManager {
             }
             let alloc = self.xms_handles[index].allocation.as_ref().ok_or(0xA4u8)?;
             let base = EXTENDED_RAM_BASE + alloc.offset();
-            if src_offset > self.xms_handles[index].size_kb as u32 * 1024 {
+            if src_offset > self.xms_handles[index].size_kb * 1024 {
                 return Err(0xA4);
             }
             base + src_offset
@@ -707,7 +715,7 @@ impl MemoryManager {
             }
             let alloc = self.xms_handles[index].allocation.as_ref().ok_or(0xA6u8)?;
             let base = EXTENDED_RAM_BASE + alloc.offset();
-            if dst_offset > self.xms_handles[index].size_kb as u32 * 1024 {
+            if dst_offset > self.xms_handles[index].size_kb * 1024 {
                 return Err(0xA6);
             }
             base + dst_offset
@@ -754,7 +762,7 @@ impl MemoryManager {
         }
         let lock_count = self.xms_handles[index].lock_count;
         let free_handles = self.free_xms_handles_count();
-        let size_kb = self.xms_handles[index].size_kb;
+        let size_kb = self.xms_handles[index].size_kb as u16;
         Ok((lock_count, free_handles, size_kb))
     }
 
@@ -782,7 +790,7 @@ impl MemoryManager {
         match self.allocator.allocate(aligned_size) {
             Some(alloc) => {
                 self.xms_handles[index].allocation = Some(alloc);
-                self.xms_handles[index].size_kb = new_size_kb;
+                self.xms_handles[index].size_kb = new_size_kb as u32;
                 Ok(())
             }
             None => {
@@ -883,8 +891,142 @@ impl MemoryManager {
         self.xms_enabled
     }
 
+    pub(crate) fn is_xms_32_enabled(&self) -> bool {
+        self.xms_32_enabled
+    }
+
     pub(crate) fn is_umb_enabled(&self) -> bool {
         self.umb_enabled
+    }
+
+    pub(crate) fn extended_memory_size_bytes(&self) -> u32 {
+        self.extended_memory_size
+    }
+
+    pub(crate) fn xms_query_free_32(&self) -> (u32, u32) {
+        let total_kb = self.extended_memory_size / 1024;
+        let used_kb = self.allocated_xms_kb();
+        let free_kb = total_kb.saturating_sub(used_kb);
+        (free_kb, free_kb)
+    }
+
+    pub(crate) fn xms_allocate_32(&mut self, size_kb: u32) -> Result<u16, u8> {
+        let handle_index = self.find_free_xms_handle().ok_or(0xA1u8)?;
+        let size_bytes = (size_kb as u64) * 1024;
+        let aligned_size = ((size_bytes + ALIGN_MASK) & !ALIGN_MASK) as u32;
+
+        if aligned_size == 0 {
+            let handle = &mut self.xms_handles[handle_index as usize];
+            handle.active = true;
+            handle.allocation = None;
+            handle.size_kb = 0;
+            handle.lock_count = 0;
+            return Ok(handle_index + 1);
+        }
+
+        let allocation = self.allocator.allocate(aligned_size).ok_or(0xA0u8)?;
+        let handle = &mut self.xms_handles[handle_index as usize];
+        handle.active = true;
+        handle.allocation = Some(allocation);
+        handle.size_kb = size_kb;
+        handle.lock_count = 0;
+        Ok(handle_index + 1)
+    }
+
+    pub(crate) fn xms_handle_info_32(&self, handle_id: u16) -> Result<(u8, u16, u32), u8> {
+        let index = handle_id.checked_sub(1).ok_or(0xA2u8)? as usize;
+        if index >= self.xms_handles.len() || !self.xms_handles[index].active {
+            return Err(0xA2);
+        }
+        let lock_count = self.xms_handles[index].lock_count;
+        let free_handles = self.free_xms_handles_count();
+        let size_kb = self.xms_handles[index].size_kb;
+        Ok((lock_count, free_handles, size_kb))
+    }
+
+    pub(crate) fn xms_reallocate_32(&mut self, handle_id: u16, new_size_kb: u32) -> Result<(), u8> {
+        let index = handle_id.checked_sub(1).ok_or(0xA2u8)? as usize;
+        if index >= self.xms_handles.len() || !self.xms_handles[index].active {
+            return Err(0xA2);
+        }
+        if self.xms_handles[index].lock_count > 0 {
+            return Err(0xAB);
+        }
+
+        if let Some(old_alloc) = self.xms_handles[index].allocation.take() {
+            self.allocator.deallocate(old_alloc);
+        }
+
+        if new_size_kb == 0 {
+            self.xms_handles[index].allocation = None;
+            self.xms_handles[index].size_kb = 0;
+            return Ok(());
+        }
+
+        let size_bytes = (new_size_kb as u64) * 1024;
+        let aligned_size = ((size_bytes + ALIGN_MASK) & !ALIGN_MASK) as u32;
+        match self.allocator.allocate(aligned_size) {
+            Some(alloc) => {
+                self.xms_handles[index].allocation = Some(alloc);
+                self.xms_handles[index].size_kb = new_size_kb;
+                Ok(())
+            }
+            None => {
+                self.xms_handles[index].active = false;
+                self.xms_handles[index].size_kb = 0;
+                Err(0xA0)
+            }
+        }
+    }
+
+    pub(crate) fn ems_enable_os_functions(&mut self, provided_key: u32) -> Result<Option<u32>, u8> {
+        match self.ems_os_access_key {
+            None => {
+                let key = 0x4E45_4554;
+                self.ems_os_access_key = Some(key);
+                self.ems_os_functions_enabled = true;
+                Ok(Some(key))
+            }
+            Some(stored_key) => {
+                if provided_key != stored_key {
+                    return Err(0xA4);
+                }
+                self.ems_os_functions_enabled = true;
+                Ok(None)
+            }
+        }
+    }
+
+    pub(crate) fn ems_disable_os_functions(
+        &mut self,
+        provided_key: u32,
+    ) -> Result<Option<u32>, u8> {
+        match self.ems_os_access_key {
+            None => {
+                let key = 0x4E45_4554;
+                self.ems_os_access_key = Some(key);
+                self.ems_os_functions_enabled = false;
+                Ok(Some(key))
+            }
+            Some(stored_key) => {
+                if provided_key != stored_key {
+                    return Err(0xA4);
+                }
+                self.ems_os_functions_enabled = false;
+                Ok(None)
+            }
+        }
+    }
+
+    pub(crate) fn ems_return_os_access_key(&mut self, provided_key: u32) -> Result<(), u8> {
+        match self.ems_os_access_key {
+            Some(stored_key) if provided_key == stored_key => {
+                self.ems_os_access_key = None;
+                self.ems_os_functions_enabled = false;
+                Ok(())
+            }
+            _ => Err(0xA4),
+        }
     }
 }
 
@@ -951,7 +1093,7 @@ mod tests {
 
     fn create_manager_selective(pool_kb: u32, ems: bool, xms: bool) -> (MemoryManager, MockMemory) {
         let mut mem = MockMemory::new(pool_kb);
-        let mm = MemoryManager::new(pool_kb * 1024, ems, xms, &mut mem);
+        let mm = MemoryManager::new(pool_kb * 1024, ems, xms, true, &mut mem);
         (mm, mem)
     }
 
@@ -1861,5 +2003,177 @@ mod tests {
 
         let (free_after_dealloc, _) = mm.xms_query_free();
         assert_eq!(free_after_dealloc, initial_total);
+    }
+
+    #[test]
+    fn test_xms_32_enabled_flag() {
+        let (mm, _mem) = create_manager(1024);
+        assert!(mm.is_xms_32_enabled());
+
+        let mut mem = MockMemory::new(1024);
+        let mm2 = MemoryManager::new(1024 * 1024, true, true, false, &mut mem);
+        assert!(!mm2.is_xms_32_enabled());
+    }
+
+    #[test]
+    fn test_xms_query_free_32() {
+        let (mm, _mem) = create_manager(1024);
+        let (largest, total) = mm.xms_query_free_32();
+        assert_eq!(largest, 1024);
+        assert_eq!(total, 1024);
+    }
+
+    #[test]
+    fn test_xms_allocate_32_basic() {
+        let (mut mm, _mem) = create_manager(1024);
+        let handle = mm.xms_allocate_32(64).unwrap();
+        assert!(handle >= 1);
+        let (_, _, size_kb) = mm.xms_handle_info_32(handle).unwrap();
+        assert_eq!(size_kb, 64);
+    }
+
+    #[test]
+    fn test_xms_allocate_32_zero() {
+        let (mut mm, _mem) = create_manager(1024);
+        let handle = mm.xms_allocate_32(0).unwrap();
+        assert!(handle >= 1);
+        let (_, _, size_kb) = mm.xms_handle_info_32(handle).unwrap();
+        assert_eq!(size_kb, 0);
+    }
+
+    #[test]
+    fn test_xms_allocate_32_exceeds_free() {
+        let (mut mm, _mem) = create_manager(1024);
+        assert_eq!(mm.xms_allocate_32(2000), Err(0xA0));
+    }
+
+    #[test]
+    fn test_xms_allocate_32_exhausts_handles() {
+        let (mut mm, _mem) = create_manager(1024);
+        for _ in 0..MAX_XMS_HANDLES {
+            mm.xms_allocate_32(0).unwrap();
+        }
+        assert_eq!(mm.xms_allocate_32(0), Err(0xA1));
+    }
+
+    #[test]
+    fn test_xms_handle_info_32() {
+        let (mut mm, _mem) = create_manager(1024);
+        let handle = mm.xms_allocate_32(64).unwrap();
+        let (lock_count, free_handles, size_kb) = mm.xms_handle_info_32(handle).unwrap();
+        assert_eq!(lock_count, 0);
+        assert_eq!(free_handles, (MAX_XMS_HANDLES - 1) as u16);
+        assert_eq!(size_kb, 64);
+    }
+
+    #[test]
+    fn test_xms_handle_info_32_invalid() {
+        let (mm, _mem) = create_manager(1024);
+        assert_eq!(mm.xms_handle_info_32(0), Err(0xA2));
+    }
+
+    #[test]
+    fn test_xms_reallocate_32_grow() {
+        let (mut mm, _mem) = create_manager(1024);
+        let handle = mm.xms_allocate_32(64).unwrap();
+        assert!(mm.xms_reallocate_32(handle, 128).is_ok());
+        let (_, _, size) = mm.xms_handle_info_32(handle).unwrap();
+        assert_eq!(size, 128);
+    }
+
+    #[test]
+    fn test_xms_reallocate_32_shrink() {
+        let (mut mm, _mem) = create_manager(1024);
+        let handle = mm.xms_allocate_32(128).unwrap();
+        assert!(mm.xms_reallocate_32(handle, 32).is_ok());
+        let (_, _, size) = mm.xms_handle_info_32(handle).unwrap();
+        assert_eq!(size, 32);
+    }
+
+    #[test]
+    fn test_xms_reallocate_32_to_zero() {
+        let (mut mm, _mem) = create_manager(1024);
+        let handle = mm.xms_allocate_32(64).unwrap();
+        assert!(mm.xms_reallocate_32(handle, 0).is_ok());
+        let (_, _, size) = mm.xms_handle_info_32(handle).unwrap();
+        assert_eq!(size, 0);
+    }
+
+    #[test]
+    fn test_xms_reallocate_32_locked() {
+        let (mut mm, _mem) = create_manager(1024);
+        let handle = mm.xms_allocate_32(64).unwrap();
+        mm.xms_lock(handle).unwrap();
+        assert_eq!(mm.xms_reallocate_32(handle, 128), Err(0xAB));
+    }
+
+    #[test]
+    fn test_ems_enable_os_functions_first_call() {
+        let (mut mm, _mem) = create_manager(1024);
+        let result = mm.ems_enable_os_functions(0);
+        assert!(result.is_ok());
+        let key = result.unwrap();
+        assert!(key.is_some());
+        assert_ne!(key.unwrap(), 0);
+    }
+
+    #[test]
+    fn test_ems_enable_os_functions_subsequent_call() {
+        let (mut mm, _mem) = create_manager(1024);
+        let key = mm.ems_enable_os_functions(0).unwrap().unwrap();
+        let result = mm.ems_enable_os_functions(key);
+        assert_eq!(result, Ok(None));
+    }
+
+    #[test]
+    fn test_ems_enable_os_functions_wrong_key() {
+        let (mut mm, _mem) = create_manager(1024);
+        mm.ems_enable_os_functions(0).unwrap();
+        assert_eq!(mm.ems_enable_os_functions(0xDEAD), Err(0xA4));
+    }
+
+    #[test]
+    fn test_ems_disable_os_functions_first_call() {
+        let (mut mm, _mem) = create_manager(1024);
+        let result = mm.ems_disable_os_functions(0);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some());
+    }
+
+    #[test]
+    fn test_ems_disable_os_functions_correct_key() {
+        let (mut mm, _mem) = create_manager(1024);
+        let key = mm.ems_enable_os_functions(0).unwrap().unwrap();
+        assert_eq!(mm.ems_disable_os_functions(key), Ok(None));
+    }
+
+    #[test]
+    fn test_ems_disable_os_functions_wrong_key() {
+        let (mut mm, _mem) = create_manager(1024);
+        mm.ems_enable_os_functions(0).unwrap();
+        assert_eq!(mm.ems_disable_os_functions(0xDEAD), Err(0xA4));
+    }
+
+    #[test]
+    fn test_ems_return_os_access_key() {
+        let (mut mm, _mem) = create_manager(1024);
+        let key = mm.ems_enable_os_functions(0).unwrap().unwrap();
+        assert!(mm.ems_return_os_access_key(key).is_ok());
+    }
+
+    #[test]
+    fn test_ems_return_os_access_key_wrong() {
+        let (mut mm, _mem) = create_manager(1024);
+        mm.ems_enable_os_functions(0).unwrap();
+        assert_eq!(mm.ems_return_os_access_key(0xDEAD), Err(0xA4));
+    }
+
+    #[test]
+    fn test_ems_return_os_access_key_enables_new_key() {
+        let (mut mm, _mem) = create_manager(1024);
+        let key1 = mm.ems_enable_os_functions(0).unwrap().unwrap();
+        mm.ems_return_os_access_key(key1).unwrap();
+        let key2 = mm.ems_enable_os_functions(0).unwrap().unwrap();
+        assert_ne!(key2, 0);
     }
 }
