@@ -50,7 +50,7 @@ pub fn boot_hle_with_time(time_fn: Option<fn() -> [u8; 6]>) -> machine::Pc9801Ra
     machine
 }
 
-fn hle_prompt_visible(bus: &machine::Pc9801Bus) -> bool {
+pub fn hle_prompt_visible(bus: &machine::Pc9801Bus) -> bool {
     let vram = bus.text_vram();
     // Scan all rows for '>' (0x003E) which indicates the prompt is displayed
     for row in 0..25 {

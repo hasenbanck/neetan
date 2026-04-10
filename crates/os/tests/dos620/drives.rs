@@ -1,6 +1,74 @@
+use common::Bus;
+
 use crate::harness;
 
 const IOSYS_BASE: u32 = 0x0600;
+
+#[test]
+fn hdd_gets_lower_drive_letters_when_present() {
+    let mut machine = harness::create_hle_machine();
+
+    // Set BDA DISK_EQUIP: bit 0 = 1MB FDD unit 0, bit 8 = HDD unit 0.
+    machine.bus.write_byte(0x055C, 0x01);
+    machine.bus.write_byte(0x055D, 0x01);
+
+    let mut total_cycles = 0u64;
+    loop {
+        total_cycles += machine.run_for(1_000_000);
+        if harness::hle_prompt_visible(&machine.bus) {
+            break;
+        }
+        assert!(total_cycles < 500_000_000, "HLE OS did not show prompt");
+    }
+
+    // PC-98 convention: HDD gets A:, FDD skips B: and starts at C:.
+    let drive_a_daua = harness::read_byte(&machine.bus, IOSYS_BASE + 0x006C);
+    assert_eq!(
+        drive_a_daua, 0x80,
+        "Drive A: should be HDD (0x80) when HDDs are present, got {:#04X}",
+        drive_a_daua
+    );
+
+    let drive_b_daua = harness::read_byte(&machine.bus, IOSYS_BASE + 0x006C + 1);
+    assert_eq!(
+        drive_b_daua, 0x00,
+        "Drive B: should be empty (0x00) -- reserved gap, got {:#04X}",
+        drive_b_daua
+    );
+
+    let drive_c_daua = harness::read_byte(&machine.bus, IOSYS_BASE + 0x006C + 2);
+    assert_eq!(
+        drive_c_daua, 0x90,
+        "Drive C: should be FDD (0x90) -- secondary type starts at C:, got {:#04X}",
+        drive_c_daua
+    );
+}
+
+#[test]
+fn floppy_gets_lower_drive_letters_without_hdd() {
+    let mut machine = harness::create_hle_machine();
+
+    // Set BDA DISK_EQUIP: bit 0 = 1MB FDD unit 0, no HDDs.
+    machine.bus.write_byte(0x055C, 0x01);
+    machine.bus.write_byte(0x055D, 0x00);
+
+    let mut total_cycles = 0u64;
+    loop {
+        total_cycles += machine.run_for(1_000_000);
+        if harness::hle_prompt_visible(&machine.bus) {
+            break;
+        }
+        assert!(total_cycles < 500_000_000, "HLE OS did not show prompt");
+    }
+
+    // No HDDs: FDD gets A:.
+    let drive_a_daua = harness::read_byte(&machine.bus, IOSYS_BASE + 0x006C);
+    assert_eq!(
+        drive_a_daua, 0x90,
+        "Drive A: should be FDD (0x90) when no HDDs exist, got {:#04X}",
+        drive_a_daua
+    );
+}
 
 #[test]
 fn daua_floppy_assignment() {
@@ -48,6 +116,81 @@ fn dpb_chain_matches_drives() {
     for &drive in &drive_numbers {
         assert!(drive < 26, "DPB drive number should be < 26, got {}", drive);
     }
+}
+
+#[test]
+fn boot_drive_is_first_drive_when_media_present() {
+    let mut machine = harness::create_hle_machine();
+
+    // Set BDA DISK_EQUIP: bit 8 = HDD unit 0.
+    machine.bus.write_byte(0x055C, 0x00);
+    machine.bus.write_byte(0x055D, 0x01);
+
+    // Insert HDD with media BEFORE boot so sector_size() returns Some.
+    let hdd = harness::create_empty_hdd(256);
+    machine.bus.insert_hdd(0, hdd, None);
+
+    let mut total_cycles = 0u64;
+    loop {
+        total_cycles += machine.run_for(1_000_000);
+        if harness::hle_prompt_visible(&machine.bus) {
+            break;
+        }
+        assert!(total_cycles < 500_000_000, "HLE OS did not show prompt");
+    }
+
+    // Boot drive should be 1 (A:, 1-based) since HDD has media.
+    let sysvars = harness::get_sysvars_address(&mut machine);
+    let boot_drive = harness::read_byte(&machine.bus, sysvars + 0x43);
+    assert_eq!(
+        boot_drive, 1,
+        "Boot drive should be 1 (A:) when HDD has media, got {}",
+        boot_drive
+    );
+
+    // Current drive (INT 21h AH=19h) should be 0 (A:, 0-based).
+    let code: &[u8] = &[
+        0xB4, 0x19, // MOV AH, 19h
+        0xCD, 0x21, // INT 21h
+        0xA2, 0x00, 0x01, // MOV [0100h], AL
+        0xFA, // CLI
+        0xF4, // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let current_drive = harness::result_byte(&machine.bus, 0);
+    assert_eq!(
+        current_drive, 0,
+        "Current drive should be 0 (A:) when HDD has media, got {}",
+        current_drive
+    );
+}
+
+#[test]
+fn boot_drive_is_virtual_when_floppy_has_no_media() {
+    let mut machine = harness::create_hle_machine();
+
+    // Set BDA DISK_EQUIP: bit 0 = 1MB FDD unit 0, no HDDs.
+    machine.bus.write_byte(0x055C, 0x01);
+    machine.bus.write_byte(0x055D, 0x00);
+
+    // Do NOT insert floppy media -- drive exists but has no disk.
+    let mut total_cycles = 0u64;
+    loop {
+        total_cycles += machine.run_for(1_000_000);
+        if harness::hle_prompt_visible(&machine.bus) {
+            break;
+        }
+        assert!(total_cycles < 500_000_000, "HLE OS did not show prompt");
+    }
+
+    // Boot drive should be 26 (Z:, 1-based) since floppy has no media.
+    let sysvars = harness::get_sysvars_address(&mut machine);
+    let boot_drive = harness::read_byte(&machine.bus, sysvars + 0x43);
+    assert_eq!(
+        boot_drive, 26,
+        "Boot drive should be 26 (Z:) when floppy has no media, got {}",
+        boot_drive
+    );
 }
 
 #[test]
