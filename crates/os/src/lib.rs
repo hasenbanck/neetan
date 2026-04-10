@@ -299,6 +299,8 @@ pub(crate) struct OsState {
     /// into the programmed escape sequence from the function key map. These bytes
     /// are queued here and returned one at a time by subsequent INT 21h input calls.
     pub(crate) pending_key_bytes: std::collections::VecDeque<u8>,
+    /// Interim console flag for DBCS input (INT 21h AH=63h AL=01h/02h).
+    pub(crate) interim_console_flag: u8,
     /// Host local time provider (BCD-encoded).
     /// Returns `[year, month<<4|day_of_week, day, hour, minute, second]`.
     pub(crate) host_local_time_fn: fn() -> [u8; 6],
@@ -524,6 +526,7 @@ impl NeetanOs {
                 buffered_input: None,
                 fn_key_map: build_default_fn_key_map(),
                 pending_key_bytes: std::collections::VecDeque::new(),
+                interim_console_flag: 0,
                 host_local_time_fn: default_host_local_time,
                 ems_enabled: true,
                 xms_enabled: true,

@@ -281,6 +281,7 @@ impl NeetanOs {
     /// AL=00h: Load and execute.
     /// DS:DX = ASCIIZ program filename.
     /// ES:BX = parameter block (env_seg, cmd_tail, FCB1, FCB2).
+    /// AL=00h: Load and execute. AL=01h: Load only.
     pub(crate) fn int21h_4bh_exec(
         &mut self,
         cpu: &mut dyn CpuAccess,
@@ -288,15 +289,17 @@ impl NeetanOs {
         disk: &mut dyn DiskIo,
     ) {
         let al = (cpu.ax() & 0xFF) as u8;
-        if al != 0x00 {
-            cpu.set_ax(0x0001);
-            set_iret_carry(cpu, mem, true);
-            return;
-        }
-
-        let result = self.exec_load_and_execute(cpu, mem, disk);
+        let result = match al {
+            0x00 => self.exec_load_and_execute(cpu, mem, disk),
+            0x01 => self.exec_load_only(cpu, mem, disk),
+            _ => {
+                cpu.set_ax(0x0001);
+                set_iret_carry(cpu, mem, true);
+                return;
+            }
+        };
         match result {
-            Ok(()) => {}
+            Ok(()) => set_iret_carry(cpu, mem, false),
             Err(error_code) => {
                 cpu.set_ax(error_code);
                 set_iret_carry(cpu, mem, true);
@@ -366,6 +369,217 @@ impl NeetanOs {
         } else {
             self.exec_com(cpu, mem, &file_data, &params)
         }
+    }
+
+    /// AX=4B01h: Load program without executing.
+    /// Loads the program into memory, writes SS:SP and CS:IP into the
+    /// parameter block at ES:BX+0Eh, but does not transfer control.
+    fn exec_load_only(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        mem: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) -> Result<(), u16> {
+        let filename_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let path = OsState::read_asciiz(mem, filename_addr, 128);
+
+        let pb_addr = ((cpu.es() as u32) << 4) + cpu.bx() as u32;
+        let env_seg = mem.read_word(pb_addr);
+        let cmd_tail_off = mem.read_word(pb_addr + 2);
+        let cmd_tail_seg = mem.read_word(pb_addr + 4);
+        let fcb1_off = mem.read_word(pb_addr + 6);
+        let fcb1_seg = mem.read_word(pb_addr + 8);
+        let fcb2_off = mem.read_word(pb_addr + 10);
+        let fcb2_seg = mem.read_word(pb_addr + 12);
+
+        let params = ExecParams {
+            env_seg,
+            cmd_tail_addr: ((cmd_tail_seg as u32) << 4) + cmd_tail_off as u32,
+            fcb1_addr: ((fcb1_seg as u32) << 4) + fcb1_off as u32,
+            fcb2_addr: ((fcb2_seg as u32) << 4) + fcb2_off as u32,
+        };
+
+        let (drive_index, dir_cluster, fcb_name) =
+            self.state.resolve_file_path(&path, mem, disk)?;
+
+        if drive_index == 25 {
+            return Err(0x0002);
+        }
+
+        self.state.ensure_volume_mounted(drive_index, mem, disk)?;
+        let vol = self.state.fat_volumes[drive_index as usize]
+            .as_ref()
+            .ok_or(0x0003u16)?;
+        let dir_entry = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk)?.ok_or(0x0002u16)?;
+
+        let file_data = read_file_data(vol, &dir_entry, disk)?;
+        if file_data.is_empty() {
+            return Err(0x000B);
+        }
+
+        let is_exe = file_data.len() >= 2
+            && ((file_data[0] == 0x4D && file_data[1] == 0x5A)
+                || (file_data[0] == 0x5A && file_data[1] == 0x4D));
+
+        let (entry_ss, entry_sp, entry_cs, entry_ip) = if is_exe {
+            self.load_exe(mem, &file_data, &params)?
+        } else {
+            self.load_com(mem, &file_data, &params)?
+        };
+
+        mem.write_word(pb_addr + 0x0E, entry_sp);
+        mem.write_word(pb_addr + 0x10, entry_ss);
+        mem.write_word(pb_addr + 0x12, entry_ip);
+        mem.write_word(pb_addr + 0x14, entry_cs);
+
+        Ok(())
+    }
+
+    /// Loads a .COM file into memory without executing. Returns (SS, SP, CS, IP).
+    fn load_com(
+        &mut self,
+        mem: &mut dyn MemoryAccess,
+        file_data: &[u8],
+        params: &ExecParams,
+    ) -> Result<(u16, u16, u16, u16), u16> {
+        let first_mcb = mem.read_word(self.state.sysvars_base - 2);
+
+        let largest =
+            match memory::allocate(mem, first_mcb, 0xFFFF, 0, self.state.allocation_strategy) {
+                Ok(_) => unreachable!(),
+                Err((_err, largest)) => largest,
+            };
+
+        if largest == 0 {
+            return Err(0x0008);
+        }
+
+        let child_psp =
+            memory::allocate(mem, first_mcb, largest, 0, self.state.allocation_strategy)
+                .map_err(|(e, _)| e as u16)?;
+
+        let mcb_segment = child_psp - 1;
+        mem.write_word(((mcb_segment as u32) << 4) + MCB_OFF_OWNER, child_psp);
+
+        write_child_psp(
+            mem,
+            child_psp,
+            self.state.current_psp,
+            MEMORY_TOP_SEGMENT,
+            params,
+            SFT_BASE,
+            self.state.sft2_base,
+        );
+
+        let load_addr = ((child_psp as u32) << 4) + 0x0100;
+        mem.write_block(load_addr, file_data);
+
+        let stack_top = ((child_psp as u32) << 4) + 0xFFFE;
+        mem.write_word(stack_top, 0x0000);
+
+        Ok((child_psp, 0xFFFE, child_psp, 0x0100))
+    }
+
+    /// Loads an .EXE file into memory without executing. Returns (SS, SP, CS, IP).
+    fn load_exe(
+        &mut self,
+        mem: &mut dyn MemoryAccess,
+        file_data: &[u8],
+        params: &ExecParams,
+    ) -> Result<(u16, u16, u16, u16), u16> {
+        if file_data.len() < 28 {
+            return Err(0x000B);
+        }
+
+        let bytes_last_page = u16::from_le_bytes([file_data[2], file_data[3]]);
+        let total_pages = u16::from_le_bytes([file_data[4], file_data[5]]);
+        let reloc_count = u16::from_le_bytes([file_data[6], file_data[7]]) as usize;
+        let header_paragraphs = u16::from_le_bytes([file_data[8], file_data[9]]);
+        let min_alloc = u16::from_le_bytes([file_data[10], file_data[11]]);
+        let max_alloc = u16::from_le_bytes([file_data[12], file_data[13]]);
+        let init_ss = u16::from_le_bytes([file_data[14], file_data[15]]);
+        let init_sp = u16::from_le_bytes([file_data[16], file_data[17]]);
+        let init_ip = u16::from_le_bytes([file_data[20], file_data[21]]);
+        let init_cs = u16::from_le_bytes([file_data[22], file_data[23]]);
+        let reloc_table_offset = u16::from_le_bytes([file_data[24], file_data[25]]) as usize;
+
+        let header_size = (header_paragraphs as u32) * 16;
+        let mut load_size = (total_pages as u32) * 512;
+        if bytes_last_page != 0 {
+            load_size -= 512 - bytes_last_page as u32;
+        }
+        if load_size < header_size {
+            return Err(0x000B);
+        }
+        load_size -= header_size;
+
+        let image_paragraphs = load_size.div_ceil(16) as u16;
+        let psp_paragraphs: u16 = 0x10;
+
+        let first_mcb = mem.read_word(self.state.sysvars_base - 2);
+
+        let total_needed = psp_paragraphs
+            .saturating_add(image_paragraphs)
+            .saturating_add(max_alloc);
+        let child_psp = match memory::allocate(
+            mem,
+            first_mcb,
+            total_needed,
+            0,
+            self.state.allocation_strategy,
+        ) {
+            Ok(seg) => seg,
+            Err(_) => {
+                let min_needed = psp_paragraphs
+                    .saturating_add(image_paragraphs)
+                    .saturating_add(min_alloc);
+                memory::allocate(
+                    mem,
+                    first_mcb,
+                    min_needed,
+                    0,
+                    self.state.allocation_strategy,
+                )
+                .map_err(|(e, _)| e as u16)?
+            }
+        };
+
+        let mcb_segment = child_psp - 1;
+        mem.write_word(((mcb_segment as u32) << 4) + MCB_OFF_OWNER, child_psp);
+
+        write_child_psp(
+            mem,
+            child_psp,
+            self.state.current_psp,
+            MEMORY_TOP_SEGMENT,
+            params,
+            SFT_BASE,
+            self.state.sft2_base,
+        );
+
+        let load_segment = child_psp + psp_paragraphs;
+        let load_base = (load_segment as u32) << 4;
+        let image_start = header_size as usize;
+        let image_end = (image_start + load_size as usize).min(file_data.len());
+        mem.write_block(load_base, &file_data[image_start..image_end]);
+
+        for i in 0..reloc_count {
+            let reloc_off = reloc_table_offset + i * 4;
+            if reloc_off + 4 > file_data.len() {
+                break;
+            }
+            let fixup_off = u16::from_le_bytes([file_data[reloc_off], file_data[reloc_off + 1]]);
+            let fixup_seg =
+                u16::from_le_bytes([file_data[reloc_off + 2], file_data[reloc_off + 3]]);
+            let fixup_addr = (((load_segment + fixup_seg) as u32) << 4) + fixup_off as u32;
+            let old_val = mem.read_word(fixup_addr);
+            mem.write_word(fixup_addr, old_val.wrapping_add(load_segment));
+        }
+
+        let exe_cs = load_segment.wrapping_add(init_cs);
+        let exe_ss = load_segment.wrapping_add(init_ss);
+
+        Ok((exe_ss, init_sp, exe_cs, init_ip))
     }
 
     fn exec_com(
