@@ -319,14 +319,17 @@ fn for_each_entry(
     Ok(None)
 }
 
-/// Collects the absolute sector numbers for all sectors in a directory.
+/// Collects the physical LBAs for each BPB logical sector in a directory.
 /// Root directory (dir_cluster == 0) uses fixed sectors; subdirectories follow cluster chain.
+/// Each returned LBA points to the start of one BPB logical sector
+/// (which may span multiple physical sectors when sector_ratio > 1).
 fn dir_sectors(vol: &FatVolume, dir_cluster: u16, disk: &mut dyn DiskIo) -> Result<Vec<u32>, u16> {
     let _ = disk;
+    let ratio = vol.sector_ratio();
     if dir_cluster == 0 {
         let start = vol.root_dir_lba();
         let count = vol.root_dir_sectors();
-        Ok((start..start + count).collect())
+        Ok((0..count).map(|i| start + i * ratio).collect())
     } else {
         let mut sectors = Vec::new();
         let spc = vol.bpb.sectors_per_cluster as u32;
@@ -334,7 +337,7 @@ fn dir_sectors(vol: &FatVolume, dir_cluster: u16, disk: &mut dyn DiskIo) -> Resu
         loop {
             let base = vol.cluster_to_lba(cluster);
             for i in 0..spc {
-                sectors.push(base + i);
+                sectors.push(base + i * ratio);
             }
             match vol.next_cluster(cluster) {
                 Some(next) => cluster = next,

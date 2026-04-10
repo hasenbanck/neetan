@@ -878,6 +878,175 @@ pub fn create_test_hdd(sector_size: u16) -> device::disk::HddImage {
     HddImage::from_raw(geometry, HddFormat::Nhd, data)
 }
 
+/// Creates an HDD image where the physical sector size (256) differs from the
+/// BPB logical sector size (1024). This is common on real PC-98 SASI drives.
+/// The FAT volume uses 1024-byte logical sectors laid out across 256-byte physical sectors.
+pub fn create_test_hdd_mismatched_sectors() -> device::disk::HddImage {
+    use device::disk::{HddFormat, HddGeometry, HddImage};
+
+    let physical_sector_size: u16 = 256;
+    let logical_sector_size: u16 = 1024;
+    let ratio = (logical_sector_size / physical_sector_size) as usize;
+
+    let cylinders: u16 = 20;
+    let heads: u8 = 8;
+    let sectors_per_track: u8 = 17;
+    let total_sectors = cylinders as u32 * heads as u32 * sectors_per_track as u32;
+    let ps = physical_sector_size as usize;
+    let ls = logical_sector_size as usize;
+    let mut data = vec![0u8; total_sectors as usize * ps];
+
+    // Sector 0: IPL
+    data[0] = 0xEB;
+    data[1] = 0x1E;
+    data[4..8].copy_from_slice(b"IPL1");
+
+    // Sector 1: PC-98 partition table
+    let part_offset = ps;
+    let part = &mut data[part_offset..part_offset + 32];
+    part[0] = 0xA0;
+    part[1] = 0x91;
+    part[4] = 0;
+    part[5] = 0;
+    part[6] = 1;
+    part[7] = 0;
+    part[8] = 0;
+    part[9] = 0;
+    part[10] = 1;
+    part[11] = 0;
+    part[12] = sectors_per_track - 1;
+    part[13] = heads - 1;
+    part[14] = (cylinders - 1) as u8;
+    part[15] = ((cylinders - 1) >> 8) as u8;
+    part[16..32].copy_from_slice(b"MS-DOS 6.20\x00\x00\x00\x00\x00");
+
+    // Partition starts at cylinder 1 in physical sectors.
+    let partition_phys_lba = heads as u32 * sectors_per_track as u32;
+    let partition_byte_offset = partition_phys_lba as usize * ps;
+
+    // BPB parameters (all in 1024-byte logical sectors).
+    let sectors_per_cluster: u8 = 4;
+    let reserved_sectors: u16 = 1;
+    let num_fats: u8 = 2;
+    let root_entry_count: u16 = 192;
+    let sectors_per_fat: u16 = 2;
+    let partition_logical_sectors = (total_sectors - partition_phys_lba) / ratio as u32;
+
+    let root_dir_logical_sectors = (root_entry_count as u32 * 32).div_ceil(ls as u32);
+    let first_data_logical = reserved_sectors as u32
+        + num_fats as u32 * sectors_per_fat as u32
+        + root_dir_logical_sectors;
+
+    // Boot sector at partition byte offset.
+    let bs = &mut data[partition_byte_offset..partition_byte_offset + ps];
+    bs[0] = 0xEB;
+    bs[1] = 0x3C;
+    bs[2] = 0x90;
+    bs[3..11].copy_from_slice(b"NEETAN  ");
+    bs[11..13].copy_from_slice(&logical_sector_size.to_le_bytes());
+    bs[13] = sectors_per_cluster;
+    bs[14..16].copy_from_slice(&reserved_sectors.to_le_bytes());
+    bs[16] = num_fats;
+    bs[17..19].copy_from_slice(&root_entry_count.to_le_bytes());
+    if partition_logical_sectors <= 0xFFFF {
+        bs[19..21].copy_from_slice(&(partition_logical_sectors as u16).to_le_bytes());
+    }
+    bs[21] = 0xF8;
+    bs[22..24].copy_from_slice(&sectors_per_fat.to_le_bytes());
+    bs[24..26].copy_from_slice(&(sectors_per_track as u16).to_le_bytes());
+    bs[26..28].copy_from_slice(&(heads as u16).to_le_bytes());
+
+    // FAT1 at logical sector 1 = byte offset partition + 1*ls.
+    let fat1_byte_offset = partition_byte_offset + reserved_sectors as usize * ls;
+    data[fat1_byte_offset] = 0xF8;
+    data[fat1_byte_offset + 1] = 0xFF;
+    data[fat1_byte_offset + 2] = 0xFF;
+    // Clusters 2, 3, 4: end-of-chain (FAT12: 0xFFF packed).
+    data[fat1_byte_offset + 3] = 0xFF;
+    data[fat1_byte_offset + 4] = 0xFF;
+    data[fat1_byte_offset + 5] = 0xFF;
+    data[fat1_byte_offset + 6] = 0xFF;
+    data[fat1_byte_offset + 7] = 0x0F;
+
+    // FAT2: copy of FAT1.
+    let fat2_byte_offset = fat1_byte_offset + sectors_per_fat as usize * ls;
+    let fat1_data: Vec<u8> =
+        data[fat1_byte_offset..fat1_byte_offset + sectors_per_fat as usize * ls].to_vec();
+    data[fat2_byte_offset..fat2_byte_offset + fat1_data.len()].copy_from_slice(&fat1_data);
+
+    // Root directory at logical sector (reserved + num_fats * spf).
+    let root_logical = reserved_sectors as usize + num_fats as usize * sectors_per_fat as usize;
+    let root_byte_offset = partition_byte_offset + root_logical * ls;
+
+    {
+        let e = &mut data[root_byte_offset..root_byte_offset + 32];
+        e[0..11].copy_from_slice(b"COMMAND COM");
+        e[11] = 0x20;
+        e[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        e[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        e[26..28].copy_from_slice(&2u16.to_le_bytes());
+        e[28..32].copy_from_slice(&(TEST_COMMAND_COM.len() as u32).to_le_bytes());
+    }
+    {
+        let e = &mut data[root_byte_offset + 32..root_byte_offset + 64];
+        e[0..11].copy_from_slice(b"TESTFILETXT");
+        e[11] = 0x20;
+        e[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        e[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        e[26..28].copy_from_slice(&3u16.to_le_bytes());
+        e[28..32].copy_from_slice(&(TEST_FILE_CONTENT.len() as u32).to_le_bytes());
+    }
+
+    // Data area: cluster 2 at logical sector first_data_logical.
+    let data_byte_offset = partition_byte_offset + first_data_logical as usize * ls;
+    data[data_byte_offset..data_byte_offset + TEST_COMMAND_COM.len()]
+        .copy_from_slice(TEST_COMMAND_COM);
+
+    // Cluster 3.
+    let cluster3_offset = data_byte_offset + sectors_per_cluster as usize * ls;
+    data[cluster3_offset..cluster3_offset + TEST_FILE_CONTENT.len()]
+        .copy_from_slice(TEST_FILE_CONTENT);
+
+    let geometry = HddGeometry {
+        cylinders,
+        heads,
+        sectors_per_track,
+        sector_size: physical_sector_size,
+    };
+    HddImage::from_raw(geometry, HddFormat::Nhd, data)
+}
+
+/// Boots an HLE machine (PC-9801RA / SASI) with an HDD that has mismatched
+/// physical (256) and BPB logical (1024) sector sizes.
+pub fn boot_hle_with_sasi_hdd_mismatched_sectors() -> machine::Pc9801Ra {
+    let mut machine = machine::Pc9801Ra::new(
+        cpu::I386::new(),
+        machine::Pc9801Bus::new(MachineModel::PC9801RA, 48000),
+    );
+    machine.bus.load_font_rom(FONT_ROM_DATA);
+
+    machine.bus.write_byte(0x055C, 0x00);
+    machine.bus.write_byte(0x055D, 0x01);
+
+    let mut total_cycles = 0u64;
+    loop {
+        total_cycles += machine.run_for(HLE_BOOT_CHECK_INTERVAL);
+        if hle_prompt_visible(&machine.bus) {
+            break;
+        }
+        assert!(
+            total_cycles < HLE_BOOT_MAX_CYCLES,
+            "HLE OS did not show prompt within {} cycles (SASI mismatched)",
+            HLE_BOOT_MAX_CYCLES
+        );
+    }
+
+    let hdd = create_test_hdd_mismatched_sectors();
+    machine.bus.insert_hdd(0, hdd, None);
+
+    machine
+}
+
 /// Boots an HLE machine (PC-9801RA / SASI) with a test HDD as the first drive.
 pub fn boot_hle_with_sasi_hdd(sector_size: u16) -> machine::Pc9801Ra {
     let mut machine = machine::Pc9801Ra::new(

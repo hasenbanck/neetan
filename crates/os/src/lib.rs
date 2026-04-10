@@ -1644,7 +1644,7 @@ impl OsState {
         mem: &dyn MemoryAccess,
         disk: &mut dyn DiskIo,
     ) -> Result<(u8, u16, [u8; 11]), u16> {
-        let (drive_opt, components, _is_absolute) = filesystem::split_path(path);
+        let (drive_opt, components, is_absolute) = filesystem::split_path(path);
         let drive_index = drive_opt.unwrap_or(self.current_drive);
 
         if components.is_empty() {
@@ -1656,8 +1656,14 @@ impl OsState {
             self.ensure_volume_mounted(drive_index, mem, disk)?;
         }
 
+        // Start from root for absolute paths, current directory for relative.
+        let mut dir_cluster: u16 = if is_absolute || drive_index == 25 {
+            0
+        } else {
+            self.current_dir_cluster(drive_index, mem, disk)?
+        };
+
         // Walk directory components (all but last)
-        let mut dir_cluster: u16 = 0; // root
         if components.len() > 1 {
             let vol = self.fat_volumes[drive_index as usize]
                 .as_ref()
