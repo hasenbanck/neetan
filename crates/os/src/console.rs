@@ -108,6 +108,17 @@ impl Console {
         }
     }
 
+    pub(crate) fn reverse_linefeed(&self, memory: &mut dyn MemoryAccess) {
+        let row = self.cursor_row(memory);
+        let col = self.cursor_col(memory);
+        let scroll_upper = self.scroll_upper(memory);
+        if row <= scroll_upper {
+            self.scroll_down(memory, 1);
+        } else {
+            self.set_cursor(memory, row - 1, col);
+        }
+    }
+
     pub(crate) fn backspace(&self, memory: &mut dyn MemoryAccess) {
         let row = self.cursor_row(memory);
         let col = self.cursor_col(memory);
@@ -318,16 +329,6 @@ impl Console {
         let col = self.cursor_col(memory);
         let new_col = col.saturating_sub(count);
         self.set_cursor(memory, row, new_col);
-    }
-
-    pub(crate) fn cursor_home(&self, memory: &mut dyn MemoryAccess) {
-        let upper = self.scroll_upper(memory);
-        self.set_cursor(memory, upper, 0);
-    }
-
-    pub(crate) fn cursor_end(&self, memory: &mut dyn MemoryAccess) {
-        let lower = self.scroll_lower(memory);
-        self.set_cursor(memory, lower, COLUMNS - 1);
     }
 }
 
@@ -699,6 +700,48 @@ mod tests {
         console.set_cursor(&mut memory, 15, 0);
         console.linefeed(&mut memory);
         assert_cursor(&console, &memory, 15, 0);
+    }
+
+    #[test]
+    fn reverse_linefeed_moves_up() {
+        let console = make_console();
+        let mut memory = make_memory();
+        console.set_cursor(&mut memory, 5, 10);
+        console.reverse_linefeed(&mut memory);
+        assert_cursor(&console, &memory, 4, 10);
+    }
+
+    #[test]
+    fn reverse_linefeed_at_scroll_upper_scrolls() {
+        let console = make_console();
+        let mut memory = make_memory();
+        fill_row(&mut memory, 0, b'A');
+        fill_row(&mut memory, 24, b'Z');
+        console.set_cursor(&mut memory, 0, 10);
+        console.reverse_linefeed(&mut memory);
+        assert_cursor(&console, &memory, 0, 10);
+        // Row 1 should now have the old row 0 content ('A').
+        let (even, _) = read_vram_char(&memory, 1, 0);
+        assert_eq!(even, b'A');
+    }
+
+    #[test]
+    fn reverse_linefeed_preserves_col() {
+        let console = make_console();
+        let mut memory = make_memory();
+        console.set_cursor(&mut memory, 3, 42);
+        console.reverse_linefeed(&mut memory);
+        assert_eq!(console.cursor_col(&memory), 42);
+    }
+
+    #[test]
+    fn reverse_linefeed_custom_scroll_upper() {
+        let console = make_console();
+        let mut memory = make_memory();
+        memory.write_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_SCROLL_UPPER, 5);
+        console.set_cursor(&mut memory, 5, 0);
+        console.reverse_linefeed(&mut memory);
+        assert_cursor(&console, &memory, 5, 0);
     }
 
     #[test]
@@ -1235,24 +1278,6 @@ mod tests {
         console.set_cursor(&mut memory, 5, 3);
         console.cursor_left(&mut memory, 10);
         assert_cursor(&console, &memory, 5, 0);
-    }
-
-    #[test]
-    fn cursor_home_moves_to_upper_left() {
-        let console = make_console();
-        let mut memory = make_memory();
-        console.set_cursor(&mut memory, 15, 40);
-        console.cursor_home(&mut memory);
-        assert_cursor(&console, &memory, 0, 0);
-    }
-
-    #[test]
-    fn cursor_end_moves_to_lower_right() {
-        let console = make_console();
-        let mut memory = make_memory();
-        console.set_cursor(&mut memory, 0, 0);
-        console.cursor_end(&mut memory);
-        assert_cursor(&console, &memory, 24, 79);
     }
 
     #[test]

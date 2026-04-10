@@ -1,5 +1,8 @@
 use crate::harness::{self, *};
 
+const IOSYS_CURSOR_Y: u32 = 0x0600 + 0x0110;
+const IOSYS_CURSOR_X: u32 = 0x0600 + 0x011C;
+
 #[test]
 fn system_identification() {
     let mut machine = harness::boot_hle();
@@ -198,4 +201,122 @@ fn fnkey_write_then_read_roundtrip() {
             "fnkey map byte {i}: expected {expected:#04X}, got {actual:#04X}"
         );
     }
+}
+
+#[test]
+fn intdch_10h_04h_cursor_down_one_line() {
+    let mut machine = harness::boot_hle();
+    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_Y, &[5]);
+    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_X, &[10]);
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB9, 0x10, 0x00,       // MOV CX, 0010h (CL=10h)
+        0xB4, 0x04,             // MOV AH, 04h
+        0xCD, 0xDC,             // INT DCh
+        0xFA, 0xF4,             // CLI; HLT
+    ];
+    inject_and_run(&mut machine, code);
+    let row = machine.bus.read_byte_direct(IOSYS_CURSOR_Y);
+    let col = machine.bus.read_byte_direct(IOSYS_CURSOR_X);
+    assert_eq!(row, 6, "AH=04h should move cursor down 1 row");
+    assert_eq!(col, 10, "AH=04h should preserve column");
+}
+
+#[test]
+fn intdch_10h_05h_cursor_up_one_line() {
+    let mut machine = harness::boot_hle();
+    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_Y, &[5]);
+    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_X, &[10]);
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB9, 0x10, 0x00,       // MOV CX, 0010h (CL=10h)
+        0xB4, 0x05,             // MOV AH, 05h
+        0xCD, 0xDC,             // INT DCh
+        0xFA, 0xF4,             // CLI; HLT
+    ];
+    inject_and_run(&mut machine, code);
+    let row = machine.bus.read_byte_direct(IOSYS_CURSOR_Y);
+    let col = machine.bus.read_byte_direct(IOSYS_CURSOR_X);
+    assert_eq!(row, 4, "AH=05h should move cursor up 1 row");
+    assert_eq!(col, 10, "AH=05h should preserve column");
+}
+
+#[test]
+fn intdch_10h_06h_cursor_up_n_lines() {
+    let mut machine = harness::boot_hle();
+    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_Y, &[10]);
+    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_X, &[5]);
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB9, 0x10, 0x00,       // MOV CX, 0010h (CL=10h)
+        0xB4, 0x06,             // MOV AH, 06h
+        0xB2, 0x03,             // MOV DL, 03h
+        0xCD, 0xDC,             // INT DCh
+        0xFA, 0xF4,             // CLI; HLT
+    ];
+    inject_and_run(&mut machine, code);
+    let row = machine.bus.read_byte_direct(IOSYS_CURSOR_Y);
+    let col = machine.bus.read_byte_direct(IOSYS_CURSOR_X);
+    assert_eq!(row, 7, "AH=06h DL=3 should move cursor up 3 rows");
+    assert_eq!(col, 5, "AH=06h should preserve column");
+}
+
+#[test]
+fn intdch_10h_07h_cursor_down_n_lines() {
+    let mut machine = harness::boot_hle();
+    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_Y, &[5]);
+    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_X, &[10]);
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB9, 0x10, 0x00,       // MOV CX, 0010h (CL=10h)
+        0xB4, 0x07,             // MOV AH, 07h
+        0xB2, 0x03,             // MOV DL, 03h
+        0xCD, 0xDC,             // INT DCh
+        0xFA, 0xF4,             // CLI; HLT
+    ];
+    inject_and_run(&mut machine, code);
+    let row = machine.bus.read_byte_direct(IOSYS_CURSOR_Y);
+    let col = machine.bus.read_byte_direct(IOSYS_CURSOR_X);
+    assert_eq!(row, 8, "AH=07h DL=3 should move cursor down 3 rows");
+    assert_eq!(col, 10, "AH=07h should preserve column");
+}
+
+#[test]
+fn intdch_10h_08h_cursor_right_n_cols() {
+    let mut machine = harness::boot_hle();
+    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_Y, &[5]);
+    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_X, &[10]);
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB9, 0x10, 0x00,       // MOV CX, 0010h (CL=10h)
+        0xB4, 0x08,             // MOV AH, 08h
+        0xB2, 0x05,             // MOV DL, 05h
+        0xCD, 0xDC,             // INT DCh
+        0xFA, 0xF4,             // CLI; HLT
+    ];
+    inject_and_run(&mut machine, code);
+    let row = machine.bus.read_byte_direct(IOSYS_CURSOR_Y);
+    let col = machine.bus.read_byte_direct(IOSYS_CURSOR_X);
+    assert_eq!(row, 5, "AH=08h should preserve row");
+    assert_eq!(col, 15, "AH=08h DL=5 should move cursor right 5 columns");
+}
+
+#[test]
+fn intdch_10h_09h_cursor_left_n_cols() {
+    let mut machine = harness::boot_hle();
+    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_Y, &[5]);
+    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_X, &[10]);
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB9, 0x10, 0x00,       // MOV CX, 0010h (CL=10h)
+        0xB4, 0x09,             // MOV AH, 09h
+        0xB2, 0x03,             // MOV DL, 03h
+        0xCD, 0xDC,             // INT DCh
+        0xFA, 0xF4,             // CLI; HLT
+    ];
+    inject_and_run(&mut machine, code);
+    let row = machine.bus.read_byte_direct(IOSYS_CURSOR_Y);
+    let col = machine.bus.read_byte_direct(IOSYS_CURSOR_X);
+    assert_eq!(row, 5, "AH=09h should preserve row");
+    assert_eq!(col, 7, "AH=09h DL=3 should move cursor left 3 columns");
 }

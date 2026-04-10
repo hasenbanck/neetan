@@ -56,32 +56,32 @@ impl NeetanOs {
                 self.console.set_cursor_position(memory, dh, dl);
             }
             0x04 => {
-                // Cursor up.
+                // Cursor down 1 line (with scroll at bottom).
+                self.console.linefeed(memory);
+            }
+            0x05 => {
+                // Cursor up 1 line (with scroll at top).
+                self.console.reverse_linefeed(memory);
+            }
+            0x06 => {
+                // Cursor up N lines (clamp, no scroll).
                 let dl = (cpu.dx() & 0xFF) as u8;
                 self.console.cursor_up(memory, dl.max(1));
             }
-            0x05 => {
-                // Cursor down.
+            0x07 => {
+                // Cursor down N lines (clamp, no scroll).
                 let dl = (cpu.dx() & 0xFF) as u8;
                 self.console.cursor_down(memory, dl.max(1));
             }
-            0x06 => {
-                // Cursor right.
+            0x08 => {
+                // Cursor right N columns (clamp).
                 let dl = (cpu.dx() & 0xFF) as u8;
                 self.console.cursor_right(memory, dl.max(1));
             }
-            0x07 => {
-                // Cursor left.
+            0x09 => {
+                // Cursor left N columns (clamp).
                 let dl = (cpu.dx() & 0xFF) as u8;
                 self.console.cursor_left(memory, dl.max(1));
-            }
-            0x08 => {
-                // Cursor home.
-                self.console.cursor_home(memory);
-            }
-            0x09 => {
-                // Cursor end.
-                self.console.cursor_end(memory);
             }
             0x0A => {
                 // Erase in display.
