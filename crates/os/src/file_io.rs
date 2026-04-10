@@ -968,6 +968,8 @@ impl NeetanOs {
     }
 
     /// AH=57h: Get/set file date and time.
+    /// AL=00h: Get file date/time. AL=01h: Set file date/time.
+    /// AL=02h-04h: Extended attribute stubs (no-op, return CF=0).
     pub(crate) fn int21h_57h_get_set_datetime(
         &mut self,
         cpu: &mut dyn CpuAccess,
@@ -975,6 +977,11 @@ impl NeetanOs {
     ) {
         let al = cpu.ax() as u8;
         let handle = cpu.bx();
+
+        if matches!(al, 0x02..=0x04) {
+            set_iret_carry(cpu, memory, false);
+            return;
+        }
 
         let result = (|| -> Result<(u16, u16), u16> {
             let sft_index = self.state.handle_to_sft_index(handle, memory)?;
@@ -1008,14 +1015,24 @@ impl NeetanOs {
         }
     }
 
-    /// AH=5Dh: Server function call (minimal).
+    /// AH=5Dh: Server function call (undocumented).
+    /// AL=0Ah: Set extended error information (no-op).
+    /// Other subfunctions: not supported.
     pub(crate) fn int21h_5dh_server_call(
         &self,
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
     ) {
-        // Minimal: just return success
-        set_iret_carry(cpu, memory, false);
+        let al = (cpu.ax() & 0xFF) as u8;
+        match al {
+            0x0A => {
+                set_iret_carry(cpu, memory, false);
+            }
+            _ => {
+                cpu.set_ax(0x0001);
+                set_iret_carry(cpu, memory, true);
+            }
+        }
     }
 
     /// Helper: populates an SFT entry for a newly opened/created file.

@@ -1,4 +1,4 @@
-//! Country info, DBCS lead byte table, date/time formats.
+//! Country info, DBCS lead byte table, date/time formats, uppercase tables.
 
 use crate::MemoryAccess;
 
@@ -7,6 +7,20 @@ const COUNTRY_INFO_SIZE: u32 = 34;
 
 /// Shift-JIS DBCS lead byte ranges (81-9F, E0-FC) with double-null terminator.
 pub const DBCS_LEAD_BYTES: [u8; 6] = [0x81, 0x9F, 0xE0, 0xFC, 0x00, 0x00];
+
+/// Uppercases a single byte (ASCII only, Shift-JIS lead bytes left alone).
+pub fn uppercase_char(ch: u8) -> u8 {
+    match ch {
+        b'a'..=b'z' => ch - 0x20,
+        _ => ch,
+    }
+}
+
+/// Returns true if the given character is a yes/no response character
+/// for the Japanese locale ('Y', 'y', 'N', 'n').
+pub fn is_yesno_char(ch: u8) -> bool {
+    matches!(ch, b'Y' | b'y' | b'N' | b'n')
+}
 
 /// Writes the 34-byte country info buffer (Japan, code 81) to the given linear address.
 pub fn write_country_info(mem: &mut dyn MemoryAccess, addr: u32) {
@@ -55,6 +69,60 @@ pub fn write_extended_country_info(mem: &mut dyn MemoryAccess, addr: u32, max_by
     // Country info
     write_country_info(mem, addr + 7);
     needed as u16
+}
+
+/// Writes extended lowercase table info (AH=65h AL=03h format) to the given buffer.
+///
+/// Format:
+///   +0x00: info ID byte (03h)
+///   +0x01: size (WORD) - size of following data
+///   +0x03: DWORD far pointer to 256-byte lowercase mapping table
+///
+/// Returns the number of bytes written.
+pub fn write_extended_lowercase_info(
+    mem: &mut dyn MemoryAccess,
+    addr: u32,
+    max_bytes: u16,
+    table_addr: u32,
+) -> u16 {
+    let needed: u16 = 7; // 1 (ID) + 2 (size) + 4 (far pointer)
+    if max_bytes < needed {
+        return 0;
+    }
+    mem.write_byte(addr, 0x03);
+    mem.write_word(addr + 1, 4);
+    let table_offset = (table_addr & 0x0F) as u16;
+    let table_segment = (table_addr >> 4) as u16;
+    mem.write_word(addr + 3, table_offset);
+    mem.write_word(addr + 5, table_segment);
+    needed
+}
+
+/// Writes extended filename character table info (AH=65h AL=05h format).
+///
+/// Format:
+///   +0x00: info ID byte (05h)
+///   +0x01: size (WORD) - size of following data
+///   +0x03: DWORD far pointer to filename character table
+///
+/// Returns the number of bytes written.
+pub fn write_extended_filename_char_info(
+    mem: &mut dyn MemoryAccess,
+    addr: u32,
+    max_bytes: u16,
+    table_addr: u32,
+) -> u16 {
+    let needed: u16 = 7; // 1 (ID) + 2 (size) + 4 (far pointer)
+    if max_bytes < needed {
+        return 0;
+    }
+    mem.write_byte(addr, 0x05);
+    mem.write_word(addr + 1, 4);
+    let table_offset = (table_addr & 0x0F) as u16;
+    let table_segment = (table_addr >> 4) as u16;
+    mem.write_word(addr + 3, table_offset);
+    mem.write_word(addr + 5, table_segment);
+    needed
 }
 
 /// Writes extended DBCS info (AH=65h AL=07h format) to the given buffer.

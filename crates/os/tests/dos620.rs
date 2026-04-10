@@ -93,3 +93,6 @@ mod commands_mem;
 
 #[path = "dos620/multiplex_interrupt.rs"]
 mod multiplex_interrupt;
+
+#[path = "dos620/undocumented_dos.rs"]
+mod undocumented_dos;

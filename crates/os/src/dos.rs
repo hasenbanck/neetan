@@ -36,6 +36,7 @@ impl NeetanOs {
             0x19 => self.int21h_19h_get_current_drive(cpu),
             0x1A => self.int21h_1ah_set_dta(cpu),
             0x1C => self.int21h_1ch_get_alloc_info(cpu, memory),
+            0x1F => self.int21h_1fh_get_dpb_default(cpu, memory),
             0x25 => self.int21h_25h_set_interrupt_vector(cpu, memory),
             0x29 => self.int21h_29h_parse_filename(cpu, memory),
             0x2A => self.int21h_2ah_get_date(cpu),
@@ -44,6 +45,7 @@ impl NeetanOs {
             0x2D => self.int21h_2dh_set_time(cpu),
             0x2F => self.int21h_2fh_get_dta(cpu),
             0x30 => self.int21h_30h_get_version(cpu),
+            0x32 => self.int21h_32h_get_dpb(cpu, memory),
             0x33 => self.int21h_33h_extended(cpu),
             0x34 => self.int21h_34h_get_indos(cpu),
             0x35 => self.int21h_35h_get_interrupt_vector(cpu, memory),
@@ -73,13 +75,30 @@ impl NeetanOs {
             0x50 => self.int21h_50h_set_psp(cpu),
             0x51 => self.int21h_51h_get_psp(cpu),
             0x52 => self.int21h_52h_get_sysvars(cpu),
+            0x53 => {
+                warn!("INT 21h AH=53h (Create DPB from BPB) called but not implemented");
+            }
+            0x55 => self.int21h_55h_create_child_psp(cpu, memory),
             0x56 => self.int21h_56h_rename(cpu, memory, disk),
             0x57 => self.int21h_57h_get_set_datetime(cpu, memory),
             0x58 => self.int21h_58h_allocation_strategy(cpu, memory),
             0x5D => self.int21h_5dh_server_call(cpu, memory),
+            0x5E | 0x5F => {
+                cpu.set_ax(0x0001);
+                set_iret_carry(cpu, memory, true);
+            }
+            0x60 => self.int21h_60h_truename(cpu, memory),
+            0x61 => cpu.set_ax(cpu.ax() & 0xFF00),
             0x62 => self.int21h_62h_get_psp(cpu),
-            0x63 => self.int21h_63h_get_dbcs_table(cpu),
+            0x63 => self.int21h_63h_dbcs_support(cpu),
+            0x64 => {}
             0x65 => self.int21h_65h_get_extended_country_info(cpu, memory),
+            0x68 | 0x6A => self.int21h_68h_commit_file(cpu, memory),
+            0x69 => self.int21h_69h_get_set_media_info(cpu, memory),
+            0x6B => {
+                cpu.set_ax(0x0001);
+                set_iret_carry(cpu, memory, true);
+            }
             0xFF => self.int21h_ffh_shell_step(cpu, memory, disk),
             _ => warn!("INT 21h AH={ah:#04X} is unimplemented"),
         }
@@ -399,6 +418,138 @@ impl NeetanOs {
         cpu.set_bx(self.state.dta_offset);
     }
 
+    /// AH=1Fh: Get DPB for the default drive (undocumented).
+    /// Returns DS:BX = DPB pointer, AL=00h. AL=FFh if invalid drive.
+    fn int21h_1fh_get_dpb_default(&self, cpu: &mut dyn CpuAccess, memory: &dyn MemoryAccess) {
+        self.get_dpb_for_drive(cpu, memory, self.state.current_drive);
+    }
+
+    /// AH=32h: Get DPB for specified drive (undocumented).
+    /// DL = drive (0=default, 1=A, 2=B, ...).
+    /// Returns DS:BX = DPB pointer, AL=00h. AL=FFh if invalid drive.
+    fn int21h_32h_get_dpb(&self, cpu: &mut dyn CpuAccess, memory: &dyn MemoryAccess) {
+        let dl = (cpu.dx() & 0xFF) as u8;
+        let drive_index = if dl == 0 {
+            self.state.current_drive
+        } else {
+            dl - 1
+        };
+        self.get_dpb_for_drive(cpu, memory, drive_index);
+    }
+
+    fn get_dpb_for_drive(
+        &self,
+        cpu: &mut dyn CpuAccess,
+        memory: &dyn MemoryAccess,
+        drive_index: u8,
+    ) {
+        if drive_index >= 26 {
+            cpu.set_ax((cpu.ax() & 0xFF00) | 0xFF);
+            return;
+        }
+
+        let cds_addr = tables::CDS_BASE + (drive_index as u32) * tables::CDS_ENTRY_SIZE;
+        let cds_flags = memory.read_word(cds_addr + tables::CDS_OFF_FLAGS);
+        if cds_flags == 0 {
+            cpu.set_ax((cpu.ax() & 0xFF00) | 0xFF);
+            return;
+        }
+
+        let dpb_off = memory.read_word(cds_addr + tables::CDS_OFF_DPB_PTR);
+        let dpb_seg = memory.read_word(cds_addr + tables::CDS_OFF_DPB_PTR + 2);
+        cpu.set_ds(dpb_seg);
+        cpu.set_bx(dpb_off);
+        cpu.set_ax(cpu.ax() & 0xFF00);
+    }
+
+    /// AH=60h: Qualify/canonicalize filename (TRUENAME, undocumented).
+    /// DS:SI = input ASCIIZ path, ES:DI = 128-byte output buffer.
+    /// Returns CF=0 on success, CF=1 with AX=error on failure.
+    fn int21h_60h_truename(&self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
+        let input_addr = ((cpu.ds() as u32) << 4) + cpu.si() as u32;
+        let output_addr = ((cpu.es() as u32) << 4) + cpu.di() as u32;
+
+        let mut path = Vec::new();
+        for i in 0..128u32 {
+            let byte = memory.read_byte(input_addr + i);
+            if byte == 0 {
+                break;
+            }
+            path.push(byte);
+        }
+
+        if path.is_empty() {
+            cpu.set_ax(0x0003);
+            set_iret_carry(cpu, memory, true);
+            return;
+        }
+
+        // Determine drive letter and whether the path is absolute.
+        let (drive_letter, rest) = if path.len() >= 2 && path[1] == b':' {
+            (path[0].to_ascii_uppercase(), &path[2..])
+        } else {
+            (b'A' + self.state.current_drive, &path[..])
+        };
+
+        if !drive_letter.is_ascii_uppercase() {
+            cpu.set_ax(0x000F);
+            set_iret_carry(cpu, memory, true);
+            return;
+        }
+
+        // Build the full path: if relative, prepend the CWD from the CDS.
+        let mut full = Vec::with_capacity(128);
+        full.push(drive_letter);
+        full.push(b':');
+
+        if rest.first() == Some(&b'\\') || rest.first() == Some(&b'/') {
+            full.extend_from_slice(rest);
+        } else {
+            // Read the CWD from CDS for this drive.
+            let drive_index = (drive_letter - b'A') as u32;
+            let cds_addr = tables::CDS_BASE + drive_index * tables::CDS_ENTRY_SIZE;
+
+            let mut cwd = Vec::new();
+            for i in 0..67u32 {
+                let byte = memory.read_byte(cds_addr + tables::CDS_OFF_PATH + i);
+                if byte == 0 {
+                    break;
+                }
+                cwd.push(byte);
+            }
+
+            // CWD is like "A:\DIR" -- skip the "A:" prefix.
+            let cwd_path = if cwd.len() >= 2 && cwd[1] == b':' {
+                &cwd[2..]
+            } else {
+                &cwd[..]
+            };
+
+            full.extend_from_slice(cwd_path);
+            if !full.ends_with(b"\\") {
+                full.push(b'\\');
+            }
+            full.extend_from_slice(rest);
+        }
+
+        // Normalize slashes.
+        for byte in &mut full {
+            if *byte == b'/' {
+                *byte = b'\\';
+            }
+        }
+
+        let normalized = normalize_path(&full);
+
+        // Uppercase and write to output buffer.
+        for (i, &byte) in normalized.iter().enumerate() {
+            memory.write_byte(output_addr + i as u32, country::uppercase_char(byte));
+        }
+        memory.write_byte(output_addr + normalized.len() as u32, 0x00);
+
+        set_iret_carry(cpu, memory, false);
+    }
+
     /// AH=30h: Get DOS version number.
     /// Returns AL=major (6), AH=minor (20), BH=OEM, BL=0.
     fn int21h_30h_get_version(&self, cpu: &mut dyn CpuAccess) {
@@ -411,6 +562,8 @@ impl NeetanOs {
     /// AH=33h: Extended functions.
     /// AL=00h: Get Ctrl-Break check state -> DL.
     /// AL=01h: Set Ctrl-Break check state <- DL.
+    /// AL=02h: Swap Ctrl-Break flag: get old into DL, set new from DL.
+    /// AL=03h/04h: Code page switching (reserved, returns AL=FFh).
     /// AL=06h: Get true DOS version -> BL=major, BH=minor.
     fn int21h_33h_extended(&mut self, cpu: &mut dyn CpuAccess) {
         let al = (cpu.ax() & 0xFF) as u8;
@@ -421,10 +574,17 @@ impl NeetanOs {
             0x01 => {
                 self.state.ctrl_break = (cpu.dx() & 0x00FF) != 0;
             }
+            0x02 => {
+                let old = self.state.ctrl_break as u16;
+                self.state.ctrl_break = (cpu.dx() & 0x00FF) != 0;
+                cpu.set_dx((cpu.dx() & 0xFF00) | old);
+            }
+            0x03 | 0x04 => {
+                cpu.set_ax((cpu.ax() & 0xFF00) | 0xFF);
+            }
             0x06 => {
                 let (major, minor) = self.state.version;
                 cpu.set_bx((minor as u16) << 8 | major as u16);
-                // DL=revision (0), DH=version flags (0)
                 cpu.set_dx(0x0000);
             }
             _ => {}
@@ -452,9 +612,11 @@ impl NeetanOs {
         cpu.set_bx(offset);
     }
 
-    /// AH=37h: Get/set switch character (undocumented).
-    /// AL=00h: Get -> DL = switch char, AL = 0.
-    /// AL=01h: Set <- DL, AL = 0.
+    /// AH=37h: Get/set switch character and availdev flag (undocumented).
+    /// AL=00h: Get switch char -> DL, AL=0.
+    /// AL=01h: Set switch char <- DL, AL=0.
+    /// AL=02h: Get availdev flag -> DL=FFh (always true in DOS 3.0+), AL=0.
+    /// AL=03h: Set availdev flag (ignored in DOS 3.0+), AL=0.
     fn int21h_37h_switch_char(&mut self, cpu: &mut dyn CpuAccess) {
         let al = (cpu.ax() & 0xFF) as u8;
         match al {
@@ -466,8 +628,14 @@ impl NeetanOs {
                 self.state.switch_char = (cpu.dx() & 0xFF) as u8;
                 cpu.set_ax(cpu.ax() & 0xFF00);
             }
+            0x02 => {
+                cpu.set_dx((cpu.dx() & 0xFF00) | 0xFF);
+                cpu.set_ax(cpu.ax() & 0xFF00);
+            }
+            0x03 => {
+                cpu.set_ax(cpu.ax() & 0xFF00);
+            }
             _ => {
-                // Unknown subfunction: return AL=FFh
                 cpu.set_ax((cpu.ax() & 0xFF00) | 0xFF);
             }
         }
@@ -710,40 +878,102 @@ impl NeetanOs {
         cpu.set_bx(self.state.current_psp);
     }
 
-    /// AH=63h: Get lead byte table (DBCS double-byte support).
-    /// AL=00h: Returns DS:SI pointing to DBCS lead byte table.
-    fn int21h_63h_get_dbcs_table(&self, cpu: &mut dyn CpuAccess) {
-        let segment = (self.state.dbcs_table_addr >> 4) as u16;
-        let offset = (self.state.dbcs_table_addr & 0x0F) as u16;
-        cpu.set_ds(segment);
-        cpu.set_si(offset);
+    /// AH=63h: DBCS support functions (undocumented).
+    /// AL=00h: Get DBCS lead byte table -> DS:SI.
+    /// AL=01h: Set interim console flag <- DL.
+    /// AL=02h: Get interim console flag -> DL.
+    fn int21h_63h_dbcs_support(&mut self, cpu: &mut dyn CpuAccess) {
+        let al = (cpu.ax() & 0xFF) as u8;
+        match al {
+            0x00 => {
+                let segment = (self.state.dbcs_table_addr >> 4) as u16;
+                let offset = (self.state.dbcs_table_addr & 0x0F) as u16;
+                cpu.set_ds(segment);
+                cpu.set_si(offset);
+            }
+            0x01 => {
+                self.state.interim_console_flag = (cpu.dx() & 0xFF) as u8;
+            }
+            0x02 => {
+                cpu.set_dx((cpu.dx() & 0xFF00) | self.state.interim_console_flag as u16);
+            }
+            _ => {}
+        }
     }
 
-    /// AH=65h: Get extended country information.
-    /// AL=01h: Get extended country info. ES:DI = buffer, CX = buffer size.
-    /// AL=07h: Get DBCS table info. ES:DI = buffer, CX = buffer size.
+    /// AH=65h: Get extended country information and uppercase functions.
+    /// AL=01h: Get extended country info.
+    /// AL=03h: Get country lowercase table pointer.
+    /// AL=05h: Get country filename character table pointer.
+    /// AL=07h: Get DBCS table info.
+    /// AL=20h/A0h: Uppercase character in DL.
+    /// AL=21h/A1h: Uppercase counted string at DS:DX, length CX.
+    /// AL=22h/A2h: Uppercase ASCIIZ string at DS:DX.
+    /// AL=23h/A3h: Yes/no character check for DL.
     fn int21h_65h_get_extended_country_info(
         &self,
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
     ) {
         let al = (cpu.ax() & 0xFF) as u8;
-        let buffer_addr = ((cpu.es() as u32) << 4) + cpu.di() as u32;
-        let max_bytes = cpu.cx();
 
         match al {
-            0x01 => {
-                let written = country::write_extended_country_info(memory, buffer_addr, max_bytes);
-                if written > 0 {
-                    cpu.set_cx(written);
-                    set_iret_carry(cpu, memory, false);
-                } else {
-                    cpu.set_ax(0x0001);
-                    set_iret_carry(cpu, memory, true);
-                }
+            0x20 | 0xA0 => {
+                let ch = (cpu.dx() & 0xFF) as u8;
+                cpu.set_dx((cpu.dx() & 0xFF00) | country::uppercase_char(ch) as u16);
+                set_iret_carry(cpu, memory, false);
             }
-            0x07 => {
-                let written = country::write_extended_dbcs_info(memory, buffer_addr, max_bytes);
+            0x21 | 0xA1 => {
+                let addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+                let len = cpu.cx() as u32;
+                for i in 0..len {
+                    let ch = memory.read_byte(addr + i);
+                    memory.write_byte(addr + i, country::uppercase_char(ch));
+                }
+                set_iret_carry(cpu, memory, false);
+            }
+            0x22 | 0xA2 => {
+                let addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+                for i in 0..256u32 {
+                    let ch = memory.read_byte(addr + i);
+                    if ch == 0 {
+                        break;
+                    }
+                    memory.write_byte(addr + i, country::uppercase_char(ch));
+                }
+                set_iret_carry(cpu, memory, false);
+            }
+            0x23 | 0xA3 => {
+                let ch = (cpu.dx() & 0xFF) as u8;
+                if country::is_yesno_char(ch) {
+                    cpu.set_ax(0x0000);
+                } else {
+                    cpu.set_ax(0x0002);
+                }
+                set_iret_carry(cpu, memory, false);
+            }
+            0x01 | 0x03 | 0x05 | 0x07 => {
+                let buffer_addr = ((cpu.es() as u32) << 4) + cpu.di() as u32;
+                let max_bytes = cpu.cx();
+
+                let written = match al {
+                    0x01 => country::write_extended_country_info(memory, buffer_addr, max_bytes),
+                    0x03 => country::write_extended_lowercase_info(
+                        memory,
+                        buffer_addr,
+                        max_bytes,
+                        self.state.dbcs_table_addr,
+                    ),
+                    0x05 => country::write_extended_filename_char_info(
+                        memory,
+                        buffer_addr,
+                        max_bytes,
+                        self.state.dbcs_table_addr,
+                    ),
+                    0x07 => country::write_extended_dbcs_info(memory, buffer_addr, max_bytes),
+                    _ => unreachable!(),
+                };
+
                 if written > 0 {
                     cpu.set_cx(written);
                     set_iret_carry(cpu, memory, false);
@@ -753,7 +983,107 @@ impl NeetanOs {
                 }
             }
             _ => {
-                cpu.set_ax(0x0001); // invalid function
+                cpu.set_ax(0x0001);
+                set_iret_carry(cpu, memory, true);
+            }
+        }
+    }
+
+    /// AH=55h: Create child PSP (undocumented).
+    /// DX = segment for new PSP. SI = memory top for child.
+    fn int21h_55h_create_child_psp(&self, cpu: &dyn CpuAccess, memory: &mut dyn MemoryAccess) {
+        let child_seg = cpu.dx();
+        let mem_top = cpu.si();
+        let base = (child_seg as u32) << 4;
+
+        // Write INT 20h at PSP:0000.
+        memory.write_byte(base, 0xCD);
+        memory.write_byte(base + 1, 0x20);
+
+        // Memory top segment.
+        memory.write_word(base + tables::PSP_OFF_MEM_TOP, mem_top);
+
+        // Copy handle table from parent PSP.
+        let parent_base = (self.state.current_psp as u32) << 4;
+        for i in 0..20u32 {
+            let handle = memory.read_byte(parent_base + tables::PSP_OFF_JFT + i);
+            memory.write_byte(base + tables::PSP_OFF_JFT + i, handle);
+        }
+
+        // Default handle table size and pointer.
+        memory.write_word(base + tables::PSP_OFF_HANDLE_SIZE, 20);
+        tables::write_far_ptr(
+            memory,
+            base + tables::PSP_OFF_HANDLE_PTR,
+            child_seg,
+            tables::PSP_OFF_JFT as u16,
+        );
+
+        // Parent PSP.
+        memory.write_word(base + tables::PSP_OFF_PARENT_PSP, self.state.current_psp);
+
+        // Environment segment (inherited from parent).
+        let parent_env = memory.read_word(parent_base + tables::PSP_OFF_ENV_SEG);
+        memory.write_word(base + tables::PSP_OFF_ENV_SEG, parent_env);
+
+        // INT 21h / RETF stub at PSP:0050h.
+        memory.write_block(base + tables::PSP_OFF_INT21_STUB, &[0xCD, 0x21, 0xCB]);
+    }
+
+    /// AH=68h / AH=6Ah: Commit (flush) file.
+    /// BX = file handle. HLE does not buffer, so just validate and return CF=0.
+    fn int21h_68h_commit_file(&self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
+        let handle = cpu.bx();
+        match self.state.handle_to_sft_index(handle, memory) {
+            Ok(_) => set_iret_carry(cpu, memory, false),
+            Err(err) => {
+                cpu.set_ax(err);
+                set_iret_carry(cpu, memory, true);
+            }
+        }
+    }
+
+    /// AH=69h: Get/set media info (volume serial number).
+    /// AL=00h: Get. BL = drive (0=default). DS:DX = 25-byte buffer.
+    /// AL=01h: Set (ignored for our HLE implementation).
+    fn int21h_69h_get_set_media_info(
+        &self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        let al = (cpu.ax() & 0xFF) as u8;
+        let bl = (cpu.bx() & 0xFF) as u8;
+        let drive_index = if bl == 0 {
+            self.state.current_drive
+        } else {
+            bl - 1
+        };
+
+        if drive_index >= 26 {
+            cpu.set_ax(0x000F);
+            set_iret_carry(cpu, memory, true);
+            return;
+        }
+
+        match al {
+            0x00 => {
+                let buffer_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+                // Info level: 0
+                memory.write_word(buffer_addr, 0x0000);
+                // Serial number (synthetic from drive index).
+                memory.write_word(buffer_addr + 2, 0x1234);
+                memory.write_word(buffer_addr + 4, 0x5678 + drive_index as u16);
+                // Volume label (11 bytes, space-padded).
+                memory.write_block(buffer_addr + 6, b"NO NAME    ");
+                // File system type (8 bytes).
+                memory.write_block(buffer_addr + 17, b"FAT12   ");
+                set_iret_carry(cpu, memory, false);
+            }
+            0x01 => {
+                set_iret_carry(cpu, memory, false);
+            }
+            _ => {
+                cpu.set_ax(0x0001);
                 set_iret_carry(cpu, memory, true);
             }
         }
