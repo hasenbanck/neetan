@@ -1,9 +1,6 @@
 use common::{Bus, Cpu, DisplaySnapshotUpload, PegcSnapshotUpload};
 
-use crate::{
-    CpuState, MachineState, Pc9801Bus,
-    trace::{NoTracing, Tracing},
-};
+use crate::{CpuState, MachineState, NoTracing, Pc9801Bus, Tracing};
 
 /// Generic PC-9801 machine: a CPU wired to the shared PC-9801 bus.
 pub struct Machine<C: Cpu, T: Tracing = NoTracing> {

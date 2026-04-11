@@ -48,11 +48,7 @@ use device::{
     upd52611_crtc::Upd52611Crtc,
 };
 
-use crate::{
-    config::ClockConfig,
-    memory::Pc9801Memory,
-    trace::{NoTracing, Tracing},
-};
+use crate::{NoTracing, Tracing, config::ClockConfig, memory::Pc9801Memory};
 
 /// Text RAM (0xA0000-0xA3FFF) access wait penalty in CPU cycles.
 const TRAM_WAIT_CYCLES: i64 = 1;

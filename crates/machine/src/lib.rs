@@ -10,10 +10,9 @@ mod bus;
 mod config;
 mod machine;
 mod memory;
-mod trace;
 
 use common::MachineModel;
-pub use common::SchedulerState;
+pub use common::{NoTracing, OsBootStage, SchedulerState, Tracing};
 use device::{
     beeper::BeeperState, cgrom::CgromState, display_control::DisplayControlState, egc::EgcState,
     grcg::GrcgState, i8251_keyboard::I8251KeyboardState, i8251_serial::I8251SerialState,
@@ -24,7 +23,6 @@ use device::{
     upd765a_fdc::Upd765aFdcState, upd7220_gdc::GdcState, upd52611_crtc::Upd52611CrtcState,
 };
 pub use machine::{Machine, Pc9801Ra, Pc9801Vm, Pc9801Vx, Pc9821Ap, Pc9821As};
-pub use trace::{NoTracing, Tracing};
 
 pub use crate::{
     bus::{BootDevice, Pc9801Bus},

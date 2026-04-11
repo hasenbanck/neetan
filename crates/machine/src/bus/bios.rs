@@ -12,7 +12,7 @@ use super::{
     BootDevice, Pc9801Bus,
     os_adapter::{OsCpuAccess, OsDiskIo, OsMemoryAccess},
 };
-use crate::{memory::Pc9801Memory, trace::Tracing};
+use crate::{Tracing, memory::Pc9801Memory};
 
 const PIT_CLOCK_8MHZ_LINEAGE: u32 = 1_996_800;
 
@@ -103,7 +103,13 @@ impl<T: Tracing> Pc9801Bus<T> {
                         sasi: &mut self.sasi,
                         ide: &mut self.ide,
                     };
-                    neetan_os.dispatch(vector, &mut cpu_access, &mut mem_access, &mut disk_io);
+                    neetan_os.dispatch(
+                        vector,
+                        &mut cpu_access,
+                        &mut mem_access,
+                        &mut disk_io,
+                        &mut self.tracer,
+                    );
                     self.os = Some(neetan_os);
                     self.sync_cursor();
                 }
@@ -2836,7 +2842,12 @@ impl<T: Tracing> Pc9801Bus<T> {
                 sasi: &mut self.sasi,
                 ide: &mut self.ide,
             };
-            neetan_os.boot(&mut cpu_access, &mut mem_access, &mut disk_io);
+            neetan_os.boot(
+                &mut cpu_access,
+                &mut mem_access,
+                &mut disk_io,
+                &mut self.tracer,
+            );
         }
 
         // Enable GDC hardware cursor for HLE OS.

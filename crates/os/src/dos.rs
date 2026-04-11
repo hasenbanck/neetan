@@ -3,8 +3,8 @@
 use common::warn;
 
 use crate::{
-    BufferedInputState, CpuAccess, DiskIo, MemoryAccess, NeetanOs, adjust_iret_ip, country, memory,
-    set_iret_carry, set_iret_zf, tables,
+    BufferedInputState, CpuAccess, DiskIo, MemoryAccess, NeetanOs, Tracing, adjust_iret_ip,
+    country, memory, set_iret_carry, set_iret_zf, tables,
 };
 
 impl NeetanOs {
@@ -14,6 +14,7 @@ impl NeetanOs {
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
         disk: &mut dyn DiskIo,
+        tracer: &mut impl Tracing,
     ) {
         let indos_addr = self.state.indos_addr;
         let indos = memory.read_byte(indos_addr);
@@ -21,7 +22,10 @@ impl NeetanOs {
 
         let ah = (cpu.ax() >> 8) as u8;
         match ah {
-            0x00 => self.terminate_process(cpu, memory, 0, 0),
+            0x00 => {
+                tracer.trace_int21h_terminate(cpu, memory);
+                self.terminate_process(cpu, memory, 0, 0);
+            }
             0x01 => self.int21h_01h_keyboard_input_with_echo(cpu, memory),
             0x02 => self.int21h_02h_display_character(cpu, memory),
             0x06 => self.int21h_06h_direct_console_io(cpu, memory),
@@ -51,27 +55,73 @@ impl NeetanOs {
             0x35 => self.int21h_35h_get_interrupt_vector(cpu, memory),
             0x37 => self.int21h_37h_switch_char(cpu),
             0x38 => self.int21h_38h_get_country_info(cpu, memory),
-            0x3B => self.int21h_3bh_chdir(cpu, memory, disk),
-            0x3C => self.int21h_3ch_create_file(cpu, memory, disk),
-            0x3D => self.int21h_3dh_open_file(cpu, memory, disk),
-            0x3E => self.int21h_3eh_close_handle(cpu, memory, disk),
-            0x3F => self.int21h_3fh_read(cpu, memory, disk),
-            0x40 => self.int21h_40h_write(cpu, memory, disk),
-            0x41 => self.int21h_41h_delete_file(cpu, memory, disk),
-            0x42 => self.int21h_42h_lseek(cpu, memory),
-            0x43 => self.int21h_43h_get_set_attributes(cpu, memory, disk),
-            0x44 => self.int21h_44h_ioctl(cpu, memory, disk),
+            0x3B => {
+                tracer.trace_int21h_chdir(cpu, memory);
+                tracer.trace_int21h_set_current_directory(cpu, memory);
+                self.int21h_3bh_chdir(cpu, memory, disk);
+            }
+            0x3C => {
+                tracer.trace_int21h_create(cpu, memory);
+                self.int21h_3ch_create_file(cpu, memory, disk);
+            }
+            0x3D => {
+                tracer.trace_int21h_open(cpu, memory);
+                self.int21h_3dh_open_file(cpu, memory, disk);
+            }
+            0x3E => {
+                tracer.trace_int21h_close(cpu, memory);
+                self.int21h_3eh_close_handle(cpu, memory, disk);
+            }
+            0x3F => {
+                tracer.trace_int21h_read(cpu, memory);
+                self.int21h_3fh_read(cpu, memory, disk);
+            }
+            0x40 => {
+                tracer.trace_int21h_write(cpu, memory);
+                self.int21h_40h_write(cpu, memory, disk);
+            }
+            0x41 => {
+                tracer.trace_int21h_delete(cpu, memory);
+                self.int21h_41h_delete_file(cpu, memory, disk);
+            }
+            0x42 => {
+                tracer.trace_int21h_lseek(cpu, memory);
+                self.int21h_42h_lseek(cpu, memory);
+            }
+            0x43 => {
+                tracer.trace_int21h_get_set_attributes(cpu, memory);
+                self.int21h_43h_get_set_attributes(cpu, memory, disk);
+            }
+            0x44 => {
+                tracer.trace_int21h_ioctl(cpu, memory);
+                self.int21h_44h_ioctl(cpu, memory, disk);
+            }
             0x45 => self.int21h_45h_dup_handle(cpu, memory),
-            0x47 => self.int21h_47h_get_current_directory(cpu, memory),
+            0x47 => {
+                tracer.trace_int21h_get_current_directory(cpu, memory);
+                self.int21h_47h_get_current_directory(cpu, memory);
+            }
             0x48 => self.int21h_48h_allocate(cpu, memory),
             0x49 => self.int21h_49h_free(cpu, memory),
             0x4A => self.int21h_4ah_resize(cpu, memory),
             0x31 => self.int21h_31h_tsr(cpu, memory),
-            0x4B => self.int21h_4bh_exec(cpu, memory, disk),
-            0x4C => self.int21h_4ch_terminate(cpu, memory),
+            0x4B => {
+                tracer.trace_int21h_exec(cpu, memory);
+                self.int21h_4bh_exec(cpu, memory, disk);
+            }
+            0x4C => {
+                tracer.trace_int21h_terminate(cpu, memory);
+                self.int21h_4ch_terminate(cpu, memory);
+            }
             0x4D => self.int21h_4dh_get_return_code(cpu),
-            0x4E => self.int21h_4eh_find_first(cpu, memory, disk),
-            0x4F => self.int21h_4fh_find_next(cpu, memory, disk),
+            0x4E => {
+                tracer.trace_int21h_find_first(cpu, memory);
+                self.int21h_4eh_find_first(cpu, memory, disk);
+            }
+            0x4F => {
+                tracer.trace_int21h_find_next(cpu, memory);
+                self.int21h_4fh_find_next(cpu, memory, disk);
+            }
             0x50 => self.int21h_50h_set_psp(cpu),
             0x51 => self.int21h_51h_get_psp(cpu),
             0x52 => self.int21h_52h_get_sysvars(cpu),
@@ -79,7 +129,10 @@ impl NeetanOs {
                 warn!("INT 21h AH=53h (Create DPB from BPB) called but not implemented");
             }
             0x55 => self.int21h_55h_create_child_psp(cpu, memory),
-            0x56 => self.int21h_56h_rename(cpu, memory, disk),
+            0x56 => {
+                tracer.trace_int21h_rename(cpu, memory);
+                self.int21h_56h_rename(cpu, memory, disk);
+            }
             0x57 => self.int21h_57h_get_set_datetime(cpu, memory),
             0x58 => self.int21h_58h_allocation_strategy(cpu, memory),
             0x5D => self.int21h_5dh_server_call(cpu, memory),

@@ -22,248 +22,10 @@ mod shell;
 mod state;
 pub mod tables;
 
-/// CPU register access for the OS.
-///
-/// Implemented by the machine crate's bridge adapter, wrapping `common::Cpu`.
-pub trait CpuAccess {
-    /// Returns the AX register.
-    fn ax(&self) -> u16;
-    /// Sets the AX register.
-    fn set_ax(&mut self, value: u16);
-    /// Returns the BX register.
-    fn bx(&self) -> u16;
-    /// Sets the BX register.
-    fn set_bx(&mut self, value: u16);
-    /// Returns the CX register.
-    fn cx(&self) -> u16;
-    /// Sets the CX register.
-    fn set_cx(&mut self, value: u16);
-    /// Returns the DX register.
-    fn dx(&self) -> u16;
-    /// Sets the DX register.
-    fn set_dx(&mut self, value: u16);
-    /// Returns the SI register.
-    fn si(&self) -> u16;
-    /// Sets the SI register.
-    fn set_si(&mut self, value: u16);
-    /// Returns the DI register.
-    fn di(&self) -> u16;
-    /// Sets the DI register.
-    fn set_di(&mut self, value: u16);
-    /// Returns the DS segment register.
-    fn ds(&self) -> u16;
-    /// Sets the DS segment register.
-    fn set_ds(&mut self, value: u16);
-    /// Returns the ES segment register.
-    fn es(&self) -> u16;
-    /// Sets the ES segment register.
-    fn set_es(&mut self, value: u16);
-    /// Returns the SS segment register.
-    fn ss(&self) -> u16;
-    /// Sets the SS segment register.
-    fn set_ss(&mut self, value: u16);
-    /// Returns the SP register.
-    fn sp(&self) -> u16;
-    /// Sets the SP register.
-    fn set_sp(&mut self, value: u16);
-    /// Returns the CS segment register.
-    fn cs(&self) -> u16;
-    /// Sets the carry flag in the IRET frame.
-    fn set_carry(&mut self, carry: bool);
-    /// Returns the EAX register (32-bit). Defaults to zero-extending AX.
-    fn eax(&self) -> u32 {
-        self.ax() as u32
-    }
-    /// Sets the EAX register (32-bit). Defaults to setting AX.
-    fn set_eax(&mut self, value: u32) {
-        self.set_ax(value as u16);
-    }
-    /// Returns the EBX register (32-bit). Defaults to zero-extending BX.
-    fn ebx(&self) -> u32 {
-        self.bx() as u32
-    }
-    /// Sets the EBX register (32-bit). Defaults to setting BX.
-    fn set_ebx(&mut self, value: u32) {
-        self.set_bx(value as u16);
-    }
-    /// Returns the ECX register (32-bit). Defaults to zero-extending CX.
-    fn ecx(&self) -> u32 {
-        self.cx() as u32
-    }
-    /// Sets the ECX register (32-bit). Defaults to setting CX.
-    fn set_ecx(&mut self, value: u32) {
-        self.set_cx(value as u16);
-    }
-    /// Returns the EDX register (32-bit). Defaults to zero-extending DX.
-    fn edx(&self) -> u32 {
-        self.dx() as u32
-    }
-    /// Sets the EDX register (32-bit). Defaults to setting DX.
-    fn set_edx(&mut self, value: u32) {
-        self.set_dx(value as u16);
-    }
-}
-
-/// Emulated memory access for the OS.
-///
-/// Implemented by the machine crate's bridge adapter, wrapping `Pc9801Memory`.
-pub trait MemoryAccess {
-    /// Reads a byte from the given linear address.
-    fn read_byte(&self, address: u32) -> u8;
-    /// Writes a byte to the given linear address.
-    fn write_byte(&mut self, address: u32, value: u8);
-    /// Reads a 16-bit word (little-endian) from the given linear address.
-    fn read_word(&self, address: u32) -> u16;
-    /// Writes a 16-bit word (little-endian) to the given linear address.
-    fn write_word(&mut self, address: u32, value: u16);
-    /// Bulk read from emulated RAM into a host buffer.
-    fn read_block(&self, address: u32, buf: &mut [u8]);
-    /// Bulk write from a host buffer into emulated RAM.
-    fn write_block(&mut self, address: u32, data: &[u8]);
-    /// Returns the size of extended RAM in bytes (0 for V30 machines).
-    fn extended_memory_size(&self) -> u32 {
-        0
-    }
-    /// Enables the EMS page frame backing at C0000-CFFFF.
-    fn enable_ems_page_frame(&mut self) {}
-    /// Enables the UMB region backing at D0000-DFFFF.
-    fn enable_umb_region(&mut self) {}
-}
-
-/// Disk I/O for the filesystem layer.
-///
-/// Abstracts access to floppy and hard disk images through the machine bus.
-pub trait DiskIo {
-    /// Read sectors from a physical drive.
-    /// `drive_da`: device address (0x90 for FD0, 0x80 for HDD0, etc.)
-    /// `lba`: logical block address (0-based)
-    /// `count`: number of sectors to read
-    fn read_sectors(&mut self, drive_da: u8, lba: u32, count: u32) -> Result<Vec<u8>, u8>;
-    /// Write sectors to a physical drive.
-    fn write_sectors(&mut self, drive_da: u8, lba: u32, data: &[u8]) -> Result<(), u8>;
-    /// Get the sector size for a drive (typically 512 for HDD, 512 or 1024 for FDD).
-    fn sector_size(&self, drive_da: u8) -> Option<u16>;
-    /// Get total sector count for a drive.
-    fn total_sectors(&self, drive_da: u8) -> Option<u32>;
-    /// Get drive geometry (cylinders, heads, sectors_per_track).
-    /// Needed for HDD partition table CHS-to-LBA conversion.
-    fn drive_geometry(&self, drive_da: u8) -> Option<(u16, u8, u8)>;
-}
-
-/// CD-ROM access for the MSCDEX layer.
-///
-/// Abstracts CD-ROM data access, TOC queries, and audio playback control.
-/// Implemented by the machine crate's adapter, delegating to `CdImage` and
-/// `CdAudioPlayer` on the IDE controller.
-pub trait CdromIo {
-    /// Returns true if the machine model has a CD-ROM drive.
-    fn cdrom_present(&self) -> bool;
-    /// Returns true if a disc is loaded in the drive.
-    fn cdrom_media_loaded(&self) -> bool;
-
-    /// Reads 2048 bytes of user data (cooked) from the given LBA.
-    fn read_sector_cooked(&self, lba: u32, buf: &mut [u8]) -> Option<usize>;
-    /// Reads a full raw sector (2352 bytes) from the given LBA.
-    fn read_sector_raw(&self, lba: u32, buf: &mut [u8]) -> Option<usize>;
-
-    /// Returns the number of tracks on the disc.
-    fn track_count(&self) -> u8;
-    /// Returns info for a 1-based track number.
-    fn track_info(&self, track_number: u8) -> Option<CdromTrackInfo>;
-    /// Returns the LBA of the lead-out area (end of last track).
-    fn leadout_lba(&self) -> u32;
-    /// Returns the total addressable sector count.
-    fn total_sectors(&self) -> u32;
-
-    /// Starts audio playback from `start_lba` for `sector_count` sectors.
-    fn audio_play(&mut self, start_lba: u32, sector_count: u32);
-    /// Pauses audio playback (if playing).
-    fn audio_stop(&mut self);
-    /// Resumes audio playback (if paused).
-    fn audio_resume(&mut self);
-    /// Returns current audio playback state and positions.
-    fn audio_state(&self) -> CdAudioStatus;
-    /// Returns current audio channel mapping and volumes.
-    fn audio_channel_info(&self) -> AudioChannelInfo;
-    /// Sets audio channel mapping and volumes.
-    fn set_audio_channel_info(&mut self, info: &AudioChannelInfo);
-}
-
-/// Track metadata returned by `CdromIo::track_info`.
-pub struct CdromTrackInfo {
-    /// LBA of the track start (INDEX 01).
-    pub start_lba: u32,
-    /// Track type (data or audio).
-    pub track_type: CdromTrackType,
-    /// ADR/Control byte (0x14 = data, 0x10 = audio).
-    pub control: u8,
-}
-
-/// CD-ROM track type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CdromTrackType {
-    /// Data track.
-    Data,
-    /// Audio track (CD-DA).
-    Audio,
-}
-
-/// Current audio playback state.
-pub struct CdAudioStatus {
-    /// Playback state.
-    pub state: CdAudioState,
-    /// Current playback position (LBA).
-    pub current_lba: u32,
-    /// Start of the current play range (LBA).
-    pub start_lba: u32,
-    /// End of the current play range (LBA).
-    pub end_lba: u32,
-}
-
-/// CD audio state enum for the OS layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CdAudioState {
-    /// Not playing.
-    Stopped,
-    /// Currently playing.
-    Playing,
-    /// Paused.
-    Paused,
-}
-
-/// Audio channel mapping and volume info.
-pub struct AudioChannelInfo {
-    /// Which input channel (0 or 1) feeds each of the four output slots.
-    pub input_channel: [u8; 4],
-    /// Volume for each of the four output slots (0-255).
-    pub volume: [u8; 4],
-}
-
-/// Console I/O for commands and the shell.
-///
-/// Abstracts keyboard input and text output through the machine's display.
-pub trait ConsoleIo {
-    /// Write a character to the console at the current cursor position.
-    fn write_char(&mut self, ch: u8);
-    /// Write a string to the console.
-    fn write_str(&mut self, s: &[u8]);
-    /// Read a character from the keyboard buffer (blocking).
-    fn read_char(&mut self) -> u8;
-    /// Check if a character is available in the keyboard buffer.
-    fn char_available(&self) -> bool;
-    /// Read a scan code + character pair (for special keys like arrows).
-    fn read_key(&mut self) -> (u8, u8);
-    /// Get current cursor position.
-    fn cursor_position(&self) -> (u8, u8);
-    /// Set cursor position.
-    fn set_cursor_position(&mut self, row: u8, col: u8);
-    /// Scroll the screen up by one line.
-    fn scroll_up(&mut self);
-    /// Clear the screen.
-    fn clear_screen(&mut self);
-    /// Get the screen dimensions.
-    fn screen_size(&self) -> (u8, u8);
-}
+pub use common::{
+    AudioChannelInfo, CdAudioState, CdAudioStatus, CdromIo, CdromTrackInfo, CdromTrackType,
+    ConsoleIo, CpuAccess, DiskIo, MemoryAccess, OsBootStage, Tracing,
+};
 
 /// Information about a discovered drive for CDS/DPB/DAUA population.
 struct DriveInfo {
@@ -601,14 +363,18 @@ impl NeetanOs {
     /// mounts drives, parses CONFIG.SYS, and creates the COMMAND.COM process.
     pub fn boot(
         &mut self,
-        _cpu: &mut dyn CpuAccess,
+        cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
         device: &mut (impl DiskIo + CdromIo),
+        tracer: &mut impl Tracing,
     ) {
+        tracer.trace_os_boot(OsBootStage::Start, cpu, memory);
         self.write_dos_data_structures(memory);
         self.write_iosys_work_area(memory);
+        tracer.trace_os_boot(OsBootStage::DosDataStructuresReady, cpu, memory);
         let drives = Self::discover_drives(memory);
         self.write_drive_structures(memory, &drives);
+        tracer.trace_os_boot(OsBootStage::DrivesReady, cpu, memory);
 
         // Boot to the first physical drive that has media, otherwise Z:.
         if let Some(first) = drives.iter().find(|d| !d.is_virtual)
@@ -624,13 +390,16 @@ impl NeetanOs {
         // Parse CONFIG.SYS if present on any mounted drive.
         let cfg = self.try_parse_config_sys(memory, device, &drives);
         self.apply_config(&cfg, memory);
+        tracer.trace_os_boot(OsBootStage::ConfigApplied, cpu, memory);
 
         // Set up CD-ROM drive Q: if the machine has a CD-ROM.
         if device.cdrom_present() {
             self.write_cdrom_drive(memory);
         }
+        tracer.trace_os_boot(OsBootStage::CdromReady, cpu, memory);
 
         self.write_initial_mcb_and_process(memory);
+        tracer.trace_os_boot(OsBootStage::InitialProcessReady, cpu, memory);
 
         // Initialize EMS/XMS memory manager if extended RAM is available.
         let ext_mem_size = memory.extended_memory_size();
@@ -648,9 +417,11 @@ impl NeetanOs {
                 memory,
             ));
         }
+        tracer.trace_os_boot(OsBootStage::MemoryManagerReady, cpu, memory);
 
         // Load AUTOEXEC.BAT if present on any mounted drive.
         let autoexec_lines = self.try_load_autoexec_bat(memory, device, &drives);
+        tracer.trace_os_boot(OsBootStage::AutoexecReady, cpu, memory);
 
         let psp = self.state.current_psp;
         if let Some((lines, bat_path)) = autoexec_lines {
@@ -658,6 +429,8 @@ impl NeetanOs {
         } else {
             self.shell = Some(shell::Shell::new(psp));
         }
+        tracer.trace_os_boot(OsBootStage::ShellReady, cpu, memory);
+        tracer.trace_os_boot(OsBootStage::End, cpu, memory);
     }
 
     /// Searches mounted drives for CONFIG.SYS and parses it.
@@ -880,36 +653,45 @@ impl NeetanOs {
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
         device: &mut (impl DiskIo + CdromIo),
+        tracer: &mut impl Tracing,
     ) -> bool {
+        tracer.trace_os_dispatch(vector, cpu, memory);
         match vector {
             0x20 => {
+                tracer.trace_int20h(cpu, memory);
                 self.int20h(cpu, memory);
                 true
             }
             0x21 => {
-                self.int21h(cpu, memory, device);
+                tracer.trace_int21h(cpu, memory);
+                self.int21h(cpu, memory, device, tracer);
                 true
             }
             0x22 => false,
             0x23 => false,
             0x24 => false,
             0x25 => {
+                tracer.trace_int25h(cpu, memory);
                 self.int25h(cpu, memory, device);
                 true
             }
             0x26 => {
+                tracer.trace_int26h(cpu, memory);
                 self.int26h(cpu, memory, device);
                 true
             }
             0x27 => {
+                tracer.trace_int27h(cpu, memory);
                 self.int27h(cpu, memory);
                 true
             }
             0x28 => {
+                tracer.trace_int28h(cpu, memory);
                 self.int28h(cpu, memory);
                 true
             }
             0x29 => {
+                tracer.trace_int29h(cpu, memory);
                 self.int29h(cpu, memory);
                 true
             }
@@ -919,19 +701,23 @@ impl NeetanOs {
                 true
             }
             0x2F => {
+                tracer.trace_int2fh(cpu, memory);
                 self.int2fh(cpu, memory, device);
                 true
             }
             0x33 => false,
             0x67 => {
+                tracer.trace_int67h(cpu, memory);
                 self.int67h(cpu, memory);
                 true
             }
             0xDC => {
+                tracer.trace_intdch(cpu, memory);
                 self.intdch(cpu, memory);
                 true
             }
             0xFE => {
+                tracer.trace_xms_entry(cpu, memory);
                 self.xms_entry(cpu, memory);
                 true
             }
