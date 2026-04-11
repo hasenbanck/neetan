@@ -12,7 +12,9 @@ mod display_snapshot;
 pub mod error;
 mod jis;
 pub mod log;
+mod os;
 mod stack_vec;
+mod trace;
 
 pub use display_snapshot::{
     DISPLAY_FLAG_PEGC_256_COLOR, DisplaySnapshotUpload, PegcSnapshotUpload,
@@ -20,7 +22,12 @@ pub use display_snapshot::{
 };
 pub use error::{Context, ContextError, OptionContext, StringError};
 pub use jis::{JisChar, char_to_jis, jis_slice_to_string, jis_to_char, str_to_jis};
+pub use os::{
+    AudioChannelInfo, CdAudioState, CdAudioStatus, CdromIo, CdromTrackInfo, CdromTrackType,
+    ConsoleIo, CpuAccess, DiskIo, MemoryAccess,
+};
 pub use stack_vec::StackVec;
+pub use trace::{NoTracing, OsBootStage, Tracing};
 
 /// CPU generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

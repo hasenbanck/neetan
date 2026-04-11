@@ -163,7 +163,10 @@ const KEYBOARD_TABLES: [[u8; 0x60]; 8] = [
 
 impl<T: Tracing> Pc9801Bus<T> {
     /// Creates a new bus configured for the given machine model.
-    pub fn new(machine_model: MachineModel, sample_rate: u32) -> Self {
+    pub fn new(machine_model: MachineModel, sample_rate: u32) -> Self
+    where
+        T: Default,
+    {
         let clocks = ClockConfig {
             cpu_clock_hz: machine_model.cpu_clock_hz(),
             pit_clock_hz: machine_model.pit_clock_hz(),

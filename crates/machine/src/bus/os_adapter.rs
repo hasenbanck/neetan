@@ -1,10 +1,12 @@
-//! Adapter structs bridging `os` crate traits to emulator internals.
+//! Adapter structs bridging shared OS traits to emulator internals.
 //!
-//! The `os` crate defines `CpuAccess`, `MemoryAccess`, `DiskIo`, and
-//! `ConsoleIo` traits. These adapters wrap the concrete emulator types
-//! (`common::Cpu`, `Pc9801Memory`) to implement those traits.
+//! These adapters wrap the concrete emulator types (`common::Cpu`,
+//! `Pc9801Memory`) to implement the shared HLE OS bridge traits.
 
-use common::Cpu;
+use common::{
+    AudioChannelInfo, CdAudioState, CdAudioStatus, CdromIo, CdromTrackInfo, CdromTrackType, Cpu,
+    CpuAccess, DiskIo, MemoryAccess,
+};
 use device::{
     cd_audio::CdAudioState as DeviceCdAudioState, cdrom::TrackType, ide::IdeController,
     sasi::SasiController, upd765a_fdc::FloppyController,
@@ -14,7 +16,7 @@ use crate::memory::Pc9801Memory;
 
 pub(super) struct OsCpuAccess<'a, C: Cpu>(pub &'a mut C);
 
-impl<C: Cpu> os::CpuAccess for OsCpuAccess<'_, C> {
+impl<C: Cpu> CpuAccess for OsCpuAccess<'_, C> {
     fn ax(&self) -> u16 {
         self.0.ax()
     }
@@ -147,7 +149,7 @@ impl<C: Cpu> os::CpuAccess for OsCpuAccess<'_, C> {
 
 pub(super) struct OsMemoryAccess<'a>(pub &'a mut Pc9801Memory);
 
-impl os::MemoryAccess for OsMemoryAccess<'_> {
+impl MemoryAccess for OsMemoryAccess<'_> {
     fn read_byte(&self, address: u32) -> u8 {
         self.0.read_byte(address)
     }
@@ -281,7 +283,7 @@ impl OsDiskIo<'_> {
     }
 }
 
-impl os::DiskIo for OsDiskIo<'_> {
+impl DiskIo for OsDiskIo<'_> {
     fn read_sectors(&mut self, drive_da: u8, lba: u32, count: u32) -> Result<Vec<u8>, u8> {
         let dev_type = drive_da & 0xF0;
         let unit = (drive_da & 0x0F) as usize;
@@ -393,7 +395,7 @@ impl os::DiskIo for OsDiskIo<'_> {
     }
 }
 
-impl os::CdromIo for OsDiskIo<'_> {
+impl CdromIo for OsDiskIo<'_> {
     fn cdrom_present(&self) -> bool {
         self.ide.has_cdrom()
     }
@@ -416,14 +418,14 @@ impl os::CdromIo for OsDiskIo<'_> {
             .map_or(0, |cdrom| cdrom.track_count())
     }
 
-    fn track_info(&self, track_number: u8) -> Option<os::CdromTrackInfo> {
+    fn track_info(&self, track_number: u8) -> Option<CdromTrackInfo> {
         let cdrom = self.ide.cdrom_image()?;
         let track = cdrom.track(track_number)?;
         let (track_type, control) = match track.track_type {
-            TrackType::Data => (os::CdromTrackType::Data, 0x14),
-            TrackType::Audio => (os::CdromTrackType::Audio, 0x10),
+            TrackType::Data => (CdromTrackType::Data, 0x14),
+            TrackType::Audio => (CdromTrackType::Audio, 0x10),
         };
-        Some(os::CdromTrackInfo {
+        Some(CdromTrackInfo {
             start_lba: track.start_lba,
             track_type,
             control,
@@ -454,15 +456,15 @@ impl os::CdromIo for OsDiskIo<'_> {
         self.ide.resume_cd_audio();
     }
 
-    fn audio_state(&self) -> os::CdAudioStatus {
+    fn audio_state(&self) -> CdAudioStatus {
         let player = self.ide.cd_audio_player();
         let (current_lba, start_lba, end_lba) = player.current_position();
         let state = match player.state() {
-            DeviceCdAudioState::Stopped => os::CdAudioState::Stopped,
-            DeviceCdAudioState::Playing => os::CdAudioState::Playing,
-            DeviceCdAudioState::Paused => os::CdAudioState::Paused,
+            DeviceCdAudioState::Stopped => CdAudioState::Stopped,
+            DeviceCdAudioState::Playing => CdAudioState::Playing,
+            DeviceCdAudioState::Paused => CdAudioState::Paused,
         };
-        os::CdAudioStatus {
+        CdAudioStatus {
             state,
             current_lba,
             start_lba,
@@ -470,15 +472,15 @@ impl os::CdromIo for OsDiskIo<'_> {
         }
     }
 
-    fn audio_channel_info(&self) -> os::AudioChannelInfo {
+    fn audio_channel_info(&self) -> AudioChannelInfo {
         let channels = self.ide.cd_audio_player().channels();
-        os::AudioChannelInfo {
+        AudioChannelInfo {
             input_channel: channels.input_channel,
             volume: channels.volume,
         }
     }
 
-    fn set_audio_channel_info(&mut self, info: &os::AudioChannelInfo) {
+    fn set_audio_channel_info(&mut self, info: &AudioChannelInfo) {
         use device::cd_audio::AudioChannelControl;
         self.ide
             .cd_audio_player_mut()
