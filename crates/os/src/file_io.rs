@@ -4,6 +4,7 @@ use common::warn;
 
 use crate::{
     CpuAccess, DiskIo, DriveIo, MemoryAccess, NeetanOs, OsState,
+    commands::md,
     filesystem::{
         ReadDirEntrySource, ReadDirectory, fat_dir,
         fat_file::{FatFileCursor, FatFileWriter},
@@ -205,6 +206,25 @@ impl NeetanOs {
         // Return AL: 0=no wildcards, 1=wildcards present, FF=invalid drive
         let has_wildcards = fcb.contains(&b'?');
         cpu.set_ax((cpu.ax() & 0xFF00) | if has_wildcards { 0x01 } else { 0x00 });
+    }
+
+    /// AH=39h: Create subdirectory.
+    pub(crate) fn int21h_39h_mkdir(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) {
+        let path_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        let path = OsState::read_asciiz(memory, path_addr, 128);
+
+        match md::create_directory(&mut self.state, memory, disk, &path) {
+            Ok(()) => set_iret_carry(cpu, memory, false),
+            Err(error) => {
+                cpu.set_ax(error);
+                set_iret_carry(cpu, memory, true);
+            }
+        }
     }
 
     /// AH=3Ch: Create file.

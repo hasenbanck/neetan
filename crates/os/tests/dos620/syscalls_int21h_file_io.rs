@@ -468,6 +468,136 @@ fn get_file_attributes() {
 }
 
 #[test]
+fn create_directory_via_int21h_39h() {
+    let mut machine = harness::boot_hle_with_floppy();
+
+    let create_path_addr = harness::INJECT_CODE_BASE + 0x200;
+    let attrs_path_addr = harness::INJECT_CODE_BASE + 0x220;
+    harness::write_bytes(&mut machine.bus, create_path_addr, b"A:\\NEWDIR\0");
+    harness::write_bytes(&mut machine.bus, attrs_path_addr, b"A:\\NEWDIR\0");
+
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xB4, 0x39,                         // MOV AH, 39h
+        0xCD, 0x21,                         // INT 21h
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (create flags)
+        0xBA, 0x20, 0x02,                   // MOV DX, 0220h
+        0xB4, 0x43,                         // MOV AH, 43h
+        0xB0, 0x00,                         // MOV AL, 00h
+        0xCD, 0x21,                         // INT 21h
+        0x89, 0x0E, 0x02, 0x01,             // MOV [0x0102], CX (attributes)
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x04, 0x01,                   // MOV [0x0104], AX (attr flags)
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(&mut machine, code, harness::INJECT_BUDGET_DISK_IO);
+
+    let create_flags = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        create_flags & 0x0001,
+        0,
+        "AH=39h should succeed (CF=0), flags={:#06X}",
+        create_flags
+    );
+
+    let attr_flags = harness::result_word(&machine.bus, 4);
+    assert_eq!(
+        attr_flags & 0x0001,
+        0,
+        "New directory should be queryable via AH=43h, flags={:#06X}",
+        attr_flags
+    );
+
+    let attributes = harness::result_byte(&machine.bus, 2);
+    assert_ne!(
+        attributes & 0x10,
+        0,
+        "NEWDIR should have directory attribute set, got {:#04X}",
+        attributes
+    );
+}
+
+#[test]
+fn create_directory_via_int21h_39h_existing_returns_access_denied() {
+    let mut machine = harness::boot_hle_with_floppy();
+
+    let path_addr = harness::INJECT_CODE_BASE + 0x200;
+    harness::write_bytes(&mut machine.bus, path_addr, b"A:\\DUPDIR\0");
+
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xB4, 0x39,                         // MOV AH, 39h
+        0xCD, 0x21,                         // INT 21h
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xB4, 0x39,                         // MOV AH, 39h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(&mut machine, code, harness::INJECT_BUDGET_DISK_IO);
+
+    let error_code = harness::result_word(&machine.bus, 0);
+    let flags = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        flags & 0x0001,
+        1,
+        "Second AH=39h should fail (CF=1), flags={:#06X}",
+        flags
+    );
+    assert_eq!(
+        error_code, 0x0005,
+        "Creating an existing directory should return access denied, got {:#06X}",
+        error_code
+    );
+}
+
+#[test]
+fn create_directory_via_int21h_39h_missing_parent_returns_path_not_found() {
+    let mut machine = harness::boot_hle_with_floppy();
+
+    let path_addr = harness::INJECT_CODE_BASE + 0x200;
+    harness::write_bytes(&mut machine.bus, path_addr, b"A:\\NOPE\\CHILD\0");
+
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xB4, 0x39,                         // MOV AH, 39h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(&mut machine, code, harness::INJECT_BUDGET_DISK_IO);
+
+    let error_code = harness::result_word(&machine.bus, 0);
+    let flags = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        flags & 0x0001,
+        1,
+        "AH=39h with a missing parent should fail (CF=1), flags={:#06X}",
+        flags
+    );
+    assert_eq!(
+        error_code, 0x0003,
+        "Missing parent path should return path not found, got {:#06X}",
+        error_code
+    );
+}
+
+#[test]
 fn get_file_datetime() {
     let mut machine = harness::boot_hle_with_floppy();
 
