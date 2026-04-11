@@ -344,6 +344,12 @@ impl NeetanOs {
         self.state.host_local_time_fn = f;
     }
 
+    /// Returns a host-formatted overview of current HLE DOS memory usage.
+    pub fn debug_memory_overview_lines(&self, memory: &dyn MemoryAccess) -> Vec<String> {
+        let overview = memory::collect_memory_overview(&self.state, memory);
+        memory::format_host_memory_overview(&overview)
+    }
+
     /// Enables or disables EMS expanded memory.
     pub fn set_ems_enabled(&mut self, enabled: bool) {
         self.state.ems_enabled = enabled;

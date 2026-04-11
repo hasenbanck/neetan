@@ -286,6 +286,10 @@ impl<T: Tracing> common::Machine for Machine<cpu::V30, T> {
     fn flush_printer(&mut self) {
         self.bus.flush_printer();
     }
+
+    fn debug_memory_overview(&mut self) -> Option<Vec<String>> {
+        self.bus.debug_memory_overview_lines()
+    }
 }
 
 impl<T: Tracing> common::Machine for Machine<cpu::I286, T> {
@@ -360,6 +364,10 @@ impl<T: Tracing> common::Machine for Machine<cpu::I286, T> {
     fn flush_printer(&mut self) {
         self.bus.flush_printer();
     }
+
+    fn debug_memory_overview(&mut self) -> Option<Vec<String>> {
+        self.bus.debug_memory_overview_lines()
+    }
 }
 
 impl<const CPU_MODEL: u8, T: Tracing> common::Machine for Machine<cpu::I386<CPU_MODEL>, T> {
@@ -433,5 +441,9 @@ impl<const CPU_MODEL: u8, T: Tracing> common::Machine for Machine<cpu::I386<CPU_
 
     fn flush_printer(&mut self) {
         self.bus.flush_printer();
+    }
+
+    fn debug_memory_overview(&mut self) -> Option<Vec<String>> {
+        self.bus.debug_memory_overview_lines()
     }
 }

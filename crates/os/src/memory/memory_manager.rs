@@ -879,6 +879,19 @@ impl MemoryManager {
         }
     }
 
+    pub(crate) fn extended_pool_total_bytes(&self) -> u32 {
+        self.extended_memory_size
+    }
+
+    pub(crate) fn extended_pool_used_bytes(&self) -> u32 {
+        (self.allocated_ems_pages() as u32) * EMS_PAGE_SIZE + self.allocated_xms_kb() * 1024
+    }
+
+    pub(crate) fn extended_pool_free_bytes(&self) -> u32 {
+        self.extended_memory_size
+            .saturating_sub(self.extended_pool_used_bytes())
+    }
+
     pub(crate) fn hma_is_allocated(&self) -> bool {
         self.hma_allocated
     }

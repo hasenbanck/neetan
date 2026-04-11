@@ -165,6 +165,7 @@ For example, if your global config sets `machine = PC9801RA` and you run
 | GUI + Alt + F9     | Open floppy selector for drive 1 |
 | GUI + Alt + F10    | Open floppy selector for drive 2 |
 | GUI + Alt + F11    | Open CD-ROM selector             |
+| GUI + Alt + F12    | Log HLE DOS memory overview      |
 
 (GUI is the Windows / Command key)
 

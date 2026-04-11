@@ -801,6 +801,13 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.scheduler.next_event_cycle()
     }
 
+    /// Returns a host-formatted overview of current HLE DOS memory usage.
+    pub fn debug_memory_overview_lines(&mut self) -> Option<Vec<String>> {
+        let os = self.os.as_ref()?;
+        let memory = os_adapter::OsMemoryAccess(&mut self.memory);
+        Some(os.debug_memory_overview_lines(&memory))
+    }
+
     fn update_plane_e_mapping(&mut self) {
         if self.pegc.is_256_color_active() {
             self.memory.set_e_plane_enabled(false);

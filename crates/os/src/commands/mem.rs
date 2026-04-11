@@ -3,7 +3,7 @@
 use crate::{
     DiskIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
-    tables::*,
+    memory::collect_memory_overview,
 };
 
 pub(crate) struct Mem;
@@ -22,63 +22,6 @@ impl Command for Mem {
 
 struct RunningMem {
     args: Vec<u8>,
-}
-
-fn read_mcb_owner(mem: &dyn crate::MemoryAccess, segment: u16) -> u16 {
-    mem.read_word((segment as u32) * 16 + MCB_OFF_OWNER)
-}
-
-fn read_mcb_size(mem: &dyn crate::MemoryAccess, segment: u16) -> u16 {
-    mem.read_word((segment as u32) * 16 + MCB_OFF_SIZE)
-}
-
-fn read_mcb_type(mem: &dyn crate::MemoryAccess, segment: u16) -> u8 {
-    mem.read_byte((segment as u32) * 16 + MCB_OFF_TYPE)
-}
-
-fn walk_mcb_chain(mem: &dyn crate::MemoryAccess, first_segment: u16) -> (u32, u32) {
-    let mut used_paragraphs: u32 = 0;
-    let mut free_paragraphs: u32 = 0;
-    let mut current = first_segment;
-    for _ in 0..4096 {
-        let block_type = read_mcb_type(mem, current);
-        if block_type != 0x4D && block_type != 0x5A {
-            break;
-        }
-        let owner = read_mcb_owner(mem, current);
-        let size = read_mcb_size(mem, current) as u32;
-        if owner == MCB_OWNER_FREE {
-            free_paragraphs += size;
-        } else {
-            used_paragraphs += size;
-        }
-        if block_type == 0x5A {
-            break;
-        }
-        current = current + size as u16 + 1;
-    }
-    (used_paragraphs, free_paragraphs)
-}
-
-fn largest_free_block(mem: &dyn crate::MemoryAccess, first_segment: u16) -> u32 {
-    let mut largest: u32 = 0;
-    let mut current = first_segment;
-    for _ in 0..4096 {
-        let block_type = read_mcb_type(mem, current);
-        if block_type != 0x4D && block_type != 0x5A {
-            break;
-        }
-        let owner = read_mcb_owner(mem, current);
-        let size = read_mcb_size(mem, current) as u32;
-        if owner == MCB_OWNER_FREE && size > largest {
-            largest = size;
-        }
-        if block_type == 0x5A {
-            break;
-        }
-        current = current + size as u16 + 1;
-    }
-    largest
 }
 
 fn format_row(label: &str, total: u32, used: u32, free: u32) -> String {
@@ -121,6 +64,10 @@ fn format_number(n: u32) -> String {
     result.chars().rev().collect()
 }
 
+fn bytes_to_kb_ceil(bytes: u32) -> u32 {
+    bytes.div_ceil(1024)
+}
+
 impl RunningCommand for RunningMem {
     fn step(
         &mut self,
@@ -135,37 +82,18 @@ impl RunningCommand for RunningMem {
             return StepResult::Done(0);
         }
 
-        let conv_total_kb: u32 = 640;
-        let (conv_used_para, _) = walk_mcb_chain(io.memory, FIRST_MCB_SEGMENT);
-        let conv_used_kb = (conv_used_para * 16).div_ceil(1024);
-        let conv_free_kb = conv_total_kb.saturating_sub(conv_used_kb);
-
+        let overview = collect_memory_overview(state, io.memory);
         let mm = state.memory_manager.as_ref();
 
-        let umb_total_kb: u32;
-        let umb_used_kb: u32;
-        let umb_free_kb: u32;
-        if let Some(manager) = mm {
-            if manager.is_umb_enabled() {
-                let (umb_used_para, umb_free_para) =
-                    walk_mcb_chain(io.memory, UMB_FIRST_MCB_SEGMENT);
-                umb_total_kb = ((umb_used_para + umb_free_para) * 16).div_ceil(1024);
-                umb_used_kb = (umb_used_para * 16).div_ceil(1024);
-                umb_free_kb = umb_total_kb.saturating_sub(umb_used_kb);
-            } else {
-                umb_total_kb = 0;
-                umb_used_kb = 0;
-                umb_free_kb = 0;
-            }
-        } else {
-            umb_total_kb = 0;
-            umb_used_kb = 0;
-            umb_free_kb = 0;
-        }
-
-        let xms_total_kb = mm.map_or(0, |m| m.xms_total_kb());
-        let xms_free_kb = mm.map_or(0, |m| m.xms_free_kb());
-        let xms_used_kb = xms_total_kb.saturating_sub(xms_free_kb);
+        let conv_total_kb = bytes_to_kb_ceil(overview.conventional.total_bytes);
+        let conv_used_kb = bytes_to_kb_ceil(overview.conventional.used_bytes);
+        let conv_free_kb = bytes_to_kb_ceil(overview.conventional.free_bytes);
+        let umb_total_kb = bytes_to_kb_ceil(overview.umb.total_bytes);
+        let umb_used_kb = bytes_to_kb_ceil(overview.umb.used_bytes);
+        let umb_free_kb = bytes_to_kb_ceil(overview.umb.free_bytes);
+        let xms_total_kb = bytes_to_kb_ceil(overview.xms.total_bytes);
+        let xms_used_kb = bytes_to_kb_ceil(overview.xms.used_bytes);
+        let xms_free_kb = bytes_to_kb_ceil(overview.xms.free_bytes);
 
         let total_total = conv_total_kb + umb_total_kb + xms_total_kb;
         let total_used = conv_used_kb + umb_used_kb + xms_used_kb;
@@ -218,8 +146,7 @@ impl RunningCommand for RunningMem {
         }
 
         io.println(b"");
-        let largest_conv = largest_free_block(io.memory, FIRST_MCB_SEGMENT);
-        let largest_conv_bytes = largest_conv * 16;
+        let largest_conv_bytes = overview.largest_conventional_free_bytes;
         let largest_conv_kb = largest_conv_bytes / 1024;
         let line = format_largest_line(
             "Largest executable program size",
@@ -229,8 +156,7 @@ impl RunningCommand for RunningMem {
         io.println(line.as_bytes());
 
         if umb_total_kb > 0 {
-            let largest_umb = largest_free_block(io.memory, UMB_FIRST_MCB_SEGMENT);
-            let largest_umb_bytes = largest_umb * 16;
+            let largest_umb_bytes = overview.largest_umb_free_bytes;
             let largest_umb_kb = largest_umb_bytes / 1024;
             let line = format_largest_line(
                 "Largest free upper memory block",
