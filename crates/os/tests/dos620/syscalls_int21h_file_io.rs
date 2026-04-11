@@ -113,6 +113,19 @@ fn open_existing_file() {
 }
 
 #[test]
+fn open_existing_file_with_dot_component() {
+    let mut machine = harness::boot_hle_with_floppy();
+
+    let handle = open_file(&mut machine, b"A:\\.\\COMMAND.COM\0");
+    assert!(
+        handle >= 5,
+        "File handle should be >= 5 (above standard handles), got {}",
+        handle
+    );
+    close_file(&mut machine, handle);
+}
+
+#[test]
 fn read_from_file() {
     let mut machine = harness::boot_hle_with_floppy();
 
