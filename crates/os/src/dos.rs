@@ -56,6 +56,7 @@ impl NeetanOs {
             0x36 => self.int21h_36h_get_free_disk_space(cpu, memory, disk),
             0x37 => self.int21h_37h_switch_char(cpu),
             0x38 => self.int21h_38h_get_country_info(cpu, memory),
+            0x39 => self.int21h_39h_mkdir(cpu, memory, disk),
             0x3B => {
                 tracer.trace_int21h_chdir(cpu, memory);
                 tracer.trace_int21h_set_current_directory(cpu, memory);
