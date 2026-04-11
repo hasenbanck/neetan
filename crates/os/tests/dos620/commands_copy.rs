@@ -1,4 +1,6 @@
-use crate::harness::*;
+use std::fs;
+
+use crate::{file_copy_repro::*, harness::*};
 
 #[test]
 fn copy_single_file() {
@@ -199,5 +201,50 @@ fn xcopy_recursive() {
     assert!(
         find_string_in_text_vram(&machine.bus, &testfile),
         "XCOPY should have copied TESTFILE.TXT into DSTDIR"
+    );
+}
+
+#[test]
+fn copy_multicluster_file_from_floppy_to_formatted_hdd_without_corruption() {
+    let source_bytes = prng_bytes(RANDOM_FILE_SIZE);
+    let floppy = create_random_file_floppy(&source_bytes);
+
+    let hdd_path = make_temp_hdd_path("copy-repro");
+    let hdd = create_empty_hdd(256);
+    fs::write(&hdd_path, hdd.to_bytes()).expect("write temp HDD image");
+
+    let mut machine = boot_hle_with_temp_hdd_and_floppy(&hdd_path, floppy);
+
+    type_string_long(&mut machine, b"FORMAT A:\r");
+    machine.run_for(10_000_000);
+    type_string(&mut machine.bus, b"Y");
+    run_until_prompt(&mut machine);
+
+    type_string_long(&mut machine, b"COPY /V C:RAND.BIN A:\\\r");
+    run_until_prompt(&mut machine);
+    machine.bus.flush_hdd(0);
+
+    let copied = [0x0063, 0x006F, 0x0070, 0x0069, 0x0065, 0x0064]; // "copied"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &copied),
+        "COPY should report success before the on-disk bytes are checked"
+    );
+
+    let copied_bytes = extract_root_file(&hdd_path, &RANDOM_FILE_FCB)
+        .expect("destination file should be readable");
+    let mismatches = mismatch_offsets(&source_bytes, &copied_bytes, 8);
+
+    assert_eq!(
+        copied_bytes.len(),
+        source_bytes.len(),
+        "copied size mismatch"
+    );
+    assert!(
+        mismatches.is_empty(),
+        "COPY corrupted data: first mismatches at {mismatches:?}"
+    );
+    assert_eq!(
+        copied_bytes, source_bytes,
+        "COPY should preserve file contents"
     );
 }

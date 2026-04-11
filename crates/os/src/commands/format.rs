@@ -44,6 +44,7 @@ struct BpbParams {
     root_entry_count: u16,
     media_descriptor: u8,
     sectors_per_fat: u16,
+    is_fat16: bool,
 }
 
 fn floppy_bpb_params(da_type: u8) -> BpbParams {
@@ -56,6 +57,7 @@ fn floppy_bpb_params(da_type: u8) -> BpbParams {
             root_entry_count: 192,
             media_descriptor: 0xFE,
             sectors_per_fat: 2,
+            is_fat16: false,
         },
         0x70 => BpbParams {
             bytes_per_sector: 512,
@@ -65,8 +67,43 @@ fn floppy_bpb_params(da_type: u8) -> BpbParams {
             root_entry_count: 112,
             media_descriptor: 0xFE,
             sectors_per_fat: 3,
+            is_fat16: false,
         },
         _ => panic!("unsupported floppy DA type {:#04X}", da_type),
+    }
+}
+
+fn fat_sectors_for(cluster_count: u32, bytes_per_sector: u16, is_fat16: bool) -> u16 {
+    let fat_bytes = if is_fat16 {
+        (cluster_count as u64 + 2) * 2
+    } else {
+        ((cluster_count as u64 + 2) * 3).div_ceil(2)
+    };
+    fat_bytes.div_ceil(bytes_per_sector as u64) as u16
+}
+
+fn solve_hdd_fat_layout(
+    partition_sectors: u32,
+    bytes_per_sector: u16,
+    sectors_per_cluster: u8,
+    reserved_sectors: u16,
+    num_fats: u8,
+    root_entry_count: u16,
+    is_fat16: bool,
+) -> (u32, u16) {
+    let root_dir_sectors = (root_entry_count as u32 * 32).div_ceil(bytes_per_sector as u32);
+    let mut sectors_per_fat = 1u16;
+
+    loop {
+        let system_sectors =
+            reserved_sectors as u32 + num_fats as u32 * sectors_per_fat as u32 + root_dir_sectors;
+        let data_sectors = partition_sectors.saturating_sub(system_sectors);
+        let cluster_count = data_sectors / sectors_per_cluster as u32;
+        let needed = fat_sectors_for(cluster_count, bytes_per_sector, is_fat16);
+        if needed == sectors_per_fat {
+            return (cluster_count, sectors_per_fat);
+        }
+        sectors_per_fat = needed;
     }
 }
 
@@ -101,13 +138,29 @@ fn hdd_bpb_params(sector_size: u16, partition_sectors: u32) -> BpbParams {
         }
     };
 
-    let root_dir_sectors = (root_entry_count as u32 * 32).div_ceil(bytes_per_sector as u32);
-    let overhead = reserved_sectors as u32 + root_dir_sectors;
-    let usable = partition_sectors.saturating_sub(overhead);
-    // Upper-bound estimate: assume FAT takes zero sectors, compute max clusters,
-    // then derive sectors_per_fat from that.
-    let max_clusters = usable / sectors_per_cluster as u32;
-    let sectors_per_fat = ((max_clusters + 2) as u64 * 2).div_ceil(bytes_per_sector as u64) as u16;
+    let (fat12_clusters, fat12_sectors_per_fat) = solve_hdd_fat_layout(
+        partition_sectors,
+        bytes_per_sector,
+        sectors_per_cluster,
+        reserved_sectors,
+        num_fats,
+        root_entry_count,
+        false,
+    );
+    let (is_fat16, sectors_per_fat) = if fat12_clusters >= 4085 {
+        let (_, fat16_sectors_per_fat) = solve_hdd_fat_layout(
+            partition_sectors,
+            bytes_per_sector,
+            sectors_per_cluster,
+            reserved_sectors,
+            num_fats,
+            root_entry_count,
+            true,
+        );
+        (true, fat16_sectors_per_fat)
+    } else {
+        (false, fat12_sectors_per_fat)
+    };
 
     BpbParams {
         bytes_per_sector,
@@ -117,6 +170,7 @@ fn hdd_bpb_params(sector_size: u16, partition_sectors: u32) -> BpbParams {
         root_entry_count,
         media_descriptor: 0xF8,
         sectors_per_fat,
+        is_fat16,
     }
 }
 
@@ -375,7 +429,7 @@ impl RunningFormat {
         let fat_size = bpb.sectors_per_fat as usize * format_state.sector_size as usize;
         let mut fat_data = vec![0u8; fat_size];
 
-        if format_state.is_hdd {
+        if bpb.is_fat16 {
             // FAT16 reserved entries: 0xFFF8, 0xFFFF
             fat_data[0] = bpb.media_descriptor;
             fat_data[1] = 0xFF;
