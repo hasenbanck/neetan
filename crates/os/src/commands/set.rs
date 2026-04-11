@@ -1,7 +1,7 @@
 //! SET command.
 
 use crate::{
-    DiskIo, IoAccess, OsState,
+    DriveIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
     tables,
 };
@@ -29,7 +29,7 @@ impl RunningCommand for RunningSet {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        _disk: &mut dyn DiskIo,
+        _disk: &mut dyn DriveIo,
     ) -> StepResult {
         let args = self.args.trim_ascii();
 

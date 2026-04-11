@@ -3,7 +3,7 @@
 use common::warn;
 
 use crate::{
-    BufferedInputState, CpuAccess, DiskIo, MemoryAccess, NeetanOs, Tracing, adjust_iret_ip,
+    BufferedInputState, CpuAccess, DriveIo, MemoryAccess, NeetanOs, Tracing, adjust_iret_ip,
     country, memory, set_iret_carry, set_iret_zf, tables,
 };
 
@@ -13,7 +13,7 @@ impl NeetanOs {
         &mut self,
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
         tracer: &mut impl Tracing,
     ) {
         let indos_addr = self.state.indos_addr;
@@ -709,7 +709,7 @@ impl NeetanOs {
         &mut self,
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) {
         let path_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
 

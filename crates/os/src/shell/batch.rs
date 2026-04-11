@@ -2,7 +2,7 @@
 
 use super::{RedirectSpec, key_available, read_env_var, read_key};
 use crate::{
-    DiskIo, IoAccess, MemoryAccess, OsState,
+    DriveIo, IoAccess, MemoryAccess, OsState,
     commands::{RunningCommand, StepResult},
     filesystem::{fat, fat_dir, fat_file},
 };
@@ -42,7 +42,7 @@ impl RunningCommand for WaitingForChildCommand {
         &mut self,
         state: &mut OsState,
         _io: &mut IoAccess,
-        _disk: &mut dyn DiskIo,
+        _disk: &mut dyn DriveIo,
     ) -> StepResult {
         if state.current_psp == self.command_com_psp {
             StepResult::Done(state.last_return_code)
@@ -159,7 +159,7 @@ impl BatchState {
         shell: &mut super::Shell,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> BatchStepResult {
         // Handle paused state (PAUSE command)
         if self.paused {
@@ -346,7 +346,7 @@ impl BatchState {
         shell: &mut super::Shell,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
         args: &[u8],
     ) {
         let trimmed = args.trim_ascii();
@@ -424,7 +424,7 @@ impl BatchState {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
         args: &[u8],
     ) {
         let trimmed = args.trim_ascii();
@@ -507,7 +507,7 @@ pub(crate) enum BatchStepResult {
 pub(crate) fn load_bat_file(
     vol: &fat::FatVolume,
     entry: &fat_dir::DirEntry,
-    disk: &mut dyn DiskIo,
+    disk: &mut dyn DriveIo,
 ) -> Result<Vec<Vec<u8>>, u16> {
     let data = fat_file::read_all(vol, entry, disk)?;
     Ok(split_bat_lines(&data))
@@ -540,7 +540,7 @@ pub(crate) fn split_bat_lines(data: &[u8]) -> Vec<Vec<u8>> {
 fn check_file_exists(
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DiskIo,
+    disk: &mut dyn DriveIo,
     filename: &[u8],
 ) -> bool {
     let (drive_index, dir_cluster, fcb_name) =

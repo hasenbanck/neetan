@@ -1,9 +1,9 @@
 //! XCOPY command.
 
 use crate::{
-    DiskIo, IoAccess, OsState,
+    DiskIo, DriveIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
-    filesystem::{fat_dir, fat_file::FatFileCursor},
+    filesystem::{fat::FatVolume, fat_dir, fat_file::FatFileCursor},
 };
 
 pub(crate) struct Xcopy;
@@ -71,7 +71,7 @@ impl RunningXcopy {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         if is_help_request(&self.args) || self.args.trim_ascii().is_empty() {
             print_help(io);
@@ -94,7 +94,7 @@ impl RunningXcopy {
         mut xcopy_state: XcopyState,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         let vol = match state.fat_volumes[xcopy_state.src_drive as usize].as_ref() {
             Some(v) => v,
@@ -181,7 +181,7 @@ impl RunningXcopy {
         mut file_state: FileCopyState,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         if file_state.src_cursor.remaining() == 0 {
             self.phase = XcopyPhase::FinishFile(xcopy_state, file_state);
@@ -451,7 +451,7 @@ impl RunningCommand for RunningXcopy {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, XcopyPhase::Init);
         match phase {
@@ -530,11 +530,7 @@ fn print_help(io: &mut IoAccess) {
     io.println(b"  /P           Prompts before copying each file.");
 }
 
-fn is_directory_empty(
-    vol: &crate::filesystem::fat::FatVolume,
-    dir_cluster: u16,
-    disk: &mut dyn DiskIo,
-) -> bool {
+fn is_directory_empty(vol: &FatVolume, dir_cluster: u16, disk: &mut dyn DiskIo) -> bool {
     let all_pattern = [b'?'; 11];
     let attr_mask = fat_dir::ATTR_HIDDEN | fat_dir::ATTR_SYSTEM | fat_dir::ATTR_DIRECTORY;
     let mut si = 0u16;

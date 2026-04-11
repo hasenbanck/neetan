@@ -29,6 +29,34 @@ fn open_file(machine: &mut machine::Pc9801Ra, filename: &[u8]) -> u16 {
     harness::result_word(&machine.bus, 0)
 }
 
+fn open_file_ap(machine: &mut machine::Pc9821Ap, filename: &[u8]) -> u16 {
+    let path_addr = harness::INJECT_CODE_BASE + 0x200;
+    harness::write_bytes(&mut machine.bus, path_addr, filename);
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x3D,                         // MOV AH, 3Dh (open)
+        0xB0, 0x00,                         // MOV AL, 00h (read-only)
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (handle)
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (flags)
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(machine, code, harness::INJECT_BUDGET_DISK_IO);
+
+    let flags = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "open_file_ap: CF should be 0, flags={:#06X}",
+        flags
+    );
+    harness::result_word(&machine.bus, 0)
+}
+
 /// Helper: close a file handle.
 fn close_file(machine: &mut machine::Pc9801Ra, handle: u16) {
     let handle_lo = (handle & 0xFF) as u8;
@@ -174,6 +202,51 @@ fn read_from_file() {
     );
 
     close_file(&mut machine, handle);
+}
+
+#[test]
+fn open_read_from_cdrom_file() {
+    let mut machine = harness::boot_hle_with_cdrom();
+
+    let handle = open_file_ap(&mut machine, b"Q:\\README.TXT\0");
+    let handle_lo = (handle & 0xFF) as u8;
+    let handle_hi = (handle >> 8) as u8;
+
+    #[rustfmt::skip]
+    let code: Vec<u8> = vec![
+        0xBB, handle_lo, handle_hi,          // MOV BX, handle
+        0xB9, 0x05, 0x00,                   // MOV CX, 0005h
+        0xBA, 0x10, 0x02,                   // MOV DX, 0210h
+        0xB4, 0x3F,                         // MOV AH, 3Fh (read)
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (bytes read)
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (flags)
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(
+        &mut machine,
+        &code,
+        harness::INJECT_BUDGET_DISK_IO,
+    );
+
+    let flags = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "CD-ROM read should succeed, flags={:#06X}",
+        flags
+    );
+    assert_eq!(
+        harness::result_word(&machine.bus, 0),
+        5,
+        "CD-ROM read should return 5 bytes"
+    );
+
+    let read_back = harness::read_bytes(&machine.bus, harness::INJECT_CODE_BASE + 0x210, 5);
+    assert_eq!(&read_back, &harness::TEST_CDROM_README[..5]);
 }
 
 #[test]

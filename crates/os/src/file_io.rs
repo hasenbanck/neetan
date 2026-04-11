@@ -3,11 +3,11 @@
 use common::warn;
 
 use crate::{
-    CpuAccess, DiskIo, MemoryAccess, NeetanOs, OsState,
+    CpuAccess, DiskIo, DriveIo, MemoryAccess, NeetanOs, OsState,
     filesystem::{
-        fat_dir,
+        ReadDirEntrySource, ReadDirectory, fat_dir,
         fat_file::{FatFileCursor, FatFileWriter},
-        split_path,
+        find_matching_read_entry, find_read_entry, iso9660, split_path,
         virtual_drive::VirtualEntry,
     },
     set_iret_carry, tables,
@@ -230,20 +230,21 @@ impl NeetanOs {
         &mut self,
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) {
         let path_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
         let open_mode = cpu.ax() as u8 & 0x03;
         let path = OsState::read_asciiz(memory, path_addr, 128);
 
         let result = (|| -> Result<u16, u16> {
-            let (drive_index, dir_cluster, fcb_name) =
-                self.state.resolve_file_path(&path, memory, disk)?;
+            let read_path = self.state.resolve_read_file_path(&path, memory, disk)?;
+            let drive_index = read_path.drive_index;
 
             if drive_index == 25 {
                 if open_mode != 0x00 {
                     return Err(0x0005); // Z: is read-only
                 }
+                let (_, _, fcb_name) = self.state.resolve_file_path(&path, memory, disk)?;
                 let ventry = self
                     .state
                     .virtual_drive
@@ -254,14 +255,36 @@ impl NeetanOs {
                 return Ok(handle as u16);
             }
 
-            let vol = self.state.fat_volumes[drive_index as usize]
-                .as_ref()
-                .ok_or(0x000Fu16)?;
-
-            let entry = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk)?.ok_or(0x0002u16)?; // file not found
-
             let (handle, sft_index) = self.state.allocate_handle(memory)?;
-            self.write_sft_for_file(memory, sft_index, &entry, drive_index, open_mode as u16);
+            let entry = find_read_entry(&self.state, &read_path, disk)?.ok_or(0x0002u16)?;
+            if entry.attribute & fat_dir::ATTR_DIRECTORY != 0 {
+                return Err(0x0005);
+            }
+            match &entry.source {
+                ReadDirEntrySource::Fat(entry) => {
+                    self.write_sft_for_file(
+                        memory,
+                        sft_index,
+                        entry,
+                        drive_index,
+                        open_mode as u16,
+                    );
+                    self.state.open_iso_files[sft_index as usize] = None;
+                }
+                ReadDirEntrySource::Iso(entry) => {
+                    if open_mode != 0x00 {
+                        return Err(0x0005);
+                    }
+                    self.write_sft_for_iso_file(
+                        memory,
+                        sft_index,
+                        entry,
+                        drive_index,
+                        open_mode as u16,
+                    );
+                    self.state.open_iso_files[sft_index as usize] = Some(entry.clone());
+                }
+            }
             Ok(handle as u16)
         })();
 
@@ -289,6 +312,7 @@ impl NeetanOs {
         let result = (|| -> Result<(), u16> {
             let sft_index = self.state.handle_to_sft_index(handle, memory)?;
             let sft_addr = self.state.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
+            let ref_count = memory.read_word(sft_addr + tables::SFT_ENT_REF_COUNT);
 
             let dev_info = memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO);
             let is_device = dev_info & tables::SFT_DEVINFO_CHAR != 0;
@@ -329,6 +353,9 @@ impl NeetanOs {
             }
 
             self.state.free_handle(handle, memory);
+            if ref_count <= 1 {
+                self.state.open_iso_files[sft_index as usize] = None;
+            }
             Ok(())
         })();
 
@@ -346,7 +373,7 @@ impl NeetanOs {
         &mut self,
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) {
         let handle = cpu.bx();
         let count = cpu.cx() as u32;
@@ -391,17 +418,24 @@ impl NeetanOs {
                 return Ok(actual as u16);
             }
 
+            let bytes_to_read = count.min(file_size - position) as usize;
+            if let Some(entry) = self.state.open_iso_files[sft_index as usize].as_ref() {
+                let read_data = iso9660::read_file_chunk(entry, position, bytes_to_read, disk)?;
+                memory.write_block(buf_addr, &read_data);
+                position = position.saturating_add(read_data.len() as u32);
+                write_dword(memory, sft_addr + tables::SFT_ENT_FILE_POS, position);
+                return Ok(read_data.len() as u16);
+            }
+
             let start_cluster = memory.read_word(sft_addr + tables::SFT_ENT_START_CLUSTER);
             if start_cluster < 2 {
                 return Ok(0);
             }
-
             let vol = self.state.fat_volumes[drive_index as usize]
                 .as_ref()
                 .ok_or(0x000Fu16)?;
-            let bytes_to_read = count.min(file_size - position);
             let mut cursor = FatFileCursor::with_position(start_cluster, file_size, position);
-            let read_data = cursor.read_chunk(vol, disk, bytes_to_read as usize)?;
+            let read_data = cursor.read_chunk(vol, disk, bytes_to_read)?;
             memory.write_block(buf_addr, &read_data);
             position = cursor.position();
 
@@ -595,34 +629,37 @@ impl NeetanOs {
         &mut self,
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) {
         let path_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
         let al = cpu.ax() as u8;
         let path = OsState::read_asciiz(memory, path_addr, 128);
 
         let result = (|| -> Result<u16, u16> {
-            let (drive_index, dir_cluster, fcb_name) =
-                self.state.resolve_file_path(&path, memory, disk)?;
+            let read_path = self.state.resolve_read_file_path(&path, memory, disk)?;
+            let drive_index = read_path.drive_index;
 
             if drive_index == 25 {
                 // Virtual Z: drive
+                let (_, _, fcb_name) = self.state.resolve_file_path(&path, memory, disk)?;
                 if let Some(ventry) = self.state.virtual_drive.find_entry(&fcb_name) {
                     return Ok(ventry.attribute as u16);
                 }
                 return Err(0x0002);
             }
 
-            let vol = self.state.fat_volumes[drive_index as usize]
-                .as_mut()
-                .ok_or(0x000Fu16)?;
-
-            let entry = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk)?.ok_or(0x0002u16)?;
+            let entry = find_read_entry(&self.state, &read_path, disk)?.ok_or(0x0002u16)?;
 
             match al {
                 0x00 => Ok(entry.attribute as u16),
                 0x01 => {
+                    let ReadDirEntrySource::Fat(entry) = entry.source else {
+                        return Err(0x0005);
+                    };
                     let new_attr = cpu.cx() as u8;
+                    let vol = self.state.fat_volumes[drive_index as usize]
+                        .as_mut()
+                        .ok_or(0x000Fu16)?;
                     let mut updated = entry;
                     updated.attribute = new_attr & 0x27;
                     fat_dir::update_entry(vol, &updated, disk)?;
@@ -766,15 +803,30 @@ impl NeetanOs {
         &mut self,
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) {
         let path_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
         let attr_mask = cpu.cx() as u8;
         let path = OsState::read_asciiz(memory, path_addr, 128);
 
         let result = (|| -> Result<(), u16> {
-            let (drive_index, dir_cluster, pattern) =
-                self.state.resolve_file_path(&path, memory, disk)?;
+            let (drive_index, pattern, dir_cluster, read_directory) =
+                if let Ok(read_path) = self.state.resolve_read_file_path(&path, memory, disk) {
+                    let dir_cluster = match &read_path.directory {
+                        ReadDirectory::Fat(dir_cluster) => *dir_cluster,
+                        ReadDirectory::Iso(_) => 0,
+                    };
+                    (
+                        read_path.drive_index,
+                        read_path.name,
+                        dir_cluster,
+                        Some(read_path.directory),
+                    )
+                } else {
+                    let (drive_index, dir_cluster, pattern) =
+                        self.state.resolve_file_path(&path, memory, disk)?;
+                    (drive_index, pattern, dir_cluster, None)
+                };
 
             let dta_addr = ((self.state.dta_segment as u32) << 4) + self.state.dta_offset as u32;
 
@@ -784,6 +836,7 @@ impl NeetanOs {
             memory.write_byte(dta_addr + 0x0C, attr_mask);
             memory.write_word(dta_addr + 0x0D, 0); // start index
             memory.write_word(dta_addr + 0x0F, dir_cluster);
+            self.state.read_find_directory = read_directory;
 
             // Perform the search
             self.do_find_next(memory, disk)
@@ -803,7 +856,7 @@ impl NeetanOs {
         &mut self,
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) {
         match self.do_find_next(memory, disk) {
             Ok(()) => set_iret_carry(cpu, memory, false),
@@ -818,7 +871,7 @@ impl NeetanOs {
     fn do_find_next(
         &mut self,
         memory: &mut dyn MemoryAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> Result<(), u16> {
         let dta_addr = ((self.state.dta_segment as u32) << 4) + self.state.dta_offset as u32;
 
@@ -852,12 +905,21 @@ impl NeetanOs {
             return Err(0x0012); // no more files
         }
 
-        let vol = self.state.fat_volumes[drive_index as usize]
-            .as_ref()
-            .ok_or(0x0012u16)?;
+        let directory = self
+            .state
+            .read_find_directory
+            .clone()
+            .unwrap_or(ReadDirectory::Fat(dir_cluster));
 
-        let result =
-            fat_dir::find_matching(vol, dir_cluster, &pattern, attr_mask, start_index, disk)?;
+        let result = find_matching_read_entry(
+            &self.state,
+            drive_index,
+            &directory,
+            &pattern,
+            attr_mask,
+            start_index,
+            disk,
+        )?;
 
         if let Some((entry, next_index)) = result {
             memory.write_word(dta_addr + 0x0D, next_index);
@@ -1039,6 +1101,42 @@ impl NeetanOs {
             sft_addr + tables::SFT_ENT_DIR_INDEX,
             (entry.dir_offset / fat_dir::DIR_ENTRY_SIZE as u16) as u8,
         );
+        mem.write_block(sft_addr + tables::SFT_ENT_NAME, &entry.name);
+        mem.write_word(sft_addr + tables::SFT_ENT_PSP_OWNER, self.state.current_psp);
+    }
+
+    fn write_sft_for_iso_file(
+        &self,
+        mem: &mut dyn MemoryAccess,
+        sft_index: u8,
+        entry: &iso9660::IsoDirEntry,
+        drive_index: u8,
+        open_mode: u16,
+    ) {
+        let sft_addr = match self.state.sft_entry_addr(sft_index) {
+            Some(address) => address,
+            None => return,
+        };
+
+        mem.write_word(sft_addr + tables::SFT_ENT_REF_COUNT, 1);
+        mem.write_word(sft_addr + tables::SFT_ENT_OPEN_MODE, open_mode);
+        mem.write_byte(sft_addr + tables::SFT_ENT_FILE_ATTR, entry.attribute);
+        mem.write_word(sft_addr + tables::SFT_ENT_DEV_INFO, drive_index as u16);
+        tables::write_far_ptr(
+            mem,
+            sft_addr + tables::SFT_ENT_DEV_PTR,
+            tables::DOS_DATA_SEGMENT,
+            tables::DEV_NUL_OFFSET,
+        );
+        mem.write_word(sft_addr + tables::SFT_ENT_START_CLUSTER, 0);
+        mem.write_word(sft_addr + tables::SFT_ENT_FILE_TIME, entry.time);
+        mem.write_word(sft_addr + tables::SFT_ENT_FILE_DATE, entry.date);
+        write_dword(mem, sft_addr + tables::SFT_ENT_FILE_SIZE, entry.file_size);
+        write_dword(mem, sft_addr + tables::SFT_ENT_FILE_POS, 0);
+        mem.write_word(sft_addr + tables::SFT_ENT_REL_CLUSTER, 0);
+        mem.write_word(sft_addr + tables::SFT_ENT_CUR_CLUSTER, 0);
+        mem.write_word(sft_addr + tables::SFT_ENT_DIR_SECTOR, 0);
+        mem.write_byte(sft_addr + tables::SFT_ENT_DIR_INDEX, 0);
         mem.write_block(sft_addr + tables::SFT_ENT_NAME, &entry.name);
         mem.write_word(sft_addr + tables::SFT_ENT_PSP_OWNER, self.state.current_psp);
     }

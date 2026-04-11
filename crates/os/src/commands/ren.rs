@@ -1,7 +1,7 @@
 //! REN / RENAME command.
 
 use crate::{
-    DiskIo, IoAccess, OsState,
+    DiskIo, DriveIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
     filesystem::fat_dir,
 };
@@ -33,7 +33,7 @@ impl RunningCommand for RunningRen {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         let args = self.args.trim_ascii();
         if is_help_request(&self.args) || args.is_empty() {

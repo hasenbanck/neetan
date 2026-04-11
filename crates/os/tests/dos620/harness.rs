@@ -76,6 +76,9 @@ It contains exactly one hundred bytes of known content!!";
 /// Known content for TESTFILE.TXT on the test floppy.
 pub const TEST_FILE_CONTENT: &[u8] = b"HELLO WORLD\r\n";
 
+/// Known content for README.TXT on the synthetic test CD-ROM.
+pub const TEST_CDROM_README: &[u8] = b"NEETAN CD README\r\n";
+
 /// Tiny .COM program for EXEC testing: terminates with exit code 0x42.
 /// MOV AH, 4Ch ; B4 4C
 /// MOV AL, 42h ; B0 42
@@ -1238,57 +1241,137 @@ pub fn create_test_cdimage() -> device::cdrom::CdImage {
   TRACK 02 AUDIO
     INDEX 01 00:02:00
 "#;
+    const ROOT_DIR_LBA: u32 = 20;
+    const README_LBA: u32 = 21;
+    const INSTALL_LBA: u32 = 22;
+
+    fn write_both_endian_u16(dst: &mut [u8], value: u16) {
+        dst[..2].copy_from_slice(&value.to_le_bytes());
+        dst[2..4].copy_from_slice(&value.to_be_bytes());
+    }
+
+    fn write_both_endian_u32(dst: &mut [u8], value: u32) {
+        dst[..4].copy_from_slice(&value.to_le_bytes());
+        dst[4..8].copy_from_slice(&value.to_be_bytes());
+    }
+
+    fn recording_time() -> [u8; 7] {
+        [95, 1, 1, 12, 0, 0, 0]
+    }
+
+    fn write_directory_record(
+        buffer: &mut [u8],
+        offset: &mut usize,
+        identifier: &[u8],
+        extent_lba: u32,
+        data_length: u32,
+        is_directory: bool,
+    ) {
+        let padding = usize::from(identifier.len().is_multiple_of(2));
+        let length = 33 + identifier.len() + padding;
+        let record = &mut buffer[*offset..*offset + length];
+        record.fill(0);
+        record[0] = length as u8;
+        write_both_endian_u32(&mut record[2..10], extent_lba);
+        write_both_endian_u32(&mut record[10..18], data_length);
+        record[18..25].copy_from_slice(&recording_time());
+        record[25] = if is_directory { 0x02 } else { 0x00 };
+        write_both_endian_u16(&mut record[28..32], 1);
+        record[32] = identifier.len() as u8;
+        record[33..33 + identifier.len()].copy_from_slice(identifier);
+        *offset += length;
+    }
+
+    fn make_raw_sector(user_data: &[u8; 2048]) -> Vec<u8> {
+        let mut sector = vec![0u8; 2352];
+        sector[0] = 0x00;
+        for byte in &mut sector[1..11] {
+            *byte = 0xFF;
+        }
+        sector[11] = 0x00;
+        sector[15] = 0x01;
+        sector[16..16 + 2048].copy_from_slice(user_data);
+        sector
+    }
+
     // Track 1: 150 raw data sectors (2352 bytes each, with sync+header+user data).
     let mut bin_data = Vec::with_capacity(2352 * 200);
     for sector_index in 0..150u32 {
-        let mut sector = vec![0u8; 2352];
-        // Minimal sync pattern.
-        sector[0] = 0x00;
-        for b in &mut sector[1..11] {
-            *b = 0xFF;
-        }
-        sector[11] = 0x00;
-        sector[15] = 0x01; // Mode 1.
-
-        let user_data = &mut sector[16..16 + 2048];
+        let mut user_data = [0u8; 2048];
         match sector_index {
             16 => {
-                // ISO 9660 Primary Volume Descriptor.
-                user_data[0] = 1; // Type: PVD.
+                user_data[0] = 1;
                 user_data[1..6].copy_from_slice(b"CD001");
-                user_data[6] = 1; // Version.
-                // Copyright file identifier at PVD offset 702 (37 bytes, space-padded).
+                user_data[6] = 1;
+                user_data[8..40].copy_from_slice(b"NEETAN TEST CD                  ");
+                user_data[40..72].copy_from_slice(b"NEETAN_CD                       ");
+                write_both_endian_u32(&mut user_data[80..88], 150);
+                write_both_endian_u16(&mut user_data[120..124], 1);
+                write_both_endian_u16(&mut user_data[124..128], 1);
+                write_both_endian_u16(&mut user_data[128..132], 2048);
+                write_both_endian_u32(&mut user_data[132..140], 10);
+                let mut root_record_offset = 156usize;
+                write_directory_record(
+                    &mut user_data,
+                    &mut root_record_offset,
+                    &[0],
+                    ROOT_DIR_LBA,
+                    2048,
+                    true,
+                );
                 let copyright = b"COPYRIGHT.TXT;1";
                 user_data[702..702 + copyright.len()].copy_from_slice(copyright);
-                for b in &mut user_data[702 + copyright.len()..702 + 37] {
-                    *b = b' ';
+                for byte in &mut user_data[702 + copyright.len()..702 + 37] {
+                    *byte = b' ';
                 }
-                // Abstract file identifier at PVD offset 739 (37 bytes, space-padded).
                 let abstract_id = b"ABSTRACT.TXT;1";
                 user_data[739..739 + abstract_id.len()].copy_from_slice(abstract_id);
-                for b in &mut user_data[739 + abstract_id.len()..739 + 37] {
-                    *b = b' ';
+                for byte in &mut user_data[739 + abstract_id.len()..739 + 37] {
+                    *byte = b' ';
                 }
-                // Bibliographic file identifier at PVD offset 776 (37 bytes, space-padded).
                 let biblio = b"BIBLIO.TXT;1";
                 user_data[776..776 + biblio.len()].copy_from_slice(biblio);
-                for b in &mut user_data[776 + biblio.len()..776 + 37] {
-                    *b = b' ';
+                for byte in &mut user_data[776 + biblio.len()..776 + 37] {
+                    *byte = b' ';
                 }
             }
             17 => {
-                // Volume Descriptor Set Terminator.
-                user_data[0] = 0xFF; // Type: Terminator.
+                user_data[0] = 0xFF;
                 user_data[1..6].copy_from_slice(b"CD001");
-                user_data[6] = 1; // Version.
+                user_data[6] = 1;
+            }
+            ROOT_DIR_LBA => {
+                let mut offset = 0usize;
+                write_directory_record(&mut user_data, &mut offset, &[0], ROOT_DIR_LBA, 2048, true);
+                write_directory_record(&mut user_data, &mut offset, &[1], ROOT_DIR_LBA, 2048, true);
+                write_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    b"README.TXT;1",
+                    README_LBA,
+                    TEST_CDROM_README.len() as u32,
+                    false,
+                );
+                write_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    b"INSTALL.EXE;1",
+                    INSTALL_LBA,
+                    4,
+                    false,
+                );
+            }
+            README_LBA => {
+                user_data[..TEST_CDROM_README.len()].copy_from_slice(TEST_CDROM_README);
+            }
+            INSTALL_LBA => {
+                user_data[..4].copy_from_slice(b"MZ\x90\x00");
             }
             _ => {
-                for b in user_data.iter_mut() {
-                    *b = 0x11;
-                }
+                user_data.fill(0x11);
             }
         }
-        bin_data.extend_from_slice(&sector);
+        bin_data.extend_from_slice(&make_raw_sector(&user_data));
     }
     // Track 2: 50 audio sectors (2352 bytes each).
     bin_data.extend_from_slice(&vec![0xAAu8; 2352 * 50]);

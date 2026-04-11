@@ -4,8 +4,8 @@
 pub(crate) static COMMAND_COM_STUB: &[u8] = include_bytes!("../../../utils/os/os.rom");
 
 use crate::{
-    CpuAccess, DiskIo, MemoryAccess, NeetanOs, OsState, country, dos,
-    filesystem::{fat::FatVolume, fat_dir, fat_file},
+    CpuAccess, DiskIo, DriveIo, MemoryAccess, NeetanOs, OsState, country, dos,
+    filesystem::{fat::FatVolume, fat_dir, fat_file, find_read_entry, read_entry_all},
     memory, set_iret_carry,
     tables::*,
 };
@@ -377,7 +377,7 @@ impl NeetanOs {
         &mut self,
         cpu: &mut dyn CpuAccess,
         mem: &mut dyn MemoryAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) {
         let al = (cpu.ax() & 0xFF) as u8;
         let result = match al {
@@ -402,7 +402,7 @@ impl NeetanOs {
         &mut self,
         cpu: &mut dyn CpuAccess,
         mem: &mut dyn MemoryAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> Result<(), u16> {
         // Parse parameters.
         let filename_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
@@ -426,8 +426,8 @@ impl NeetanOs {
         };
 
         // Resolve file path.
-        let (drive_index, dir_cluster, fcb_name) =
-            self.state.resolve_file_path(&path, mem, disk)?;
+        let read_path = self.state.resolve_read_file_path(&path, mem, disk)?;
+        let drive_index = read_path.drive_index;
 
         // Z: drive contains only COMMAND.COM for COMSPEC compatibility.
         // All shell commands are built-in and resolved from the command registry,
@@ -439,14 +439,8 @@ impl NeetanOs {
         }
 
         // Find the file on disk.
-        self.state.ensure_volume_mounted(drive_index, mem, disk)?;
-        let vol = self.state.fat_volumes[drive_index as usize]
-            .as_ref()
-            .ok_or(0x0003u16)?;
-        let dir_entry = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk)?.ok_or(0x0002u16)?;
-
-        // Read file data.
-        let file_data = read_file_data(vol, &dir_entry, disk)?;
+        let dir_entry = find_read_entry(&self.state, &read_path, disk)?.ok_or(0x0002u16)?;
+        let file_data = read_entry_all(&self.state, drive_index, &dir_entry, disk)?;
         if file_data.is_empty() {
             return Err(0x000B);
         }
@@ -470,7 +464,7 @@ impl NeetanOs {
         &mut self,
         cpu: &mut dyn CpuAccess,
         mem: &mut dyn MemoryAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> Result<(), u16> {
         let filename_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
         let path = OsState::read_asciiz(mem, filename_addr, 128);
@@ -492,20 +486,15 @@ impl NeetanOs {
             fcb2_addr: ((fcb2_seg as u32) << 4) + fcb2_off as u32,
         };
 
-        let (drive_index, dir_cluster, fcb_name) =
-            self.state.resolve_file_path(&path, mem, disk)?;
+        let read_path = self.state.resolve_read_file_path(&path, mem, disk)?;
+        let drive_index = read_path.drive_index;
 
         if drive_index == 25 {
             return Err(0x0002);
         }
 
-        self.state.ensure_volume_mounted(drive_index, mem, disk)?;
-        let vol = self.state.fat_volumes[drive_index as usize]
-            .as_ref()
-            .ok_or(0x0003u16)?;
-        let dir_entry = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk)?.ok_or(0x0002u16)?;
-
-        let file_data = read_file_data(vol, &dir_entry, disk)?;
+        let dir_entry = find_read_entry(&self.state, &read_path, disk)?.ok_or(0x0002u16)?;
+        let file_data = read_entry_all(&self.state, drive_index, &dir_entry, disk)?;
         if file_data.is_empty() {
             return Err(0x000B);
         }

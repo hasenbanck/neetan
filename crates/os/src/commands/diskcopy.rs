@@ -1,7 +1,7 @@
 //! DISKCOPY command.
 
 use crate::{
-    DiskIo, IoAccess, OsState,
+    DiskIo, DriveIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
     filesystem, tables,
 };
@@ -104,7 +104,7 @@ impl RunningDiskcopy {
         &mut self,
         mut diskcopy_state: DiskcopyState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         if diskcopy_state.current_track >= diskcopy_state.total_tracks {
             if diskcopy_state.same_drive {
@@ -165,7 +165,7 @@ impl RunningDiskcopy {
         &mut self,
         mut diskcopy_state: DiskcopyState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         if diskcopy_state.current_track >= diskcopy_state.total_tracks {
             if diskcopy_state.verify {
@@ -202,7 +202,7 @@ impl RunningDiskcopy {
         &mut self,
         mut diskcopy_state: DiskcopyState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         if diskcopy_state.current_track >= diskcopy_state.total_tracks {
             self.phase = DiskcopyPhase::Summary(diskcopy_state);
@@ -295,7 +295,7 @@ impl RunningCommand for RunningDiskcopy {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, DiskcopyPhase::Init);
         match phase {

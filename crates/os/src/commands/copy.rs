@@ -1,8 +1,9 @@
 //! COPY command.
 
 use crate::{
-    DiskIo, IoAccess, OsState,
+    DiskIo, DriveIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
+    filesystem,
     filesystem::{fat_dir, fat_file::FatFileCursor},
 };
 
@@ -77,7 +78,7 @@ struct RunningCopy {
 }
 
 fn destination_fcb_name(dst_path: &[u8]) -> [u8; 11] {
-    let (_, components, _) = crate::filesystem::split_path(dst_path);
+    let (_, components, _) = filesystem::split_path(dst_path);
     let name = components.last().copied().unwrap_or(dst_path);
     fat_dir::name_to_fcb(name)
 }
@@ -87,7 +88,7 @@ impl RunningCopy {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         if is_help_request(&self.args) || self.args.trim_ascii().is_empty() {
             print_help(io);
@@ -110,7 +111,7 @@ impl RunningCopy {
         mut copy_state: CopyState,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         if copy_state.current_source >= copy_state.sources.len() {
             if copy_state.files_copied == 0 {
@@ -265,7 +266,7 @@ impl RunningCopy {
         mut file_state: FileCopyState,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         if file_state.src_cursor.remaining() == 0 {
             if copy_state.concatenating {
@@ -578,7 +579,7 @@ impl RunningCommand for RunningCopy {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, CopyPhase::Init);
         match phase {

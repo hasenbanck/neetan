@@ -1,7 +1,7 @@
 //! MEM command - displays memory usage information.
 
 use crate::{
-    DiskIo, IoAccess, OsState,
+    DriveIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
     memory::collect_memory_overview,
 };
@@ -73,7 +73,7 @@ impl RunningCommand for RunningMem {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        _disk: &mut dyn DiskIo,
+        _disk: &mut dyn DriveIo,
     ) -> StepResult {
         if is_help_request(&self.args) {
             io.println(b"Displays the amount of used and free memory in your system.");

@@ -199,6 +199,50 @@ fn shell_switch_to_drive_no_media() {
 }
 
 #[test]
+fn shell_switch_to_q_drive_with_cdrom() {
+    let mut machine = boot_hle_with_cdrom();
+
+    type_string(&mut machine.bus, b"Q:\r");
+    run_until_prompt_ap(&mut machine);
+
+    assert!(
+        find_row_containing(&machine.bus, "No media in drive Q").is_none(),
+        "Q: should not report missing media for the MSCDEX CD-ROM drive"
+    );
+
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x19,                         // MOV AH, 19h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    inject_and_run_generic_with_budget(&mut machine, code, INJECT_BUDGET);
+
+    let current_drive = result_byte(&machine.bus, 0);
+    assert_eq!(
+        current_drive, 16,
+        "Q: command should switch the current drive to Q:, got index {}",
+        current_drive
+    );
+}
+
+#[test]
+fn shell_switch_to_q_drive_without_media() {
+    let mut machine = boot_hle_with_cdrom();
+    machine.bus.eject_cdrom();
+
+    type_string(&mut machine.bus, b"Q:\r");
+    run_until_prompt_ap(&mut machine);
+
+    assert!(
+        find_row_containing(&machine.bus, "No media in drive Q").is_some(),
+        "Q: should report missing media after the CD-ROM is ejected"
+    );
+}
+
+#[test]
 fn shell_cd_nonexistent_directory() {
     let mut machine = boot_hle_with_floppy();
 

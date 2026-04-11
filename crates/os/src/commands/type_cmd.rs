@@ -1,7 +1,7 @@
 //! TYPE command.
 
 use crate::{
-    DiskIo, IoAccess, OsState,
+    DiskIo, DriveIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
     filesystem::{fat_dir, fat_file},
 };
@@ -41,7 +41,7 @@ impl RunningType {
         &mut self,
         _state: &mut OsState,
         io: &mut IoAccess,
-        _disk: &mut dyn DiskIo,
+        _disk: &mut dyn DriveIo,
         read: ReadState,
     ) -> StepResult {
         let chunk_end = (read.offset + 4096).min(read.data.len());
@@ -66,7 +66,7 @@ impl RunningCommand for RunningType {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, TypePhase::Init);
         match phase {

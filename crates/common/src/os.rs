@@ -150,6 +150,11 @@ pub trait CdromIo {
     fn set_audio_channel_info(&mut self, info: &AudioChannelInfo);
 }
 
+/// Combined disk and CD-ROM access for mixed-media filesystem operations.
+pub trait DriveIo: DiskIo + CdromIo {}
+
+impl<T: DiskIo + CdromIo + ?Sized> DriveIo for T {}
+
 /// Track metadata returned by `CdromIo::track_info`.
 pub struct CdromTrackInfo {
     /// LBA of the track start.
