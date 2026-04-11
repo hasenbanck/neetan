@@ -85,6 +85,70 @@ impl NeetanOs {
         }
     }
 
+    /// AH=36h: Get free disk space.
+    pub(crate) fn int21h_36h_get_free_disk_space(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &dyn MemoryAccess,
+        disk: &mut dyn DriveIo,
+    ) {
+        let dl = (cpu.dx() & 0xFF) as u8;
+        let drive_index = if dl == 0 {
+            self.state.current_drive
+        } else {
+            dl - 1
+        };
+
+        if drive_index >= 26 {
+            cpu.set_ax(0xFFFF);
+            return;
+        }
+
+        if drive_index == 25 {
+            cpu.set_ax(1);
+            cpu.set_bx(0);
+            cpu.set_cx(512);
+            cpu.set_dx(0);
+            return;
+        }
+
+        let cds_addr = tables::CDS_BASE + (drive_index as u32) * tables::CDS_ENTRY_SIZE;
+        let cds_flags = memory.read_word(cds_addr + tables::CDS_OFF_FLAGS);
+        if cds_flags == 0 {
+            cpu.set_ax(0xFFFF);
+            return;
+        }
+
+        if self.state.mscdex.drive_letter == drive_index
+            && cds_flags & tables::CDS_FLAG_PHYSICAL == 0
+        {
+            cpu.set_ax(1);
+            cpu.set_bx(0);
+            cpu.set_cx(2048);
+            cpu.set_dx(0);
+            return;
+        }
+
+        if self
+            .state
+            .ensure_volume_mounted(drive_index, memory, disk)
+            .is_err()
+        {
+            cpu.set_ax(0xFFFF);
+            return;
+        }
+
+        let Some(volume) = self.state.fat_volumes[drive_index as usize].as_ref() else {
+            cpu.set_ax(0xFFFF);
+            return;
+        };
+
+        cpu.set_ax(volume.sectors_per_cluster());
+        cpu.set_bx(volume.free_cluster_count());
+        cpu.set_cx(volume.bytes_per_sector());
+        cpu.set_dx(volume.total_cluster_count());
+    }
+
     /// AH=29h: Parse filename into FCB.
     pub(crate) fn int21h_29h_parse_filename(
         &self,

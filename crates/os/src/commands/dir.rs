@@ -852,14 +852,9 @@ fn calculate_free_space(state: &OsState, drive_index: u8) -> u64 {
     };
 
     let mut free_clusters = 0u64;
-    let max = vol.data_cluster_count as u16 + 2;
-    for cluster in 2..max {
-        if vol.read_fat_entry(cluster) == 0 {
-            free_clusters += 1;
-        }
-    }
+    free_clusters += vol.free_cluster_count() as u64;
 
-    let cluster_size = vol.bpb.sectors_per_cluster as u64 * vol.bpb.bytes_per_sector as u64;
+    let cluster_size = vol.sectors_per_cluster() as u64 * vol.bytes_per_sector() as u64;
     free_clusters * cluster_size
 }
 

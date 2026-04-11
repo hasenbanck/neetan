@@ -159,6 +159,29 @@ impl FatVolume {
         self.sector_ratio
     }
 
+    pub fn bytes_per_sector(&self) -> u16 {
+        self.bpb.bytes_per_sector
+    }
+
+    pub fn sectors_per_cluster(&self) -> u16 {
+        self.bpb.sectors_per_cluster as u16
+    }
+
+    pub fn total_cluster_count(&self) -> u16 {
+        self.data_cluster_count.min(u16::MAX as u32) as u16
+    }
+
+    pub fn free_cluster_count(&self) -> u16 {
+        let mut free_clusters = 0u16;
+        let max_cluster = self.total_cluster_count().saturating_add(2);
+        for cluster in 2..max_cluster {
+            if self.read_fat_entry(cluster) == 0 {
+                free_clusters = free_clusters.saturating_add(1);
+            }
+        }
+        free_clusters
+    }
+
     /// Converts a cluster number to an absolute physical LBA.
     pub fn cluster_to_lba(&self, cluster: u16) -> u32 {
         self.partition_offset
