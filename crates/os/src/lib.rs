@@ -359,6 +359,17 @@ impl NeetanOs {
         self.state.xms_32_enabled = enabled;
     }
 
+    /// Drops mounted FAT caches for any DOS drive backed by the given DA/UA.
+    pub fn invalidate_drive_caches(&mut self, memory: &dyn MemoryAccess, da_ua: u8) {
+        for drive_index in 0..26usize {
+            let mapped_da_ua = memory
+                .read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DAUA_TABLE + drive_index as u32);
+            if mapped_da_ua == da_ua {
+                self.state.fat_volumes[drive_index] = None;
+            }
+        }
+    }
+
     /// Performs the DOS boot sequence: writes data structures into emulated RAM,
     /// mounts drives, parses CONFIG.SYS, and creates the COMMAND.COM process.
     pub fn boot(

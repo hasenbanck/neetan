@@ -6,7 +6,7 @@ use crate::{
     DiskIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
     dos,
-    filesystem::fat_dir,
+    filesystem::{fat_dir, fat_file::FatFileCursor},
 };
 
 pub(crate) struct B3sum;
@@ -42,8 +42,7 @@ struct ArgumentState {
 
 struct FileHashState {
     drive_index: u8,
-    current_cluster: u16,
-    remaining: u32,
+    cursor: FatFileCursor,
     display_path: Vec<u8>,
     hasher: Hasher,
 }
@@ -156,8 +155,7 @@ impl RunningB3sum {
                     b3sum_state,
                     Box::new(FileHashState {
                         drive_index,
-                        current_cluster: entry.start_cluster,
-                        remaining: entry.file_size,
+                        cursor: FatFileCursor::new(&entry),
                         display_path,
                         hasher,
                     }),
@@ -189,11 +187,6 @@ impl RunningB3sum {
         io: &mut IoAccess,
         disk: &mut dyn DiskIo,
     ) -> StepResult {
-        if file_hash_state.current_cluster < 2 {
-            io.println(b"Read error");
-            return StepResult::Done(1);
-        }
-
         let volume = match state.fat_volumes[file_hash_state.drive_index as usize].as_ref() {
             Some(volume) => volume,
             None => {
@@ -202,7 +195,11 @@ impl RunningB3sum {
             }
         };
 
-        let cluster_data = match volume.read_cluster(file_hash_state.current_cluster, disk) {
+        let cluster_data = match file_hash_state.cursor.read_chunk(
+            volume,
+            disk,
+            volume.bpb.cluster_size() as usize,
+        ) {
             Ok(cluster_data) => cluster_data,
             Err(_) => {
                 io.println(b"Read error");
@@ -210,13 +207,7 @@ impl RunningB3sum {
             }
         };
 
-        let bytes_in_cluster = cluster_data.len().min(file_hash_state.remaining as usize);
-        file_hash_state
-            .hasher
-            .update(&cluster_data[..bytes_in_cluster]);
-        file_hash_state.remaining -= bytes_in_cluster as u32;
-
-        if file_hash_state.remaining == 0 {
+        if cluster_data.is_empty() {
             let current_argument = &mut b3sum_state.arguments[b3sum_state.current_argument];
             current_argument.matched_any = true;
             print_digest(io, &file_hash_state.hasher, &file_hash_state.display_path);
@@ -227,15 +218,7 @@ impl RunningB3sum {
             return StepResult::Continue;
         }
 
-        let next_cluster = volume
-            .next_cluster(file_hash_state.current_cluster)
-            .unwrap_or(0);
-        if next_cluster < 2 {
-            io.println(b"Read error");
-            return StepResult::Done(1);
-        }
-
-        file_hash_state.current_cluster = next_cluster;
+        file_hash_state.hasher.update(&cluster_data);
         self.phase = B3sumPhase::Hashing(b3sum_state, file_hash_state);
         StepResult::Continue
     }

@@ -245,6 +245,89 @@ fn run_hdd_write_tests<const M: u8>(
     delete_file_generic(machine, &path);
 }
 
+fn run_hdd_multicluster_write_tests<const M: u8>(
+    machine: &mut machine::Machine<cpu::I386<M>>,
+    drive_letter: &[u8],
+) {
+    let mut path = Vec::new();
+    path.extend_from_slice(drive_letter);
+    path.extend_from_slice(b":\\WBIG.TMP\0");
+
+    let payload = (0..4096)
+        .map(|index| ((index * 5) % 251) as u8)
+        .collect::<Vec<_>>();
+
+    let handle = create_file_generic(machine, &path);
+    let handle_lo = (handle & 0xFF) as u8;
+    let handle_hi = (handle >> 8) as u8;
+
+    let write_addr = harness::INJECT_CODE_BASE + 0x400;
+    let read_addr = harness::INJECT_CODE_BASE + 0x1800;
+    harness::write_bytes(&mut machine.bus, write_addr, &payload);
+
+    #[rustfmt::skip]
+    let write_code: Vec<u8> = vec![
+        0xBB, handle_lo, handle_hi,
+        0xB9, 0x00, 0x10,
+        0xBA, 0x00, 0x04,
+        0xB4, 0x40,
+        0xCD, 0x21,
+        0xA3, 0x00, 0x01,
+        0x9C, 0x58,
+        0xA3, 0x02, 0x01,
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run_generic_with_budget(
+        machine,
+        &write_code,
+        harness::INJECT_BUDGET_DISK_IO,
+    );
+
+    let write_flags = harness::result_word(&machine.bus, 2);
+    assert_eq!(write_flags & 0x0001, 0, "multicluster write failed");
+    assert_eq!(harness::result_word(&machine.bus, 0), payload.len() as u16);
+
+    #[rustfmt::skip]
+    let seek_code: Vec<u8> = vec![
+        0xBB, handle_lo, handle_hi,
+        0xB4, 0x42, 0xB0, 0x00,
+        0xB9, 0x00, 0x00, 0xBA, 0x00, 0x00,
+        0xCD, 0x21, 0xFA, 0xF4,
+    ];
+    harness::inject_and_run_generic_with_budget(
+        machine,
+        &seek_code,
+        harness::INJECT_BUDGET_DISK_IO,
+    );
+
+    #[rustfmt::skip]
+    let read_code: Vec<u8> = vec![
+        0xBB, handle_lo, handle_hi,
+        0xB9, 0x00, 0x10,
+        0xBA, 0x00, 0x18,
+        0xB4, 0x3F,
+        0xCD, 0x21,
+        0xA3, 0x00, 0x01,
+        0x9C, 0x58,
+        0xA3, 0x02, 0x01,
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run_generic_with_budget(
+        machine,
+        &read_code,
+        harness::INJECT_BUDGET_DISK_IO,
+    );
+
+    let read_flags = harness::result_word(&machine.bus, 2);
+    assert_eq!(read_flags & 0x0001, 0, "multicluster read failed");
+    assert_eq!(harness::result_word(&machine.bus, 0), payload.len() as u16);
+    let read_back = harness::read_bytes(&machine.bus, read_addr, payload.len());
+    assert_eq!(read_back, payload, "multicluster read-back mismatch");
+
+    close_file_generic(machine, handle);
+    delete_file_generic(machine, &path);
+}
+
 #[test]
 fn sasi_hdd_256_open_read_lseek() {
     let mut machine = harness::boot_hle_with_sasi_hdd(256);
@@ -270,6 +353,12 @@ fn ide_hdd_512_create_write_read_delete() {
 }
 
 #[test]
+fn ide_hdd_512_create_write_read_multicluster_file() {
+    let mut machine = harness::boot_hle_with_ide_hdd(512);
+    run_hdd_multicluster_write_tests(&mut machine, b"A");
+}
+
+#[test]
 fn ide_hdd_256_open_read_lseek() {
     let mut machine = harness::boot_hle_with_ide_hdd(256);
     run_hdd_file_io_tests(&mut machine, b"A");
@@ -291,4 +380,10 @@ fn sasi_hdd_mismatched_sectors_open_read_lseek() {
 fn sasi_hdd_mismatched_sectors_create_write_read_delete() {
     let mut machine = harness::boot_hle_with_sasi_hdd_mismatched_sectors();
     run_hdd_write_tests(&mut machine, b"A");
+}
+
+#[test]
+fn sasi_hdd_256_create_write_read_multicluster_file() {
+    let mut machine = harness::boot_hle_with_sasi_hdd(256);
+    run_hdd_multicluster_write_tests(&mut machine, b"A");
 }

@@ -228,14 +228,4 @@ impl FatVolume {
         self.fat_dirty = false;
         Ok(())
     }
-
-    /// Walks the cluster chain from `start` and returns the cluster at position
-    /// `index` in the chain (0 = start itself). Returns None if chain is shorter.
-    pub fn cluster_at_index(&self, start: u16, index: u32) -> Option<u16> {
-        let mut current = start;
-        for _ in 0..index {
-            current = self.next_cluster(current)?;
-        }
-        Some(current)
-    }
 }

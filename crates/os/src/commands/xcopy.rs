@@ -3,7 +3,7 @@
 use crate::{
     DiskIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
-    filesystem::fat_dir,
+    filesystem::{fat_dir, fat_file::FatFileCursor},
 };
 
 pub(crate) struct Xcopy;
@@ -40,10 +40,7 @@ struct XcopyState {
 
 struct FileCopyState {
     src_drive: u8,
-    src_cluster: u16,
-    src_remaining: u32,
-    src_buffer: Vec<u8>,
-    src_buffer_pos: usize,
+    src_cursor: FatFileCursor,
     src_entry: fat_dir::DirEntry,
     dst_drive: u8,
     dst_dir_cluster: u16,
@@ -186,8 +183,7 @@ impl RunningXcopy {
         io: &mut IoAccess,
         disk: &mut dyn DiskIo,
     ) -> StepResult {
-        if file_state.src_remaining == 0 && file_state.src_buffer_pos >= file_state.src_buffer.len()
-        {
+        if file_state.src_cursor.remaining() == 0 {
             self.phase = XcopyPhase::FinishFile(xcopy_state, file_state);
             return StepResult::Continue;
         }
@@ -196,51 +192,20 @@ impl RunningXcopy {
             Some(v) => v.bpb.cluster_size() as usize,
             None => return StepResult::Done(1),
         };
-        let mut write_data = Vec::with_capacity(dst_cluster_size);
-
-        while write_data.len() < dst_cluster_size {
-            if file_state.src_buffer_pos >= file_state.src_buffer.len() {
-                if file_state.src_remaining == 0 {
-                    break;
-                }
-                if file_state.src_cluster < 2 {
-                    io.println(b"Read error");
-                    return StepResult::Done(1);
-                }
-
-                let vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
-                    Some(v) => v,
-                    None => return StepResult::Done(1),
-                };
-
-                let cluster_data = match vol.read_cluster(file_state.src_cluster, disk) {
-                    Ok(d) => d,
-                    Err(_) => {
-                        io.println(b"Read error");
-                        return StepResult::Done(1);
-                    }
-                };
-
-                let bytes_in_cluster = cluster_data.len().min(file_state.src_remaining as usize);
-                file_state.src_remaining -= bytes_in_cluster as u32;
-                file_state.src_buffer = cluster_data[..bytes_in_cluster].to_vec();
-                file_state.src_buffer_pos = 0;
-                file_state.src_cluster = vol.next_cluster(file_state.src_cluster).unwrap_or(0);
+        let src_vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
+            Some(v) => v,
+            None => return StepResult::Done(1),
+        };
+        let write_data = match file_state
+            .src_cursor
+            .read_chunk(src_vol, disk, dst_cluster_size)
+        {
+            Ok(data) => data,
+            Err(_) => {
+                io.println(b"Read error");
+                return StepResult::Done(1);
             }
-
-            if file_state.src_buffer_pos >= file_state.src_buffer.len() {
-                break;
-            }
-
-            let available = file_state.src_buffer.len() - file_state.src_buffer_pos;
-            let needed = dst_cluster_size - write_data.len();
-            let bytes_to_take = available.min(needed);
-            write_data.extend_from_slice(
-                &file_state.src_buffer
-                    [file_state.src_buffer_pos..file_state.src_buffer_pos + bytes_to_take],
-            );
-            file_state.src_buffer_pos += bytes_to_take;
-        }
+        };
 
         if write_data.is_empty() {
             self.phase = XcopyPhase::FinishFile(xcopy_state, file_state);
@@ -512,10 +477,7 @@ impl RunningXcopy {
     fn start_file_copy(&mut self, xcopy_state: &mut XcopyState, entry: fat_dir::DirEntry) {
         let file_state = FileCopyState {
             src_drive: xcopy_state.src_drive,
-            src_cluster: entry.start_cluster,
-            src_remaining: entry.file_size,
-            src_buffer: Vec::new(),
-            src_buffer_pos: 0,
+            src_cursor: FatFileCursor::new(&entry),
             src_entry: entry,
             dst_drive: xcopy_state.dst_drive,
             dst_dir_cluster: xcopy_state.dst_dir_cluster,
@@ -546,7 +508,7 @@ impl RunningXcopy {
             },
         );
 
-        if file_state.src_remaining == 0 || file_state.src_cluster < 2 {
+        if file_state.src_entry.file_size == 0 {
             self.phase = XcopyPhase::FinishFile(taken, file_state);
         } else {
             self.phase = XcopyPhase::ReadChunk(taken, file_state);

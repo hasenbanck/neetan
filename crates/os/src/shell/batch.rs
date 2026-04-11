@@ -4,7 +4,7 @@ use super::{RedirectSpec, key_available, read_env_var, read_key};
 use crate::{
     DiskIo, IoAccess, MemoryAccess, OsState,
     commands::{RunningCommand, StepResult},
-    filesystem::{fat, fat_dir},
+    filesystem::{fat, fat_dir, fat_file},
 };
 
 struct CallFrame {
@@ -509,28 +509,7 @@ pub(crate) fn load_bat_file(
     entry: &fat_dir::DirEntry,
     disk: &mut dyn DiskIo,
 ) -> Result<Vec<Vec<u8>>, u16> {
-    if entry.file_size == 0 || entry.start_cluster < 2 {
-        return Ok(Vec::new());
-    }
-
-    let mut data = Vec::with_capacity(entry.file_size as usize);
-    let mut cluster = entry.start_cluster;
-    let mut remaining = entry.file_size as usize;
-
-    loop {
-        let cluster_data = vol.read_cluster(cluster, disk)?;
-        let take = remaining.min(cluster_data.len());
-        data.extend_from_slice(&cluster_data[..take]);
-        remaining -= take;
-        if remaining == 0 {
-            break;
-        }
-        cluster = match vol.next_cluster(cluster) {
-            Some(c) => c,
-            None => break,
-        };
-    }
-
+    let data = fat_file::read_all(vol, entry, disk)?;
     Ok(split_bat_lines(&data))
 }
 

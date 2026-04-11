@@ -10,7 +10,7 @@ use history::History;
 use crate::{
     DiskIo, IoAccess, MemoryAccess, OsState,
     commands::{self, Command, RunningCommand, StepResult},
-    filesystem::{fat, fat_dir},
+    filesystem::{fat, fat_dir, fat_file, fat_file::FatFileWriter},
     tables,
 };
 
@@ -1058,26 +1058,9 @@ fn create_new_file_with_data(
     time: u16,
     date: u16,
 ) {
-    let cluster_size = vol.bpb.sectors_per_cluster as usize * vol.bpb.bytes_per_sector as usize;
-    let mut first_cluster: u16 = 0;
-    let mut last_cluster: u16 = 0;
-    let mut offset = 0;
-
-    while offset < data.len() {
-        let end = (offset + cluster_size).min(data.len());
-        let mut cluster_data = vec![0u8; cluster_size];
-        cluster_data[..end - offset].copy_from_slice(&data[offset..end]);
-
-        let new_cluster = match vol.allocate_cluster(last_cluster) {
-            Some(c) => c,
-            None => return,
-        };
-        if first_cluster == 0 {
-            first_cluster = new_cluster;
-        }
-        let _ = vol.write_cluster(new_cluster, &cluster_data, disk);
-        last_cluster = new_cluster;
-        offset = end;
+    let mut writer = FatFileWriter::new(0, 0);
+    if writer.write_chunk(vol, disk, data).is_err() {
+        return;
     }
 
     let new_entry = fat_dir::DirEntry {
@@ -1085,8 +1068,8 @@ fn create_new_file_with_data(
         attribute: 0x20, // archive
         time,
         date,
-        start_cluster: first_cluster,
-        file_size: data.len() as u32,
+        start_cluster: writer.start_cluster(),
+        file_size: writer.position(),
         dir_sector: 0,
         dir_offset: 0,
     };
@@ -1099,95 +1082,14 @@ fn append_to_existing_file(
     data: &[u8],
     disk: &mut dyn DiskIo,
 ) {
-    let cluster_size = vol.bpb.sectors_per_cluster as usize * vol.bpb.bytes_per_sector as usize;
-    let old_size = entry.file_size as usize;
-
-    // Find last cluster and its fill level
-    let mut last_cluster = entry.start_cluster;
-    let mut remaining_in_chain = old_size;
-
-    if last_cluster < 2 {
-        // Empty file: allocate first cluster
-        let new_cluster = match vol.allocate_cluster(0) {
-            Some(c) => c,
-            None => return,
-        };
-        let mut cluster_data = vec![0u8; cluster_size];
-        let write_len = data.len().min(cluster_size);
-        cluster_data[..write_len].copy_from_slice(&data[..write_len]);
-        let _ = vol.write_cluster(new_cluster, &cluster_data, disk);
-
-        let mut updated = entry.clone();
-        updated.start_cluster = new_cluster;
-        updated.file_size = data.len() as u32;
-
-        // Write remaining data if any
-        let mut offset = write_len;
-        let mut prev = new_cluster;
-        while offset < data.len() {
-            let end = (offset + cluster_size).min(data.len());
-            let mut cd = vec![0u8; cluster_size];
-            cd[..end - offset].copy_from_slice(&data[offset..end]);
-            let nc = match vol.allocate_cluster(prev) {
-                Some(c) => c,
-                None => break,
-            };
-            let _ = vol.write_cluster(nc, &cd, disk);
-            prev = nc;
-            offset = end;
-        }
-        updated.file_size = (old_size + data.len()) as u32;
-        let _ = fat_dir::update_entry(vol, &updated, disk);
+    let mut writer = fat_file::FatFileWriter::new(entry.start_cluster, entry.file_size);
+    if writer.write_chunk(vol, disk, data).is_err() {
         return;
     }
 
-    // Walk to last cluster
-    while remaining_in_chain > cluster_size {
-        if let Some(next) = vol.next_cluster(last_cluster) {
-            last_cluster = next;
-            remaining_in_chain -= cluster_size;
-        } else {
-            break;
-        }
-    }
-
-    let used_in_last = remaining_in_chain % cluster_size;
-    let free_in_last = if used_in_last == 0 && old_size > 0 {
-        0
-    } else {
-        cluster_size - used_in_last
-    };
-
-    let mut offset = 0;
-
-    // Fill remaining space in last cluster
-    if free_in_last > 0 && !data.is_empty() {
-        let mut existing_data = match vol.read_cluster(last_cluster, disk) {
-            Ok(d) => d,
-            Err(_) => return,
-        };
-        let write_len = data.len().min(free_in_last);
-        existing_data[used_in_last..used_in_last + write_len].copy_from_slice(&data[..write_len]);
-        let _ = vol.write_cluster(last_cluster, &existing_data, disk);
-        offset = write_len;
-    }
-
-    // Allocate new clusters for remaining data
-    while offset < data.len() {
-        let end = (offset + cluster_size).min(data.len());
-        let mut cluster_data = vec![0u8; cluster_size];
-        cluster_data[..end - offset].copy_from_slice(&data[offset..end]);
-        let new_cluster = match vol.allocate_cluster(last_cluster) {
-            Some(c) => c,
-            None => break,
-        };
-        let _ = vol.write_cluster(new_cluster, &cluster_data, disk);
-        last_cluster = new_cluster;
-        offset = end;
-    }
-
     let mut updated = entry.clone();
-    updated.file_size = (old_size + data.len()) as u32;
+    updated.start_cluster = writer.start_cluster();
+    updated.file_size = writer.position();
     let _ = fat_dir::update_entry(vol, &updated, disk);
 }
 
@@ -1213,29 +1115,5 @@ fn read_file_data(
         .map_err(|_| &b"File not found\r\n"[..])?
         .ok_or(&b"File not found\r\n"[..])?;
 
-    if entry.file_size == 0 || entry.start_cluster < 2 {
-        return Ok(Vec::new());
-    }
-
-    let mut data = Vec::with_capacity(entry.file_size as usize);
-    let mut cluster = entry.start_cluster;
-    let mut remaining = entry.file_size as usize;
-
-    loop {
-        let cluster_data = vol
-            .read_cluster(cluster, disk)
-            .map_err(|_| &b"Read error\r\n"[..])?;
-        let take = remaining.min(cluster_data.len());
-        data.extend_from_slice(&cluster_data[..take]);
-        remaining -= take;
-        if remaining == 0 {
-            break;
-        }
-        cluster = match vol.next_cluster(cluster) {
-            Some(c) => c,
-            None => break,
-        };
-    }
-
-    Ok(data)
+    fat_file::read_all(vol, &entry, disk).map_err(|_| &b"Read error\r\n"[..])
 }
