@@ -104,6 +104,19 @@ impl Console {
                 self.clear_screen(memory);
                 self.esc_parser.reset();
             }
+            b'D' => {
+                self.linefeed(memory);
+                self.esc_parser.reset();
+            }
+            b'E' => {
+                self.carriage_return(memory);
+                self.linefeed(memory);
+                self.esc_parser.reset();
+            }
+            b'M' => {
+                self.reverse_linefeed(memory);
+                self.esc_parser.reset();
+            }
             b')' => {
                 self.esc_parser.state = EscState::GotEscRightParen;
             }
