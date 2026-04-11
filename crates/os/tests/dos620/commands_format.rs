@@ -1,6 +1,6 @@
 use std::fs;
 
-use crate::{file_copy_repro::*, harness::*};
+use crate::{file_copy_harness::*, harness::*};
 
 #[test]
 fn format_floppy_shows_complete() {

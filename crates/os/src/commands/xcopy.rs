@@ -50,6 +50,7 @@ struct FileCopyState {
     dst_fcb_name: [u8; 11],
     dst_first_cluster: u16,
     dst_last_cluster: u16,
+    dst_total_written: u32,
 }
 
 enum XcopyPhase {
@@ -199,8 +200,12 @@ impl RunningXcopy {
 
         while write_data.len() < dst_cluster_size {
             if file_state.src_buffer_pos >= file_state.src_buffer.len() {
-                if file_state.src_remaining == 0 || file_state.src_cluster < 2 {
+                if file_state.src_remaining == 0 {
                     break;
+                }
+                if file_state.src_cluster < 2 {
+                    io.println(b"Read error");
+                    return StepResult::Done(1);
                 }
 
                 let vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
@@ -274,6 +279,7 @@ impl RunningXcopy {
         file_state.dst_last_cluster = new_cluster;
 
         let cluster_size = vol.bpb.cluster_size() as usize;
+        let bytes_to_write = data.len();
         let mut write_data = data;
         write_data.resize(cluster_size, 0);
 
@@ -281,6 +287,8 @@ impl RunningXcopy {
             io.println(b"Write error");
             return StepResult::Done(1);
         }
+
+        file_state.dst_total_written += bytes_to_write as u32;
 
         self.phase = XcopyPhase::ReadChunk(xcopy_state, file_state);
         StepResult::Continue
@@ -317,7 +325,7 @@ impl RunningXcopy {
             time: file_state.src_entry.time,
             date: file_state.src_entry.date,
             start_cluster: file_state.dst_first_cluster,
-            file_size: file_state.src_entry.file_size,
+            file_size: file_state.dst_total_written,
             dir_sector: 0,
             dir_offset: 0,
         };
@@ -514,6 +522,7 @@ impl RunningXcopy {
             dst_fcb_name: [0; 11],
             dst_first_cluster: 0,
             dst_last_cluster: 0,
+            dst_total_written: 0,
         };
 
         let mut file_state = file_state;

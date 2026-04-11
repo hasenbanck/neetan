@@ -64,8 +64,8 @@ mod commands_dir;
 #[path = "dos620/commands_copy.rs"]
 mod commands_copy;
 
-#[path = "dos620/file_copy_repro.rs"]
-mod file_copy_repro;
+#[path = "dos620/file_copy_harness.rs"]
+mod file_copy_harness;
 
 #[path = "dos620/commands_xcopy.rs"]
 mod commands_xcopy;

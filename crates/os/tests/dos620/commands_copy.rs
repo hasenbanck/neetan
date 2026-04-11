@@ -1,6 +1,6 @@
 use std::fs;
 
-use crate::{file_copy_repro::*, harness::*};
+use crate::{file_copy_harness::*, harness::*};
 
 #[test]
 fn copy_single_file() {
@@ -246,5 +246,79 @@ fn copy_multicluster_file_from_floppy_to_formatted_hdd_without_corruption() {
     assert_eq!(
         copied_bytes, source_bytes,
         "COPY should preserve file contents"
+    );
+}
+
+#[test]
+fn copy_explicit_destination_path_uses_basename() {
+    let source_bytes = prng_bytes(RANDOM_FILE_SIZE);
+    let source_name = *b"COPYONE BIN";
+    let destination_name = *b"TARGET  BIN";
+    let floppy = create_random_file_floppy_with_name(&source_name, &source_bytes);
+
+    let hdd_path = make_temp_hdd_path("copy-destination-path");
+    let hdd = create_empty_hdd(256);
+    fs::write(&hdd_path, hdd.to_bytes()).expect("write temp HDD image");
+
+    let mut machine = boot_hle_with_temp_hdd_and_floppy(&hdd_path, floppy);
+
+    type_string_long(&mut machine, b"FORMAT A:\r");
+    machine.run_for(10_000_000);
+    type_string(&mut machine.bus, b"Y");
+    run_until_prompt(&mut machine);
+
+    type_string_long(&mut machine, b"COPY /V C:COPYONE.BIN A:\\TARGET.BIN\r");
+    run_until_prompt(&mut machine);
+    machine.bus.flush_hdd(0);
+
+    let copied_bytes = extract_root_file(&hdd_path, &destination_name)
+        .expect("destination file should be created with the explicit basename");
+    let mismatches = mismatch_offsets(&source_bytes, &copied_bytes, 8);
+
+    assert_eq!(
+        copied_bytes.len(),
+        source_bytes.len(),
+        "copy with explicit destination path should preserve file size"
+    );
+    assert!(
+        mismatches.is_empty(),
+        "copy with explicit destination path mismatches at {mismatches:?}"
+    );
+    assert_eq!(
+        copied_bytes, source_bytes,
+        "copy with explicit destination path should preserve file contents"
+    );
+}
+
+#[test]
+fn copy_broken_source_chain_reports_read_error() {
+    let broken_name = *b"BROKEN  BIN";
+    let floppy = create_broken_chain_floppy_with_name(&broken_name, 4096);
+
+    let hdd_path = make_temp_hdd_path("copy-broken-chain");
+    let hdd = create_empty_hdd(256);
+    fs::write(&hdd_path, hdd.to_bytes()).expect("write temp HDD image");
+
+    let mut machine = boot_hle_with_temp_hdd_and_floppy(&hdd_path, floppy);
+
+    type_string_long(&mut machine, b"FORMAT A:\r");
+    machine.run_for(10_000_000);
+    type_string(&mut machine.bus, b"Y");
+    run_until_prompt(&mut machine);
+
+    type_string_long(&mut machine, b"COPY C:BROKEN.BIN A:\\BROKEN.BIN\r");
+    run_until_prompt(&mut machine);
+    machine.bus.flush_hdd(0);
+
+    let read_error = [
+        0x0052, 0x0065, 0x0061, 0x0064, 0x0020, 0x0065, 0x0072, 0x0072, 0x006F, 0x0072,
+    ]; // "Read error"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &read_error),
+        "COPY should report a read error for a truncated source chain"
+    );
+    assert!(
+        extract_root_file(&hdd_path, &broken_name).is_err(),
+        "COPY should not create a destination file after a read error"
     );
 }

@@ -79,6 +79,12 @@ struct RunningCopy {
     phase: CopyPhase,
 }
 
+fn destination_fcb_name(dst_path: &[u8]) -> [u8; 11] {
+    let (_, components, _) = crate::filesystem::split_path(dst_path);
+    let name = components.last().copied().unwrap_or(dst_path);
+    fat_dir::name_to_fcb(name)
+}
+
 impl RunningCopy {
     fn step_init(
         &mut self,
@@ -146,7 +152,7 @@ impl RunningCopy {
                 let dst_fcb_name = if copy_state.dst_is_dir {
                     entry.name
                 } else {
-                    fat_dir::name_to_fcb(&copy_state.dst_path)
+                    destination_fcb_name(&copy_state.dst_path)
                 };
 
                 let display_name = fat_dir::fcb_to_display_name(&entry.name);
@@ -285,8 +291,12 @@ impl RunningCopy {
 
         while write_data.len() < dst_cluster_size {
             if file_state.src_buffer_pos >= file_state.src_buffer.len() {
-                if file_state.src_remaining == 0 || file_state.src_cluster < 2 {
+                if file_state.src_remaining == 0 {
                     break;
+                }
+                if file_state.src_cluster < 2 {
+                    io.println(b"Read error");
+                    return StepResult::Done(1);
                 }
 
                 let vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
@@ -541,8 +551,12 @@ impl RunningCopy {
 
         while write_data.len() < dst_cluster_size {
             if file_state.src_buffer_pos >= file_state.src_buffer.len() {
-                if file_state.src_remaining == 0 || file_state.src_cluster < 2 {
+                if file_state.src_remaining == 0 {
                     break;
+                }
+                if file_state.src_cluster < 2 {
+                    io.println(b"Read error");
+                    return StepResult::Done(1);
                 }
 
                 let vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
