@@ -100,6 +100,10 @@ impl Console {
             b'[' => {
                 self.esc_parser.state = EscState::GotCsi;
             }
+            b'*' => {
+                self.clear_screen(memory);
+                self.esc_parser.reset();
+            }
             b')' => {
                 self.esc_parser.state = EscState::GotEscRightParen;
             }

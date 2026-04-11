@@ -1891,6 +1891,21 @@ mod tests {
     }
 
     #[test]
+    fn esc_star_clears_screen() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+        fill_row(&mut memory, 0, b'X');
+        console.set_cursor(&mut memory, 5, 10);
+        feed_str(&mut console, &mut memory, "\x1b*");
+        assert_vram_clear(&memory, 0, 0, 79);
+        assert_cursor(&console, &memory, 0, 0);
+        assert_eq!(
+            console.esc_parser.state,
+            crate::console_esc::EscState::Normal
+        );
+    }
+
+    #[test]
     fn parser_resets_on_unknown_csi() {
         let mut console = make_console();
         let mut memory = make_memory();
