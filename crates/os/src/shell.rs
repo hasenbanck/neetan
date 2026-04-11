@@ -161,7 +161,7 @@ impl Shell {
             ShellPhase::ShowPrompt => {
                 if !self.boot_banner_shown {
                     let (major, minor) = state.version;
-                    let msg = format!("Neetan OS Version {}.{}\r\n\r\n", major, minor);
+                    let msg = format!("Neetan DOS {}.{}\r\n\r\n", major, minor);
                     io.print(msg.as_bytes());
                     self.boot_banner_shown = true;
                 }
@@ -697,7 +697,7 @@ fn render_prompt(state: &OsState, io: &mut IoAccess) {
                 }
                 b'V' => {
                     let (major, minor) = state.version;
-                    let msg = format!("Neetan OS Version {}.{}", major, minor);
+                    let msg = format!("Neetan DOS {}.{}", major, minor);
                     for &byte in msg.as_bytes() {
                         io.console.process_byte(io.memory, byte);
                     }
