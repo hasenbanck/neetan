@@ -152,6 +152,30 @@ fn batch_if_errorlevel() {
 }
 
 #[test]
+fn batch_if_errorlevel_after_external_program() {
+    let floppy_a = create_test_floppy_with_program(
+        b"TEST    BAT",
+        b"B:\\RUNME\r\nIF ERRORLEVEL 66 ECHO EXITOK\r\n",
+    );
+    let floppy_b = create_test_floppy_with_program(b"RUNME   COM", TEST_COM_PROGRAM);
+    let mut machine = boot_hle_with_two_floppy_images(floppy_a, floppy_b);
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"TEST\r");
+    run_until_prompt(&mut machine);
+
+    let exitok = [0x0045, 0x0058, 0x0049, 0x0054, 0x004F, 0x004B]; // "EXITOK"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &exitok),
+        "batch should wait for external programs before evaluating following lines"
+    );
+}
+
+#[test]
 fn batch_params() {
     let mut machine = boot_with_bat(b"ECHO %1 %2\r\n");
     type_string(&mut machine.bus, b"A:\r");

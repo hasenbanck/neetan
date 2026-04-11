@@ -27,6 +27,31 @@ pub(crate) struct BatchState {
     paused: bool,
 }
 
+struct WaitingForChildCommand {
+    command_com_psp: u16,
+}
+
+impl WaitingForChildCommand {
+    fn new(command_com_psp: u16) -> Self {
+        Self { command_com_psp }
+    }
+}
+
+impl RunningCommand for WaitingForChildCommand {
+    fn step(
+        &mut self,
+        state: &mut OsState,
+        _io: &mut IoAccess,
+        _disk: &mut dyn DiskIo,
+    ) -> StepResult {
+        if state.current_psp == self.command_com_psp {
+            StepResult::Done(state.last_return_code)
+        } else {
+            StepResult::Continue
+        }
+    }
+}
+
 impl BatchState {
     pub(crate) fn new(
         lines: Vec<Vec<u8>>,
@@ -292,6 +317,11 @@ impl BatchState {
                     self.redirect_buffer = shell.redirect_buffer.take();
                     self.current_redirect = shell.current_redirect.take();
                 }
+                BatchStepResult::Continue
+            }
+            super::ShellPhase::WaitingForChild => {
+                self.running_command =
+                    Some(Box::new(WaitingForChildCommand::new(shell.command_com_psp)));
                 BatchStepResult::Continue
             }
             super::ShellPhase::ExecutingBatch(new_batch) => {
