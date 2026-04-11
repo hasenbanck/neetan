@@ -743,6 +743,120 @@ fn get_allocation_info() {
 }
 
 #[test]
+fn get_free_disk_space() {
+    let mut machine = harness::boot_hle_with_floppy();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x36,                         // MOV AH, 36h
+        0xB2, 0x01,                         // MOV DL, 01h (A:)
+        0xCD, 0x21,                         // INT 21h
+        0x89, 0x06, 0x00, 0x01,             // MOV [0x0100], AX
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX
+        0x89, 0x0E, 0x04, 0x01,             // MOV [0x0104], CX
+        0x89, 0x16, 0x06, 0x01,             // MOV [0x0106], DX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(&mut machine, code, harness::INJECT_BUDGET_DISK_IO);
+
+    let sectors_per_cluster = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        sectors_per_cluster, 1,
+        "Test floppy should report 1 sector per cluster, got {}",
+        sectors_per_cluster
+    );
+
+    let free_clusters = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        free_clusters, 1218,
+        "Test floppy should report 1218 free clusters, got {}",
+        free_clusters
+    );
+
+    let bytes_per_sector = harness::result_word(&machine.bus, 4);
+    assert_eq!(
+        bytes_per_sector, 1024,
+        "Test floppy should report 1024 bytes per sector, got {}",
+        bytes_per_sector
+    );
+
+    let total_clusters = harness::result_word(&machine.bus, 6);
+    assert_eq!(
+        total_clusters, 1221,
+        "Test floppy should report 1221 total clusters, got {}",
+        total_clusters
+    );
+}
+
+#[test]
+fn get_free_disk_space_invalid_drive_returns_ffff() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x36,                         // MOV AH, 36h
+        0xB2, 0x1B,                         // MOV DL, 1Bh (invalid)
+        0xCD, 0x21,                         // INT 21h
+        0x89, 0x06, 0x00, 0x01,             // MOV [0x0100], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let ax = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        ax, 0xFFFF,
+        "Invalid drive should return AX=FFFFh, got {:#06X}",
+        ax
+    );
+}
+
+#[test]
+fn get_free_disk_space_virtual_drive_is_empty() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x36,                         // MOV AH, 36h
+        0xB2, 0x1A,                         // MOV DL, 1Ah (Z:)
+        0xCD, 0x21,                         // INT 21h
+        0x89, 0x06, 0x00, 0x01,             // MOV [0x0100], AX
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX
+        0x89, 0x0E, 0x04, 0x01,             // MOV [0x0104], CX
+        0x89, 0x16, 0x06, 0x01,             // MOV [0x0106], DX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let sectors_per_cluster = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        sectors_per_cluster, 1,
+        "Virtual Z: drive should report a synthetic 1 sector per cluster, got {}",
+        sectors_per_cluster
+    );
+
+    let free_clusters = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        free_clusters, 0,
+        "Virtual Z: drive should report no free clusters, got {}",
+        free_clusters
+    );
+
+    let bytes_per_sector = harness::result_word(&machine.bus, 4);
+    assert_eq!(
+        bytes_per_sector, 512,
+        "Virtual Z: drive should report a synthetic 512-byte sector, got {}",
+        bytes_per_sector
+    );
+
+    let total_clusters = harness::result_word(&machine.bus, 6);
+    assert_eq!(
+        total_clusters, 0,
+        "Virtual Z: drive should report zero total clusters, got {}",
+        total_clusters
+    );
+}
+
+#[test]
 fn get_extended_country_info() {
     let mut machine = harness::boot_hle();
     let buffer_offset: u16 = harness::INJECT_RESULT_OFFSET + 0x10;

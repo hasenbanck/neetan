@@ -53,6 +53,7 @@ impl NeetanOs {
             0x33 => self.int21h_33h_extended(cpu),
             0x34 => self.int21h_34h_get_indos(cpu),
             0x35 => self.int21h_35h_get_interrupt_vector(cpu, memory),
+            0x36 => self.int21h_36h_get_free_disk_space(cpu, memory, disk),
             0x37 => self.int21h_37h_switch_char(cpu),
             0x38 => self.int21h_38h_get_country_info(cpu, memory),
             0x3B => {
