@@ -609,6 +609,47 @@ fn change_directory_to_root() {
 }
 
 #[test]
+fn change_directory_with_dot_component() {
+    let mut machine = harness::boot_hle_with_floppy();
+    harness::type_string(&mut machine.bus, b"A:\r");
+    harness::run_until_prompt(&mut machine);
+    harness::type_string(&mut machine.bus, b"MD SUBDIR\r");
+    harness::run_until_prompt(&mut machine);
+
+    let path = b".\\SUBDIR\0";
+    harness::write_bytes(&mut machine.bus, harness::INJECT_CODE_BASE + 0x200, path);
+
+    let buffer_offset: u16 = harness::INJECT_RESULT_OFFSET + 0x10;
+    #[rustfmt::skip]
+    let code: Vec<u8> = vec![
+        0xBA, 0x00, 0x02,                                        // MOV DX, 0200h
+        0xB4, 0x3B,                                              // MOV AH, 3Bh
+        0xCD, 0x21,                                              // INT 21h
+        0x9C,                                                    // PUSHF
+        0x58,                                                    // POP AX
+        0xA3, 0x00, 0x01,                                        // MOV [0x0100], AX (flags)
+        0xB4, 0x47,                                              // MOV AH, 47h
+        0xB2, 0x00,                                              // MOV DL, 00h
+        0xBE, buffer_offset as u8, (buffer_offset >> 8) as u8,   // MOV SI, buffer_offset
+        0xCD, 0x21,                                              // INT 21h
+        0xFA,                                                    // CLI
+        0xF4,                                                    // HLT
+    ];
+    harness::inject_and_run_with_budget(&mut machine, &code, harness::INJECT_BUDGET_DISK_IO);
+
+    let flags = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "CHDIR with .\\ component should succeed, flags={:#06X}",
+        flags
+    );
+
+    let cwd = harness::read_string(&machine.bus, harness::INJECT_RESULT_BASE + 0x10, 67);
+    assert_eq!(cwd, b"SUBDIR", "Current directory should resolve to SUBDIR");
+}
+
+#[test]
 fn parse_filename_into_fcb() {
     let mut machine = harness::boot_hle();
     // Place filename at 0x9000:0200, FCB buffer at 0x9000:0220.

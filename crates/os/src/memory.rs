@@ -426,7 +426,7 @@ pub(crate) fn free_process_blocks(
         }
         current = current + read_mcb_size(mem, current) + 1;
     }
-    for data_seg in to_free {
+    for data_seg in to_free.into_iter().rev() {
         let _ = free(mem, first_mcb_segment, data_seg);
     }
 }
@@ -459,7 +459,7 @@ pub(crate) fn free_process_blocks_tsr(
         }
         current = current + read_mcb_size(mem, current) + 1;
     }
-    for data_seg in to_free {
+    for data_seg in to_free.into_iter().rev() {
         let _ = free(mem, first_mcb_segment, data_seg);
     }
 }
@@ -489,4 +489,119 @@ fn coalesce_forward(mem: &mut dyn MemoryAccess, segment: u16) {
     let merged_size = block_size + 1 + next_size;
     write_mcb_size(mem, segment, merged_size);
     write_mcb_type(mem, segment, next_type); // Inherit M/Z from next
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockMemory {
+        data: Vec<u8>,
+    }
+
+    impl MockMemory {
+        fn new(size: usize) -> Self {
+            Self {
+                data: vec![0; size],
+            }
+        }
+    }
+
+    impl MemoryAccess for MockMemory {
+        fn read_byte(&self, address: u32) -> u8 {
+            self.data[address as usize]
+        }
+
+        fn write_byte(&mut self, address: u32, value: u8) {
+            self.data[address as usize] = value;
+        }
+
+        fn read_word(&self, address: u32) -> u16 {
+            let lo = self.read_byte(address) as u16;
+            let hi = self.read_byte(address + 1) as u16;
+            lo | (hi << 8)
+        }
+
+        fn write_word(&mut self, address: u32, value: u16) {
+            self.write_byte(address, value as u8);
+            self.write_byte(address + 1, (value >> 8) as u8);
+        }
+
+        fn read_block(&self, address: u32, buf: &mut [u8]) {
+            let start = address as usize;
+            let end = start + buf.len();
+            buf.copy_from_slice(&self.data[start..end]);
+        }
+
+        fn write_block(&mut self, address: u32, data: &[u8]) {
+            let start = address as usize;
+            let end = start + data.len();
+            self.data[start..end].copy_from_slice(data);
+        }
+    }
+
+    #[test]
+    fn free_process_blocks_frees_in_reverse_to_fully_coalesce() {
+        let mut mem = MockMemory::new(0x20000);
+        let first_mcb = 0x1000;
+        let owner = 0x2222;
+
+        write_mcb(
+            &mut mem,
+            first_mcb,
+            MCB_TYPE_M,
+            MCB_OWNER_DOS,
+            1,
+            b"DOS     ",
+        );
+        write_mcb(&mut mem, 0x1002, MCB_TYPE_M, owner, 2, b"OWN1    ");
+        write_mcb(&mut mem, 0x1005, MCB_TYPE_M, owner, 3, b"OWN2    ");
+        write_mcb(&mut mem, 0x1009, MCB_TYPE_Z, MCB_OWNER_FREE, 4, b"FREE    ");
+
+        free_process_blocks(&mut mem, first_mcb, owner);
+
+        assert_eq!(read_mcb_owner(&mem, 0x1002), MCB_OWNER_FREE);
+        assert_eq!(read_mcb_type(&mem, 0x1002), MCB_TYPE_Z);
+        assert_eq!(
+            read_mcb_size(&mem, 0x1002),
+            2 + 1 + 3 + 1 + 4,
+            "owned blocks should coalesce with the trailing free block into one Z block"
+        );
+    }
+
+    #[test]
+    fn free_process_blocks_tsr_frees_following_blocks_in_reverse_to_fully_coalesce() {
+        let mut mem = MockMemory::new(0x20000);
+        let first_mcb = 0x1000;
+        let owner_psp = 0x1003;
+
+        write_mcb(
+            &mut mem,
+            first_mcb,
+            MCB_TYPE_M,
+            MCB_OWNER_DOS,
+            1,
+            b"DOS     ",
+        );
+        write_mcb(&mut mem, 0x1002, MCB_TYPE_M, owner_psp, 2, b"PSP     ");
+        write_mcb(&mut mem, 0x1005, MCB_TYPE_M, owner_psp, 2, b"AUX1    ");
+        write_mcb(&mut mem, 0x1008, MCB_TYPE_M, owner_psp, 3, b"AUX2    ");
+        write_mcb(&mut mem, 0x100C, MCB_TYPE_Z, MCB_OWNER_FREE, 4, b"FREE    ");
+
+        free_process_blocks_tsr(&mut mem, first_mcb, owner_psp, 2);
+
+        assert_eq!(
+            read_mcb_owner(&mem, 0x1002),
+            owner_psp,
+            "TSR should retain the PSP block"
+        );
+        assert_eq!(read_mcb_size(&mem, 0x1002), 2);
+        assert_eq!(read_mcb_owner(&mem, 0x1005), MCB_OWNER_FREE);
+        assert_eq!(read_mcb_type(&mem, 0x1005), MCB_TYPE_Z);
+        assert_eq!(
+            read_mcb_size(&mem, 0x1005),
+            2 + 1 + 3 + 1 + 4,
+            "all non-PSP blocks should coalesce into one trailing free Z block"
+        );
+    }
 }

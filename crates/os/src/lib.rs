@@ -1714,7 +1714,8 @@ impl OsState {
         mem: &dyn MemoryAccess,
         disk: &mut dyn DiskIo,
     ) -> Result<(u8, u16, [u8; 11]), u16> {
-        let (drive_opt, components, is_absolute) = filesystem::split_path(path);
+        let normalized_path = dos::normalize_path(path);
+        let (drive_opt, components, is_absolute) = filesystem::split_path(&normalized_path);
         let drive_index = drive_opt.unwrap_or(self.current_drive);
 
         if components.is_empty() {
@@ -1764,7 +1765,8 @@ impl OsState {
         mem: &dyn MemoryAccess,
         disk: &mut dyn DiskIo,
     ) -> Result<(u8, u16), u16> {
-        let (drive_opt, components, is_absolute) = filesystem::split_path(path);
+        let normalized_path = dos::normalize_path(path);
+        let (drive_opt, components, is_absolute) = filesystem::split_path(&normalized_path);
         let drive_index = drive_opt.unwrap_or(self.current_drive);
 
         if drive_index == 25 {

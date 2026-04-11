@@ -477,6 +477,34 @@ pub fn boot_hle_with_two_floppies() -> machine::Pc9801Ra {
     machine
 }
 
+pub fn boot_hle_with_two_floppy_images(
+    floppy_a: device::floppy::FloppyImage,
+    floppy_b: device::floppy::FloppyImage,
+) -> machine::Pc9801Ra {
+    let mut machine = create_hle_machine();
+
+    // Set BDA DISK_EQUIP bits 0+1 (two 1MB FDD units) before boot.
+    machine.bus.write_byte(0x055C, 0x03);
+
+    let mut total_cycles = 0u64;
+    loop {
+        total_cycles += machine.run_for(HLE_BOOT_CHECK_INTERVAL);
+        if hle_prompt_visible(&machine.bus) {
+            break;
+        }
+        assert!(
+            total_cycles < HLE_BOOT_MAX_CYCLES,
+            "HLE OS did not show prompt within {} cycles",
+            HLE_BOOT_MAX_CYCLES
+        );
+    }
+
+    machine.bus.insert_floppy(0, floppy_a, None);
+    machine.bus.insert_floppy(1, floppy_b, None);
+
+    machine
+}
+
 pub fn write_bytes(bus: &mut impl Bus, addr: u32, data: &[u8]) {
     for (i, &byte) in data.iter().enumerate() {
         bus.write_byte(addr + i as u32, byte);

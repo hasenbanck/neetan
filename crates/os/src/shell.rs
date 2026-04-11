@@ -79,7 +79,6 @@ pub(crate) struct Shell {
     pub(crate) echo_on: bool,
     pub(crate) last_exit_code: u8,
     boot_banner_shown: bool,
-    pending_drive_change: Option<u8>,
     pending_commands: VecDeque<PendingCommand>,
     current_redirect: Option<RedirectSpec>,
     redirect_buffer: Option<Vec<u8>>,
@@ -124,7 +123,6 @@ impl Shell {
             echo_on: true,
             last_exit_code: 0,
             boot_banner_shown: false,
-            pending_drive_change: None,
             pending_commands: VecDeque::new(),
             current_redirect: None,
             redirect_buffer: None,
@@ -148,7 +146,6 @@ impl Shell {
             echo_on: true,
             last_exit_code: 0,
             boot_banner_shown: true,
-            pending_drive_change: None,
             pending_commands: VecDeque::new(),
             current_redirect: None,
             redirect_buffer: None,
@@ -167,9 +164,6 @@ impl Shell {
                     let msg = format!("Neetan OS Version {}.{}\r\n\r\n", major, minor);
                     io.print(msg.as_bytes());
                     self.boot_banner_shown = true;
-                }
-                if let Some(drive) = self.pending_drive_change.take() {
-                    state.current_drive = drive;
                 }
                 render_prompt(state, io);
                 let prompt_col = io.console.cursor_col(io.memory);
@@ -491,7 +485,7 @@ impl Shell {
                 self.last_exit_code = 1;
                 return ShellPhase::ShowPrompt;
             }
-            self.pending_drive_change = Some(drive_index);
+            state.current_drive = drive_index;
             return ShellPhase::ShowPrompt;
         }
 

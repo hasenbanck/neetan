@@ -251,3 +251,28 @@ fn batch_pause() {
         "batch should continue after PAUSE and display 'AFTER'"
     );
 }
+
+#[test]
+fn batch_drive_change_applies_before_following_lines() {
+    let floppy_a = create_test_floppy_with_program(
+        b"SWITCH  BAT",
+        b"B:\r\nIF EXIST TARGET.TXT ECHO FOUND\r\n",
+    );
+    let floppy_b = create_test_floppy_with_program(b"TARGET  TXT", b"B-ONLY\r\n");
+    let mut machine = boot_hle_with_two_floppy_images(floppy_a, floppy_b);
+
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"SWITCH\r");
+    run_until_prompt(&mut machine);
+
+    let found = [0x0046, 0x004F, 0x0055, 0x004E, 0x0044]; // "FOUND"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &found),
+        "batch drive change should affect relative paths used by following lines"
+    );
+}

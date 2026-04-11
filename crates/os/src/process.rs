@@ -4,7 +4,7 @@
 pub(crate) static COMMAND_COM_STUB: &[u8] = include_bytes!("../../../utils/os/os.rom");
 
 use crate::{
-    CpuAccess, DiskIo, MemoryAccess, NeetanOs, OsState,
+    CpuAccess, DiskIo, MemoryAccess, NeetanOs, OsState, country, dos,
     filesystem::{fat::FatVolume, fat_dir},
     memory, set_iret_carry,
     tables::*,
@@ -37,6 +37,11 @@ pub(crate) struct ProcessContext {
     pub return_sp: u16,
     pub saved_dta_seg: u16,
     pub saved_dta_off: u16,
+}
+
+pub(crate) struct SftBases {
+    pub primary: u32,
+    pub secondary: u32,
 }
 
 /// Writes a 256-byte Program Segment Prefix at the given segment.
@@ -168,6 +173,118 @@ pub(crate) fn write_environment_block(mem: &mut dyn MemoryAccess, env_segment: u
     mem.write_byte(base + offset, 0x00);
 }
 
+fn build_program_path(state: &OsState, mem: &dyn MemoryAccess, path: &[u8]) -> Vec<u8> {
+    let (drive_letter, rest) = if path.len() >= 2 && path[1] == b':' {
+        (path[0].to_ascii_uppercase(), &path[2..])
+    } else {
+        (b'A' + state.current_drive, path)
+    };
+
+    let mut full = Vec::with_capacity(128);
+    full.push(drive_letter);
+    full.push(b':');
+
+    if rest.first() == Some(&b'\\') || rest.first() == Some(&b'/') {
+        full.extend_from_slice(rest);
+    } else {
+        let drive_index = (drive_letter - b'A') as u32;
+        let cds_addr = CDS_BASE + drive_index * CDS_ENTRY_SIZE;
+
+        let mut cwd = Vec::new();
+        for i in 0..67u32 {
+            let byte = mem.read_byte(cds_addr + CDS_OFF_PATH + i);
+            if byte == 0 {
+                break;
+            }
+            cwd.push(byte);
+        }
+
+        let cwd_path = if cwd.len() >= 2 && cwd[1] == b':' {
+            &cwd[2..]
+        } else {
+            &cwd[..]
+        };
+
+        full.extend_from_slice(cwd_path);
+        if !full.ends_with(b"\\") {
+            full.push(b'\\');
+        }
+        full.extend_from_slice(rest);
+    }
+
+    for byte in &mut full {
+        if *byte == b'/' {
+            *byte = b'\\';
+        }
+    }
+
+    let normalized = dos::normalize_path(&full);
+    normalized
+        .into_iter()
+        .map(country::uppercase_char)
+        .collect()
+}
+
+fn write_environment_program_path(
+    mem: &mut dyn MemoryAccess,
+    env_segment: u16,
+    program_path: &[u8],
+) {
+    let base = (env_segment as u32) << 4;
+    let block_size = ENV_BLOCK_PARAGRAPHS as u32 * 16;
+
+    let mut offset = 0u32;
+    while offset + 1 < block_size {
+        if mem.read_byte(base + offset) == 0 && mem.read_byte(base + offset + 1) == 0 {
+            break;
+        }
+        offset += 1;
+    }
+
+    if offset + 3 >= block_size {
+        return;
+    }
+
+    mem.write_byte(base + offset, 0x00);
+    offset += 1;
+    mem.write_byte(base + offset, 0x00);
+    offset += 1;
+
+    mem.write_word(base + offset, 0x0001);
+    offset += 2;
+
+    let available = block_size.saturating_sub(offset + 1) as usize;
+    let path_len = program_path.len().min(available);
+    mem.write_block(base + offset, &program_path[..path_len]);
+    mem.write_byte(base + offset + path_len as u32, 0x00);
+}
+
+fn allocate_child_environment(
+    mem: &mut dyn MemoryAccess,
+    first_mcb: u16,
+    source_env: u16,
+    allocation_strategy: u16,
+    program_path: &[u8],
+) -> Result<u16, u16> {
+    let env_segment =
+        memory::allocate(mem, first_mcb, ENV_BLOCK_PARAGRAPHS, 0, allocation_strategy)
+            .map_err(|(e, _)| e as u16)?;
+
+    if source_env == 0 {
+        write_environment_block(mem, env_segment);
+    } else {
+        let source_base = (source_env as u32) << 4;
+        let dest_base = (env_segment as u32) << 4;
+        let mut env_data = [0u8; ENV_BLOCK_PARAGRAPHS as usize * 16];
+        mem.read_block(source_base, &mut env_data);
+        mem.write_block(dest_base, &env_data);
+    }
+
+    write_environment_program_path(mem, env_segment, program_path);
+
+    Ok(env_segment)
+}
+
 /// Writes the COMMAND.COM code stub at PSP:0100h.
 ///
 /// INT 28h (DOS Idle) is called on each iteration so that TSR programs
@@ -183,19 +300,12 @@ pub(crate) fn write_child_psp(
     mem: &mut dyn MemoryAccess,
     child_psp: u16,
     parent_psp: u16,
+    env_segment: u16,
     mem_top: u16,
     params: &ExecParams,
-    sft_base: u32,
-    sft2_base: u32,
+    sft_bases: SftBases,
 ) {
-    let actual_env = if params.env_seg == 0 {
-        let parent_base = (parent_psp as u32) << 4;
-        mem.read_word(parent_base + PSP_OFF_ENV_SEG)
-    } else {
-        params.env_seg
-    };
-
-    write_psp(mem, child_psp, parent_psp, actual_env, mem_top);
+    write_psp(mem, child_psp, parent_psp, env_segment, mem_top);
 
     let child_base = (child_psp as u32) << 4;
     let parent_base = (parent_psp as u32) << 4;
@@ -205,7 +315,8 @@ pub(crate) fn write_child_psp(
         let sft_index = mem.read_byte(parent_base + PSP_OFF_JFT + i);
         mem.write_byte(child_base + PSP_OFF_JFT + i, sft_index);
         if sft_index != 0xFF
-            && let Some(sft_addr) = sft_entry_addr(sft_index, sft_base, sft2_base)
+            && let Some(sft_addr) =
+                sft_entry_addr(sft_index, sft_bases.primary, sft_bases.secondary)
         {
             let ref_count = mem.read_word(sft_addr + SFT_ENT_REF_COUNT);
             mem.write_word(sft_addr + SFT_ENT_REF_COUNT, ref_count + 1);
@@ -316,6 +427,7 @@ impl NeetanOs {
         // Parse parameters.
         let filename_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
         let path = OsState::read_asciiz(mem, filename_addr, 128);
+        let program_path = build_program_path(&self.state, mem, &path);
 
         let pb_addr = ((cpu.es() as u32) << 4) + cpu.bx() as u32;
         let env_seg = mem.read_word(pb_addr);
@@ -365,9 +477,9 @@ impl NeetanOs {
                 || (file_data[0] == 0x5A && file_data[1] == 0x4D));
 
         if is_exe {
-            self.exec_exe(cpu, mem, &file_data, &params)
+            self.exec_exe(cpu, mem, &file_data, &params, &program_path)
         } else {
-            self.exec_com(cpu, mem, &file_data, &params)
+            self.exec_com(cpu, mem, &file_data, &params, &program_path)
         }
     }
 
@@ -382,6 +494,7 @@ impl NeetanOs {
     ) -> Result<(), u16> {
         let filename_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
         let path = OsState::read_asciiz(mem, filename_addr, 128);
+        let program_path = build_program_path(&self.state, mem, &path);
 
         let pb_addr = ((cpu.es() as u32) << 4) + cpu.bx() as u32;
         let env_seg = mem.read_word(pb_addr);
@@ -422,9 +535,9 @@ impl NeetanOs {
                 || (file_data[0] == 0x5A && file_data[1] == 0x4D));
 
         let (entry_ss, entry_sp, entry_cs, entry_ip) = if is_exe {
-            self.load_exe(mem, &file_data, &params)?
+            self.load_exe(mem, &file_data, &params, &program_path)?
         } else {
-            self.load_com(mem, &file_data, &params)?
+            self.load_com(mem, &file_data, &params, &program_path)?
         };
 
         mem.write_word(pb_addr + 0x0E, entry_sp);
@@ -441,8 +554,22 @@ impl NeetanOs {
         mem: &mut dyn MemoryAccess,
         file_data: &[u8],
         params: &ExecParams,
+        program_path: &[u8],
     ) -> Result<(u16, u16, u16, u16), u16> {
         let first_mcb = mem.read_word(self.state.sysvars_base - 2);
+        let parent_base = (self.state.current_psp as u32) << 4;
+        let source_env = if params.env_seg == 0 {
+            mem.read_word(parent_base + PSP_OFF_ENV_SEG)
+        } else {
+            params.env_seg
+        };
+        let env_segment = allocate_child_environment(
+            mem,
+            first_mcb,
+            source_env,
+            self.state.allocation_strategy,
+            program_path,
+        )?;
 
         let largest =
             match memory::allocate(mem, first_mcb, 0xFFFF, 0, self.state.allocation_strategy) {
@@ -451,24 +578,33 @@ impl NeetanOs {
             };
 
         if largest == 0 {
+            let _ = memory::free(mem, first_mcb, env_segment);
             return Err(0x0008);
         }
 
         let child_psp =
-            memory::allocate(mem, first_mcb, largest, 0, self.state.allocation_strategy)
-                .map_err(|(e, _)| e as u16)?;
+            memory::allocate(mem, first_mcb, largest, 0, self.state.allocation_strategy).map_err(
+                |(e, _)| {
+                    let _ = memory::free(mem, first_mcb, env_segment);
+                    e as u16
+                },
+            )?;
 
         let mcb_segment = child_psp - 1;
         mem.write_word(((mcb_segment as u32) << 4) + MCB_OFF_OWNER, child_psp);
+        mem.write_word(((env_segment as u32 - 1) << 4) + MCB_OFF_OWNER, child_psp);
 
         write_child_psp(
             mem,
             child_psp,
             self.state.current_psp,
+            env_segment,
             MEMORY_TOP_SEGMENT,
             params,
-            SFT_BASE,
-            self.state.sft2_base,
+            SftBases {
+                primary: SFT_BASE,
+                secondary: self.state.sft2_base,
+            },
         );
 
         let load_addr = ((child_psp as u32) << 4) + 0x0100;
@@ -486,6 +622,7 @@ impl NeetanOs {
         mem: &mut dyn MemoryAccess,
         file_data: &[u8],
         params: &ExecParams,
+        program_path: &[u8],
     ) -> Result<(u16, u16, u16, u16), u16> {
         if file_data.len() < 28 {
             return Err(0x000B);
@@ -517,6 +654,19 @@ impl NeetanOs {
         let psp_paragraphs: u16 = 0x10;
 
         let first_mcb = mem.read_word(self.state.sysvars_base - 2);
+        let parent_base = (self.state.current_psp as u32) << 4;
+        let source_env = if params.env_seg == 0 {
+            mem.read_word(parent_base + PSP_OFF_ENV_SEG)
+        } else {
+            params.env_seg
+        };
+        let env_segment = allocate_child_environment(
+            mem,
+            first_mcb,
+            source_env,
+            self.state.allocation_strategy,
+            program_path,
+        )?;
 
         let total_needed = psp_paragraphs
             .saturating_add(image_paragraphs)
@@ -540,21 +690,28 @@ impl NeetanOs {
                     0,
                     self.state.allocation_strategy,
                 )
-                .map_err(|(e, _)| e as u16)?
+                .map_err(|(e, _)| {
+                    let _ = memory::free(mem, first_mcb, env_segment);
+                    e as u16
+                })?
             }
         };
 
         let mcb_segment = child_psp - 1;
         mem.write_word(((mcb_segment as u32) << 4) + MCB_OFF_OWNER, child_psp);
+        mem.write_word(((env_segment as u32 - 1) << 4) + MCB_OFF_OWNER, child_psp);
 
         write_child_psp(
             mem,
             child_psp,
             self.state.current_psp,
+            env_segment,
             MEMORY_TOP_SEGMENT,
             params,
-            SFT_BASE,
-            self.state.sft2_base,
+            SftBases {
+                primary: SFT_BASE,
+                secondary: self.state.sft2_base,
+            },
         );
 
         let load_segment = child_psp + psp_paragraphs;
@@ -588,8 +745,22 @@ impl NeetanOs {
         mem: &mut dyn MemoryAccess,
         file_data: &[u8],
         params: &ExecParams,
+        program_path: &[u8],
     ) -> Result<(), u16> {
         let first_mcb = mem.read_word(self.state.sysvars_base - 2);
+        let parent_base = (self.state.current_psp as u32) << 4;
+        let source_env = if params.env_seg == 0 {
+            mem.read_word(parent_base + PSP_OFF_ENV_SEG)
+        } else {
+            params.env_seg
+        };
+        let env_segment = allocate_child_environment(
+            mem,
+            first_mcb,
+            source_env,
+            self.state.allocation_strategy,
+            program_path,
+        )?;
 
         // Allocate largest available block for the .COM program.
         let largest =
@@ -599,26 +770,35 @@ impl NeetanOs {
             };
 
         if largest == 0 {
+            let _ = memory::free(mem, first_mcb, env_segment);
             return Err(0x0008);
         }
 
         let child_psp =
-            memory::allocate(mem, first_mcb, largest, 0, self.state.allocation_strategy)
-                .map_err(|(e, _)| e as u16)?;
+            memory::allocate(mem, first_mcb, largest, 0, self.state.allocation_strategy).map_err(
+                |(e, _)| {
+                    let _ = memory::free(mem, first_mcb, env_segment);
+                    e as u16
+                },
+            )?;
 
         // Set MCB owner to the child PSP segment and name.
         let mcb_segment = child_psp - 1;
         mem.write_word(((mcb_segment as u32) << 4) + MCB_OFF_OWNER, child_psp);
+        mem.write_word(((env_segment as u32 - 1) << 4) + MCB_OFF_OWNER, child_psp);
 
         // Write child PSP with inherited handles, command tail, FCBs.
         write_child_psp(
             mem,
             child_psp,
             self.state.current_psp,
+            env_segment,
             MEMORY_TOP_SEGMENT,
             params,
-            SFT_BASE,
-            self.state.sft2_base,
+            SftBases {
+                primary: SFT_BASE,
+                secondary: self.state.sft2_base,
+            },
         );
 
         // Load .COM data at PSP:0100h.
@@ -651,6 +831,7 @@ impl NeetanOs {
         mem: &mut dyn MemoryAccess,
         file_data: &[u8],
         params: &ExecParams,
+        program_path: &[u8],
     ) -> Result<(), u16> {
         if file_data.len() < 28 {
             return Err(0x000B);
@@ -685,6 +866,19 @@ impl NeetanOs {
         let psp_paragraphs: u16 = 0x10;
 
         let first_mcb = mem.read_word(self.state.sysvars_base - 2);
+        let parent_base = (self.state.current_psp as u32) << 4;
+        let source_env = if params.env_seg == 0 {
+            mem.read_word(parent_base + PSP_OFF_ENV_SEG)
+        } else {
+            params.env_seg
+        };
+        let env_segment = allocate_child_environment(
+            mem,
+            first_mcb,
+            source_env,
+            self.state.allocation_strategy,
+            program_path,
+        )?;
 
         // Try with max_alloc first, fall back to min_alloc.
         let total_needed = psp_paragraphs
@@ -709,23 +903,30 @@ impl NeetanOs {
                     0,
                     self.state.allocation_strategy,
                 )
-                .map_err(|(e, _)| e as u16)?
+                .map_err(|(e, _)| {
+                    let _ = memory::free(mem, first_mcb, env_segment);
+                    e as u16
+                })?
             }
         };
 
         // Set MCB owner to child PSP.
         let mcb_segment = child_psp - 1;
         mem.write_word(((mcb_segment as u32) << 4) + MCB_OFF_OWNER, child_psp);
+        mem.write_word(((env_segment as u32 - 1) << 4) + MCB_OFF_OWNER, child_psp);
 
         // Write child PSP.
         write_child_psp(
             mem,
             child_psp,
             self.state.current_psp,
+            env_segment,
             MEMORY_TOP_SEGMENT,
             params,
-            SFT_BASE,
-            self.state.sft2_base,
+            SftBases {
+                primary: SFT_BASE,
+                secondary: self.state.sft2_base,
+            },
         );
 
         // Load EXE image after PSP (at child_psp + 0x10).
