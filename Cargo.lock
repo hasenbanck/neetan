@@ -17,6 +17,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "blake3"
+version = "1.0.0"
+
+[[package]]
 name = "cc"
 version = "1.2.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -177,6 +181,7 @@ dependencies = [
 name = "os"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "common",
  "cpu",
  "device",
