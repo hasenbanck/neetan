@@ -8,7 +8,7 @@ use common::Bus;
 use device::{
     disk::{self, HddImage},
     floppy::{
-        self, FloppyImage,
+        FloppyImage,
         d88::{D88Disk, D88MediaType, D88Sector},
     },
 };
@@ -56,6 +56,10 @@ fn set_fat12_entry(fat: &mut [u8], cluster: u16, value: u16) {
 }
 
 pub fn create_random_file_floppy(file_data: &[u8]) -> FloppyImage {
+    create_random_file_floppy_with_name(&RANDOM_FILE_FCB, file_data)
+}
+
+pub fn create_random_file_floppy_with_name(fcb_name: &[u8; 11], file_data: &[u8]) -> FloppyImage {
     let cylinders = 77usize;
     let heads = 2usize;
     let sectors_per_track = 8usize;
@@ -126,7 +130,7 @@ pub fn create_random_file_floppy(file_data: &[u8]) -> FloppyImage {
     }
     {
         let entry = &mut disk_data[root_offset + 64..root_offset + 96];
-        entry[0..11].copy_from_slice(&RANDOM_FILE_FCB);
+        entry[0..11].copy_from_slice(fcb_name);
         entry[11] = 0x20;
         entry[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
         entry[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
@@ -172,7 +176,118 @@ pub fn create_random_file_floppy(file_data: &[u8]) -> FloppyImage {
     }
 
     let d88 = D88Disk::from_tracks("XRAND".to_string(), false, D88MediaType::Disk2HD, tracks);
-    floppy::FloppyImage::from_d88(d88)
+    FloppyImage::from_d88(d88)
+}
+
+pub fn create_broken_chain_floppy_with_name(
+    fcb_name: &[u8; 11],
+    advertised_size: usize,
+) -> FloppyImage {
+    let first_cluster_data = prng_bytes(1024);
+    let cylinders = 77usize;
+    let heads = 2usize;
+    let sectors_per_track = 8usize;
+    let sector_size = 1024usize;
+    let total_tracks = cylinders * heads;
+    let total_sectors = cylinders * heads * sectors_per_track;
+    let mut disk_data = vec![0u8; total_sectors * sector_size];
+
+    {
+        let bpb = &mut disk_data[0..sector_size];
+        bpb[0] = 0xEB;
+        bpb[1] = 0x3C;
+        bpb[2] = 0x90;
+        bpb[3..11].copy_from_slice(b"NEETAN  ");
+        bpb[11..13].copy_from_slice(&1024u16.to_le_bytes());
+        bpb[13] = 1;
+        bpb[14..16].copy_from_slice(&1u16.to_le_bytes());
+        bpb[16] = 2;
+        bpb[17..19].copy_from_slice(&192u16.to_le_bytes());
+        bpb[19..21].copy_from_slice(&1232u16.to_le_bytes());
+        bpb[21] = 0xFE;
+        bpb[22..24].copy_from_slice(&2u16.to_le_bytes());
+        bpb[24..26].copy_from_slice(&8u16.to_le_bytes());
+        bpb[26..28].copy_from_slice(&2u16.to_le_bytes());
+    }
+
+    let fat1_offset = sector_size;
+    let fat = &mut disk_data[fat1_offset..fat1_offset + 2 * sector_size];
+    fat[0] = 0xFE;
+    fat[1] = 0xFF;
+    fat[2] = 0xFF;
+    set_fat12_entry(fat, 2, FAT12_EOC);
+    set_fat12_entry(fat, 3, FAT12_EOC);
+    set_fat12_entry(fat, 4, FAT12_EOC);
+
+    let fat2_offset = 3 * sector_size;
+    let fat_copy = disk_data[fat1_offset..fat1_offset + 2 * sector_size].to_vec();
+    disk_data[fat2_offset..fat2_offset + fat_copy.len()].copy_from_slice(&fat_copy);
+
+    let root_offset = 5 * sector_size;
+    {
+        let entry = &mut disk_data[root_offset..root_offset + 32];
+        entry[0..11].copy_from_slice(b"COMMAND COM");
+        entry[11] = 0x20;
+        entry[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        entry[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        entry[26..28].copy_from_slice(&2u16.to_le_bytes());
+        entry[28..32].copy_from_slice(&(TEST_COMMAND_COM.len() as u32).to_le_bytes());
+    }
+    {
+        let entry = &mut disk_data[root_offset + 32..root_offset + 64];
+        entry[0..11].copy_from_slice(b"TESTFILETXT");
+        entry[11] = 0x20;
+        entry[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        entry[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        entry[26..28].copy_from_slice(&3u16.to_le_bytes());
+        entry[28..32].copy_from_slice(&(TEST_FILE_CONTENT.len() as u32).to_le_bytes());
+    }
+    {
+        let entry = &mut disk_data[root_offset + 64..root_offset + 96];
+        entry[0..11].copy_from_slice(fcb_name);
+        entry[11] = 0x20;
+        entry[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        entry[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        entry[26..28].copy_from_slice(&4u16.to_le_bytes());
+        entry[28..32].copy_from_slice(&(advertised_size as u32).to_le_bytes());
+    }
+
+    let cluster2_offset = 11 * sector_size;
+    disk_data[cluster2_offset..cluster2_offset + TEST_COMMAND_COM.len()]
+        .copy_from_slice(TEST_COMMAND_COM);
+    let cluster3_offset = 12 * sector_size;
+    disk_data[cluster3_offset..cluster3_offset + TEST_FILE_CONTENT.len()]
+        .copy_from_slice(TEST_FILE_CONTENT);
+    let cluster4_offset = 13 * sector_size;
+    disk_data[cluster4_offset..cluster4_offset + first_cluster_data.len()]
+        .copy_from_slice(&first_cluster_data);
+
+    let mut tracks = Vec::with_capacity(total_tracks);
+    for track_index in 0..total_tracks {
+        let cylinder = (track_index / heads) as u8;
+        let head = (track_index % heads) as u8;
+        let mut sectors = Vec::with_capacity(sectors_per_track);
+        for sector in 0..sectors_per_track {
+            let lba = track_index * sectors_per_track + sector;
+            let offset = lba * sector_size;
+            sectors.push(D88Sector {
+                cylinder,
+                head,
+                record: (sector + 1) as u8,
+                size_code: 3,
+                sector_count: sectors_per_track as u16,
+                mfm_flag: 0x40,
+                deleted: 0,
+                status: 0,
+                reserved: [0; 5],
+                data: disk_data[offset..offset + sector_size].to_vec(),
+            });
+        }
+        tracks.push(Some(sectors));
+    }
+
+    let d88 = D88Disk::from_tracks("BROKEN".to_string(), false, D88MediaType::Disk2HD, tracks);
+    FloppyImage::from_d88(d88)
 }
 
 pub fn make_temp_hdd_path(prefix: &str) -> PathBuf {
