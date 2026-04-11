@@ -3,16 +3,45 @@
 pub(crate) mod memory_manager;
 mod tlsf;
 
-use crate::{MemoryAccess, tables::*};
+use crate::{MemoryAccess, OsState, tables::*};
 
 const MCB_TYPE_M: u8 = 0x4D;
 const MCB_TYPE_Z: u8 = 0x5A;
 const MAX_CHAIN_WALK: usize = 4096;
+const CONVENTIONAL_MEMORY_TOTAL_BYTES: u32 = 640 * 1024;
+const HMA_TOTAL_BYTES: u32 = 0xFFF0;
 
 // DOS error codes
 const ERR_MCB_DESTROYED: u8 = 7;
 const ERR_INSUFFICIENT_MEMORY: u8 = 8;
 const ERR_INVALID_BLOCK: u8 = 9;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MemoryAmount {
+    pub(crate) total_bytes: u32,
+    pub(crate) used_bytes: u32,
+    pub(crate) free_bytes: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HmaMemoryAmount {
+    pub(crate) total_bytes: u32,
+    pub(crate) used_bytes: u32,
+    pub(crate) free_bytes: u32,
+    pub(crate) allocated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MemoryOverview {
+    pub(crate) conventional: MemoryAmount,
+    pub(crate) umb: MemoryAmount,
+    pub(crate) hma: HmaMemoryAmount,
+    pub(crate) ems: MemoryAmount,
+    pub(crate) xms: MemoryAmount,
+    pub(crate) extended_pool: MemoryAmount,
+    pub(crate) largest_conventional_free_bytes: u32,
+    pub(crate) largest_umb_free_bytes: u32,
+}
 
 fn mcb_addr(segment: u16) -> u32 {
     (segment as u32) << 4
@@ -28,6 +57,61 @@ fn read_mcb_owner(mem: &dyn MemoryAccess, segment: u16) -> u16 {
 
 fn read_mcb_size(mem: &dyn MemoryAccess, segment: u16) -> u16 {
     mem.read_word(mcb_addr(segment) + MCB_OFF_SIZE)
+}
+
+fn walk_mcb_chain_usage(mem: &dyn MemoryAccess, first_segment: u16) -> (u32, u32) {
+    let mut used_paragraphs: u32 = 0;
+    let mut free_paragraphs: u32 = 0;
+    let mut current = first_segment;
+
+    for _ in 0..MAX_CHAIN_WALK {
+        let block_type = read_mcb_type(mem, current);
+        if !is_valid_mcb_type(block_type) {
+            break;
+        }
+
+        let owner = read_mcb_owner(mem, current);
+        let size = read_mcb_size(mem, current) as u32;
+        if owner == MCB_OWNER_FREE {
+            free_paragraphs += size;
+        } else {
+            used_paragraphs += size;
+        }
+
+        if block_type == MCB_TYPE_Z {
+            break;
+        }
+
+        current = current + size as u16 + 1;
+    }
+
+    (used_paragraphs, free_paragraphs)
+}
+
+fn largest_free_block_paragraphs(mem: &dyn MemoryAccess, first_segment: u16) -> u32 {
+    let mut largest: u32 = 0;
+    let mut current = first_segment;
+
+    for _ in 0..MAX_CHAIN_WALK {
+        let block_type = read_mcb_type(mem, current);
+        if !is_valid_mcb_type(block_type) {
+            break;
+        }
+
+        let owner = read_mcb_owner(mem, current);
+        let size = read_mcb_size(mem, current) as u32;
+        if owner == MCB_OWNER_FREE && size > largest {
+            largest = size;
+        }
+
+        if block_type == MCB_TYPE_Z {
+            break;
+        }
+
+        current = current + size as u16 + 1;
+    }
+
+    largest
 }
 
 fn write_mcb_type(mem: &mut dyn MemoryAccess, segment: u16, block_type: u8) {
@@ -51,6 +135,176 @@ fn clear_mcb_name(mem: &mut dyn MemoryAccess, segment: u16) {
 
 fn is_valid_mcb_type(t: u8) -> bool {
     t == MCB_TYPE_M || t == MCB_TYPE_Z
+}
+
+pub(crate) fn collect_memory_overview(state: &OsState, mem: &dyn MemoryAccess) -> MemoryOverview {
+    let (conventional_used_paragraphs, _) = walk_mcb_chain_usage(mem, FIRST_MCB_SEGMENT);
+    let conventional_used_bytes = conventional_used_paragraphs * 16;
+    let conventional = MemoryAmount {
+        total_bytes: CONVENTIONAL_MEMORY_TOTAL_BYTES,
+        used_bytes: conventional_used_bytes,
+        free_bytes: CONVENTIONAL_MEMORY_TOTAL_BYTES.saturating_sub(conventional_used_bytes),
+    };
+
+    let memory_manager = state.memory_manager.as_ref();
+
+    let umb = if let Some(manager) = memory_manager {
+        if manager.is_umb_enabled() {
+            let (umb_used_paragraphs, umb_free_paragraphs) =
+                walk_mcb_chain_usage(mem, UMB_FIRST_MCB_SEGMENT);
+            let total_bytes = (umb_used_paragraphs + umb_free_paragraphs) * 16;
+            let used_bytes = umb_used_paragraphs * 16;
+            MemoryAmount {
+                total_bytes,
+                used_bytes,
+                free_bytes: total_bytes.saturating_sub(used_bytes),
+            }
+        } else {
+            MemoryAmount {
+                total_bytes: 0,
+                used_bytes: 0,
+                free_bytes: 0,
+            }
+        }
+    } else {
+        MemoryAmount {
+            total_bytes: 0,
+            used_bytes: 0,
+            free_bytes: 0,
+        }
+    };
+
+    let hma_total_bytes = if memory_manager.is_some_and(|manager| manager.is_xms_enabled()) {
+        HMA_TOTAL_BYTES
+    } else {
+        0
+    };
+    let hma_allocated = memory_manager.is_some_and(|manager| manager.hma_is_allocated());
+    let hma = HmaMemoryAmount {
+        total_bytes: hma_total_bytes,
+        used_bytes: if hma_allocated { hma_total_bytes } else { 0 },
+        free_bytes: if hma_allocated { 0 } else { hma_total_bytes },
+        allocated: hma_allocated,
+    };
+
+    let ems_total_bytes = memory_manager.map_or(0, |manager| manager.ems_total_kb() * 1024);
+    let ems_free_bytes = memory_manager.map_or(0, |manager| manager.ems_free_kb() * 1024);
+    let ems = MemoryAmount {
+        total_bytes: ems_total_bytes,
+        used_bytes: ems_total_bytes.saturating_sub(ems_free_bytes),
+        free_bytes: ems_free_bytes,
+    };
+
+    let xms_total_bytes = memory_manager.map_or(0, |manager| manager.xms_total_kb() * 1024);
+    let xms_free_bytes = memory_manager.map_or(0, |manager| manager.xms_free_kb() * 1024);
+    let xms = MemoryAmount {
+        total_bytes: xms_total_bytes,
+        used_bytes: xms_total_bytes.saturating_sub(xms_free_bytes),
+        free_bytes: xms_free_bytes,
+    };
+
+    let extended_pool = if let Some(manager) = memory_manager {
+        MemoryAmount {
+            total_bytes: manager.extended_pool_total_bytes(),
+            used_bytes: manager.extended_pool_used_bytes(),
+            free_bytes: manager.extended_pool_free_bytes(),
+        }
+    } else {
+        MemoryAmount {
+            total_bytes: 0,
+            used_bytes: 0,
+            free_bytes: 0,
+        }
+    };
+
+    MemoryOverview {
+        conventional,
+        umb,
+        hma,
+        ems,
+        xms,
+        extended_pool,
+        largest_conventional_free_bytes: largest_free_block_paragraphs(mem, FIRST_MCB_SEGMENT) * 16,
+        largest_umb_free_bytes: if umb.total_bytes > 0 {
+            largest_free_block_paragraphs(mem, UMB_FIRST_MCB_SEGMENT) * 16
+        } else {
+            0
+        },
+    }
+}
+
+pub(crate) fn format_host_memory_overview(overview: &MemoryOverview) -> Vec<String> {
+    vec![
+        "Memory overview (HLE DOS)".to_string(),
+        format!(
+            "Conventional: total={} used={} free={}",
+            format_debug_size(overview.conventional.total_bytes),
+            format_debug_size(overview.conventional.used_bytes),
+            format_debug_size(overview.conventional.free_bytes),
+        ),
+        format!(
+            "UMB: total={} used={} free={}",
+            format_debug_size(overview.umb.total_bytes),
+            format_debug_size(overview.umb.used_bytes),
+            format_debug_size(overview.umb.free_bytes),
+        ),
+        format!(
+            "HMA: total={} used={} free={} state={}",
+            format_debug_size(overview.hma.total_bytes),
+            format_debug_size(overview.hma.used_bytes),
+            format_debug_size(overview.hma.free_bytes),
+            if overview.hma.allocated {
+                "allocated"
+            } else {
+                "free"
+            },
+        ),
+        format!(
+            "EMS: total={} used={} free={}",
+            format_debug_size(overview.ems.total_bytes),
+            format_debug_size(overview.ems.used_bytes),
+            format_debug_size(overview.ems.free_bytes),
+        ),
+        format!(
+            "XMS: total={} used={} free={}",
+            format_debug_size(overview.xms.total_bytes),
+            format_debug_size(overview.xms.used_bytes),
+            format_debug_size(overview.xms.free_bytes),
+        ),
+        format!(
+            "Extended backing pool (EMS+XMS): total={} used={} free={}",
+            format_debug_size(overview.extended_pool.total_bytes),
+            format_debug_size(overview.extended_pool.used_bytes),
+            format_debug_size(overview.extended_pool.free_bytes),
+        ),
+        "Note: EMS and XMS share the same backing pool.".to_string(),
+    ]
+}
+
+fn format_debug_size(bytes: u32) -> String {
+    if bytes == 0 {
+        return "0 bytes".to_string();
+    }
+    if bytes.is_multiple_of(1024) {
+        return format!(
+            "{}K ({} bytes)",
+            format_debug_number(bytes / 1024),
+            format_debug_number(bytes),
+        );
+    }
+    format!("{} bytes", format_debug_number(bytes))
+}
+
+fn format_debug_number(value: u32) -> String {
+    let digits = value.to_string();
+    let mut result = String::new();
+    for (index, ch) in digits.chars().rev().enumerate() {
+        if index > 0 && index % 3 == 0 {
+            result.push(',');
+        }
+        result.push(ch);
+    }
+    result.chars().rev().collect()
 }
 
 pub(crate) fn read_mcb_size_pub(mem: &dyn MemoryAccess, segment: u16) -> u16 {
