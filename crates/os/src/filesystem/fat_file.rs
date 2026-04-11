@@ -1,6 +1,9 @@
 use crate::{
     DiskIo,
-    filesystem::{fat::FatVolume, fat_dir::DirEntry},
+    filesystem::{
+        fat::FatVolume,
+        fat_dir::{self, DirEntry},
+    },
 };
 
 pub(crate) struct FatFileCursor {
@@ -212,6 +215,60 @@ pub(crate) fn read_all(
 
     let mut cursor = FatFileCursor::new(entry);
     cursor.read_chunk(vol, disk, entry.file_size as usize)
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct FileCreateOptions {
+    pub(crate) attributes: u8,
+    pub(crate) time: u16,
+    pub(crate) date: u16,
+}
+
+pub(crate) fn create_or_replace_file(
+    vol: &mut FatVolume,
+    dir_cluster: u16,
+    fcb_name: &[u8; 11],
+    data: &[u8],
+    options: FileCreateOptions,
+    disk: &mut dyn DiskIo,
+) -> Result<(), u16> {
+    if let Some(existing) = fat_dir::find_entry(vol, dir_cluster, fcb_name, disk)? {
+        if existing.attribute & fat_dir::ATTR_DIRECTORY != 0 {
+            return Err(0x0005);
+        }
+        if existing.start_cluster >= 2 {
+            vol.free_chain(existing.start_cluster);
+        }
+        fat_dir::delete_entry(vol, &existing, disk)?;
+    }
+
+    let mut writer = FatFileWriter::new(0, 0);
+    if let Err(error) = writer.write_chunk(vol, disk, data) {
+        if writer.start_cluster() >= 2 {
+            vol.free_chain(writer.start_cluster());
+        }
+        return Err(error);
+    }
+
+    let new_entry = DirEntry {
+        name: *fcb_name,
+        attribute: options.attributes,
+        time: options.time,
+        date: options.date,
+        start_cluster: writer.start_cluster(),
+        file_size: writer.position(),
+        dir_sector: 0,
+        dir_offset: 0,
+    };
+
+    if let Err(error) = fat_dir::create_entry(vol, dir_cluster, &new_entry, disk) {
+        if writer.start_cluster() >= 2 {
+            vol.free_chain(writer.start_cluster());
+        }
+        return Err(error);
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

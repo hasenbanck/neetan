@@ -13,6 +13,7 @@ pub mod date;
 pub mod del;
 pub mod dir;
 pub mod diskcopy;
+pub mod dosmock;
 pub mod echo;
 pub mod format;
 pub mod md;

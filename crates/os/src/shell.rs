@@ -11,7 +11,7 @@ use crate::{
     DiskIo, DriveIo, IoAccess, MemoryAccess, OsState,
     commands::{self, Command, RunningCommand, StepResult},
     filesystem,
-    filesystem::{fat, fat_dir, fat_file, fat_file::FatFileWriter},
+    filesystem::{fat, fat_dir, fat_file},
     tables,
 };
 
@@ -105,6 +105,7 @@ impl Shell {
             Box::new(commands::del::Del),
             Box::new(commands::dir::Dir),
             Box::new(commands::diskcopy::Diskcopy),
+            Box::new(commands::dosmock::Dosmock),
             Box::new(commands::format::Format),
             Box::new(commands::md::Md),
             Box::new(commands::mem::Mem),
@@ -1026,47 +1027,35 @@ fn write_redirect_to_file(
         if let Ok(Some(existing)) = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk) {
             append_to_existing_file(vol, &existing, data, disk);
         } else {
-            create_new_file_with_data(vol, dir_cluster, &fcb_name, data, disk, time, date);
+            let _ = fat_file::create_or_replace_file(
+                vol,
+                dir_cluster,
+                &fcb_name,
+                data,
+                fat_file::FileCreateOptions {
+                    attributes: fat_dir::ATTR_ARCHIVE,
+                    time,
+                    date,
+                },
+                disk,
+            );
         }
     } else {
-        // Overwrite mode: delete existing, create new
-        if let Ok(Some(existing)) = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk) {
-            if existing.start_cluster >= 2 {
-                vol.free_chain(existing.start_cluster);
-            }
-            let _ = fat_dir::delete_entry(vol, &existing, disk);
-        }
-        create_new_file_with_data(vol, dir_cluster, &fcb_name, data, disk, time, date);
+        let _ = fat_file::create_or_replace_file(
+            vol,
+            dir_cluster,
+            &fcb_name,
+            data,
+            fat_file::FileCreateOptions {
+                attributes: fat_dir::ATTR_ARCHIVE,
+                time,
+                date,
+            },
+            disk,
+        );
     }
 
     let _ = vol.flush_fat(disk);
-}
-
-fn create_new_file_with_data(
-    vol: &mut fat::FatVolume,
-    dir_cluster: u16,
-    fcb_name: &[u8; 11],
-    data: &[u8],
-    disk: &mut dyn DiskIo,
-    time: u16,
-    date: u16,
-) {
-    let mut writer = FatFileWriter::new(0, 0);
-    if writer.write_chunk(vol, disk, data).is_err() {
-        return;
-    }
-
-    let new_entry = fat_dir::DirEntry {
-        name: *fcb_name,
-        attribute: 0x20, // archive
-        time,
-        date,
-        start_cluster: writer.start_cluster(),
-        file_size: writer.position(),
-        dir_sector: 0,
-        dir_offset: 0,
-    };
-    let _ = fat_dir::create_entry(vol, dir_cluster, &new_entry, disk);
 }
 
 fn append_to_existing_file(

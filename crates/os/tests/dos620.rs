@@ -61,6 +61,9 @@ mod shell;
 #[path = "dos620/commands_dir.rs"]
 mod commands_dir;
 
+#[path = "dos620/commands_dosmock.rs"]
+mod commands_dosmock;
+
 #[path = "dos620/commands_copy.rs"]
 mod commands_copy;
 
