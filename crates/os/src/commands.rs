@@ -27,7 +27,7 @@ pub mod type_cmd;
 pub mod ver;
 pub mod xcopy;
 
-use crate::{DiskIo, IoAccess, OsState};
+use crate::{DriveIo, IoAccess, OsState};
 
 pub(crate) enum StepResult {
     /// Command completed with the given exit code.
@@ -57,8 +57,12 @@ pub(crate) trait RunningCommand {
     /// Must return quickly - never block.
     /// Simple commands (CLS, VER) return Done on the first call.
     /// Long commands (COPY, FORMAT) process one chunk and return Continue.
-    fn step(&mut self, state: &mut OsState, io: &mut IoAccess, disk: &mut dyn DiskIo)
-    -> StepResult;
+    fn step(
+        &mut self,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DriveIo,
+    ) -> StepResult;
 }
 
 pub(crate) fn is_help_request(args: &[u8]) -> bool {

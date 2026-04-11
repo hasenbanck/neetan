@@ -1,9 +1,9 @@
 //! RD / RMDIR command.
 
 use crate::{
-    DiskIo, IoAccess, OsState,
+    DiskIo, DriveIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
-    filesystem::fat_dir,
+    filesystem::{fat::FatVolume, fat_dir},
 };
 
 pub(crate) struct Rd;
@@ -33,7 +33,7 @@ impl RunningCommand for RunningRd {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         let args = self.args.trim_ascii();
         if is_help_request(&self.args) || args.is_empty() {
@@ -105,7 +105,7 @@ fn remove_directory(
 
 /// Returns true if a directory contains only "." and ".." entries.
 fn is_directory_empty(
-    vol: &crate::filesystem::fat::FatVolume,
+    vol: &FatVolume,
     dir_cluster: u16,
     disk: &mut dyn DiskIo,
 ) -> Result<bool, u16> {

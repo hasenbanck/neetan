@@ -1,7 +1,7 @@
 //! ECHO command.
 
 use crate::{
-    DiskIo, IoAccess, OsState,
+    DriveIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult},
 };
 
@@ -38,7 +38,7 @@ impl RunningCommand for RunningEcho {
         &mut self,
         _state: &mut OsState,
         io: &mut IoAccess,
-        _disk: &mut dyn DiskIo,
+        _disk: &mut dyn DriveIo,
     ) -> StepResult {
         if self.text.trim_ascii() == b"/?" {
             print_help(io);

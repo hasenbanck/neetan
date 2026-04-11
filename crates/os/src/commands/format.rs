@@ -1,7 +1,7 @@
 //! FORMAT command.
 
 use crate::{
-    DiskIo, IoAccess, OsState,
+    DiskIo, DriveIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
     filesystem, tables,
 };
@@ -198,7 +198,7 @@ impl RunningFormat {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         if is_help_request(&self.args) || self.args.trim_ascii().is_empty() {
             print_help(io);
@@ -252,7 +252,7 @@ impl RunningFormat {
         &mut self,
         mut format_state: FormatState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         if format_state.current_track >= format_state.total_tracks {
             self.phase = FormatPhase::WriteBootSector(format_state);
@@ -281,7 +281,7 @@ impl RunningFormat {
         &mut self,
         format_state: FormatState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         let ss = format_state.sector_size as usize;
 
@@ -577,7 +577,7 @@ impl RunningCommand for RunningFormat {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, FormatPhase::Init);
         match phase {

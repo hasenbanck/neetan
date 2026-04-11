@@ -25,6 +25,22 @@ fn dir_basic_listing() {
 }
 
 #[test]
+fn dir_lists_cdrom_root() {
+    let mut machine = boot_hle_with_cdrom();
+    type_string(&mut machine.bus, b"Q:\r");
+    run_until_prompt_ap(&mut machine);
+
+    type_string(&mut machine.bus, b"DIR\r");
+    run_until_prompt_ap(&mut machine);
+
+    let readme = [0x0052, 0x0045, 0x0041, 0x0044, 0x004D, 0x0045]; // "README"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &readme),
+        "DIR on Q: should list README.TXT from the synthetic CD-ROM"
+    );
+}
+
+#[test]
 fn dir_wildcard_txt() {
     let mut machine = boot_hle_with_floppy();
     type_string(&mut machine.bus, b"A:\r");

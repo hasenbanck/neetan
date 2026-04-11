@@ -1,7 +1,7 @@
 //! DEL / ERASE command.
 
 use crate::{
-    DiskIo, IoAccess, OsState,
+    DiskIo, DriveIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
     filesystem::fat_dir,
 };
@@ -54,7 +54,7 @@ impl RunningDel {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         let args = self.args.trim_ascii().to_vec();
         if is_help_request(&args) || args.is_empty() {
@@ -126,7 +126,7 @@ impl RunningDel {
         mut del_state: DelState,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         let vol = match state.fat_volumes[del_state.drive_index as usize].as_ref() {
             Some(v) => v,
@@ -199,7 +199,7 @@ impl RunningDel {
         entry: fat_dir::DirEntry,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         if io.memory.read_byte(KB_BUF_COUNT) == 0 {
             self.phase = DelPhase::PromptFile(del_state, entry);
@@ -245,7 +245,7 @@ impl RunningCommand for RunningDel {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, DelPhase::Init);
         match phase {

@@ -3,7 +3,7 @@
 use blake3::Hasher;
 
 use crate::{
-    DiskIo, IoAccess, OsState,
+    DiskIo, DriveIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
     dos,
     filesystem::{fat_dir, fat_file::FatFileCursor},
@@ -63,7 +63,7 @@ impl RunningB3sum {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         let args = self.args.trim_ascii();
         if args.is_empty() || is_help_request(args) {
@@ -88,7 +88,7 @@ impl RunningB3sum {
         mut b3sum_state: B3sumState,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         if b3sum_state.current_argument >= b3sum_state.arguments.len() {
             return StepResult::Done(0);
@@ -185,7 +185,7 @@ impl RunningB3sum {
         mut file_hash_state: Box<FileHashState>,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         let volume = match state.fat_volumes[file_hash_state.drive_index as usize].as_ref() {
             Some(volume) => volume,
@@ -229,7 +229,7 @@ impl RunningCommand for RunningB3sum {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, B3sumPhase::Init);
         match phase {

@@ -1,9 +1,9 @@
 //! DIR command.
 
 use crate::{
-    DiskIo, IoAccess, MemoryAccess, OsState,
+    DriveIo, IoAccess, MemoryAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
-    filesystem::fat_dir,
+    filesystem::{self, ReadDirEntry, ReadDirectory, fat_dir, find_matching_read_entry},
     tables,
 };
 
@@ -60,7 +60,7 @@ impl Default for AttrFilter {
 
 struct DirState {
     drive_index: u8,
-    dir_cluster: u16,
+    directory: ReadDirectory,
     pattern: [u8; 11],
     wide: bool,
     bare: bool,
@@ -72,11 +72,9 @@ struct DirState {
     total_bytes: u64,
     lines_shown: u16,
     wide_col: u8,
-    // For sorted or recursive: collected entries
-    entries: Vec<fat_dir::DirEntry>,
+    entries: Vec<ReadDirEntry>,
     entry_index: usize,
-    // For /S recursive traversal
-    dir_stack: Vec<(u16, Vec<u8>)>, // (cluster, path)
+    dir_stack: Vec<(ReadDirectory, Vec<u8>)>,
     current_path: Vec<u8>,
 }
 
@@ -100,7 +98,7 @@ impl RunningDir {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         if is_help_request(&self.args) {
             print_help(io);
@@ -122,7 +120,7 @@ impl RunningDir {
         &mut self,
         mut dir_state: DirState,
         state: &mut OsState,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         dir_state.entries.clear();
         dir_state.entry_index = 0;
@@ -138,15 +136,22 @@ impl RunningDir {
                     .virtual_drive
                     .find_matching(&dir_state.pattern, attr_mask, start_index)
             {
-                let entry = fat_dir::DirEntry {
+                let entry = ReadDirEntry {
                     name: ventry.name,
                     attribute: ventry.attribute,
                     time: ventry.time,
                     date: ventry.date,
-                    start_cluster: 0,
                     file_size: ventry.file_size,
-                    dir_sector: 0,
-                    dir_offset: 0,
+                    source: filesystem::ReadDirEntrySource::Fat(fat_dir::DirEntry {
+                        name: ventry.name,
+                        attribute: ventry.attribute,
+                        time: ventry.time,
+                        date: ventry.date,
+                        start_cluster: 0,
+                        file_size: ventry.file_size,
+                        dir_sector: 0,
+                        dir_offset: 0,
+                    }),
                 };
                 if should_show_entry(&entry, &dir_state.attr_filter) {
                     dir_state.entries.push(entry);
@@ -154,11 +159,6 @@ impl RunningDir {
                 start_index = next_index;
             }
         } else {
-            let vol = match state.fat_volumes[dir_state.drive_index as usize].as_ref() {
-                Some(v) => v,
-                None => return StepResult::Done(1),
-            };
-
             let mut start_index = 0u16;
             let attr_mask = fat_dir::ATTR_HIDDEN
                 | fat_dir::ATTR_SYSTEM
@@ -166,9 +166,10 @@ impl RunningDir {
                 | fat_dir::ATTR_READ_ONLY;
 
             loop {
-                let result = fat_dir::find_matching(
-                    vol,
-                    dir_state.dir_cluster,
+                let result = find_matching_read_entry(
+                    state,
+                    dir_state.drive_index,
+                    &dir_state.directory,
                     &dir_state.pattern,
                     attr_mask,
                     start_index,
@@ -200,11 +201,11 @@ impl RunningDir {
         dir_state: DirState,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         if !dir_state.bare {
             let drive_letter = (b'A' + dir_state.drive_index) as char;
-            let label = get_volume_label(state, dir_state.drive_index, disk);
+            let label = get_volume_label(state, dir_state.drive_index, &dir_state.directory, disk);
             if let Some(label) = label {
                 let msg = format!(" Volume in drive {} is {}\r\n", drive_letter, label);
                 io.print(msg.as_bytes());
@@ -310,7 +311,7 @@ impl RunningDir {
         mut dir_state: DirState,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         // /S: find subdirectories in the entries we just listed and push them
         // We need to scan current entries for directories, excluding "." and ".."
@@ -322,20 +323,16 @@ impl RunningDir {
             self.phase = DirPhase::Footer(dir_state);
             return StepResult::Continue;
         }
-        let vol = match state.fat_volumes[dir_state.drive_index as usize].as_ref() {
-            Some(v) => v,
-            None => return StepResult::Done(1),
-        };
-
         // Collect subdirectories from current dir (not from filtered entries)
         if dir_state.dir_stack.is_empty() {
             let all_pattern = [b'?'; 11];
             let mut si = 0u16;
             let attr_mask = fat_dir::ATTR_HIDDEN | fat_dir::ATTR_SYSTEM | fat_dir::ATTR_DIRECTORY;
             loop {
-                let result = fat_dir::find_matching(
-                    vol,
-                    dir_state.dir_cluster,
+                let result = find_matching_read_entry(
+                    state,
+                    dir_state.drive_index,
+                    &dir_state.directory,
                     &all_pattern,
                     attr_mask,
                     si,
@@ -346,7 +343,6 @@ impl RunningDir {
                         if entry.attribute & fat_dir::ATTR_DIRECTORY != 0
                             && entry.name != *b".          "
                             && entry.name != *b"..         "
-                            && entry.start_cluster >= 2
                         {
                             let mut subpath = if dir_state.current_path.is_empty() {
                                 let cds_path =
@@ -360,7 +356,19 @@ impl RunningDir {
                             }
                             let name = fat_dir::fcb_to_display_name(&entry.name);
                             subpath.extend_from_slice(&name);
-                            dir_state.dir_stack.push((entry.start_cluster, subpath));
+                            let directory = match entry.source {
+                                filesystem::ReadDirEntrySource::Fat(entry) => {
+                                    ReadDirectory::Fat(entry.start_cluster)
+                                }
+                                filesystem::ReadDirEntrySource::Iso(entry) => {
+                                    let Some(directory) = entry.directory else {
+                                        si = next_index;
+                                        continue;
+                                    };
+                                    ReadDirectory::Iso(directory)
+                                }
+                            };
+                            dir_state.dir_stack.push((directory, subpath));
                         }
                         si = next_index;
                     }
@@ -370,8 +378,8 @@ impl RunningDir {
         }
 
         // Pop next subdir from stack
-        if let Some((cluster, path)) = dir_state.dir_stack.pop() {
-            dir_state.dir_cluster = cluster;
+        if let Some((directory, path)) = dir_state.dir_stack.pop() {
+            dir_state.directory = directory;
             dir_state.current_path = path;
             if !dir_state.bare {
                 io.println(b"");
@@ -394,7 +402,7 @@ impl RunningCommand for RunningDir {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, DirPhase::Init);
         match phase {
@@ -426,7 +434,7 @@ fn print_help(io: &mut IoAccess) {
     io.println(b"          H hidden, S system, D directories, R read-only.");
 }
 
-fn should_show_entry(entry: &fat_dir::DirEntry, filter: &AttrFilter) -> bool {
+fn should_show_entry(entry: &ReadDirEntry, filter: &AttrFilter) -> bool {
     // Never show volume ID
     if entry.attribute & fat_dir::ATTR_VOLUME_ID != 0 {
         return false;
@@ -450,7 +458,7 @@ fn should_show_entry(entry: &fat_dir::DirEntry, filter: &AttrFilter) -> bool {
     true
 }
 
-fn sort_entries(entries: &mut [fat_dir::DirEntry], order: SortOrder) {
+fn sort_entries(entries: &mut [ReadDirEntry], order: SortOrder) {
     entries.sort_by(|a, b| match order {
         SortOrder::Name => a.name.cmp(&b.name),
         SortOrder::NameDesc => b.name.cmp(&a.name),
@@ -483,7 +491,7 @@ fn sort_entries(entries: &mut [fat_dir::DirEntry], order: SortOrder) {
 fn init_dir(
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DiskIo,
+    disk: &mut dyn DriveIo,
     args: &[u8],
 ) -> Result<DirState, &'static [u8]> {
     let args = args.trim_ascii();
@@ -542,13 +550,13 @@ fn init_dir(
     let has_wildcard = path.contains(&b'*') || path.contains(&b'?');
 
     if has_wildcard {
-        let (drive_index, dir_cluster, fcb_pattern) = state
-            .resolve_file_path(path, io.memory, disk)
+        let read_path = state
+            .resolve_read_file_path(path, io.memory, disk)
             .map_err(|_| &b"File Not Found\r\n"[..])?;
         Ok(DirState {
-            drive_index,
-            dir_cluster,
-            pattern: fcb_pattern,
+            drive_index: read_path.drive_index,
+            directory: read_path.directory,
+            pattern: read_path.name,
             wide,
             bare,
             paged,
@@ -565,10 +573,10 @@ fn init_dir(
             current_path: Vec::new(),
         })
     } else {
-        match state.resolve_dir_path(path, io.memory, disk) {
-            Ok((drive_index, dir_cluster)) => Ok(DirState {
-                drive_index,
-                dir_cluster,
+        match state.resolve_read_dir_path(path, io.memory, disk) {
+            Ok(read_path) => Ok(DirState {
+                drive_index: read_path.drive_index,
+                directory: read_path.directory,
                 pattern: [b'?'; 11],
                 wide,
                 bare,
@@ -586,13 +594,13 @@ fn init_dir(
                 current_path: Vec::new(),
             }),
             Err(_) => {
-                let (drive_index, dir_cluster, fcb_pattern) = state
-                    .resolve_file_path(path, io.memory, disk)
+                let read_path = state
+                    .resolve_read_file_path(path, io.memory, disk)
                     .map_err(|_| &b"File Not Found\r\n"[..])?;
                 Ok(DirState {
-                    drive_index,
-                    dir_cluster,
-                    pattern: fcb_pattern,
+                    drive_index: read_path.drive_index,
+                    directory: read_path.directory,
+                    pattern: read_path.name,
                     wide,
                     bare,
                     paged,
@@ -690,7 +698,7 @@ fn parse_attr_filter(spec: &[u8]) -> AttrFilter {
     filter
 }
 
-fn format_standard(entry: &fat_dir::DirEntry, io: &mut IoAccess) {
+fn format_standard(entry: &ReadDirEntry, io: &mut IoAccess) {
     // Format: "FILENAME EXT    <size>  <date>  <time>"
     // Base name (left-justified, 8 chars)
     let base_end = entry.name[..8]
@@ -744,7 +752,7 @@ fn format_standard(entry: &fat_dir::DirEntry, io: &mut IoAccess) {
     io.println(b"");
 }
 
-fn format_bare(entry: &fat_dir::DirEntry, io: &mut IoAccess) {
+fn format_bare(entry: &ReadDirEntry, io: &mut IoAccess) {
     let display_name = fat_dir::fcb_to_display_name(&entry.name);
     for &byte in &display_name {
         io.output_byte(byte);
@@ -752,7 +760,7 @@ fn format_bare(entry: &fat_dir::DirEntry, io: &mut IoAccess) {
     io.println(b"");
 }
 
-fn format_wide(entry: &fat_dir::DirEntry, dir_state: &mut DirState, io: &mut IoAccess) {
+fn format_wide(entry: &ReadDirEntry, dir_state: &mut DirState, io: &mut IoAccess) {
     let display_name = fat_dir::fcb_to_display_name(&entry.name);
 
     if entry.attribute & fat_dir::ATTR_DIRECTORY != 0 {
@@ -782,10 +790,23 @@ fn format_wide(entry: &fat_dir::DirEntry, dir_state: &mut DirState, io: &mut IoA
     }
 }
 
-fn get_volume_label(state: &OsState, drive_index: u8, disk: &mut dyn DiskIo) -> Option<String> {
+fn get_volume_label(
+    state: &OsState,
+    drive_index: u8,
+    directory: &ReadDirectory,
+    disk: &mut dyn DriveIo,
+) -> Option<String> {
     if drive_index == 25 {
         return None;
     }
+    if matches!(directory, ReadDirectory::Iso(_)) {
+        let volume = filesystem::iso9660::IsoVolume::mount(disk).ok()?;
+        if volume.volume_label.is_empty() {
+            return None;
+        }
+        return Some(String::from_utf8_lossy(&volume.volume_label).into_owned());
+    }
+
     let vol = state.fat_volumes[drive_index as usize].as_ref()?;
     let pattern = [b'?'; 11];
     let mut start_index = 0u16;

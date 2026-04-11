@@ -24,7 +24,7 @@ pub mod tables;
 
 pub use common::{
     AudioChannelInfo, CdAudioState, CdAudioStatus, CdromIo, CdromTrackInfo, CdromTrackType,
-    ConsoleIo, CpuAccess, DiskIo, MemoryAccess, OsBootStage, Tracing,
+    ConsoleIo, CpuAccess, DiskIo, DriveIo, MemoryAccess, OsBootStage, Tracing,
 };
 
 /// Information about a discovered drive for CDS/DPB/DAUA population.
@@ -86,6 +86,10 @@ pub(crate) struct OsState {
     pub(crate) sft2_count: u16,
     /// Pending buffered input state for INT 21h AH=0Ah.
     pub(crate) buffered_input: Option<BufferedInputState>,
+    /// Active ISO-backed SFT entries, indexed by SFT slot.
+    pub(crate) open_iso_files: Vec<Option<filesystem::iso9660::IsoDirEntry>>,
+    /// Active directory for FINDFIRST/FINDNEXT on non-FAT media.
+    pub(crate) read_find_directory: Option<filesystem::ReadDirectory>,
     /// Function key escape code storage for INT DCh CL=0x0C/0x0D (786 bytes).
     pub(crate) fn_key_map: Vec<u8>,
     /// Pending bytes from function key / arrow key expansion. When an extended
@@ -320,6 +324,8 @@ impl NeetanOs {
                 mscdex: cdrom::MscdexState::new(),
                 sft2_count: 15,
                 buffered_input: None,
+                open_iso_files: vec![None; tables::SFT_TOTAL_COUNT as usize],
+                read_find_directory: None,
                 fn_key_map: build_default_fn_key_map(),
                 pending_key_bytes: std::collections::VecDeque::new(),
                 interim_console_flag: 0,
@@ -574,7 +580,7 @@ impl NeetanOs {
         &mut self,
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) {
         let mut shell = self.shell.take().expect("shell not initialized");
         {
@@ -611,7 +617,7 @@ impl NeetanOs {
         &mut self,
         cpu: &mut dyn CpuAccess,
         mem: &mut dyn MemoryAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
         path: &[u8],
         args: &[u8],
     ) -> Result<(), u16> {
@@ -1496,6 +1502,32 @@ impl OsState {
         Ok(())
     }
 
+    fn drive_has_cdrom_filesystem(&self, drive_index: u8, mem: &dyn MemoryAccess) -> bool {
+        if drive_index != self.mscdex.drive_letter {
+            return false;
+        }
+        let cds_addr = tables::CDS_BASE + (drive_index as u32) * tables::CDS_ENTRY_SIZE;
+        let cds_flags = mem.read_word(cds_addr + tables::CDS_OFF_FLAGS);
+        cds_flags != 0 && cds_flags & tables::CDS_FLAG_PHYSICAL == 0
+    }
+
+    pub(crate) fn ensure_readable_drive_ready(
+        &mut self,
+        drive_index: u8,
+        mem: &dyn MemoryAccess,
+        device: &mut dyn DriveIo,
+    ) -> Result<(), u16> {
+        if drive_index == 25 {
+            return Ok(());
+        }
+
+        if self.drive_has_cdrom_filesystem(drive_index, mem) {
+            filesystem::iso9660::IsoVolume::mount(device).map(|_| ())
+        } else {
+            self.ensure_volume_mounted(drive_index, mem, device)
+        }
+    }
+
     /// Reads an ASCIIZ string from emulated memory.
     pub(crate) fn read_asciiz(mem: &dyn MemoryAccess, addr: u32, max_len: usize) -> Vec<u8> {
         let mut result = Vec::new();
@@ -1559,6 +1591,74 @@ impl OsState {
         Ok((drive_index, dir_cluster, fcb_name))
     }
 
+    pub(crate) fn resolve_read_file_path(
+        &mut self,
+        path: &[u8],
+        mem: &dyn MemoryAccess,
+        device: &mut dyn DriveIo,
+    ) -> Result<filesystem::ReadFilePath, u16> {
+        let normalized_path = dos::normalize_path(path);
+        let (drive_opt, components, is_absolute) = filesystem::split_path(&normalized_path);
+        let drive_index = drive_opt.unwrap_or(self.current_drive);
+
+        if components.is_empty() {
+            return Err(0x0002);
+        }
+
+        if drive_index == 25 {
+            let (drive_index, dir_cluster, name) = self.resolve_file_path(path, mem, device)?;
+            return Ok(filesystem::ReadFilePath {
+                drive_index,
+                directory: filesystem::ReadDirectory::Fat(dir_cluster),
+                name,
+            });
+        }
+
+        self.ensure_readable_drive_ready(drive_index, mem, device)?;
+
+        let mut directory = if is_absolute {
+            if self.drive_has_cdrom_filesystem(drive_index, mem) {
+                let volume = filesystem::iso9660::IsoVolume::mount(device)?;
+                filesystem::ReadDirectory::Iso(volume.root_directory)
+            } else {
+                filesystem::ReadDirectory::Fat(0)
+            }
+        } else {
+            self.current_read_directory(drive_index, mem, device)?
+        };
+
+        for component in &components[..components.len() - 1] {
+            let fcb = filesystem::fat_dir::name_to_fcb(component);
+            directory = match &directory {
+                filesystem::ReadDirectory::Fat(dir_cluster) => {
+                    let volume = self.fat_volumes[drive_index as usize]
+                        .as_ref()
+                        .ok_or(0x000Fu16)?;
+                    let entry =
+                        filesystem::fat_dir::find_entry(volume, *dir_cluster, &fcb, device)?
+                            .ok_or(0x0003u16)?;
+                    if entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY == 0 {
+                        return Err(0x0003);
+                    }
+                    filesystem::ReadDirectory::Fat(entry.start_cluster)
+                }
+                filesystem::ReadDirectory::Iso(directory) => {
+                    let volume = filesystem::iso9660::IsoVolume::mount(device)?;
+                    let entry = filesystem::iso9660::find_entry(&volume, directory, &fcb, device)?
+                        .ok_or(0x0003u16)?;
+                    let next_directory = entry.directory.ok_or(0x0003u16)?;
+                    filesystem::ReadDirectory::Iso(next_directory)
+                }
+            };
+        }
+
+        Ok(filesystem::ReadFilePath {
+            drive_index,
+            directory,
+            name: filesystem::fat_dir::name_to_fcb(components.last().unwrap()),
+        })
+    }
+
     /// Resolves a path to a directory, returning `(drive_index, dir_cluster)`.
     /// Walks all path components (unlike `resolve_file_path` which splits off the last).
     /// An empty path or just a drive letter returns the current directory for that drive.
@@ -1612,6 +1712,70 @@ impl OsState {
         Ok((drive_index, dir_cluster))
     }
 
+    pub(crate) fn resolve_read_dir_path(
+        &mut self,
+        path: &[u8],
+        mem: &dyn MemoryAccess,
+        device: &mut dyn DriveIo,
+    ) -> Result<filesystem::ReadDirPath, u16> {
+        let normalized_path = dos::normalize_path(path);
+        let (drive_opt, components, is_absolute) = filesystem::split_path(&normalized_path);
+        let drive_index = drive_opt.unwrap_or(self.current_drive);
+
+        if drive_index == 25 {
+            let (drive_index, dir_cluster) = self.resolve_dir_path(path, mem, device)?;
+            return Ok(filesystem::ReadDirPath {
+                drive_index,
+                directory: filesystem::ReadDirectory::Fat(dir_cluster),
+            });
+        }
+
+        self.ensure_readable_drive_ready(drive_index, mem, device)?;
+
+        let mut directory = if is_absolute || components.is_empty() {
+            if self.drive_has_cdrom_filesystem(drive_index, mem) {
+                let volume = filesystem::iso9660::IsoVolume::mount(device)?;
+                filesystem::ReadDirectory::Iso(volume.root_directory)
+            } else if components.is_empty() && !is_absolute {
+                self.current_read_directory(drive_index, mem, device)?
+            } else {
+                filesystem::ReadDirectory::Fat(0)
+            }
+        } else {
+            self.current_read_directory(drive_index, mem, device)?
+        };
+
+        for component in &components {
+            let fcb = filesystem::fat_dir::name_to_fcb(component);
+            directory = match &directory {
+                filesystem::ReadDirectory::Fat(dir_cluster) => {
+                    let volume = self.fat_volumes[drive_index as usize]
+                        .as_ref()
+                        .ok_or(0x000Fu16)?;
+                    let entry =
+                        filesystem::fat_dir::find_entry(volume, *dir_cluster, &fcb, device)?
+                            .ok_or(0x0003u16)?;
+                    if entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY == 0 {
+                        return Err(0x0003);
+                    }
+                    filesystem::ReadDirectory::Fat(entry.start_cluster)
+                }
+                filesystem::ReadDirectory::Iso(directory) => {
+                    let volume = filesystem::iso9660::IsoVolume::mount(device)?;
+                    let entry = filesystem::iso9660::find_entry(&volume, directory, &fcb, device)?
+                        .ok_or(0x0003u16)?;
+                    let next_directory = entry.directory.ok_or(0x0003u16)?;
+                    filesystem::ReadDirectory::Iso(next_directory)
+                }
+            };
+        }
+
+        Ok(filesystem::ReadDirPath {
+            drive_index,
+            directory,
+        })
+    }
+
     /// Returns the cluster number of the current directory for a drive by
     /// reading the CDS path and walking from root.
     fn current_dir_cluster(
@@ -1649,12 +1813,54 @@ impl OsState {
         Ok(dir_cluster)
     }
 
+    fn current_read_directory(
+        &mut self,
+        drive_index: u8,
+        mem: &dyn MemoryAccess,
+        device: &mut dyn DriveIo,
+    ) -> Result<filesystem::ReadDirectory, u16> {
+        if self.drive_has_cdrom_filesystem(drive_index, mem) {
+            let volume = filesystem::iso9660::IsoVolume::mount(device)?;
+            let cds_path = Self::read_cds_path(mem, drive_index);
+            let (_, components, _) = filesystem::split_path(&cds_path);
+            let mut directory = volume.root_directory.clone();
+
+            for component in &components {
+                let fcb = filesystem::fat_dir::name_to_fcb(component);
+                let entry = filesystem::iso9660::find_entry(&volume, &directory, &fcb, device)?
+                    .ok_or(0x0003u16)?;
+                directory = entry.directory.ok_or(0x0003u16)?;
+            }
+
+            Ok(filesystem::ReadDirectory::Iso(directory))
+        } else {
+            Ok(filesystem::ReadDirectory::Fat(self.current_dir_cluster(
+                drive_index,
+                mem,
+                device,
+            )?))
+        }
+    }
+
+    fn read_cds_path(mem: &dyn MemoryAccess, drive_index: u8) -> Vec<u8> {
+        let cds_addr = tables::CDS_BASE + (drive_index as u32) * tables::CDS_ENTRY_SIZE;
+        let mut path = Vec::new();
+        for i in 0..67u32 {
+            let byte = mem.read_byte(cds_addr + tables::CDS_OFF_PATH + i);
+            if byte == 0 {
+                break;
+            }
+            path.push(byte);
+        }
+        path
+    }
+
     /// Changes the current directory for a drive.
     /// `path_bytes` is a raw path like `\DIR`, `C:\DIR`, or `SUBDIR`.
     pub(crate) fn change_directory(
         &mut self,
         memory: &mut dyn MemoryAccess,
-        disk: &mut dyn DiskIo,
+        device: &mut dyn DriveIo,
         path_bytes: &[u8],
     ) -> Result<(), u16> {
         if path_bytes.is_empty() {
@@ -1731,21 +1937,7 @@ impl OsState {
                 // Z: is a virtual drive with no filesystem
                 return Err(0x0003);
             }
-            self.ensure_volume_mounted(drive_index, memory, disk)?;
-            let vol = self.fat_volumes[drive_index as usize]
-                .as_ref()
-                .ok_or(0x000Fu16)?;
-            let (_, components, _) = filesystem::split_path(final_path);
-            let mut dir_cluster = 0u16;
-            for component in &components {
-                let fcb = filesystem::fat_dir::name_to_fcb(component);
-                let entry = filesystem::fat_dir::find_entry(vol, dir_cluster, &fcb, disk)?
-                    .ok_or(0x0003u16)?;
-                if entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY == 0 {
-                    return Err(0x0003);
-                }
-                dir_cluster = entry.start_cluster;
-            }
+            self.resolve_read_dir_path(final_path, memory, device)?;
         }
 
         // Write path to CDS entry

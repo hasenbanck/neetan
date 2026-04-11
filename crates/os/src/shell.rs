@@ -8,8 +8,9 @@ use std::collections::VecDeque;
 use history::History;
 
 use crate::{
-    DiskIo, IoAccess, MemoryAccess, OsState,
+    DiskIo, DriveIo, IoAccess, MemoryAccess, OsState,
     commands::{self, Command, RunningCommand, StepResult},
+    filesystem,
     filesystem::{fat, fat_dir, fat_file, fat_file::FatFileWriter},
     tables,
 };
@@ -156,7 +157,7 @@ impl Shell {
         }
     }
 
-    pub(crate) fn step(&mut self, state: &mut OsState, io: &mut IoAccess, disk: &mut dyn DiskIo) {
+    pub(crate) fn step(&mut self, state: &mut OsState, io: &mut IoAccess, disk: &mut dyn DriveIo) {
         let phase = std::mem::replace(&mut self.phase, ShellPhase::ShowPrompt);
         self.phase = match phase {
             ShellPhase::ShowPrompt => {
@@ -343,7 +344,7 @@ impl Shell {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
         line: &[u8],
     ) -> ShellPhase {
         let trimmed = line.trim_ascii();
@@ -391,7 +392,7 @@ impl Shell {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
         segment: &[u8],
     ) -> ShellPhase {
         let parsed = parse_redirections(segment);
@@ -424,7 +425,7 @@ impl Shell {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
         command: &[u8],
     ) -> ShellPhase {
         let trimmed = command.trim_ascii();
@@ -470,11 +471,9 @@ impl Shell {
                 self.last_exit_code = 1;
                 return ShellPhase::ShowPrompt;
             }
-            // For physical drives, verify media is accessible.
-            if drive_index != 25
-                && state
-                    .ensure_volume_mounted(drive_index, io.memory, disk)
-                    .is_err()
+            if state
+                .ensure_readable_drive_ready(drive_index, io.memory, disk)
+                .is_err()
             {
                 let msg = [
                     b"No media in drive ".as_slice(),
@@ -546,7 +545,7 @@ impl Shell {
         pipe_data: Option<Vec<u8>>,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        disk: &mut dyn DriveIo,
     ) -> ShellPhase {
         // Set up output redirection for this command
         if pending.parsed.output_redirect.is_some() {
@@ -872,8 +871,8 @@ fn find_external_program(
     original_cmd: &[u8],
     cmd_upper: &[u8],
     state: &mut OsState,
-    memory: &dyn crate::MemoryAccess,
-    disk: &mut dyn DiskIo,
+    memory: &dyn MemoryAccess,
+    disk: &mut dyn DriveIo,
 ) -> Option<Vec<u8>> {
     let has_extension =
         cmd_upper.len() > 4 && (cmd_upper.ends_with(b".COM") || cmd_upper.ends_with(b".EXE"));
@@ -917,8 +916,8 @@ fn try_find_program(
     path: &[u8],
     has_extension: bool,
     state: &mut OsState,
-    memory: &dyn crate::MemoryAccess,
-    disk: &mut dyn DiskIo,
+    memory: &dyn MemoryAccess,
+    disk: &mut dyn DriveIo,
 ) -> Option<Vec<u8>> {
     if has_extension {
         if file_exists_on_disk(path, state, memory, disk) {
@@ -944,24 +943,18 @@ fn try_find_program(
 fn file_exists_on_disk(
     path: &[u8],
     state: &mut OsState,
-    memory: &dyn crate::MemoryAccess,
-    disk: &mut dyn DiskIo,
+    memory: &dyn MemoryAccess,
+    disk: &mut dyn DriveIo,
 ) -> bool {
-    let (drive_index, dir_cluster, fcb_name) = match state.resolve_file_path(path, memory, disk) {
-        Ok(r) => r,
+    let read_path = match state.resolve_read_file_path(path, memory, disk) {
+        Ok(path) => path,
         Err(_) => return false,
     };
-    if drive_index == 25 {
-        return false;
-    }
-    let vol = match state.fat_volumes[drive_index as usize].as_ref() {
-        Some(v) => v,
-        None => return false,
+    let entry = match filesystem::find_read_entry(state, &read_path, disk) {
+        Ok(Some(entry)) => entry,
+        _ => return false,
     };
-    matches!(
-        fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk),
-        Ok(Some(e)) if e.attribute & fat_dir::ATTR_DIRECTORY == 0
-    )
+    entry.attribute & fat_dir::ATTR_DIRECTORY == 0
 }
 
 fn parse_bat_params(args: &[u8]) -> [Vec<u8>; 10] {
@@ -1096,24 +1089,20 @@ fn append_to_existing_file(
 fn read_file_data(
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DiskIo,
+    disk: &mut dyn DriveIo,
     filename: &[u8],
 ) -> Result<Vec<u8>, &'static [u8]> {
-    let (drive_index, dir_cluster, fcb_name) = state
-        .resolve_file_path(filename, io.memory, disk)
+    let read_path = state
+        .resolve_read_file_path(filename, io.memory, disk)
         .map_err(|_| &b"File not found\r\n"[..])?;
-
-    if drive_index == 25 {
+    if read_path.drive_index == 25 {
         return Err(b"Access denied\r\n");
     }
 
-    let vol = state.fat_volumes[drive_index as usize]
-        .as_ref()
-        .ok_or(&b"Invalid drive\r\n"[..])?;
-
-    let entry = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk)
+    let entry = filesystem::find_read_entry(state, &read_path, disk)
         .map_err(|_| &b"File not found\r\n"[..])?
         .ok_or(&b"File not found\r\n"[..])?;
 
-    fat_file::read_all(vol, &entry, disk).map_err(|_| &b"Read error\r\n"[..])
+    filesystem::read_entry_all(state, read_path.drive_index, &entry, disk)
+        .map_err(|_| &b"Read error\r\n"[..])
 }

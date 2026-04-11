@@ -24,7 +24,7 @@ pub use error::{Context, ContextError, OptionContext, StringError};
 pub use jis::{JisChar, char_to_jis, jis_slice_to_string, jis_to_char, str_to_jis};
 pub use os::{
     AudioChannelInfo, CdAudioState, CdAudioStatus, CdromIo, CdromTrackInfo, CdromTrackType,
-    ConsoleIo, CpuAccess, DiskIo, MemoryAccess,
+    ConsoleIo, CpuAccess, DiskIo, DriveIo, MemoryAccess,
 };
 pub use stack_vec::StackVec;
 pub use trace::{NoTracing, OsBootStage, Tracing};
