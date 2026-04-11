@@ -1371,6 +1371,33 @@ mod tests {
     }
 
     #[test]
+    fn esc_plain_d_calls_linefeed() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+        console.set_cursor(&mut memory, 5, 10);
+        feed_str(&mut console, &mut memory, "\x1bD");
+        assert_cursor(&console, &memory, 6, 10);
+    }
+
+    #[test]
+    fn esc_plain_e_calls_carriage_return_then_linefeed() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+        console.set_cursor(&mut memory, 5, 10);
+        feed_str(&mut console, &mut memory, "\x1bE");
+        assert_cursor(&console, &memory, 6, 0);
+    }
+
+    #[test]
+    fn esc_plain_m_calls_reverse_linefeed() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+        console.set_cursor(&mut memory, 5, 10);
+        feed_str(&mut console, &mut memory, "\x1bM");
+        assert_cursor(&console, &memory, 4, 10);
+    }
+
+    #[test]
     fn esc_printable_single() {
         let mut console = make_console();
         let mut memory = make_memory();

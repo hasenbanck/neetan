@@ -28,6 +28,9 @@ mod config;
 #[path = "dos620/compatibility.rs"]
 mod compatibility;
 
+#[path = "dos620/escape_sequences.rs"]
+mod escape_sequences;
+
 #[path = "dos620/syscalls_int21h.rs"]
 mod syscalls_int21h;
 
