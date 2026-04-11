@@ -5,6 +5,7 @@
 //! instances (RunningCommand). The shell calls step() once per INT 21h AH=FFh
 //! dispatch - commands must return quickly and never block.
 
+pub mod b3sum;
 pub mod cd;
 pub mod cls;
 pub mod copy;

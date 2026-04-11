@@ -11,6 +11,7 @@ rust-version = "1.94"
 [workspace.dependencies]
 # Internal dependencies
 audio_engine = { path = "crates/audio_engine" }
+blake3 = { path = "crates/blake3" }
 common = { path = "crates/common" }
 cpu = { path = "crates/cpu" }
 device = { path = "crates/device" }
@@ -76,6 +77,10 @@ opt-level = 3
 codegen-units = 1
 
 [profile.dev.package.audio_engine]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.blake3]
 opt-level = 3
 codegen-units = 1
 

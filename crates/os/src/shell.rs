@@ -92,6 +92,7 @@ pub(crate) struct Shell {
 impl Shell {
     fn build_commands() -> Vec<Box<dyn Command>> {
         vec![
+            Box::new(commands::b3sum::B3sum),
             Box::new(commands::cls::Cls),
             Box::new(commands::ver::Ver),
             Box::new(commands::echo::Echo),
