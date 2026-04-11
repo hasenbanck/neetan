@@ -452,6 +452,10 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// Inserts a floppy disk image into the specified drive (0-3).
     pub fn insert_floppy(&mut self, drive: usize, image: FloppyImage, path: Option<PathBuf>) {
         self.floppy.insert_drive(drive, image, path);
+        if let Some(os) = self.os.as_mut() {
+            let memory = os_adapter::OsMemoryAccess(&mut self.memory);
+            os.invalidate_drive_caches(&memory, 0x90 | drive as u8);
+        }
     }
 
     /// Returns a reference to the disk image in the given drive, if present.
@@ -467,6 +471,10 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// Ejects the floppy disk from the specified drive, flushing if dirty.
     pub fn eject_floppy(&mut self, drive: usize) {
         self.floppy.eject_drive(drive);
+        if let Some(os) = self.os.as_mut() {
+            let memory = os_adapter::OsMemoryAccess(&mut self.memory);
+            os.invalidate_drive_caches(&memory, 0x90 | drive as u8);
+        }
     }
 
     /// Writes the floppy image back to its file if it has been modified.
@@ -495,6 +503,10 @@ impl<T: Tracing> Pc9801Bus<T> {
                     self.sdip.set_front_bank_bit(0, 6, false);
                 }
             }
+        }
+        if let Some(os) = self.os.as_mut() {
+            let memory = os_adapter::OsMemoryAccess(&mut self.memory);
+            os.invalidate_drive_caches(&memory, 0x80 | drive as u8);
         }
     }
 

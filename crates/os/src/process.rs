@@ -5,7 +5,7 @@ pub(crate) static COMMAND_COM_STUB: &[u8] = include_bytes!("../../../utils/os/os
 
 use crate::{
     CpuAccess, DiskIo, MemoryAccess, NeetanOs, OsState, country, dos,
-    filesystem::{fat::FatVolume, fat_dir},
+    filesystem::{fat::FatVolume, fat_dir, fat_file},
     memory, set_iret_carry,
     tables::*,
 };
@@ -363,27 +363,7 @@ pub(crate) fn read_file_data(
     entry: &fat_dir::DirEntry,
     disk: &mut dyn DiskIo,
 ) -> Result<Vec<u8>, u16> {
-    if entry.file_size == 0 {
-        return Ok(Vec::new());
-    }
-
-    let mut data = Vec::with_capacity(entry.file_size as usize);
-    let mut cluster = entry.start_cluster;
-
-    loop {
-        let chunk = vol.read_cluster(cluster, disk)?;
-        data.extend_from_slice(&chunk);
-        if data.len() >= entry.file_size as usize {
-            break;
-        }
-        match vol.next_cluster(cluster) {
-            Some(next) => cluster = next,
-            None => break,
-        }
-    }
-
-    data.truncate(entry.file_size as usize);
-    Ok(data)
+    fat_file::read_all(vol, entry, disk)
 }
 
 impl NeetanOs {

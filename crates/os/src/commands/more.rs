@@ -3,7 +3,7 @@
 use crate::{
     DiskIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
-    filesystem::fat_dir,
+    filesystem::{fat_dir, fat_file},
 };
 
 pub(crate) struct More;
@@ -25,11 +25,8 @@ const LINES_PER_PAGE: u16 = 24;
 const KB_BUF_COUNT: u32 = 0x0528;
 
 struct ReadState {
-    drive_index: u8,
-    current_cluster: u16,
-    cluster_data: Vec<u8>,
+    data: Vec<u8>,
     offset: usize,
-    remaining: u32,
 }
 
 enum MorePhase {
@@ -46,63 +43,28 @@ struct RunningMore {
 impl RunningMore {
     fn do_output(
         &mut self,
-        state: &mut OsState,
+        _state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        _disk: &mut dyn DiskIo,
         mut read: ReadState,
         mut lines_shown: u16,
     ) -> StepResult {
-        let vol = match state.fat_volumes[read.drive_index as usize].as_ref() {
-            Some(v) => v,
-            None => return StepResult::Done(1),
-        };
-
-        let cluster_size = vol.bpb.sectors_per_cluster as usize * vol.bpb.bytes_per_sector as usize;
-        let end = cluster_size.min(read.remaining as usize + read.offset);
-
-        while read.offset < end && read.remaining > 0 {
-            if read.offset < read.cluster_data.len() {
-                let byte = read.cluster_data[read.offset];
-                io.output_byte(byte);
-                if byte == b'\n' {
-                    lines_shown += 1;
-                    if lines_shown >= LINES_PER_PAGE {
-                        io.print(b"-- More --");
-                        read.offset += 1;
-                        read.remaining -= 1;
-                        self.phase = MorePhase::WaitKey(read);
-                        return StepResult::Continue;
-                    }
+        while read.offset < read.data.len() {
+            let byte = read.data[read.offset];
+            io.output_byte(byte);
+            if byte == b'\n' {
+                lines_shown += 1;
+                if lines_shown >= LINES_PER_PAGE {
+                    io.print(b"-- More --");
+                    read.offset += 1;
+                    self.phase = MorePhase::WaitKey(read);
+                    return StepResult::Continue;
                 }
             }
             read.offset += 1;
-            read.remaining -= 1;
         }
 
-        if read.remaining == 0 {
-            return StepResult::Done(0);
-        }
-
-        match vol.next_cluster(read.current_cluster) {
-            Some(next) => {
-                let next_data = match vol.read_cluster(next, disk) {
-                    Ok(d) => d,
-                    Err(_) => return StepResult::Done(1),
-                };
-                self.phase = MorePhase::Outputting {
-                    read: ReadState {
-                        drive_index: read.drive_index,
-                        current_cluster: next,
-                        cluster_data: next_data,
-                        offset: 0,
-                        remaining: read.remaining,
-                    },
-                    lines_shown,
-                };
-                StepResult::Continue
-            }
-            None => StepResult::Done(0),
-        }
+        StepResult::Done(0)
     }
 }
 
@@ -203,22 +165,14 @@ fn init_more(
         return Err(b"Access denied\r\n");
     }
 
-    if entry.file_size == 0 || entry.start_cluster < 2 {
+    if entry.file_size == 0 {
         return Ok(MorePhase::Init);
     }
 
-    let cluster_data = vol
-        .read_cluster(entry.start_cluster, disk)
-        .map_err(|_| &b"Read error\r\n"[..])?;
+    let data = fat_file::read_all(vol, &entry, disk).map_err(|_| &b"Read error\r\n"[..])?;
 
     Ok(MorePhase::Outputting {
-        read: ReadState {
-            drive_index,
-            current_cluster: entry.start_cluster,
-            cluster_data,
-            offset: 0,
-            remaining: entry.file_size,
-        },
+        read: ReadState { data, offset: 0 },
         lines_shown: 0,
     })
 }

@@ -3,6 +3,7 @@
 pub mod fat;
 pub(crate) mod fat_bpb;
 pub(crate) mod fat_dir;
+pub(crate) mod fat_file;
 pub(crate) mod fat_partition;
 pub(crate) mod virtual_drive;
 

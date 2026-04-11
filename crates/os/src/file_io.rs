@@ -4,7 +4,12 @@ use common::warn;
 
 use crate::{
     CpuAccess, DiskIo, MemoryAccess, NeetanOs, OsState,
-    filesystem::{fat_dir, split_path, virtual_drive::VirtualEntry},
+    filesystem::{
+        fat_dir,
+        fat_file::{FatFileCursor, FatFileWriter},
+        split_path,
+        virtual_drive::VirtualEntry,
+    },
     set_iret_carry, tables,
 };
 
@@ -394,33 +399,16 @@ impl NeetanOs {
             let vol = self.state.fat_volumes[drive_index as usize]
                 .as_ref()
                 .ok_or(0x000Fu16)?;
-
-            let cluster_size = vol.bpb.cluster_size();
             let bytes_to_read = count.min(file_size - position);
-            let mut bytes_read = 0u32;
-
-            while bytes_read < bytes_to_read {
-                let cluster_index = position / cluster_size;
-                let offset_in_cluster = position % cluster_size;
-
-                let cluster = vol
-                    .cluster_at_index(start_cluster, cluster_index)
-                    .ok_or(0x001Fu16)?;
-                let cluster_data = vol.read_cluster(cluster, disk)?;
-
-                let available = (cluster_size - offset_in_cluster).min(bytes_to_read - bytes_read);
-                let src_start = offset_in_cluster as usize;
-                let src_end = src_start + available as usize;
-                memory.write_block(buf_addr + bytes_read, &cluster_data[src_start..src_end]);
-
-                bytes_read += available;
-                position += available;
-            }
+            let mut cursor = FatFileCursor::with_position(start_cluster, file_size, position);
+            let read_data = cursor.read_chunk(vol, disk, bytes_to_read as usize)?;
+            memory.write_block(buf_addr, &read_data);
+            position = cursor.position();
 
             // Update SFT position
             write_dword(memory, sft_addr + tables::SFT_ENT_FILE_POS, position);
 
-            Ok(bytes_read as u16)
+            Ok(read_data.len() as u16)
         })();
 
         match result {
@@ -480,42 +468,14 @@ impl NeetanOs {
             let vol = self.state.fat_volumes[drive_index as usize]
                 .as_mut()
                 .ok_or(0x000Fu16)?;
-            let cluster_size = vol.bpb.cluster_size();
+            let mut write_data = vec![0u8; count as usize];
+            memory.read_block(buf_addr, &mut write_data);
 
-            // Allocate first cluster if needed
-            if start_cluster < 2 {
-                let new_cluster = vol.allocate_cluster(0).ok_or(0x001Fu16)?;
-                start_cluster = new_cluster;
-                memory.write_word(sft_addr + tables::SFT_ENT_START_CLUSTER, start_cluster);
-                // Zero out the cluster
-                let zeros = vec![0u8; cluster_size as usize];
-                vol.write_cluster(new_cluster, &zeros, disk)?;
-            }
-
-            let mut bytes_written = 0u32;
-            while bytes_written < count {
-                let cluster_index = position / cluster_size;
-                let offset_in_cluster = position % cluster_size;
-
-                // Walk to the right cluster, allocating if needed
-                let cluster = ensure_cluster_at_index(vol, start_cluster, cluster_index, disk)?;
-
-                let mut cluster_data = vol.read_cluster(cluster, disk)?;
-                let available = (cluster_size - offset_in_cluster).min(count - bytes_written);
-
-                // Read data from guest memory
-                let dst_start = offset_in_cluster as usize;
-                let dst_end = dst_start + available as usize;
-                memory.read_block(
-                    buf_addr + bytes_written,
-                    &mut cluster_data[dst_start..dst_end],
-                );
-
-                vol.write_cluster(cluster, &cluster_data, disk)?;
-
-                bytes_written += available;
-                position += available;
-            }
+            let mut writer = FatFileWriter::new(start_cluster, position);
+            writer.write_chunk(vol, disk, &write_data)?;
+            start_cluster = writer.start_cluster();
+            position = writer.position();
+            memory.write_word(sft_addr + tables::SFT_ENT_START_CLUSTER, start_cluster);
 
             if position > file_size {
                 file_size = position;
@@ -529,7 +489,7 @@ impl NeetanOs {
 
             vol.flush_fat(disk)?;
 
-            Ok(bytes_written as u16)
+            Ok(write_data.len() as u16)
         })();
 
         match result {
@@ -1139,29 +1099,4 @@ fn write_find_result(
     let len = display.len().min(12);
     mem.write_block(dta_addr + 0x1E, &display[..len]);
     mem.write_byte(dta_addr + 0x1E + len as u32, 0x00);
-}
-
-/// Ensures a cluster exists at the given index in the chain, allocating as needed.
-fn ensure_cluster_at_index(
-    vol: &mut crate::filesystem::fat::FatVolume,
-    start: u16,
-    index: u32,
-    disk: &mut dyn DiskIo,
-) -> Result<u16, u16> {
-    let mut current = start;
-    for _ in 0..index {
-        match vol.next_cluster(current) {
-            Some(next) => current = next,
-            None => {
-                // Allocate new cluster
-                let new = vol.allocate_cluster(current).ok_or(0x001Fu16)?;
-                // Zero out new cluster
-                let cluster_size = vol.bpb.cluster_size();
-                let zeros = vec![0u8; cluster_size as usize];
-                vol.write_cluster(new, &zeros, disk)?;
-                current = new;
-            }
-        }
-    }
-    Ok(current)
 }

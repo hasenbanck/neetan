@@ -3,7 +3,7 @@
 use crate::{
     DiskIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
-    filesystem::fat_dir,
+    filesystem::{fat_dir, fat_file},
 };
 
 pub(crate) struct TypeCmd;
@@ -22,11 +22,8 @@ impl Command for TypeCmd {
 }
 
 struct ReadState {
-    drive_index: u8,
-    current_cluster: u16,
-    cluster_data: Vec<u8>,
+    data: Vec<u8>,
     offset: usize,
-    remaining: u32,
 }
 
 enum TypePhase {
@@ -42,48 +39,25 @@ struct RunningType {
 impl RunningType {
     fn do_output(
         &mut self,
-        state: &mut OsState,
+        _state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        _disk: &mut dyn DiskIo,
         read: ReadState,
     ) -> StepResult {
-        let vol = match state.fat_volumes[read.drive_index as usize].as_ref() {
-            Some(v) => v,
-            None => return StepResult::Done(1),
-        };
-
-        let cluster_size = vol.bpb.sectors_per_cluster as usize * vol.bpb.bytes_per_sector as usize;
-        let bytes_in_cluster = cluster_size.min(read.remaining as usize);
-        let end = read.offset + (bytes_in_cluster - read.offset).min(bytes_in_cluster);
-
-        for i in read.offset..end {
-            if i < read.cluster_data.len() {
-                io.output_byte(read.cluster_data[i]);
-            }
+        let chunk_end = (read.offset + 4096).min(read.data.len());
+        for &byte in &read.data[read.offset..chunk_end] {
+            io.output_byte(byte);
         }
 
-        let new_remaining = read.remaining - (end - read.offset) as u32;
-        if new_remaining == 0 {
+        if chunk_end >= read.data.len() {
             return StepResult::Done(0);
         }
 
-        match vol.next_cluster(read.current_cluster) {
-            Some(next) => {
-                let next_data = match vol.read_cluster(next, disk) {
-                    Ok(d) => d,
-                    Err(_) => return StepResult::Done(1),
-                };
-                self.phase = TypePhase::Outputting(ReadState {
-                    drive_index: read.drive_index,
-                    current_cluster: next,
-                    cluster_data: next_data,
-                    offset: 0,
-                    remaining: new_remaining,
-                });
-                StepResult::Continue
-            }
-            None => StepResult::Done(0),
-        }
+        self.phase = TypePhase::Outputting(ReadState {
+            data: read.data,
+            offset: chunk_end,
+        });
+        StepResult::Continue
     }
 }
 
@@ -153,19 +127,11 @@ fn init_type(
         return Err(b"Access denied\r\n");
     }
 
-    if entry.file_size == 0 || entry.start_cluster < 2 {
+    if entry.file_size == 0 {
         return Ok(TypePhase::Init);
     }
 
-    let cluster_data = vol
-        .read_cluster(entry.start_cluster, disk)
-        .map_err(|_| &b"Read error\r\n"[..])?;
+    let data = fat_file::read_all(vol, &entry, disk).map_err(|_| &b"Read error\r\n"[..])?;
 
-    Ok(TypePhase::Outputting(ReadState {
-        drive_index,
-        current_cluster: entry.start_cluster,
-        cluster_data,
-        offset: 0,
-        remaining: entry.file_size,
-    }))
+    Ok(TypePhase::Outputting(ReadState { data, offset: 0 }))
 }
