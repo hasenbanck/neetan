@@ -1,5 +1,77 @@
 //! CONFIG.SYS and AUTOEXEC.BAT parsing.
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ShellConfig {
+    pub path: Vec<u8>,
+    pub raw_arguments: Vec<u8>,
+    pub initial_drive: Option<u8>,
+    pub environment_size_bytes: Option<u16>,
+    /// `/P` is preserved from CONFIG.SYS but does not change root HLE shell behavior.
+    pub permanent: bool,
+}
+
+impl ShellConfig {
+    fn parse(value: &[u8]) -> Option<Self> {
+        let (path, arguments) = split_first_token(value);
+        if path.is_empty() {
+            return None;
+        }
+
+        let raw_arguments = arguments.to_vec();
+        let mut initial_drive = None;
+        let mut environment_size_bytes = None;
+        let mut permanent = false;
+        let mut remaining = arguments;
+
+        while !remaining.is_empty() {
+            let (token, rest) = split_first_token(remaining);
+            remaining = rest;
+
+            if token.is_empty() {
+                continue;
+            }
+
+            if token.len() == 2 && token[1] == b':' && token[0].is_ascii_alphabetic() {
+                initial_drive = Some(token[0].to_ascii_uppercase() - b'A');
+                continue;
+            }
+
+            let upper_token: Vec<u8> = token.iter().map(|b| b.to_ascii_uppercase()).collect();
+
+            if upper_token == b"/P" {
+                permanent = true;
+                continue;
+            }
+
+            if upper_token.starts_with(b"/E:")
+                && upper_token.len() > 3
+                && upper_token[3..].iter().all(|byte| byte.is_ascii_digit())
+            {
+                environment_size_bytes = parse_u16(&upper_token[3..]);
+                continue;
+            }
+
+            if upper_token == b"/MSG" {
+                // TODO: Honor /MSG for root COMMAND.COM compatibility.
+                continue;
+            }
+
+            if upper_token == b"/Y" {
+                // TODO: Honor /Y for root COMMAND.COM compatibility.
+                continue;
+            }
+        }
+
+        Some(Self {
+            path: path.to_vec(),
+            raw_arguments,
+            initial_drive,
+            environment_size_bytes,
+            permanent,
+        })
+    }
+}
+
 /// Parsed CONFIG.SYS directives with defaults matching MS-DOS 6.20.
 pub(crate) struct ConfigSys {
     /// Maximum number of open file handles (FILES=).
@@ -12,8 +84,8 @@ pub(crate) struct ConfigSys {
     pub country: u16,
     /// Extended Ctrl-Break checking (BREAK=).
     pub ctrl_break: bool,
-    /// Custom command interpreter path (SHELL=). Silently noted.
-    pub shell: Option<Vec<u8>>,
+    /// Parsed COMMAND.COM-compatible SHELL= configuration.
+    pub shell: Option<ShellConfig>,
     /// MSCDEX device name extracted from DEVICE=NECCD.SYS /D:name.
     pub cdrom_device_name: Option<Vec<u8>>,
 }
@@ -56,7 +128,7 @@ pub(crate) fn parse_config_sys(data: &[u8]) -> ConfigSys {
             Some(p) => p,
             None => continue,
         };
-        let directive = &upper[..eq_pos];
+        let directive = upper[..eq_pos].trim_ascii();
         let value = &trimmed[eq_pos + 1..];
         let value_trimmed = value.trim_ascii();
 
@@ -101,7 +173,7 @@ pub(crate) fn parse_config_sys(data: &[u8]) -> ConfigSys {
             }
             b"SHELL" => {
                 if !value_trimmed.is_empty() {
-                    config.shell = Some(value_trimmed.to_vec());
+                    config.shell = ShellConfig::parse(value_trimmed);
                 }
             }
             b"DEVICE" | b"DEVICEHIGH" => {
@@ -278,10 +350,23 @@ mod tests {
     #[test]
     fn parse_shell() {
         let config = parse_config_sys(b"SHELL=C:\\COMMAND.COM /P\n");
-        assert_eq!(
-            config.shell.as_deref(),
-            Some(b"C:\\COMMAND.COM /P".as_ref())
-        );
+        let shell = config.shell.expect("SHELL= should parse");
+        assert_eq!(shell.path, b"C:\\COMMAND.COM");
+        assert_eq!(shell.raw_arguments, b"/P");
+        assert_eq!(shell.initial_drive, None);
+        assert_eq!(shell.environment_size_bytes, None);
+        assert!(shell.permanent);
+    }
+
+    #[test]
+    fn parse_shell_command_com_contract() {
+        let config = parse_config_sys(b"SHELL = A:COMMAND.COM A: /E:384 /P\n");
+        let shell = config.shell.expect("SHELL= should parse");
+        assert_eq!(shell.path, b"A:COMMAND.COM");
+        assert_eq!(shell.raw_arguments, b"A: /E:384 /P");
+        assert_eq!(shell.initial_drive, Some(0));
+        assert_eq!(shell.environment_size_bytes, Some(384));
+        assert!(shell.permanent);
     }
 
     #[test]

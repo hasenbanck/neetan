@@ -110,25 +110,30 @@ pub(crate) fn write_psp(
 /// Writes the default COMMAND.COM environment block at the given segment.
 ///
 /// Contents:
-///   COMSPEC=Z:\COMMAND.COM\0
+///   COMSPEC=<command_path>\0
 ///   PATH=Z:\;A:\;B:\;C:\;\0
 ///   PROMPT=$P$G\0
 ///   \0                       (double-null terminator)
 ///   \x01\x00                 (WORD count = 1)
-///   Z:\COMMAND.COM\0        (program pathname)
-pub(crate) fn write_environment_block(mem: &mut dyn MemoryAccess, env_segment: u16) {
+///   <command_path>\0        (program pathname)
+pub(crate) fn write_environment_block(
+    mem: &mut dyn MemoryAccess,
+    env_segment: u16,
+    env_paragraphs: u16,
+    command_path: &[u8],
+) {
     let base = (env_segment as u32) << 4;
 
     // Zero the entire environment block first.
-    let zeros = [0u8; ENV_BLOCK_PARAGRAPHS as usize * 16];
+    let zeros = vec![0u8; env_paragraphs as usize * 16];
     mem.write_block(base, &zeros);
 
     let mut offset = 0u32;
 
-    // COMSPEC=Z:\COMMAND.COM
-    let comspec = b"COMSPEC=Z:\\COMMAND.COM";
-    mem.write_block(base + offset, comspec);
-    offset += comspec.len() as u32;
+    mem.write_block(base + offset, b"COMSPEC=");
+    offset += b"COMSPEC=".len() as u32;
+    mem.write_block(base + offset, command_path);
+    offset += command_path.len() as u32;
     mem.write_byte(base + offset, 0x00);
     offset += 1;
 
@@ -155,10 +160,29 @@ pub(crate) fn write_environment_block(mem: &mut dyn MemoryAccess, env_segment: u
     offset += 2;
 
     // Program pathname
-    let pathname = b"Z:\\COMMAND.COM";
-    mem.write_block(base + offset, pathname);
-    offset += pathname.len() as u32;
+    mem.write_block(base + offset, command_path);
+    offset += command_path.len() as u32;
     mem.write_byte(base + offset, 0x00);
+}
+
+fn environment_block_required_bytes(command_path: &[u8]) -> usize {
+    b"COMSPEC=".len()
+        + command_path.len()
+        + 1
+        + b"PATH=Z:\\;A:\\;B:\\;C:\\;".len()
+        + 1
+        + b"PROMPT=$P$G".len()
+        + 1
+        + 1
+        + 2
+        + command_path.len()
+        + 1
+}
+
+pub(crate) fn environment_block_paragraphs(command_path: &[u8], requested_size_bytes: u16) -> u16 {
+    let minimum_size_bytes = environment_block_required_bytes(command_path);
+    let target_size_bytes = minimum_size_bytes.max(requested_size_bytes as usize);
+    target_size_bytes.div_ceil(16) as u16
 }
 
 fn build_program_path(state: &OsState, mem: &dyn MemoryAccess, path: &[u8]) -> Vec<u8> {
@@ -227,6 +251,20 @@ pub(crate) fn is_command_processor_path(path: &[u8]) -> bool {
     basename(path).eq_ignore_ascii_case(b"COMMAND.COM")
 }
 
+pub(crate) fn write_psp_command_tail(
+    mem: &mut dyn MemoryAccess,
+    psp_segment: u16,
+    command_tail: &[u8],
+) {
+    let base = (psp_segment as u32) << 4;
+    let tail_len = command_tail.len().min(127) as u8;
+    mem.write_byte(base + PSP_OFF_CMD_TAIL_LEN, tail_len);
+    if tail_len > 0 {
+        mem.write_block(base + PSP_OFF_CMD_TAIL, &command_tail[..tail_len as usize]);
+    }
+    mem.write_byte(base + PSP_OFF_CMD_TAIL + tail_len as u32, 0x0D);
+}
+
 fn write_environment_program_path(
     mem: &mut dyn MemoryAccess,
     env_segment: u16,
@@ -273,7 +311,7 @@ fn allocate_child_environment(
             .map_err(|(e, _)| e as u16)?;
 
     if source_env == 0 {
-        write_environment_block(mem, env_segment);
+        write_environment_block(mem, env_segment, ENV_BLOCK_PARAGRAPHS, b"Z:\\COMMAND.COM");
     } else {
         let source_base = (source_env as u32) << 4;
         let dest_base = (env_segment as u32) << 4;
