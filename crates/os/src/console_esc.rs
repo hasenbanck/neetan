@@ -1,5 +1,7 @@
 //! Native ESC sequence state machine and processing.
 
+use common::{is_shift_jis_lead_byte, is_shift_jis_trail_byte, shift_jis_pair_to_jis};
+
 use crate::{MemoryAccess, console::Console, tables};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -66,6 +68,27 @@ impl Console {
     /// Main entry point: feed one byte into the console output pipeline.
     /// Handles control characters, ESC sequences, and printable output.
     pub(crate) fn process_byte(&mut self, memory: &mut dyn MemoryAccess, byte: u8) {
+        if let Some(lead) = self.pending_shift_jis_lead(memory) {
+            self.clear_pending_shift_jis_lead(memory);
+            if let Some(jis) = if is_shift_jis_trail_byte(byte) {
+                shift_jis_pair_to_jis(lead, byte)
+            } else {
+                None
+            } {
+                self.put_fullwidth_jis_char(memory, jis);
+                return;
+            }
+
+            self.put_char(memory, lead);
+            self.process_byte(memory, byte);
+            return;
+        }
+
+        if self.esc_parser.state == EscState::Normal && is_shift_jis_lead_byte(byte) {
+            self.set_pending_shift_jis_lead(memory, byte);
+            return;
+        }
+
         match self.esc_parser.state {
             EscState::Normal => self.esc_process_normal(memory, byte),
             EscState::GotEsc => self.esc_process_got_esc(memory, byte),

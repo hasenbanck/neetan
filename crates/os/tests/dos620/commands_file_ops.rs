@@ -1,3 +1,5 @@
+use common::JisChar;
+
 use crate::harness::*;
 
 #[test]
@@ -39,6 +41,26 @@ fn type_nonexistent() {
     assert!(
         find_string_in_text_vram(&machine.bus, &not_found),
         "TYPE of nonexistent file should show 'not found'"
+    );
+}
+
+#[test]
+fn type_shift_jis_file_content() {
+    let floppy = create_test_floppy_with_program(b"JAPAN   TXT", b"\x82\xA0\x82\xA2\r\n");
+    let mut machine = boot_hle_with_floppy_image(floppy);
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    type_string_long(&mut machine, b"TYPE JAPAN.TXT\r");
+    run_until_prompt(&mut machine);
+
+    let chars = [JisChar::from_u16(0x2422), JisChar::from_u16(0x2424)];
+    assert!(
+        find_jis_string_in_text_vram(&machine.bus, &chars),
+        "TYPE should display Shift-JIS text as full-width JIS glyphs"
     );
 }
 

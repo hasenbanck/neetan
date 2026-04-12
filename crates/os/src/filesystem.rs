@@ -1,5 +1,7 @@
 //! Drive trait, DiskIo trait, drive mapping, error types.
 
+use common::is_shift_jis_lead_byte;
+
 use crate::{DiskIo, DriveIo, MemoryAccess, OsState, dos, process::COMMAND_COM_STUB, tables};
 
 pub mod fat;
@@ -175,7 +177,7 @@ pub(crate) fn read_entry_all(
 
 /// Returns true if the byte is a DBCS (Shift-JIS) lead byte.
 pub(crate) fn is_dbcs_lead_byte(b: u8) -> bool {
-    (0x81..=0x9F).contains(&b) || (0xE0..=0xFC).contains(&b)
+    is_shift_jis_lead_byte(b)
 }
 
 /// Splits a DOS path into components, handling SJIS double-byte characters
