@@ -661,7 +661,12 @@ fn atapi_mode_sense_page_0f_nec_vendor() {
     assert_eq!(page_code, 0x0F, "page code should be 0x0F (NEC vendor)");
     assert_eq!(
         page_length, 0x10,
-        "page length should be 16 (NP21W compatible)"
+        "page length should be 16 in the compact NEC vendor layout"
+    );
+    let nec_capability_byte = data[6] as u8;
+    assert_eq!(
+        nec_capability_byte, 0x13,
+        "page 0x0F byte 4 should advertise the DOS compatibility bit"
     );
 }
 
@@ -695,7 +700,11 @@ fn atapi_mode_sense_all_pages_includes_nec() {
             break;
         }
         found_pages.push(page_code);
-        offset += 2 + page_length;
+        offset += if page_code == 0x0F {
+            16
+        } else {
+            2 + page_length
+        };
     }
 
     assert!(

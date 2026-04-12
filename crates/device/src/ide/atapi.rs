@@ -952,14 +952,17 @@ impl AtapiState {
             }
         }
 
-        // Fill mode parameter header.
-        let data_length = (offset - 2) as u16;
+        // The header must describe the truncated payload that will actually be
+        // transferred, not the full unbounded page set. Real-mode CD drivers
+        // issue short MODE SENSE requests and reject replies whose length field
+        // advertises more bytes than the command returns.
+        let size = offset.min(allocation_length as usize);
+        let data_length = size.saturating_sub(2) as u16;
         self.data_buffer[0] = (data_length >> 8) as u8;
         self.data_buffer[1] = data_length as u8;
         // Byte 2: medium type.
         self.data_buffer[2] = medium_type(cdrom);
 
-        let size = offset.min(allocation_length as usize);
         self.cmd_complete_with_data(size)
     }
 
@@ -997,6 +1000,7 @@ impl AtapiState {
         self.data_buffer[offset + 1] = 0x0E; // Page length.
         // Audio play control parameters.
         self.data_buffer[offset + 2] = 0x04; // Immed = 1.
+        self.data_buffer[offset + 7] = 0x4B; // Number of frames per second (75).
         // Port 0: channel 0, volume 0xFF.
         self.data_buffer[offset + 8] = 0x01;
         self.data_buffer[offset + 9] = 0xFF;
@@ -1006,21 +1010,26 @@ impl AtapiState {
         end
     }
 
-    // Page 0x0F: NEC vendor-specific CD-ROM parameters (for neccdd.sys compatibility).
+    // Page 0x0F: NEC vendor-specific CD-ROM parameters.
+    //
+    // The page-length byte says 0x10, but the total structure exposed to the
+    // guest is 16 bytes including the page code and length bytes. Old DOS
+    // drivers expect this exact compact layout.
     fn mode_page_0f(&mut self, offset: usize) -> usize {
-        let end = offset + 18;
+        let end = offset + 16;
         if end > self.data_buffer.len() {
             self.data_buffer.resize(end, 0);
         }
         self.data_buffer[offset] = 0x0F; // Page code (vendor specific).
         self.data_buffer[offset + 1] = 0x10; // Page length.
-        // NEC capability mapping from page 0x2A values:
-        //   bit 0: Audio play supported (from 0x2A byte 4 bit 0)
-        //   bit 4: R-W supported (from 0x2A byte 5 bit 2)
-        //   bit 7: Lock state (from 0x2A byte 6 bit 1)
-        self.data_buffer[offset + 4] = 0x81;
-        // bits 3-4: Audio manipulation (from 0x2A byte 7 bits 0-1)
-        self.data_buffer[offset + 5] = 0x00;
+        // Byte 4 contains drive capability flags consumed by DOS CD-ROM
+        // drivers. Bit 1 is the compatibility-critical flag for directory
+        // enumeration. Without it, the disc mounts but file listings appear
+        // empty under the low-level DOS path.
+        self.data_buffer[offset + 4] = 0x13;
+        // Byte 5 carries the related audio capability bits expected by the
+        // same vendor-specific interface.
+        self.data_buffer[offset + 5] = 0x18;
         end
     }
 
@@ -1032,25 +1041,23 @@ impl AtapiState {
         }
         self.data_buffer[offset] = 0x2A; // Page code.
         self.data_buffer[offset + 1] = 0x12; // Page length (18 bytes).
-        // Capabilities.
-        self.data_buffer[offset + 2] = 0x01; // Read CD-R, no other media.
-        self.data_buffer[offset + 3] = 0x00; // No write capabilities.
-        self.data_buffer[offset + 4] = 0x21; // Multi-session, Mode 2 Form 1.
-        self.data_buffer[offset + 5] = 0x00; // No audio play.
-        self.data_buffer[offset + 6] = 0x2B; // Lock, eject, tray type.
-        self.data_buffer[offset + 7] = 0x00;
-        // Max speed: 4x (706 KB/s = 176*4).
+        // Capability bytes chosen to match the behavior expected by DOS-era
+        // ATAPI CD-ROM drivers. Page 0x0F above mirrors a subset of these
+        // flags through the vendor-specific interface.
+        self.data_buffer[offset + 4] = 0x71;
+        self.data_buffer[offset + 5] = 0x65;
+        self.data_buffer[offset + 6] = 0x29;
+        self.data_buffer[offset + 7] = 0x07;
+        // Max speed: 4x (706 KB/s).
         self.data_buffer[offset + 8] = 0x02;
-        self.data_buffer[offset + 9] = 0xC4; // 706 in big-endian.
-        // Number of volume levels.
-        self.data_buffer[offset + 10] = 0x01;
-        self.data_buffer[offset + 11] = 0x00;
+        self.data_buffer[offset + 9] = 0xC2;
+        self.data_buffer[offset + 11] = 0xFF;
         // Buffer size (64 KB).
         self.data_buffer[offset + 12] = 0x00;
         self.data_buffer[offset + 13] = 0x80;
         // Current speed: 4x.
         self.data_buffer[offset + 14] = 0x02;
-        self.data_buffer[offset + 15] = 0xC4;
+        self.data_buffer[offset + 15] = 0xC2;
         end
     }
 
@@ -1708,8 +1715,9 @@ mod tests {
         let mut state = AtapiState::new();
         assert!(!state.bcd_msf_mode);
 
-        // MODE SENSE(10): page 0x0F, allocation 256.
-        state.packet = [0x5A, 0, 0x0F, 0, 0, 0, 0, 0x01, 0x00, 0, 0, 0];
+        // MODE SENSE(10): page 0x0F with a short 24-byte allocation. This is
+        // the form used by the real-mode DOS CD-ROM stack.
+        state.packet = [0x5A, 0, 0x0F, 0, 0, 0, 0, 0x00, 0x18, 0, 0, 0];
 
         let (has_data, is_error) = state.cmd_mode_sense_10(None);
         assert!(has_data);
@@ -1719,14 +1727,16 @@ mod tests {
         // Mode page 0x0F should be at offset 8.
         assert_eq!(state.data_buffer[8], 0x0F); // Page code.
         assert_eq!(state.data_buffer[9], 0x10); // Page length = 16 bytes.
-        // Total data: 8 (header) + 2 (page code + length) + 16 (page data) = 26.
-        assert_eq!(state.data_size, 26);
+        // A 24-byte request should return 24 bytes and advertise 22 bytes
+        // after the length field, not the larger untruncated page set.
+        assert_eq!(state.data_size, 24);
+        assert_eq!(state.data_buffer[0], 0x00);
+        assert_eq!(state.data_buffer[1], 0x16);
 
-        // NEC capability bytes mapped from page 0x2A.
-        // Byte 4: audio play (bit 0) | lock state (bit 7) = 0x81.
-        assert_eq!(state.data_buffer[12], 0x81);
-        // Byte 5: no audio manipulation = 0x00.
-        assert_eq!(state.data_buffer[13], 0x00);
+        // Byte 4 bit 1 is the compatibility-critical flag for real-mode DOS
+        // directory enumeration. Byte 5 carries the paired audio bits.
+        assert_eq!(state.data_buffer[12], 0x13);
+        assert_eq!(state.data_buffer[13], 0x18);
 
         // Requesting page 0x0F activates BCD MSF mode (NEC neccdd.sys quirk).
         assert!(state.bcd_msf_mode);
@@ -1948,7 +1958,11 @@ mod tests {
             let page_code = state.data_buffer[offset] & 0x3F;
             let page_length = state.data_buffer[offset + 1] as usize;
             found_pages.push(page_code);
-            offset += 2 + page_length;
+            offset += if page_code == 0x0F {
+                16
+            } else {
+                2 + page_length
+            };
         }
         assert!(
             found_pages.contains(&0x01),
