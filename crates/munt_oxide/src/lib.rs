@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 mod analog;
+mod blake3_digest;
 mod breverb;
 mod context;
 mod enumerations;
@@ -20,7 +21,6 @@ mod partial;
 mod partial_manager;
 mod poly;
 mod rom_info;
-mod sha1;
 mod state;
 mod structures;
 mod synth;

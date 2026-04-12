@@ -14,9 +14,7 @@
 //  You should have received a copy of the GNU Lesser General Public License
 //  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use crate::sha1::{sha1_calc, sha1_from_hex};
-
-// Defines vital info about ROM file to be used by synth and applications.
+use crate::blake3_digest::{blake3_digest, blake3_digest_from_hex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RomType {
@@ -41,34 +39,31 @@ pub(crate) enum PairType {
 #[derive(Debug, Clone)]
 pub(crate) struct RomInfo {
     pub(crate) file_size: usize,
-    pub(crate) sha1_digest: [u8; 20],
+    pub(crate) blake3_digest: [u8; 32],
     pub(crate) rom_type: RomType,
     pub(crate) short_name: &'static str,
     pub(crate) description: &'static str,
     pub(crate) pair_type: PairType,
-    /// Index into ALL_ROM_INFOS for the corresponding other image for pairing, or None for Full images.
     pub(crate) pair_rom_info_index: Option<usize>,
 }
 
 /// Indices into ALL_ROM_INFOS. Full ROMs come first, then partial ROMs.
-pub(crate) const FULL_ROM_COUNT: usize = 14;
+pub(crate) const FULL_ROM_COUNT: usize = 13;
 
-// Partial ROMs (indices 14..27):
-const IDX_CTRL_MT32_V1_04_A: usize = 14;
-const IDX_CTRL_MT32_V1_04_B: usize = 15;
-const IDX_CTRL_MT32_V1_05_A: usize = 16;
-const IDX_CTRL_MT32_V1_05_B: usize = 17;
-const IDX_CTRL_MT32_V1_06_A: usize = 18;
-const IDX_CTRL_MT32_V1_06_B: usize = 19;
-const IDX_CTRL_MT32_V1_07_A: usize = 20;
-const IDX_CTRL_MT32_V1_07_B: usize = 21;
-const IDX_CTRL_MT32_BLUER_A: usize = 22;
-const IDX_CTRL_MT32_BLUER_B: usize = 23;
-const IDX_PCM_MT32_L: usize = 24;
-const IDX_PCM_MT32_H: usize = 25;
-// Alias of PCM_MT32 ROM, only useful for pairing with PCM_CM32L_H.
-const IDX_PCM_CM32L_L: usize = 26;
-const IDX_PCM_CM32L_H: usize = 27;
+const IDX_CTRL_MT32_V1_04_A: usize = FULL_ROM_COUNT;
+const IDX_CTRL_MT32_V1_04_B: usize = IDX_CTRL_MT32_V1_04_A + 1;
+const IDX_CTRL_MT32_V1_05_A: usize = IDX_CTRL_MT32_V1_04_B + 1;
+const IDX_CTRL_MT32_V1_05_B: usize = IDX_CTRL_MT32_V1_05_A + 1;
+const IDX_CTRL_MT32_V1_06_A: usize = IDX_CTRL_MT32_V1_05_B + 1;
+const IDX_CTRL_MT32_V1_06_B: usize = IDX_CTRL_MT32_V1_06_A + 1;
+const IDX_CTRL_MT32_V1_07_A: usize = IDX_CTRL_MT32_V1_06_B + 1;
+const IDX_CTRL_MT32_V1_07_B: usize = IDX_CTRL_MT32_V1_07_A + 1;
+const IDX_CTRL_MT32_BLUER_A: usize = IDX_CTRL_MT32_V1_07_B + 1;
+const IDX_CTRL_MT32_BLUER_B: usize = IDX_CTRL_MT32_BLUER_A + 1;
+const IDX_PCM_MT32_L: usize = IDX_CTRL_MT32_BLUER_B + 1;
+const IDX_PCM_MT32_H: usize = IDX_PCM_MT32_L + 1;
+const IDX_PCM_CM32L_L: usize = IDX_PCM_MT32_H + 1;
+const IDX_PCM_CM32L_H: usize = IDX_PCM_CM32L_L + 1;
 
 pub(crate) const PARTIAL_ROM_COUNT: usize = 14;
 pub(crate) const ALL_ROM_COUNT: usize = FULL_ROM_COUNT + PARTIAL_ROM_COUNT;
@@ -80,43 +75,65 @@ pub(crate) fn get_all_rom_infos() -> &'static [RomInfo; ALL_ROM_COUNT] {
 }
 
 fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
-    // SHA-1 digests for control ROMs.
-    let ctrl_mt32_v1_04_a_sha1 = sha1_from_hex("9cd4858014c4e8a9dff96053f784bfaac1092a2e");
-    let ctrl_mt32_v1_04_b_sha1 = sha1_from_hex("fe8db469b5bfeb37edb269fd47e3ce6d91014652");
-    let ctrl_mt32_v1_04_sha1 = sha1_from_hex("5a5cb5a77d7d55ee69657c2f870416daed52dea7");
-    let ctrl_mt32_v1_05_a_sha1 = sha1_from_hex("57a09d80d2f7ca5b9734edbe9645e6e700f83701");
-    let ctrl_mt32_v1_05_b_sha1 = sha1_from_hex("52e3c6666db9ef962591a8ee99be0cde17f3a6b6");
-    let ctrl_mt32_v1_05_sha1 = sha1_from_hex("e17a3a6d265bf1fa150312061134293d2b58288c");
-    let ctrl_mt32_v1_06_a_sha1 = sha1_from_hex("cc83bf23cee533097fb4c7e2c116e43b50ebacc8");
-    let ctrl_mt32_v1_06_b_sha1 = sha1_from_hex("bf4f15666bc46679579498386704893b630c1171");
-    let ctrl_mt32_v1_06_sha1 = sha1_from_hex("a553481f4e2794c10cfe597fef154eef0d8257de");
-    let ctrl_mt32_v1_07_a_sha1 = sha1_from_hex("13f06b38f0d9e0fc050b6503ab777bb938603260");
-    let ctrl_mt32_v1_07_b_sha1 = sha1_from_hex("c55e165487d71fa88bd8c5e9c083bc456c1a89aa");
-    let ctrl_mt32_v1_07_sha1 = sha1_from_hex("b083518fffb7f66b03c23b7eb4f868e62dc5a987");
-    let ctrl_mt32_bluer_a_sha1 = sha1_from_hex("11a6ae5d8b6ee328b371af7f1e40b82125aa6b4d");
-    let ctrl_mt32_bluer_b_sha1 = sha1_from_hex("e0934320d7cbb5edfaa29e0d01ae835ef620085b");
-    let ctrl_mt32_bluer_sha1 = sha1_from_hex("7b8c2a5ddb42fd0732e2f22b3340dcf5360edf92");
+    let ctrl_mt32_v1_04_a_blake3 =
+        blake3_digest_from_hex("3b0bdc08828f383711334a5db13252b98df79cbd9fa7a21cd37e55355dd41963");
+    let ctrl_mt32_v1_04_b_blake3 =
+        blake3_digest_from_hex("a3feacf1522d04d283fcb20c262f8cdfe469a667eb4e4689899b168660923993");
+    let ctrl_mt32_v1_04_blake3 =
+        blake3_digest_from_hex("9102699229706ff459a718924884559d50a6a8749a2d27fe58548f3c0606f66a");
+    let ctrl_mt32_v1_05_a_blake3 =
+        blake3_digest_from_hex("2d970225f29d20dc38ef47e48db1ded49ee223f27a6b8c0e9072b55ebe85aa0f");
+    let ctrl_mt32_v1_05_b_blake3 =
+        blake3_digest_from_hex("a6d5c9d616cf23b8fdf06f86a8c1a3116b4bf71985ca337cca21ba517614dd04");
+    let ctrl_mt32_v1_05_blake3 =
+        blake3_digest_from_hex("6b05c40c21d67c6780c39dac669dc7869d2b9fbde62bfc73a03ec3634282658f");
+    let ctrl_mt32_v1_06_a_blake3 =
+        blake3_digest_from_hex("ad9dd4a7eec18b561ca9bfdf446730ff55019dc8e9a20b0e6de3a9c721282e68");
+    let ctrl_mt32_v1_06_b_blake3 =
+        blake3_digest_from_hex("7bd393b0b2dec1ee98b06357eb3849aa903bdd57595b0d1b409530e2a963269a");
+    let ctrl_mt32_v1_06_blake3 =
+        blake3_digest_from_hex("93e8a9bd5fdea0f3e92d9a9949e307bc98dc7d9ff7650b28d9dbfd2e863054bb");
+    let ctrl_mt32_v1_07_a_blake3 =
+        blake3_digest_from_hex("d8f51c813aebfa8f47a20ec8d5dc1bd870720b19d2ae43a20eea19612fb249d1");
+    let ctrl_mt32_v1_07_b_blake3 =
+        blake3_digest_from_hex("31f0fa94dda0bb836106b53c21d78e016bf970ea794a6cd84dbf4bd852ada51e");
+    let ctrl_mt32_v1_07_blake3 =
+        blake3_digest_from_hex("8f123c1f38104a2a7eb1df35fd5b26ca1b857185086a87233b355510264602bf");
+    let ctrl_mt32_bluer_a_blake3 =
+        blake3_digest_from_hex("848350fb882dbffafaa18fa4c100c2c63fec6ddc99ac62243dcf7acf86594397");
+    let ctrl_mt32_bluer_b_blake3 =
+        blake3_digest_from_hex("46a2c0b8ee01ed06a73bb3cfaee40199e8fcb51162e1504c32bb33dc32935dbb");
+    let ctrl_mt32_bluer_blake3 =
+        blake3_digest_from_hex("af3cc9fe2f9844adde07377af66b4e1b0636df499abf4f2cdba716bb886642ad");
 
-    let ctrl_mt32_v2_03_sha1 = sha1_from_hex("5837064c9df4741a55f7c4d8787ac158dff2d3ce");
-    let ctrl_mt32_v2_04_sha1 = sha1_from_hex("2c16432b6c73dd2a3947cba950a0f4c19d6180eb");
-    let ctrl_mt32_v2_06_sha1 = sha1_from_hex("2869cf4c235d671668cfcb62415e2ce8323ad4ed");
-    let ctrl_mt32_v2_07_sha1 = sha1_from_hex("47b52adefedaec475c925e54340e37673c11707c");
-    let ctrl_cm32l_v1_00_sha1 = sha1_from_hex("73683d585cd6948cc19547942ca0e14a0319456d");
-    let ctrl_cm32l_v1_02_sha1 = sha1_from_hex("a439fbb390da38cada95a7cbb1d6ca199cd66ef8");
-    let ctrl_cm32ln_v1_00_sha1 = sha1_from_hex("dc1c5b1b90a4646d00f7daf3679733c7badc7077");
+    let ctrl_mt32_v2_04_blake3 =
+        blake3_digest_from_hex("788364d4f8dbe7577f092ef944418461b65bdbd449e2808a3403e28e90c4ee5d");
+    let ctrl_mt32_v2_06_blake3 =
+        blake3_digest_from_hex("3bd5adf2aba6f5bd9a85d52dc164b2c0efd3c8e69b7cf058d4dcc644c85d98b3");
+    let ctrl_mt32_v2_07_blake3 =
+        blake3_digest_from_hex("eb32a5640adba7da5e5cc2b8a455cf709d9f8998f3a5b5f2f2aa948c0ff3a9e0");
+    let ctrl_cm32l_v1_00_blake3 =
+        blake3_digest_from_hex("d88dcc0e94864040bd5933d89a29afd5a156eb43fec416ae1add5c02e565b9ff");
+    let ctrl_cm32l_v1_02_blake3 =
+        blake3_digest_from_hex("136741df33c185e809b057ee82b71ad94a07e82925fb0b7941bdd5912be6f549");
+    let ctrl_cm32ln_v1_00_blake3 =
+        blake3_digest_from_hex("0037be2e04ee72b01de1577b996887cd4258ddb538a433b52de8f60829e06ce1");
 
-    // SHA-1 digests for PCM ROMs.
-    let pcm_mt32_l_sha1 = sha1_from_hex("3a1e19b0cd4036623fd1d1d11f5f25995585962b");
-    let pcm_mt32_h_sha1 = sha1_from_hex("2cadb99d21a6a4a6f5b61b6218d16e9b43f61d01");
-    let pcm_mt32_sha1 = sha1_from_hex("f6b1eebc4b2d200ec6d3d21d51325d5b48c60252");
-    let pcm_cm32l_h_sha1 = sha1_from_hex("3ad889fde5db5b6437cbc2eb6e305312fec3df93");
-    let pcm_cm32l_sha1 = sha1_from_hex("289cc298ad532b702461bfc738009d9ebe8025ea");
+    let pcm_mt32_l_blake3 =
+        blake3_digest_from_hex("5ced158f0131b5170219cd69d438288321810004f06148eda275c11d3c488bfb");
+    let pcm_mt32_h_blake3 =
+        blake3_digest_from_hex("22a2f889408003c128a28a9672c11655444b2c777955114ba87d0fba5822d035");
+    let pcm_mt32_blake3 =
+        blake3_digest_from_hex("7805996b758fab5469e96d9a28588eb2e991440242372f7546345cdc66c8d97a");
+    let pcm_cm32l_h_blake3 =
+        blake3_digest_from_hex("991388440296b3ae2664f9f620667b64120ba862a1cda23e0701859693830397");
+    let pcm_cm32l_blake3 =
+        blake3_digest_from_hex("5e4839e75ec9e9b03eca0c0eacf4d4b551e76504c72c10325a311bd9ea1309e7");
 
     [
-        // Full ROMs (indices 0..14).
         RomInfo {
             file_size: 65536,
-            sha1_digest: ctrl_mt32_v1_04_sha1,
+            blake3_digest: ctrl_mt32_v1_04_blake3,
             rom_type: RomType::Control,
             short_name: "ctrl_mt32_1_04",
             description: "MT-32 Control v1.04",
@@ -125,7 +142,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 65536,
-            sha1_digest: ctrl_mt32_v1_05_sha1,
+            blake3_digest: ctrl_mt32_v1_05_blake3,
             rom_type: RomType::Control,
             short_name: "ctrl_mt32_1_05",
             description: "MT-32 Control v1.05",
@@ -134,7 +151,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 65536,
-            sha1_digest: ctrl_mt32_v1_06_sha1,
+            blake3_digest: ctrl_mt32_v1_06_blake3,
             rom_type: RomType::Control,
             short_name: "ctrl_mt32_1_06",
             description: "MT-32 Control v1.06",
@@ -143,7 +160,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 65536,
-            sha1_digest: ctrl_mt32_v1_07_sha1,
+            blake3_digest: ctrl_mt32_v1_07_blake3,
             rom_type: RomType::Control,
             short_name: "ctrl_mt32_1_07",
             description: "MT-32 Control v1.07",
@@ -152,7 +169,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 65536,
-            sha1_digest: ctrl_mt32_bluer_sha1,
+            blake3_digest: ctrl_mt32_bluer_blake3,
             rom_type: RomType::Control,
             short_name: "ctrl_mt32_bluer",
             description: "MT-32 Control BlueRidge",
@@ -161,16 +178,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 131072,
-            sha1_digest: ctrl_mt32_v2_03_sha1,
-            rom_type: RomType::Control,
-            short_name: "ctrl_mt32_2_03",
-            description: "MT-32 Control v2.03",
-            pair_type: PairType::Full,
-            pair_rom_info_index: None,
-        },
-        RomInfo {
-            file_size: 131072,
-            sha1_digest: ctrl_mt32_v2_04_sha1,
+            blake3_digest: ctrl_mt32_v2_04_blake3,
             rom_type: RomType::Control,
             short_name: "ctrl_mt32_2_04",
             description: "MT-32 Control v2.04",
@@ -179,7 +187,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 131072,
-            sha1_digest: ctrl_mt32_v2_06_sha1,
+            blake3_digest: ctrl_mt32_v2_06_blake3,
             rom_type: RomType::Control,
             short_name: "ctrl_mt32_2_06",
             description: "MT-32 Control v2.06",
@@ -188,7 +196,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 131072,
-            sha1_digest: ctrl_mt32_v2_07_sha1,
+            blake3_digest: ctrl_mt32_v2_07_blake3,
             rom_type: RomType::Control,
             short_name: "ctrl_mt32_2_07",
             description: "MT-32 Control v2.07",
@@ -197,7 +205,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 65536,
-            sha1_digest: ctrl_cm32l_v1_00_sha1,
+            blake3_digest: ctrl_cm32l_v1_00_blake3,
             rom_type: RomType::Control,
             short_name: "ctrl_cm32l_1_00",
             description: "CM-32L/LAPC-I Control v1.00",
@@ -206,7 +214,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 65536,
-            sha1_digest: ctrl_cm32l_v1_02_sha1,
+            blake3_digest: ctrl_cm32l_v1_02_blake3,
             rom_type: RomType::Control,
             short_name: "ctrl_cm32l_1_02",
             description: "CM-32L/LAPC-I Control v1.02",
@@ -215,7 +223,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 65536,
-            sha1_digest: ctrl_cm32ln_v1_00_sha1,
+            blake3_digest: ctrl_cm32ln_v1_00_blake3,
             rom_type: RomType::Control,
             short_name: "ctrl_cm32ln_1_00",
             description: "CM-32LN/CM-500/LAPC-N Control v1.00",
@@ -224,7 +232,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 524288,
-            sha1_digest: pcm_mt32_sha1,
+            blake3_digest: pcm_mt32_blake3,
             rom_type: RomType::Pcm,
             short_name: "pcm_mt32",
             description: "MT-32 PCM ROM",
@@ -233,17 +241,16 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 1048576,
-            sha1_digest: pcm_cm32l_sha1,
+            blake3_digest: pcm_cm32l_blake3,
             rom_type: RomType::Pcm,
             short_name: "pcm_cm32l",
             description: "CM-32L/CM-64/LAPC-I PCM ROM",
             pair_type: PairType::Full,
             pair_rom_info_index: None,
         },
-        // Partial ROMs (indices 14..28).
         RomInfo {
             file_size: 32768,
-            sha1_digest: ctrl_mt32_v1_04_a_sha1,
+            blake3_digest: ctrl_mt32_v1_04_a_blake3,
             rom_type: RomType::Control,
             short_name: "ctrl_mt32_1_04_a",
             description: "MT-32 Control v1.04",
@@ -252,7 +259,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 32768,
-            sha1_digest: ctrl_mt32_v1_04_b_sha1,
+            blake3_digest: ctrl_mt32_v1_04_b_blake3,
             rom_type: RomType::Control,
             short_name: "ctrl_mt32_1_04_b",
             description: "MT-32 Control v1.04",
@@ -261,7 +268,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 32768,
-            sha1_digest: ctrl_mt32_v1_05_a_sha1,
+            blake3_digest: ctrl_mt32_v1_05_a_blake3,
             rom_type: RomType::Control,
             short_name: "ctrl_mt32_1_05_a",
             description: "MT-32 Control v1.05",
@@ -270,7 +277,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 32768,
-            sha1_digest: ctrl_mt32_v1_05_b_sha1,
+            blake3_digest: ctrl_mt32_v1_05_b_blake3,
             rom_type: RomType::Control,
             short_name: "ctrl_mt32_1_05_b",
             description: "MT-32 Control v1.05",
@@ -279,7 +286,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 32768,
-            sha1_digest: ctrl_mt32_v1_06_a_sha1,
+            blake3_digest: ctrl_mt32_v1_06_a_blake3,
             rom_type: RomType::Control,
             short_name: "ctrl_mt32_1_06_a",
             description: "MT-32 Control v1.06",
@@ -288,7 +295,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 32768,
-            sha1_digest: ctrl_mt32_v1_06_b_sha1,
+            blake3_digest: ctrl_mt32_v1_06_b_blake3,
             rom_type: RomType::Control,
             short_name: "ctrl_mt32_1_06_b",
             description: "MT-32 Control v1.06",
@@ -297,7 +304,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 32768,
-            sha1_digest: ctrl_mt32_v1_07_a_sha1,
+            blake3_digest: ctrl_mt32_v1_07_a_blake3,
             rom_type: RomType::Control,
             short_name: "ctrl_mt32_1_07_a",
             description: "MT-32 Control v1.07",
@@ -306,7 +313,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 32768,
-            sha1_digest: ctrl_mt32_v1_07_b_sha1,
+            blake3_digest: ctrl_mt32_v1_07_b_blake3,
             rom_type: RomType::Control,
             short_name: "ctrl_mt32_1_07_b",
             description: "MT-32 Control v1.07",
@@ -315,7 +322,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 32768,
-            sha1_digest: ctrl_mt32_bluer_a_sha1,
+            blake3_digest: ctrl_mt32_bluer_a_blake3,
             rom_type: RomType::Control,
             short_name: "ctrl_mt32_bluer_a",
             description: "MT-32 Control BlueRidge",
@@ -324,7 +331,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 32768,
-            sha1_digest: ctrl_mt32_bluer_b_sha1,
+            blake3_digest: ctrl_mt32_bluer_b_blake3,
             rom_type: RomType::Control,
             short_name: "ctrl_mt32_bluer_b",
             description: "MT-32 Control BlueRidge",
@@ -333,7 +340,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 262144,
-            sha1_digest: pcm_mt32_l_sha1,
+            blake3_digest: pcm_mt32_l_blake3,
             rom_type: RomType::Pcm,
             short_name: "pcm_mt32_l",
             description: "MT-32 PCM ROM",
@@ -342,17 +349,16 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 262144,
-            sha1_digest: pcm_mt32_h_sha1,
+            blake3_digest: pcm_mt32_h_blake3,
             rom_type: RomType::Pcm,
             short_name: "pcm_mt32_h",
             description: "MT-32 PCM ROM",
             pair_type: PairType::SecondHalf,
             pair_rom_info_index: Some(IDX_PCM_MT32_L),
         },
-        // Alias of PCM_MT32 ROM, only useful for pairing with PCM_CM32L_H.
         RomInfo {
             file_size: 524288,
-            sha1_digest: pcm_mt32_sha1,
+            blake3_digest: pcm_mt32_blake3,
             rom_type: RomType::Pcm,
             short_name: "pcm_cm32l_l",
             description: "CM-32L/CM-64/LAPC-I PCM ROM",
@@ -361,7 +367,7 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
         },
         RomInfo {
             file_size: 524288,
-            sha1_digest: pcm_cm32l_h_sha1,
+            blake3_digest: pcm_cm32l_h_blake3,
             rom_type: RomType::Pcm,
             short_name: "pcm_cm32l_h",
             description: "CM-32L/CM-64/LAPC-I PCM ROM",
@@ -371,23 +377,19 @@ fn build_rom_info_table() -> [RomInfo; ALL_ROM_COUNT] {
     ]
 }
 
-/// Returns a RomInfo by inspecting the size and the SHA1 hash of the data
-/// among all known RomInfos.
 pub(crate) fn get_rom_info(data: &[u8]) -> Option<&'static RomInfo> {
     get_rom_info_from_list(data, get_all_rom_infos())
 }
 
-/// Returns a RomInfo by inspecting the size and the SHA1 hash of the data
-/// among the RomInfos in the provided list.
 pub(crate) fn get_rom_info_from_list<'a>(
     data: &[u8],
     rom_infos: &'a [RomInfo],
 ) -> Option<&'a RomInfo> {
     let file_size = data.len();
-    let sha1 = sha1_calc(data);
-    rom_infos
-        .iter()
-        .find(|rom_info| file_size == rom_info.file_size && sha1 == rom_info.sha1_digest)
+    let file_blake3_digest = blake3_digest(data);
+    rom_infos.iter().find(|rom_info| {
+        file_size == rom_info.file_size && file_blake3_digest == rom_info.blake3_digest
+    })
 }
 
 #[cfg(test)]
@@ -403,23 +405,22 @@ mod tests {
     #[test]
     fn test_rom_info_pair_references() {
         let all = get_all_rom_infos();
-        for (i, info) in all.iter().enumerate() {
-            if let Some(pair_idx) = info.pair_rom_info_index {
+        for (index, info) in all.iter().enumerate() {
+            if let Some(pair_index) = info.pair_rom_info_index {
                 assert!(
-                    pair_idx < ALL_ROM_COUNT,
+                    pair_index < ALL_ROM_COUNT,
                     "ROM {} has out-of-bounds pair index",
-                    i
+                    index
                 );
-                let pair = &all[pair_idx];
-                // The pair should also point back to us.
+                let pair_info = &all[pair_index];
                 assert_eq!(
-                    pair.pair_rom_info_index,
-                    Some(i),
+                    pair_info.pair_rom_info_index,
+                    Some(index),
                     "ROM {} ({}) pair ROM {} ({}) does not point back",
-                    i,
+                    index,
                     info.short_name,
-                    pair_idx,
-                    pair.short_name,
+                    pair_index,
+                    pair_info.short_name,
                 );
             }
         }
