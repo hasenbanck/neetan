@@ -194,21 +194,23 @@ fn insert_cdrom_impl<T: Tracing>(
 ) -> Result<String, String> {
     let cue_content = std::fs::read_to_string(path)
         .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-    let bin_filename = device::cdrom::extract_bin_filename(&cue_content)
+    let bin_filenames = device::cdrom::extract_bin_filenames(&cue_content)
         .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
-    let bin_path = path
-        .parent()
-        .unwrap_or(std::path::Path::new("."))
-        .join(&bin_filename);
-    let bin_data = std::fs::read(&bin_path)
-        .map_err(|error| format!("Failed to read {}: {error}", bin_path.display()))?;
-    let image = device::cdrom::CdImage::from_cue(&cue_content, bin_data)
+    let base_path = path.parent().unwrap_or(std::path::Path::new("."));
+    let mut bin_files = Vec::with_capacity(bin_filenames.len());
+    for bin_filename in &bin_filenames {
+        let bin_path = base_path.join(bin_filename);
+        let bin_data = std::fs::read(&bin_path)
+            .map_err(|error| format!("Failed to read {}: {error}", bin_path.display()))?;
+        bin_files.push(bin_data);
+    }
+    let image = device::cdrom::CdImage::from_cue_files(&cue_content, bin_files)
         .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
     let track_count = image.track_count();
     let total_sectors = image.total_sectors();
     let description = format!(
         "{} ({} tracks, {} sectors)",
-        bin_filename, track_count, total_sectors
+        bin_filenames[0], track_count, total_sectors
     );
     bus.insert_cdrom(image);
     Ok(description)

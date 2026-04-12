@@ -19,6 +19,14 @@ const MAX_BUFFER_SIZE: usize = 65536;
 /// CD-ROM sector size for data reads.
 const CDROM_SECTOR_SIZE: usize = 2048;
 
+fn raw_user_data_offset(raw_sector: &[u8]) -> usize {
+    if raw_sector.get(15) == Some(&0x02) {
+        24
+    } else {
+        16
+    }
+}
+
 // ATAPI signature registers (identifies device as ATAPI, not ATA).
 pub(super) const ATAPI_SIGNATURE_CYLINDER_LOW: u8 = 0x14;
 pub(super) const ATAPI_SIGNATURE_CYLINDER_HIGH: u8 = 0xEB;
@@ -1127,6 +1135,8 @@ impl AtapiState {
 
             if let Some(raw_size) = cdrom.read_sector_raw(sector_lba, &mut raw_buf) {
                 if raw_size == 2352 {
+                    let user_data_offset = raw_user_data_offset(&raw_buf);
+                    let is_mode2 = user_data_offset == 24;
                     let mut pos = out_offset;
                     if want_sync {
                         self.data_buffer[pos..pos + 12].copy_from_slice(&raw_buf[0..12]);
@@ -1137,17 +1147,22 @@ impl AtapiState {
                         pos += 4;
                     }
                     if want_sub_header {
-                        self.data_buffer[pos..pos + 8].copy_from_slice(&raw_buf[16..24]);
+                        if is_mode2 {
+                            self.data_buffer[pos..pos + 8].copy_from_slice(&raw_buf[16..24]);
+                        } else {
+                            self.data_buffer[pos..pos + 8].fill(0);
+                        }
                         pos += 8;
                     }
                     if want_user_data {
-                        self.data_buffer[pos..pos + CDROM_SECTOR_SIZE]
-                            .copy_from_slice(&raw_buf[16..16 + CDROM_SECTOR_SIZE]);
+                        self.data_buffer[pos..pos + CDROM_SECTOR_SIZE].copy_from_slice(
+                            &raw_buf[user_data_offset..user_data_offset + CDROM_SECTOR_SIZE],
+                        );
                         pos += CDROM_SECTOR_SIZE;
                     }
                     if want_edc_ecc {
-                        let edc_start = 16 + CDROM_SECTOR_SIZE;
-                        let edc_end = (edc_start + 288).min(2352);
+                        let edc_start = user_data_offset + CDROM_SECTOR_SIZE;
+                        let edc_end = 2352;
                         let actual = edc_end - edc_start;
                         self.data_buffer[pos..pos + actual]
                             .copy_from_slice(&raw_buf[edc_start..edc_end]);
@@ -1256,6 +1271,8 @@ impl AtapiState {
 
             if let Some(raw_size) = cdrom.read_sector_raw(sector_lba, &mut raw_buf) {
                 if raw_size == 2352 {
+                    let user_data_offset = raw_user_data_offset(&raw_buf);
+                    let is_mode2 = user_data_offset == 24;
                     let mut pos = out_offset;
                     if want_sync {
                         self.data_buffer[pos..pos + 12].copy_from_slice(&raw_buf[0..12]);
@@ -1266,19 +1283,22 @@ impl AtapiState {
                         pos += 4;
                     }
                     if want_sub_header {
-                        // Mode 2 sub-header at raw offset 16, 8 bytes.
-                        // Mode 1 has no sub-header; write zeros.
-                        self.data_buffer[pos..pos + 8].copy_from_slice(&raw_buf[16..24]);
+                        if is_mode2 {
+                            self.data_buffer[pos..pos + 8].copy_from_slice(&raw_buf[16..24]);
+                        } else {
+                            self.data_buffer[pos..pos + 8].fill(0);
+                        }
                         pos += 8;
                     }
                     if want_user_data {
-                        self.data_buffer[pos..pos + CDROM_SECTOR_SIZE]
-                            .copy_from_slice(&raw_buf[16..16 + CDROM_SECTOR_SIZE]);
+                        self.data_buffer[pos..pos + CDROM_SECTOR_SIZE].copy_from_slice(
+                            &raw_buf[user_data_offset..user_data_offset + CDROM_SECTOR_SIZE],
+                        );
                         pos += CDROM_SECTOR_SIZE;
                     }
                     if want_edc_ecc {
-                        let edc_start = 16 + CDROM_SECTOR_SIZE;
-                        let edc_end = (edc_start + 288).min(2352);
+                        let edc_start = user_data_offset + CDROM_SECTOR_SIZE;
+                        let edc_end = 2352;
                         let actual = edc_end - edc_start;
                         self.data_buffer[pos..pos + actual]
                             .copy_from_slice(&raw_buf[edc_start..edc_end]);

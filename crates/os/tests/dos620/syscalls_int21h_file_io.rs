@@ -282,6 +282,52 @@ fn open_read_from_cdrom_file() {
 }
 
 #[test]
+fn open_read_from_multifile_mode2_cdrom_file() {
+    let temp_cdrom_files = harness::write_temp_mode2_multi_file_cdrom("mode2_multifile");
+    let mut machine = harness::boot_hle_with_cdrom_path(&temp_cdrom_files.cue_path);
+
+    let handle = open_file_ap(&mut machine, b"Q:\\SETUP.EXE\0");
+    let handle_lo = (handle & 0xFF) as u8;
+    let handle_hi = (handle >> 8) as u8;
+
+    #[rustfmt::skip]
+    let code: Vec<u8> = vec![
+        0xBB, handle_lo, handle_hi,
+        0xB9, 0x02, 0x00,
+        0xBA, 0x10, 0x02,
+        0xB4, 0x3F,
+        0xCD, 0x21,
+        0xA3, 0x00, 0x01,
+        0x9C,
+        0x58,
+        0xA3, 0x02, 0x01,
+        0xFA,
+        0xF4,
+    ];
+    harness::inject_and_run_generic_with_budget(
+        &mut machine,
+        &code,
+        harness::INJECT_BUDGET_DISK_IO,
+    );
+
+    let flags = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "synthetic mode2 CD-ROM read should succeed, flags={:#06X}",
+        flags
+    );
+    assert_eq!(
+        harness::result_word(&machine.bus, 0),
+        2,
+        "synthetic mode2 CD-ROM read should return 2 bytes"
+    );
+
+    let read_back = harness::read_bytes(&machine.bus, harness::INJECT_CODE_BASE + 0x210, 2);
+    assert_eq!(&read_back, b"MZ");
+}
+
+#[test]
 fn lseek_file_size() {
     let mut machine = harness::boot_hle_with_floppy();
 
@@ -291,7 +337,7 @@ fn lseek_file_size() {
 
     #[rustfmt::skip]
     let code: Vec<u8> = vec![
-        0xBB, handle_lo, handle_hi,          // MOV BX, handle
+        0xBB, handle_lo, handle_hi,         // MOV BX, handle
         0xB4, 0x42,                         // MOV AH, 42h (lseek)
         0xB0, 0x02,                         // MOV AL, 02h (from end)
         0xB9, 0x00, 0x00,                   // MOV CX, 0000h
@@ -343,7 +389,7 @@ fn create_write_close_delete() {
     let handle_hi = (handle >> 8) as u8;
     #[rustfmt::skip]
     let write_code: Vec<u8> = vec![
-        0xBB, handle_lo, handle_hi,          // MOV BX, handle
+        0xBB, handle_lo, handle_hi,         // MOV BX, handle
         0xB9, 0x05, 0x00,                   // MOV CX, 0005h
         0xBA, 0x10, 0x02,                   // MOV DX, 0210h
         0xB4, 0x40,                         // MOV AH, 40h (write)
@@ -487,13 +533,15 @@ fn get_file_attributes() {
 
     // INT 21h/43h returns attributes in CL only; CH is undefined.
     let attributes = harness::result_byte(&machine.bus, 0);
-    assert!(
-        attributes & 0xC0 == 0,
+    assert_eq!(
+        attributes & 0xC0,
+        0,
         "File attributes should use only bits 0-5, got {:#04X}",
         attributes
     );
-    assert!(
-        attributes & 0x20 != 0,
+    assert_ne!(
+        attributes & 0x20,
+        0,
         "COMMAND.COM should have archive attribute set, got {:#04X}",
         attributes
     );
@@ -639,7 +687,7 @@ fn get_file_datetime() {
 
     #[rustfmt::skip]
     let code: Vec<u8> = vec![
-        0xBB, handle_lo, handle_hi,          // MOV BX, handle
+        0xBB, handle_lo, handle_hi,         // MOV BX, handle
         0xB4, 0x57,                         // MOV AH, 57h
         0xB0, 0x00,                         // MOV AL, 00h (get)
         0xCD, 0x21,                         // INT 21h
@@ -688,7 +736,7 @@ fn dup_file_handle() {
     // DUP the handle.
     #[rustfmt::skip]
     let dup_code: Vec<u8> = vec![
-        0xBB, handle_lo, handle_hi,          // MOV BX, handle
+        0xBB, handle_lo, handle_hi,         // MOV BX, handle
         0xB4, 0x45,                         // MOV AH, 45h (DUP)
         0xCD, 0x21,                         // INT 21h
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (new handle)
@@ -769,8 +817,9 @@ fn ioctl_get_device_info_stdout() {
     );
 
     let device_info = harness::result_word(&machine.bus, 0);
-    assert!(
-        device_info & 0x0080 != 0,
+    assert_ne!(
+        device_info & 0x0080,
+        0,
         "Stdout IOCTL: bit 7 should be set (character device), got {:#06X}",
         device_info
     );
@@ -786,7 +835,7 @@ fn ioctl_get_device_info_file() {
 
     #[rustfmt::skip]
     let code: Vec<u8> = vec![
-        0xBB, handle_lo, handle_hi,          // MOV BX, handle
+        0xBB, handle_lo, handle_hi,         // MOV BX, handle
         0xB4, 0x44,                         // MOV AH, 44h
         0xB0, 0x00,                         // MOV AL, 00h
         0xCD, 0x21,                         // INT 21h
@@ -832,7 +881,7 @@ fn ioctl_get_device_info_file_clears_not_written_after_zero_length_write() {
 
     #[rustfmt::skip]
     let ioctl_code: Vec<u8> = vec![
-        0xBB, handle_lo, handle_hi,          // MOV BX, handle
+        0xBB, handle_lo, handle_hi,         // MOV BX, handle
         0xB4, 0x44,                         // MOV AH, 44h
         0xB0, 0x00,                         // MOV AL, 00h
         0xCD, 0x21,                         // INT 21h
@@ -854,8 +903,9 @@ fn ioctl_get_device_info_file_clears_not_written_after_zero_length_write() {
     );
 
     let device_info = harness::result_word(&machine.bus, 0);
-    assert!(
-        device_info & 0x0040 != 0,
+    assert_ne!(
+        device_info & 0x0040,
+        0,
         "File IOCTL should start with the not-written bit set, got {:#06X}",
         device_info
     );
@@ -916,8 +966,9 @@ fn findfirst_root_directory() {
 
     let dta_base = harness::INJECT_CODE_BASE + 0x300;
     let attribute = harness::read_byte(&machine.bus, dta_base + 0x15);
-    assert!(
-        attribute & 0xC0 == 0,
+    assert_eq!(
+        attribute & 0xC0,
+        0,
         "Found file attribute should use only bits 0-5, got {:#04X}",
         attribute
     );
