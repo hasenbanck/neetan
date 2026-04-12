@@ -3,6 +3,7 @@ use common::Bus;
 use crate::harness;
 
 const IOSYS_BASE: u32 = 0x0600;
+const BDA_BOOT_DEVICE: u32 = 0x0584;
 const AUTOEXEC_LINES: &[u8] = b"@ECHO OFF\r\n";
 
 fn assert_boot_and_current_drive_are_a(machine: &mut machine::Pc9801Ra) {
@@ -124,6 +125,13 @@ fn fdd_autoexec_takes_drive_a_when_hdd_is_also_present() {
     );
 
     assert_boot_and_current_drive_are_a(&mut machine);
+
+    let boot_device = harness::read_byte(&machine.bus, BDA_BOOT_DEVICE);
+    assert_eq!(
+        boot_device, 0x90,
+        "BDA boot device should report 2HD floppy boot (0x90), got {:#04X}",
+        boot_device
+    );
 }
 
 #[test]
@@ -137,6 +145,13 @@ fn hdd_autoexec_takes_drive_a_when_floppy_has_no_autoexec() {
         drive_a_daua, 0x80,
         "Drive A: should be HDD (0x80) when only HDD has AUTOEXEC.BAT, got {:#04X}",
         drive_a_daua
+    );
+
+    let boot_device = harness::read_byte(&machine.bus, BDA_BOOT_DEVICE);
+    assert_eq!(
+        boot_device, 0x80,
+        "BDA boot device should report HDD boot (0x80), got {:#04X}",
+        boot_device
     );
 
     let drive_b_daua = harness::read_byte(&machine.bus, IOSYS_BASE + 0x006C + 1);
@@ -154,6 +169,27 @@ fn hdd_autoexec_takes_drive_a_when_floppy_has_no_autoexec() {
     );
 
     assert_boot_and_current_drive_are_a(&mut machine);
+}
+
+#[test]
+fn hle_boot_sets_bda_boot_device_from_selected_physical_medium() {
+    let floppy = harness::create_test_floppy_with_autoexec(AUTOEXEC_LINES);
+    let hdd = harness::create_test_hdd_with_autoexec(256, AUTOEXEC_LINES);
+    let machine = harness::boot_hle_with_forced_os(Some(floppy), Some(hdd));
+    assert_eq!(
+        harness::read_byte(&machine.bus, BDA_BOOT_DEVICE),
+        0x90,
+        "BDA boot device should report the selected floppy DA/UA when floppy AUTOEXEC.BAT wins"
+    );
+
+    let floppy = harness::create_test_floppy();
+    let hdd = harness::create_test_hdd_with_autoexec(256, AUTOEXEC_LINES);
+    let machine = harness::boot_hle_with_forced_os(Some(floppy), Some(hdd));
+    assert_eq!(
+        harness::read_byte(&machine.bus, BDA_BOOT_DEVICE),
+        0x80,
+        "BDA boot device should report the selected HDD DA/UA when HDD AUTOEXEC.BAT wins"
+    );
 }
 
 #[test]
