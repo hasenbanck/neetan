@@ -174,6 +174,24 @@ fn has_path_entry() {
 }
 
 #[test]
+fn default_root_environment_matches_hle_contract() {
+    let (machine, env_addr) = boot_and_get_environment();
+    let strings = read_environment_strings(&machine.bus, env_addr);
+
+    assert_eq!(
+        strings,
+        vec![
+            "COMSPEC=Z:\\COMMAND.COM".to_string(),
+            "CONFIG=".to_string(),
+            "PATH=".to_string(),
+            "PROMPT=$P$G".to_string(),
+            "TEMP=".to_string(),
+        ],
+        "root environment strings should match the default HLE DOS contract"
+    );
+}
+
+#[test]
 fn double_null_terminated() {
     let (machine, env_addr) = boot_and_get_environment();
     // Walk to find the double-null terminator.
