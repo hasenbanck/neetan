@@ -25,6 +25,7 @@ use crate::{
     config::{AspectMode, EmulatorConfig, ForceGdcClock, WindowMode},
     errors::Error,
     image_selector::{ImageEntry, ImageSelector, MediaType},
+    keyboard::{KeyMap, KeyboardForwardingState},
 };
 
 pub mod config;
@@ -32,7 +33,7 @@ pub mod convert;
 pub mod create;
 mod errors;
 mod image_selector;
-mod keymap;
+mod keyboard;
 
 #[cfg(feature = "tracing")]
 mod tracing;
@@ -291,7 +292,8 @@ struct Application {
     /// Whether relative mouse mode is active (Right Ctrl toggles).
     mouse_captured: bool,
     /// Host-to-PC-98 key mapping.
-    key_map: keymap::KeyMap,
+    key_map: KeyMap,
+    keyboard_forwarding_state: KeyboardForwardingState,
     /// Floppy disk image entries for drive 1.
     fdd1_entries: Vec<ImageEntry>,
     /// Current index into fdd1_entries, or `None` if no floppy is loaded.
@@ -404,6 +406,7 @@ impl Application {
             mouse_middle: false,
             mouse_captured: false,
             key_map,
+            keyboard_forwarding_state: KeyboardForwardingState::new(),
             fdd1_entries,
             fdd1_index,
             fdd2_entries,
@@ -502,6 +505,15 @@ impl Application {
                         self.handle_selector_key(*scancode, keymod.alt_gui());
                     }
                 } else {
+                    self.keyboard_forwarding_state.handle_key_down(
+                        *scancode,
+                        keymod.gui(),
+                        *repeat,
+                        &self.key_map,
+                    );
+                    self.keyboard_forwarding_state
+                        .apply_pending_actions(self.machine.as_mut());
+
                     // Right Ctrl toggles mouse capture.
                     if !repeat
                         && *scancode == Some(Scancode::RCtrl)
@@ -528,10 +540,6 @@ impl Application {
                         self.open_or_toggle_selector(MediaType::CdRom);
                     } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F12) {
                         self.log_memory_overview();
-                    } else if !repeat
-                        && let Some(code) = (*scancode).map(|sc| self.key_map.lookup(sc))
-                    {
-                        self.machine.push_keyboard_scancode(code);
                     }
                 }
             }
@@ -539,10 +547,13 @@ impl Application {
                 scancode, repeat, ..
             } => {
                 if self.image_selector.is_none()
-                    && !repeat
-                    && let Some(code) = (*scancode).map(|sc| self.key_map.lookup(sc))
+                    && let Some(code) = self.keyboard_forwarding_state.handle_key_up(
+                        *scancode,
+                        *repeat,
+                        &self.key_map,
+                    )
                 {
-                    self.machine.push_keyboard_scancode(code | 0x80);
+                    self.machine.push_keyboard_scancode(code);
                 }
             }
             Event::MouseMotion { xrel, yrel, .. } => {
