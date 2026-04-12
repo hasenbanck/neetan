@@ -2,12 +2,16 @@ use crate::harness;
 
 /// Helper: open a file and return the handle.
 fn open_file(machine: &mut machine::Pc9801Ra, filename: &[u8]) -> u16 {
+    open_file_with_mode(machine, filename, 0x00)
+}
+
+fn open_file_with_mode(machine: &mut machine::Pc9801Ra, filename: &[u8], open_mode: u8) -> u16 {
     let path_addr = harness::INJECT_CODE_BASE + 0x200;
     harness::write_bytes(&mut machine.bus, path_addr, filename);
     #[rustfmt::skip]
-    let code: &[u8] = &[
+    let mut code: Vec<u8> = vec![
         0xB4, 0x3D,                         // MOV AH, 3Dh (open)
-        0xB0, 0x00,                         // MOV AL, 00h (read-only)
+        0xB0, 0x00,                         // MOV AL, imm8
         0xBA, 0x00, 0x02,                   // MOV DX, 0200h
         0xCD, 0x21,                         // INT 21h
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (handle)
@@ -17,7 +21,8 @@ fn open_file(machine: &mut machine::Pc9801Ra, filename: &[u8]) -> u16 {
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
-    harness::inject_and_run_with_budget(machine, code, harness::INJECT_BUDGET_DISK_IO);
+    code[3] = open_mode;
+    harness::inject_and_run_with_budget(machine, &code, harness::INJECT_BUDGET_DISK_IO);
 
     let flags = harness::result_word(&machine.bus, 2);
     assert_eq!(
@@ -70,6 +75,33 @@ fn close_file(machine: &mut machine::Pc9801Ra, handle: u16) {
         0xF4,                               // HLT
     ];
     harness::inject_and_run_with_budget(machine, &code, harness::INJECT_BUDGET_DISK_IO);
+}
+
+fn write_zero_bytes(machine: &mut machine::Pc9801Ra, handle: u16) {
+    let handle_lo = (handle & 0xFF) as u8;
+    let handle_hi = (handle >> 8) as u8;
+    #[rustfmt::skip]
+    let code: Vec<u8> = vec![
+        0xBB, handle_lo, handle_hi,          // MOV BX, handle
+        0xB4, 0x40,                         // MOV AH, 40h
+        0x31, 0xC9,                         // XOR CX, CX
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xCD, 0x21,                         // INT 21h
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (flags)
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(machine, &code, harness::INJECT_BUDGET_DISK_IO);
+
+    let flags = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "write_zero_bytes: CF should be 0, flags={:#06X}",
+        flags
+    );
 }
 
 /// Helper: create a file and return the handle.
@@ -758,6 +790,52 @@ fn ioctl_get_device_info_file() {
         0xB4, 0x44,                         // MOV AH, 44h
         0xB0, 0x00,                         // MOV AL, 00h
         0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0x89, 0x16, 0x02, 0x01,             // MOV [0x0102], DX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x04, 0x01,                   // MOV [0x0104], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(&mut machine, &code, harness::INJECT_BUDGET_DISK_IO);
+
+    let flags = harness::result_word(&machine.bus, 4);
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "IOCTL on file should succeed (CF=0), flags={:#06X}",
+        flags
+    );
+
+    let device_info_ax = harness::result_word(&machine.bus, 0);
+    let device_info_dx = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        device_info_ax, 0x0040,
+        "File IOCTL should return the not-written bit for A: in AX"
+    );
+    assert_eq!(
+        device_info_dx, 0x0040,
+        "File IOCTL should return the not-written bit for A: in DX"
+    );
+
+    close_file(&mut machine, handle);
+}
+
+#[test]
+fn ioctl_get_device_info_file_clears_not_written_after_zero_length_write() {
+    let mut machine = harness::boot_hle_with_floppy();
+
+    let handle = open_file_with_mode(&mut machine, b"A:\\TESTFILE.TXT\0", 0x02);
+    let handle_lo = (handle & 0xFF) as u8;
+    let handle_hi = (handle >> 8) as u8;
+
+    #[rustfmt::skip]
+    let ioctl_code: Vec<u8> = vec![
+        0xBB, handle_lo, handle_hi,          // MOV BX, handle
+        0xB4, 0x44,                         // MOV AH, 44h
+        0xB0, 0x00,                         // MOV AL, 00h
+        0xCD, 0x21,                         // INT 21h
         0x89, 0x16, 0x00, 0x01,             // MOV [0x0100], DX
         0x9C,                               // PUSHF
         0x58,                               // POP AX
@@ -765,7 +843,7 @@ fn ioctl_get_device_info_file() {
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
-    harness::inject_and_run_with_budget(&mut machine, &code, harness::INJECT_BUDGET_DISK_IO);
+    harness::inject_and_run_with_budget(&mut machine, &ioctl_code, harness::INJECT_BUDGET_DISK_IO);
 
     let flags = harness::result_word(&machine.bus, 2);
     assert_eq!(
@@ -777,9 +855,26 @@ fn ioctl_get_device_info_file() {
 
     let device_info = harness::result_word(&machine.bus, 0);
     assert!(
-        device_info & 0x0080 == 0,
-        "File IOCTL: bit 7 should be clear (block device/file), got {:#06X}",
+        device_info & 0x0040 != 0,
+        "File IOCTL should start with the not-written bit set, got {:#06X}",
         device_info
+    );
+
+    write_zero_bytes(&mut machine, handle);
+
+    harness::inject_and_run_with_budget(&mut machine, &ioctl_code, harness::INJECT_BUDGET_DISK_IO);
+    let flags_after_write = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        flags_after_write & 0x0001,
+        0,
+        "IOCTL after zero-length write should succeed (CF=0), flags={:#06X}",
+        flags_after_write
+    );
+
+    let device_info_after_write = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        device_info_after_write, 0x0000,
+        "File IOCTL should clear the not-written bit after a successful zero-length write on A:"
     );
 
     close_file(&mut machine, handle);

@@ -561,6 +561,10 @@ impl NeetanOs {
                     metadata.file_size = metadata.position;
                     write_fat_handle_metadata(memory, sft_addr, &metadata);
                 }
+                memory.write_word(
+                    sft_addr + tables::SFT_ENT_DEV_INFO,
+                    dev_info & !tables::SFT_DEVINFO_EOF,
+                );
                 return Ok(0);
             }
 
@@ -572,6 +576,10 @@ impl NeetanOs {
             let (written, metadata) =
                 filesystem::write_fat_handle(&mut self.state, disk, metadata, &write_data)?;
             write_fat_handle_metadata(memory, sft_addr, &metadata);
+            memory.write_word(
+                sft_addr + tables::SFT_ENT_DEV_INFO,
+                dev_info & !tables::SFT_DEVINFO_EOF,
+            );
             Ok(written)
         })();
 
@@ -702,6 +710,7 @@ impl NeetanOs {
                 })();
                 match result {
                     Ok(info) => {
+                        cpu.set_ax(info);
                         cpu.set_dx(info);
                         set_iret_carry(cpu, memory, false);
                     }
@@ -1048,7 +1057,10 @@ impl NeetanOs {
         mem.write_word(sft_addr + tables::SFT_ENT_OPEN_MODE, open_mode);
         mem.write_byte(sft_addr + tables::SFT_ENT_FILE_ATTR, entry.attribute);
         // Device info: drive number in low bits, not a char device
-        mem.write_word(sft_addr + tables::SFT_ENT_DEV_INFO, drive_index as u16);
+        mem.write_word(
+            sft_addr + tables::SFT_ENT_DEV_INFO,
+            tables::SFT_DEVINFO_EOF | drive_index as u16,
+        );
         // DPB pointer (approximate: point to NUL device as placeholder)
         tables::write_far_ptr(
             mem,
@@ -1094,7 +1106,10 @@ impl NeetanOs {
         mem.write_word(sft_addr + tables::SFT_ENT_REF_COUNT, 1);
         mem.write_word(sft_addr + tables::SFT_ENT_OPEN_MODE, open_mode);
         mem.write_byte(sft_addr + tables::SFT_ENT_FILE_ATTR, entry.attribute);
-        mem.write_word(sft_addr + tables::SFT_ENT_DEV_INFO, drive_index as u16);
+        mem.write_word(
+            sft_addr + tables::SFT_ENT_DEV_INFO,
+            tables::SFT_DEVINFO_EOF | drive_index as u16,
+        );
         tables::write_far_ptr(
             mem,
             sft_addr + tables::SFT_ENT_DEV_PTR,
@@ -1130,7 +1145,10 @@ impl NeetanOs {
         mem.write_word(sft_addr + tables::SFT_ENT_REF_COUNT, 1);
         mem.write_word(sft_addr + tables::SFT_ENT_OPEN_MODE, open_mode);
         mem.write_byte(sft_addr + tables::SFT_ENT_FILE_ATTR, entry.attribute);
-        mem.write_word(sft_addr + tables::SFT_ENT_DEV_INFO, 25);
+        mem.write_word(
+            sft_addr + tables::SFT_ENT_DEV_INFO,
+            tables::SFT_DEVINFO_EOF | 25,
+        );
         tables::write_far_ptr(
             mem,
             sft_addr + tables::SFT_ENT_DEV_PTR,
