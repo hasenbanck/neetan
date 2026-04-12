@@ -1,5 +1,22 @@
 use crate::harness::*;
 
+fn row_containing(machine: &machine::Pc9801Ra, needle: &str) -> usize {
+    find_row_containing(&machine.bus, needle)
+        .unwrap_or_else(|| panic!("expected to find row containing {needle:?}"))
+}
+
+fn format_with_commas(value: usize) -> String {
+    let digits = value.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, byte) in digits.bytes().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            formatted.push(',');
+        }
+        formatted.push(byte as char);
+    }
+    formatted
+}
+
 #[test]
 fn dir_basic_listing() {
     let mut machine = boot_hle_with_floppy();
@@ -132,26 +149,28 @@ fn dir_sorted_by_name() {
     type_string(&mut machine.bus, b"A:\r");
     run_until_prompt(&mut machine);
 
+    type_string(&mut machine.bus, b"MD SUBDIR\r");
+    run_until_prompt(&mut machine);
+
     type_string(&mut machine.bus, b"CLS\r");
     run_until_prompt(&mut machine);
 
-    // /ON sorts by name; COMMAND.COM should come before TEST.COM and TESTFILE.TXT
     type_string(&mut machine.bus, b"DIR /ON\r");
     run_until_prompt(&mut machine);
 
-    // Verify COMMAND appears (sorted output should still list all files)
-    let command = [0x0043, 0x004F, 0x004D, 0x004D, 0x0041, 0x004E, 0x0044]; // "COMMAND"
-    assert!(
-        find_string_in_text_vram(&machine.bus, &command),
-        "DIR /ON should list COMMAND"
-    );
+    let subdir_row = row_containing(&machine, "SUBDIR");
+    let command_row = row_containing(&machine, "COMMAND");
+    let test_row = row_containing(&machine, "TEST     COM");
+    let testfile_row = row_containing(&machine, "TESTFILE TXT");
 
-    let testfile = [
-        0x0054, 0x0045, 0x0053, 0x0054, 0x0046, 0x0049, 0x004C, 0x0045,
-    ]; // "TESTFILE"
     assert!(
-        find_string_in_text_vram(&machine.bus, &testfile),
-        "DIR /ON should list TESTFILE"
+        subdir_row < command_row,
+        "DIR /ON should list directories before files"
+    );
+    assert!(command_row < test_row, "DIR /ON should sort files by name");
+    assert!(
+        test_row < testfile_row,
+        "DIR /ON should keep TEST.COM before TESTFILE.TXT"
     );
 }
 
@@ -161,17 +180,31 @@ fn dir_sorted_by_extension() {
     type_string(&mut machine.bus, b"A:\r");
     run_until_prompt(&mut machine);
 
+    type_string(&mut machine.bus, b"MD SUBDIR\r");
+    run_until_prompt(&mut machine);
+
     type_string(&mut machine.bus, b"CLS\r");
     run_until_prompt(&mut machine);
 
     type_string(&mut machine.bus, b"DIR /OE\r");
     run_until_prompt(&mut machine);
 
-    // All files should still appear
-    let files = [0x0066, 0x0069, 0x006C, 0x0065, 0x0028, 0x0073, 0x0029]; // "file(s)"
+    let subdir_row = row_containing(&machine, "SUBDIR");
+    let command_row = row_containing(&machine, "COMMAND");
+    let test_row = row_containing(&machine, "TEST     COM");
+    let testfile_row = row_containing(&machine, "TESTFILE TXT");
+
     assert!(
-        find_string_in_text_vram(&machine.bus, &files),
-        "DIR /OE should show file(s) in summary"
+        subdir_row < command_row,
+        "DIR /OE should keep directories before files"
+    );
+    assert!(
+        command_row < test_row,
+        "DIR /OE should sort matching COM entries by name"
+    );
+    assert!(
+        test_row < testfile_row,
+        "DIR /OE should place COM files before TXT files"
     );
 }
 
@@ -181,16 +214,65 @@ fn dir_sorted_by_size() {
     type_string(&mut machine.bus, b"A:\r");
     run_until_prompt(&mut machine);
 
+    type_string(&mut machine.bus, b"MD SUBDIR\r");
+    run_until_prompt(&mut machine);
+
     type_string(&mut machine.bus, b"CLS\r");
     run_until_prompt(&mut machine);
 
     type_string(&mut machine.bus, b"DIR /OS\r");
     run_until_prompt(&mut machine);
 
-    let files = [0x0066, 0x0069, 0x006C, 0x0065, 0x0028, 0x0073, 0x0029]; // "file(s)"
+    let subdir_row = row_containing(&machine, "SUBDIR");
+    let test_row = row_containing(&machine, "TEST     COM");
+    let testfile_row = row_containing(&machine, "TESTFILE TXT");
+    let command_row = row_containing(&machine, "COMMAND");
+
     assert!(
-        find_string_in_text_vram(&machine.bus, &files),
-        "DIR /OS should show file(s) in summary"
+        subdir_row < test_row,
+        "DIR /OS should keep directories before files"
+    );
+    assert!(
+        test_row < testfile_row,
+        "DIR /OS should place smaller files first"
+    );
+    assert!(
+        testfile_row < command_row,
+        "DIR /OS should place larger files later"
+    );
+}
+
+#[test]
+fn dir_default_sorts_directories_before_files_by_name() {
+    let mut machine = boot_hle_with_floppy();
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"MD SUBDIR\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"DIR\r");
+    run_until_prompt(&mut machine);
+
+    let subdir_row = row_containing(&machine, "SUBDIR");
+    let command_row = row_containing(&machine, "COMMAND");
+    let test_row = row_containing(&machine, "TEST     COM");
+    let testfile_row = row_containing(&machine, "TESTFILE TXT");
+
+    assert!(
+        subdir_row < command_row,
+        "DIR should list directories before files by default"
+    );
+    assert!(
+        command_row < test_row,
+        "DIR should sort files by name by default"
+    );
+    assert!(
+        test_row < testfile_row,
+        "DIR should keep TEST.COM before TESTFILE.TXT by default"
     );
 }
 
@@ -301,5 +383,56 @@ fn dir_in_subdirectory_shows_subdir_content() {
     assert!(
         find_string_in_text_vram(&machine.bus, &sub_prompt),
         "Prompt should show A:\\SUB>"
+    );
+}
+
+#[test]
+fn dir_formats_sizes_with_commas_and_dates_as_ymd() {
+    let large_file = vec![0x41; 1024];
+    let expected_total_bytes = TEST_COMMAND_COM.len() + TEST_FILE_CONTENT.len() + large_file.len();
+    let floppy = create_test_floppy_with_program(b"BIGFILE BIN", &large_file);
+    let mut machine = boot_hle_with_floppy_image(floppy);
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"DIR\r");
+    run_until_prompt(&mut machine);
+
+    let bigfile_row = row_containing(&machine, "BIGFILE  BIN");
+    let bigfile_line = text_vram_row_to_string(&machine.bus, bigfile_row);
+    assert!(
+        bigfile_line.contains("1,024"),
+        "DIR should format file sizes with commas, line was {:?}",
+        bigfile_line.trim_end()
+    );
+    assert!(
+        bigfile_line.contains("1995-01-01"),
+        "DIR should format dates as YYYY-MM-DD, line was {:?}",
+        bigfile_line.trim_end()
+    );
+    assert!(
+        bigfile_line.contains("12:00"),
+        "DIR should keep the expected time field, line was {:?}",
+        bigfile_line.trim_end()
+    );
+
+    let summary_row = row_containing(&machine, "file(s)");
+    let summary_line = text_vram_row_to_string(&machine.bus, summary_row);
+    let expected_total_bytes = format!("{} bytes", format_with_commas(expected_total_bytes));
+    assert!(
+        summary_line.contains(&expected_total_bytes),
+        "DIR summary should format total bytes with commas, line was {:?}",
+        summary_line.trim_end()
+    );
+
+    let free_row = row_containing(&machine, "bytes free");
+    let free_line = text_vram_row_to_string(&machine.bus, free_row);
+    assert!(
+        free_line.contains(','),
+        "DIR free space line should include comma separators, line was {:?}",
+        free_line.trim_end()
     );
 }
