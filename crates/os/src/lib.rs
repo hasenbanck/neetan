@@ -422,6 +422,7 @@ impl NeetanOs {
             && DiskIo::total_sectors(device, first.da_ua).is_some()
         {
             self.state.boot_drive = first.drive_index + 1;
+            memory.write_byte(tables::BDA_BOOT_DEVICE, first.da_ua);
             memory.write_byte(
                 tables::SYSVARS_BASE + tables::SYSVARS_OFF_BOOT_DRIVE,
                 self.state.boot_drive,

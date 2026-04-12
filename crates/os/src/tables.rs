@@ -296,6 +296,7 @@ pub const IOSYS_OFF_EXT_DAUA_TABLE: u32 = 0x2C86;
 pub const IOSYS_EXT_DAUA_TABLE_SIZE: u32 = 52;
 
 // BDA (BIOS Data Area) fields read during drive discovery.
+pub const BDA_BOOT_DEVICE: u32 = 0x0584;
 pub const BDA_DISK_EQUIP: u32 = 0x055C;
 
 /// Writes a far pointer (offset:segment, little-endian DWORD) at the given linear address.
