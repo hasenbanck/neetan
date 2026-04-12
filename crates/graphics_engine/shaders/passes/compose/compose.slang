@@ -342,12 +342,16 @@ func compute_text_pixel(x: uint, y: uint, out pixel_on: bool, out color_index: u
 
     let semigraphics = attr_semigraphics_mode && ((attr_byte & 0x10) != 0);
     let is_kanji = (char_high & kanji_high_mask) != 0;
+    let char_row_code = char_low & 0x7F;
+    let is_gaiji = is_kanji && ((char_row_code == 0x56) || (char_row_code == 0x57));
     let character_step = width40_mode ? 2u : 1u;
 
     var previous_char_low = 0u;
     var previous_char_high = 0u;
     var previous_is_kanji = false;
-    var previous_has_right_half = false;
+    var previous_is_gaiji = false;
+    var previous_is_trail_code = false;
+    var previous_is_normal_doublewidth = false;
     if (memory_col >= character_step) {
         let previous_byte_offset = (scroll_start + row * pitch + memory_col - character_step) * 2;
         previous_char_low = read_text_vram_byte(previous_byte_offset);
@@ -359,16 +363,21 @@ func compute_text_pixel(x: uint, y: uint, out pixel_on: bool, out color_index: u
             // Trail bytes (kanji right-half cells) have bit 7 set in at least one byte.
             // Some programs set it in char_low, others in char_high. A genuine kanji
             // left half never has bit 7 in either byte (row 0x01-0x5D, ten 0x21-0x7E).
-            let previous_is_trail_code = ((previous_char_low | previous_char_high) & 0x80) != 0;
-            let previous_is_gaiji = (previous_row_code == 0x56) || (previous_row_code == 0x57);
-            previous_has_right_half =
+            previous_is_trail_code = ((previous_char_low | previous_char_high) & 0x80) != 0;
+            previous_is_gaiji = (previous_row_code == 0x56) || (previous_row_code == 0x57);
+            previous_is_normal_doublewidth =
                 !previous_is_trail_code &&
                 !previous_is_gaiji &&
                 ((previous_row_code < 0x09) || (previous_row_code >= 0x0C));
         }
     }
 
-    let is_right_half = previous_has_right_half;
+    let gaiji_matches_previous =
+        is_gaiji &&
+        previous_is_gaiji &&
+        !previous_is_trail_code &&
+        (((char_high << 8) | char_low) & 0x7F7F) == (((previous_char_high << 8) | previous_char_low) & 0x7F7F);
+    let is_right_half = previous_is_normal_doublewidth || gaiji_matches_previous;
     var on: bool;
 
     if (!font_visible) {
@@ -378,7 +387,7 @@ func compute_text_pixel(x: uint, y: uint, out pixel_on: bool, out color_index: u
         // Kanji (double-byte): 16x16 glyph from the kanji font ROM.
         var kanji_low: uint;
         var kanji_high: uint;
-        if (is_right_half) {
+        if (previous_is_normal_doublewidth) {
             kanji_low = previous_char_low;
             kanji_high = previous_char_high;
         } else {
