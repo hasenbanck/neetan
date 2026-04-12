@@ -550,8 +550,7 @@ fn init_dir(
     let has_wildcard = path.contains(&b'*') || path.contains(&b'?');
 
     if has_wildcard {
-        let read_path = state
-            .resolve_read_file_path(path, io.memory, disk)
+        let read_path = crate::filesystem::resolve_read_file_path(state, path, io.memory, disk)
             .map_err(|_| &b"File Not Found\r\n"[..])?;
         Ok(DirState {
             drive_index: read_path.drive_index,
@@ -573,7 +572,7 @@ fn init_dir(
             current_path: Vec::new(),
         })
     } else {
-        match state.resolve_read_dir_path(path, io.memory, disk) {
+        match crate::filesystem::resolve_read_dir_path(state, path, io.memory, disk) {
             Ok(read_path) => Ok(DirState {
                 drive_index: read_path.drive_index,
                 directory: read_path.directory,
@@ -594,9 +593,9 @@ fn init_dir(
                 current_path: Vec::new(),
             }),
             Err(_) => {
-                let read_path = state
-                    .resolve_read_file_path(path, io.memory, disk)
-                    .map_err(|_| &b"File Not Found\r\n"[..])?;
+                let read_path =
+                    crate::filesystem::resolve_read_file_path(state, path, io.memory, disk)
+                        .map_err(|_| &b"File Not Found\r\n"[..])?;
                 Ok(DirState {
                     drive_index: read_path.drive_index,
                     directory: read_path.directory,

@@ -3,8 +3,7 @@
 use crate::{
     DiskIo, DriveIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
-    filesystem,
-    filesystem::{fat_dir, fat_file::FatFileCursor},
+    filesystem::{self, PendingFatFile, fat_dir, fat_file::FatFileCursor},
 };
 
 pub(crate) struct Copy;
@@ -47,12 +46,7 @@ struct FileCopyState {
     src_drive: u8,
     src_cursor: FatFileCursor,
     src_entry: fat_dir::DirEntry,
-    dst_drive: u8,
-    dst_dir_cluster: u16,
-    dst_fcb_name: [u8; 11],
-    dst_first_cluster: u16,
-    dst_last_cluster: u16,
-    dst_total_written: u32,
+    dst_file: PendingFatFile,
 }
 
 const KB_BUF_COUNT: u32 = 0x0528;
@@ -162,25 +156,32 @@ impl RunningCopy {
                 let file_state = FileCopyState {
                     src_drive: copy_state.sources[copy_state.current_source].drive,
                     src_cursor: FatFileCursor::new(&entry),
+                    dst_file: PendingFatFile {
+                        drive_index: copy_state.dst_drive,
+                        dir_cluster: copy_state.dst_dir_cluster,
+                        name: dst_fcb_name,
+                        attribute: entry.attribute & 0x27,
+                        time: entry.time,
+                        date: entry.date,
+                        start_cluster: 0,
+                        file_size: 0,
+                        position: 0,
+                    },
                     src_entry: entry,
-                    dst_drive: copy_state.dst_drive,
-                    dst_dir_cluster: copy_state.dst_dir_cluster,
-                    dst_fcb_name,
-                    dst_first_cluster: 0,
-                    dst_last_cluster: 0,
-                    dst_total_written: 0,
                 };
 
                 // Check if dest exists and /Y not set
                 if !copy_state.overwrite_all {
-                    let dst_vol = match state.fat_volumes[file_state.dst_drive as usize].as_ref() {
+                    let dst_vol = match state.fat_volumes[file_state.dst_file.drive_index as usize]
+                        .as_ref()
+                    {
                         Some(v) => v,
                         None => return StepResult::Done(1),
                     };
                     if fat_dir::find_entry(
                         dst_vol,
-                        file_state.dst_dir_cluster,
-                        &file_state.dst_fcb_name,
+                        file_state.dst_file.dir_cluster,
+                        &file_state.dst_file.name,
                         disk,
                     )
                     .ok()
@@ -277,10 +278,11 @@ impl RunningCopy {
             return StepResult::Continue;
         }
 
-        let dst_cluster_size = match state.fat_volumes[file_state.dst_drive as usize].as_ref() {
-            Some(v) => v.bpb.cluster_size() as usize,
-            None => return StepResult::Done(1),
-        };
+        let dst_cluster_size =
+            match state.fat_volumes[file_state.dst_file.drive_index as usize].as_ref() {
+                Some(v) => v.bpb.cluster_size() as usize,
+                None => return StepResult::Done(1),
+            };
         let src_vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
             Some(v) => v,
             None => return StepResult::Done(1),
@@ -318,35 +320,20 @@ impl RunningCopy {
         io: &mut IoAccess,
         disk: &mut dyn DiskIo,
     ) -> StepResult {
-        let vol = match state.fat_volumes[file_state.dst_drive as usize].as_mut() {
-            Some(v) => v,
-            None => return StepResult::Done(1),
-        };
+        let (dst_file, new_cluster) =
+            match filesystem::write_pending_file_chunk(state, disk, file_state.dst_file, &data) {
+                Ok(result) => result,
+                Err(0x001F) => {
+                    io.println(b"Insufficient disk space");
+                    return StepResult::Done(1);
+                }
+                Err(_) => {
+                    io.println(b"Write error");
+                    return StepResult::Done(1);
+                }
+            };
 
-        let new_cluster = match vol.allocate_cluster(file_state.dst_last_cluster) {
-            Some(c) => c,
-            None => {
-                io.println(b"Insufficient disk space");
-                return StepResult::Done(1);
-            }
-        };
-
-        if file_state.dst_first_cluster == 0 {
-            file_state.dst_first_cluster = new_cluster;
-        }
-        file_state.dst_last_cluster = new_cluster;
-
-        let bytes_to_write = data.len();
-        let cluster_size = vol.bpb.cluster_size() as usize;
-        let mut write_data = data.clone();
-        write_data.resize(cluster_size, 0);
-
-        if vol.write_cluster(new_cluster, &write_data, disk).is_err() {
-            io.println(b"Write error");
-            return StepResult::Done(1);
-        }
-
-        file_state.dst_total_written += bytes_to_write as u32;
+        file_state.dst_file = dst_file;
 
         if copy_state.verify {
             self.phase = CopyPhase::VerifyChunk(copy_state, file_state, new_cluster, data);
@@ -367,8 +354,7 @@ impl RunningCopy {
         io: &mut IoAccess,
         disk: &mut dyn DiskIo,
     ) -> StepResult {
-        // /V: re-read the written cluster and compare
-        let vol = match state.fat_volumes[file_state.dst_drive as usize].as_ref() {
+        let vol = match state.fat_volumes[file_state.dst_file.drive_index as usize].as_ref() {
             Some(v) => v,
             None => return StepResult::Done(1),
         };
@@ -399,41 +385,11 @@ impl RunningCopy {
         io: &mut IoAccess,
         disk: &mut dyn DiskIo,
     ) -> StepResult {
-        let vol = match state.fat_volumes[file_state.dst_drive as usize].as_mut() {
-            Some(v) => v,
-            None => return StepResult::Done(1),
-        };
-
-        // Remove existing dest if present
-        if let Ok(Some(existing)) = fat_dir::find_entry(
-            vol,
-            file_state.dst_dir_cluster,
-            &file_state.dst_fcb_name,
-            disk,
-        ) {
-            if existing.start_cluster >= 2 {
-                vol.free_chain(existing.start_cluster);
-            }
-            let _ = fat_dir::delete_entry(vol, &existing, disk);
-        }
-
-        let new_entry = fat_dir::DirEntry {
-            name: file_state.dst_fcb_name,
-            attribute: file_state.src_entry.attribute & 0x27,
-            time: file_state.src_entry.time,
-            date: file_state.src_entry.date,
-            start_cluster: file_state.dst_first_cluster,
-            file_size: file_state.dst_total_written,
-            dir_sector: 0,
-            dir_offset: 0,
-        };
-
-        if fat_dir::create_entry(vol, file_state.dst_dir_cluster, &new_entry, disk).is_err() {
+        if filesystem::finish_pending_file(state, disk, file_state.dst_file).is_err() {
             io.println(b"Unable to create destination");
             return StepResult::Done(1);
         }
 
-        let _ = vol.flush_fat(disk);
         copy_state.files_copied += 1;
 
         self.phase = CopyPhase::FindNext(copy_state);
@@ -502,10 +458,11 @@ impl RunningCopy {
             return StepResult::Continue;
         }
 
-        let dst_cluster_size = match state.fat_volumes[file_state.dst_drive as usize].as_ref() {
-            Some(v) => v.bpb.cluster_size() as usize,
-            None => return StepResult::Done(1),
-        };
+        let dst_cluster_size =
+            match state.fat_volumes[file_state.dst_file.drive_index as usize].as_ref() {
+                Some(v) => v.bpb.cluster_size() as usize,
+                None => return StepResult::Done(1),
+            };
         let src_vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
             Some(v) => v,
             None => return StepResult::Done(1),
@@ -539,35 +496,19 @@ impl RunningCopy {
         io: &mut IoAccess,
         disk: &mut dyn DiskIo,
     ) -> StepResult {
-        let vol = match state.fat_volumes[file_state.dst_drive as usize].as_mut() {
-            Some(v) => v,
-            None => return StepResult::Done(1),
-        };
-
-        let new_cluster = match vol.allocate_cluster(file_state.dst_last_cluster) {
-            Some(c) => c,
-            None => {
-                io.println(b"Insufficient disk space");
-                return StepResult::Done(1);
-            }
-        };
-
-        if file_state.dst_first_cluster == 0 {
-            file_state.dst_first_cluster = new_cluster;
-        }
-        file_state.dst_last_cluster = new_cluster;
-
-        let bytes_to_write = data.len();
-        let cluster_size = vol.bpb.cluster_size() as usize;
-        let mut write_data = data;
-        write_data.resize(cluster_size, 0);
-
-        if vol.write_cluster(new_cluster, &write_data, disk).is_err() {
-            io.println(b"Write error");
-            return StepResult::Done(1);
-        }
-
-        file_state.dst_total_written += bytes_to_write as u32;
+        let (dst_file, _) =
+            match filesystem::write_pending_file_chunk(state, disk, file_state.dst_file, &data) {
+                Ok(result) => result,
+                Err(0x001F) => {
+                    io.println(b"Insufficient disk space");
+                    return StepResult::Done(1);
+                }
+                Err(_) => {
+                    io.println(b"Write error");
+                    return StepResult::Done(1);
+                }
+            };
+        file_state.dst_file = dst_file;
 
         self.phase = CopyPhase::ConcatRead(copy_state, file_state);
         StepResult::Continue
@@ -670,9 +611,9 @@ fn init_copy(
             if src_name.is_empty() {
                 continue;
             }
-            let (drive, dir_cluster, pattern) = state
-                .resolve_file_path(src_name, io.memory, disk)
-                .map_err(|_| &b"File not found\r\n"[..])?;
+            let (drive, dir_cluster, pattern) =
+                filesystem::resolve_file_path(state, src_name, io.memory, disk)
+                    .map_err(|_| &b"File not found\r\n"[..])?;
             sources.push(SourceSpec {
                 drive,
                 dir_cluster,
@@ -685,12 +626,12 @@ fn init_copy(
         }
 
         let (dst_drive, dst_dir_cluster, dst_is_dir) =
-            match state.resolve_dir_path(dest, io.memory, disk) {
+            match crate::filesystem::resolve_dir_path(state, dest, io.memory, disk) {
                 Ok((drive, cluster)) => (drive, cluster, true),
                 Err(_) => {
-                    let (drive, dir_cluster, _fcb) = state
-                        .resolve_file_path(dest, io.memory, disk)
-                        .map_err(|_| &b"Invalid destination\r\n"[..])?;
+                    let (drive, dir_cluster, _fcb) =
+                        crate::filesystem::resolve_file_path(state, dest, io.memory, disk)
+                            .map_err(|_| &b"Invalid destination\r\n"[..])?;
                     (drive, dir_cluster, false)
                 }
             };
@@ -721,21 +662,21 @@ fn init_copy(
         let source = tokens[0];
         let dest = tokens[1];
 
-        let (src_drive, src_dir_cluster, src_pattern) = state
-            .resolve_file_path(source, io.memory, disk)
-            .map_err(|_| &b"File not found\r\n"[..])?;
+        let (src_drive, src_dir_cluster, src_pattern) =
+            crate::filesystem::resolve_file_path(state, source, io.memory, disk)
+                .map_err(|_| &b"File not found\r\n"[..])?;
 
         if src_drive == 25 {
             return Err(b"Access denied\r\n");
         }
 
         let (dst_drive, dst_dir_cluster, dst_is_dir) =
-            match state.resolve_dir_path(dest, io.memory, disk) {
+            match crate::filesystem::resolve_dir_path(state, dest, io.memory, disk) {
                 Ok((drive, cluster)) => (drive, cluster, true),
                 Err(_) => {
-                    let (drive, dir_cluster, _fcb) = state
-                        .resolve_file_path(dest, io.memory, disk)
-                        .map_err(|_| &b"Invalid destination\r\n"[..])?;
+                    let (drive, dir_cluster, _fcb) =
+                        crate::filesystem::resolve_file_path(state, dest, io.memory, disk)
+                            .map_err(|_| &b"Invalid destination\r\n"[..])?;
                     (drive, dir_cluster, false)
                 }
             };

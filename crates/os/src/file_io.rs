@@ -4,11 +4,9 @@ use common::warn;
 
 use crate::{
     CpuAccess, DiskIo, DriveIo, MemoryAccess, NeetanOs, OsState,
-    commands::md,
     filesystem::{
-        ReadDirEntrySource, ReadDirectory, fat_dir,
-        fat_file::{FatFileCursor, FatFileWriter},
-        find_matching_read_entry, find_read_entry, iso9660, split_path,
+        self, FatHandleMetadata, ReadDirEntrySource, ReadDirectory, fat_dir,
+        fat_file::FatFileCursor, find_matching_read_entry, find_read_entry, iso9660, split_path,
         virtual_drive::VirtualEntry,
     },
     set_iret_carry, tables,
@@ -23,6 +21,67 @@ fn write_dword(mem: &mut dyn MemoryAccess, addr: u32, value: u32) {
 /// Reads a 32-bit value from emulated memory.
 fn read_dword(mem: &dyn MemoryAccess, addr: u32) -> u32 {
     mem.read_word(addr) as u32 | ((mem.read_word(addr + 2) as u32) << 16)
+}
+
+fn read_fat_handle_metadata(
+    memory: &mut dyn MemoryAccess,
+    sft_addr: u32,
+    drive_index: u8,
+) -> FatHandleMetadata {
+    let dir_sector = memory.read_word(sft_addr + tables::SFT_ENT_DIR_SECTOR) as u32;
+    let dir_index = memory.read_byte(sft_addr + tables::SFT_ENT_DIR_INDEX);
+    let mut name = [0u8; 11];
+    memory.read_block(sft_addr + tables::SFT_ENT_NAME, &mut name);
+
+    FatHandleMetadata {
+        drive_index,
+        name,
+        attribute: memory.read_byte(sft_addr + tables::SFT_ENT_FILE_ATTR),
+        time: memory.read_word(sft_addr + tables::SFT_ENT_FILE_TIME),
+        date: memory.read_word(sft_addr + tables::SFT_ENT_FILE_DATE),
+        start_cluster: memory.read_word(sft_addr + tables::SFT_ENT_START_CLUSTER),
+        file_size: read_dword(memory, sft_addr + tables::SFT_ENT_FILE_SIZE),
+        position: read_dword(memory, sft_addr + tables::SFT_ENT_FILE_POS),
+        dir_sector,
+        dir_offset: dir_index as u16 * fat_dir::DIR_ENTRY_SIZE as u16,
+    }
+}
+
+fn write_fat_handle_metadata(
+    memory: &mut dyn MemoryAccess,
+    sft_addr: u32,
+    metadata: &FatHandleMetadata,
+) {
+    memory.write_byte(sft_addr + tables::SFT_ENT_FILE_ATTR, metadata.attribute);
+    memory.write_word(
+        sft_addr + tables::SFT_ENT_START_CLUSTER,
+        metadata.start_cluster,
+    );
+    memory.write_word(sft_addr + tables::SFT_ENT_FILE_TIME, metadata.time);
+    memory.write_word(sft_addr + tables::SFT_ENT_FILE_DATE, metadata.date);
+    write_dword(
+        memory,
+        sft_addr + tables::SFT_ENT_FILE_SIZE,
+        metadata.file_size,
+    );
+    write_dword(
+        memory,
+        sft_addr + tables::SFT_ENT_FILE_POS,
+        metadata.position,
+    );
+    memory.write_word(
+        sft_addr + tables::SFT_ENT_CUR_CLUSTER,
+        metadata.start_cluster,
+    );
+    memory.write_word(
+        sft_addr + tables::SFT_ENT_DIR_SECTOR,
+        metadata.dir_sector as u16,
+    );
+    memory.write_byte(
+        sft_addr + tables::SFT_ENT_DIR_INDEX,
+        (metadata.dir_offset / fat_dir::DIR_ENTRY_SIZE as u16) as u8,
+    );
+    memory.write_block(sft_addr + tables::SFT_ENT_NAME, &metadata.name);
 }
 
 impl NeetanOs {
@@ -218,7 +277,7 @@ impl NeetanOs {
         let path_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
         let path = OsState::read_asciiz(memory, path_addr, 128);
 
-        match md::create_directory(&mut self.state, memory, disk, &path) {
+        match filesystem::create_directory(&mut self.state, memory, disk, &path) {
             Ok(()) => set_iret_carry(cpu, memory, false),
             Err(error) => {
                 cpu.set_ax(error);
@@ -239,59 +298,13 @@ impl NeetanOs {
         let path = OsState::read_asciiz(memory, path_addr, 128);
 
         let result = (|| -> Result<u16, u16> {
-            let (drive_index, dir_cluster, fcb_name) =
-                self.state.resolve_file_path(&path, memory, disk)?;
-
-            if drive_index == 25 {
-                return Err(0x0005); // access denied (Z: is read-only)
-            }
-
-            let (time, date) = self.state.dos_timestamp_now();
-
-            let vol = self.state.fat_volumes[drive_index as usize]
-                .as_mut()
-                .ok_or(0x000Fu16)?;
-
-            // Check if file already exists - truncate it
-            if let Some(existing) = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk)? {
-                if existing.start_cluster >= 2 {
-                    vol.free_chain(existing.start_cluster);
-                }
-                let mut updated = existing;
-                updated.file_size = 0;
-                updated.start_cluster = 0;
-                updated.attribute = attr & 0x27; // mask valid bits
-                updated.time = time;
-                updated.date = date;
-                fat_dir::update_entry(vol, &updated, disk)?;
-                vol.flush_fat(disk)?;
-
-                // Allocate handle
-                let (handle, sft_index) = self.state.allocate_handle(memory)?;
-                self.write_sft_for_file(
-                    memory,
-                    sft_index,
-                    &updated,
-                    drive_index,
-                    0x0002, // read/write
-                );
-                return Ok(handle as u16);
-            }
-
-            // Create new entry
-            let new_entry = fat_dir::DirEntry {
-                name: fcb_name,
-                attribute: attr & 0x27,
-                time,
-                date,
-                start_cluster: 0,
-                file_size: 0,
-                dir_sector: 0,
-                dir_offset: 0,
-            };
-            let created = fat_dir::create_entry(vol, dir_cluster, &new_entry, disk)?;
-            vol.flush_fat(disk)?;
-
+            let created =
+                filesystem::create_or_truncate_file(&mut self.state, memory, disk, &path, attr)?;
+            let drive_index = path
+                .first()
+                .filter(|_| path.len() >= 2 && path[1] == b':')
+                .map(|letter| letter.to_ascii_uppercase() - b'A')
+                .unwrap_or(self.state.current_drive);
             let (handle, sft_index) = self.state.allocate_handle(memory)?;
             self.write_sft_for_file(memory, sft_index, &created, drive_index, 0x0002);
             Ok(handle as u16)
@@ -321,14 +334,16 @@ impl NeetanOs {
         let path = OsState::read_asciiz(memory, path_addr, 128);
 
         let result = (|| -> Result<u16, u16> {
-            let read_path = self.state.resolve_read_file_path(&path, memory, disk)?;
+            let read_path =
+                filesystem::resolve_read_file_path(&mut self.state, &path, memory, disk)?;
             let drive_index = read_path.drive_index;
 
             if drive_index == 25 {
                 if open_mode != 0x00 {
                     return Err(0x0005); // Z: is read-only
                 }
-                let (_, _, fcb_name) = self.state.resolve_file_path(&path, memory, disk)?;
+                let (_, _, fcb_name) =
+                    filesystem::resolve_file_path(&mut self.state, &path, memory, disk)?;
                 let ventry = self
                     .state
                     .virtual_drive
@@ -402,38 +417,9 @@ impl NeetanOs {
             let is_device = dev_info & tables::SFT_DEVINFO_CHAR != 0;
 
             if !is_device {
-                // Flush file: update directory entry with current size/time
                 let drive_index = (dev_info & 0x003F) as u8;
-                if let Some(vol) = self
-                    .state
-                    .fat_volumes
-                    .get_mut(drive_index as usize)
-                    .and_then(|v| v.as_mut())
-                {
-                    let dir_sector_lo = memory.read_word(sft_addr + tables::SFT_ENT_DIR_SECTOR);
-                    let dir_sector = dir_sector_lo as u32;
-                    let dir_index = memory.read_byte(sft_addr + tables::SFT_ENT_DIR_INDEX);
-                    let file_size = read_dword(memory, sft_addr + tables::SFT_ENT_FILE_SIZE);
-                    let start_cluster = memory.read_word(sft_addr + tables::SFT_ENT_START_CLUSTER);
-                    let time = memory.read_word(sft_addr + tables::SFT_ENT_FILE_TIME);
-                    let date = memory.read_word(sft_addr + tables::SFT_ENT_FILE_DATE);
-
-                    let mut name = [0u8; 11];
-                    memory.read_block(sft_addr + tables::SFT_ENT_NAME, &mut name);
-
-                    let entry = fat_dir::DirEntry {
-                        name,
-                        attribute: memory.read_byte(sft_addr + tables::SFT_ENT_FILE_ATTR),
-                        time,
-                        date,
-                        start_cluster,
-                        file_size,
-                        dir_sector,
-                        dir_offset: dir_index as u16 * fat_dir::DIR_ENTRY_SIZE as u16,
-                    };
-                    let _ = fat_dir::update_entry(vol, &entry, disk);
-                    let _ = vol.flush_fat(disk);
-                }
+                let metadata = read_fat_handle_metadata(memory, sft_addr, drive_index);
+                let _ = filesystem::flush_fat_handle(&mut self.state, disk, &metadata);
             }
 
             self.state.free_handle(handle, memory);
@@ -568,46 +554,25 @@ impl NeetanOs {
 
             // File write
             let drive_index = (dev_info & 0x003F) as u8;
-            let mut file_size = read_dword(memory, sft_addr + tables::SFT_ENT_FILE_SIZE);
-            let mut position = read_dword(memory, sft_addr + tables::SFT_ENT_FILE_POS);
-            let mut start_cluster = memory.read_word(sft_addr + tables::SFT_ENT_START_CLUSTER);
+            let mut metadata = read_fat_handle_metadata(memory, sft_addr, drive_index);
 
             if count == 0 {
-                // Truncate at current position
-                if position < file_size {
-                    file_size = position;
-                    write_dword(memory, sft_addr + tables::SFT_ENT_FILE_SIZE, file_size);
+                if metadata.position < metadata.file_size {
+                    metadata.file_size = metadata.position;
+                    write_fat_handle_metadata(memory, sft_addr, &metadata);
                 }
                 return Ok(0);
             }
 
             let (time, date) = self.state.dos_timestamp_now();
-
-            let vol = self.state.fat_volumes[drive_index as usize]
-                .as_mut()
-                .ok_or(0x000Fu16)?;
             let mut write_data = vec![0u8; count as usize];
             memory.read_block(buf_addr, &mut write_data);
-
-            let mut writer = FatFileWriter::new(start_cluster, position);
-            writer.write_chunk(vol, disk, &write_data)?;
-            start_cluster = writer.start_cluster();
-            position = writer.position();
-            memory.write_word(sft_addr + tables::SFT_ENT_START_CLUSTER, start_cluster);
-
-            if position > file_size {
-                file_size = position;
-            }
-            write_dword(memory, sft_addr + tables::SFT_ENT_FILE_SIZE, file_size);
-            write_dword(memory, sft_addr + tables::SFT_ENT_FILE_POS, position);
-
-            // Update time stamp
-            memory.write_word(sft_addr + tables::SFT_ENT_FILE_TIME, time);
-            memory.write_word(sft_addr + tables::SFT_ENT_FILE_DATE, date);
-
-            vol.flush_fat(disk)?;
-
-            Ok(write_data.len() as u16)
+            metadata.time = time;
+            metadata.date = date;
+            let (written, metadata) =
+                filesystem::write_fat_handle(&mut self.state, disk, metadata, &write_data)?;
+            write_fat_handle_metadata(memory, sft_addr, &metadata);
+            Ok(written)
         })();
 
         match result {
@@ -632,31 +597,7 @@ impl NeetanOs {
         let path_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
         let path = OsState::read_asciiz(memory, path_addr, 128);
 
-        let result = (|| -> Result<(), u16> {
-            let (drive_index, dir_cluster, fcb_name) =
-                self.state.resolve_file_path(&path, memory, disk)?;
-
-            if drive_index == 25 {
-                return Err(0x0005);
-            }
-
-            let vol = self.state.fat_volumes[drive_index as usize]
-                .as_mut()
-                .ok_or(0x000Fu16)?;
-
-            let entry = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk)?.ok_or(0x0002u16)?;
-
-            if entry.attribute & (fat_dir::ATTR_DIRECTORY | fat_dir::ATTR_VOLUME_ID) != 0 {
-                return Err(0x0005); // access denied
-            }
-
-            if entry.start_cluster >= 2 {
-                vol.free_chain(entry.start_cluster);
-            }
-            fat_dir::delete_entry(vol, &entry, disk)?;
-            vol.flush_fat(disk)?;
-            Ok(())
-        })();
+        let result = filesystem::delete_file(&mut self.state, memory, disk, &path);
 
         match result {
             Ok(()) => set_iret_carry(cpu, memory, false),
@@ -719,39 +660,14 @@ impl NeetanOs {
         let al = cpu.ax() as u8;
         let path = OsState::read_asciiz(memory, path_addr, 128);
 
-        let result = (|| -> Result<u16, u16> {
-            let read_path = self.state.resolve_read_file_path(&path, memory, disk)?;
-            let drive_index = read_path.drive_index;
-
-            if drive_index == 25 {
-                // Virtual Z: drive
-                let (_, _, fcb_name) = self.state.resolve_file_path(&path, memory, disk)?;
-                if let Some(ventry) = self.state.virtual_drive.find_entry(&fcb_name) {
-                    return Ok(ventry.attribute as u16);
-                }
-                return Err(0x0002);
+        let result = match al {
+            0x00 => filesystem::get_attributes(&mut self.state, memory, disk, &path).map(u16::from),
+            0x01 => {
+                filesystem::set_attributes(&mut self.state, memory, disk, &path, cpu.cx() as u8)
+                    .map(u16::from)
             }
-
-            let entry = find_read_entry(&self.state, &read_path, disk)?.ok_or(0x0002u16)?;
-
-            match al {
-                0x00 => Ok(entry.attribute as u16),
-                0x01 => {
-                    let ReadDirEntrySource::Fat(entry) = entry.source else {
-                        return Err(0x0005);
-                    };
-                    let new_attr = cpu.cx() as u8;
-                    let vol = self.state.fat_volumes[drive_index as usize]
-                        .as_mut()
-                        .ok_or(0x000Fu16)?;
-                    let mut updated = entry;
-                    updated.attribute = new_attr & 0x27;
-                    fat_dir::update_entry(vol, &updated, disk)?;
-                    Ok(new_attr as u16)
-                }
-                _ => Err(0x0001),
-            }
-        })();
+            _ => Err(0x0001),
+        };
 
         match result {
             Ok(attr) => {
@@ -894,23 +810,24 @@ impl NeetanOs {
         let path = OsState::read_asciiz(memory, path_addr, 128);
 
         let result = (|| -> Result<(), u16> {
-            let (drive_index, pattern, dir_cluster, read_directory) =
-                if let Ok(read_path) = self.state.resolve_read_file_path(&path, memory, disk) {
-                    let dir_cluster = match &read_path.directory {
-                        ReadDirectory::Fat(dir_cluster) => *dir_cluster,
-                        ReadDirectory::Iso(_) => 0,
-                    };
-                    (
-                        read_path.drive_index,
-                        read_path.name,
-                        dir_cluster,
-                        Some(read_path.directory),
-                    )
-                } else {
-                    let (drive_index, dir_cluster, pattern) =
-                        self.state.resolve_file_path(&path, memory, disk)?;
-                    (drive_index, pattern, dir_cluster, None)
+            let (drive_index, pattern, dir_cluster, read_directory) = if let Ok(read_path) =
+                filesystem::resolve_read_file_path(&mut self.state, &path, memory, disk)
+            {
+                let dir_cluster = match &read_path.directory {
+                    ReadDirectory::Fat(dir_cluster) => *dir_cluster,
+                    ReadDirectory::Iso(_) => 0,
                 };
+                (
+                    read_path.drive_index,
+                    read_path.name,
+                    dir_cluster,
+                    Some(read_path.directory),
+                )
+            } else {
+                let (drive_index, dir_cluster, pattern) =
+                    filesystem::resolve_file_path(&mut self.state, &path, memory, disk)?;
+                (drive_index, pattern, dir_cluster, None)
+            };
 
             let dta_addr = ((self.state.dta_segment as u32) << 4) + self.state.dta_offset as u32;
 
@@ -1034,35 +951,7 @@ impl NeetanOs {
         let old_path = OsState::read_asciiz(memory, old_addr, 128);
         let new_path = OsState::read_asciiz(memory, new_addr, 128);
 
-        let result = (|| -> Result<(), u16> {
-            let (drive_old, dir_old, fcb_old) =
-                self.state.resolve_file_path(&old_path, memory, disk)?;
-            let (drive_new, dir_new, fcb_new) =
-                self.state.resolve_file_path(&new_path, memory, disk)?;
-
-            if drive_old != drive_new {
-                return Err(0x0011); // not same device
-            }
-            if drive_old == 25 {
-                return Err(0x0005);
-            }
-
-            let vol = self.state.fat_volumes[drive_old as usize]
-                .as_mut()
-                .ok_or(0x000Fu16)?;
-
-            // Find old entry
-            let mut entry = fat_dir::find_entry(vol, dir_old, &fcb_old, disk)?.ok_or(0x0002u16)?;
-
-            // Check new name doesn't exist
-            if fat_dir::find_entry(vol, dir_new, &fcb_new, disk)?.is_some() {
-                return Err(0x0005); // access denied (file exists)
-            }
-
-            entry.name = fcb_new;
-            fat_dir::update_entry(vol, &entry, disk)?;
-            Ok(())
-        })();
+        let result = filesystem::rename_entry(&mut self.state, memory, disk, &old_path, &new_path);
 
         match result {
             Ok(()) => set_iret_carry(cpu, memory, false),

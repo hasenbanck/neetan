@@ -3,6 +3,7 @@
 use crate::{
     DiskIo, DriveIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
+    filesystem,
     filesystem::{fat_dir, fat_file},
 };
 
@@ -145,9 +146,9 @@ fn init_more(
     disk: &mut dyn DiskIo,
     path: &[u8],
 ) -> Result<MorePhase, &'static [u8]> {
-    let (drive_index, dir_cluster, fcb_name) = state
-        .resolve_file_path(path, io.memory, disk)
-        .map_err(|_| &b"File not found\r\n"[..])?;
+    let (drive_index, dir_cluster, fcb_name) =
+        filesystem::resolve_file_path(state, path, io.memory, disk)
+            .map_err(|_| &b"File not found\r\n"[..])?;
 
     if drive_index == 25 {
         return Err(b"Access denied\r\n");
