@@ -39,6 +39,18 @@ fn ascii_to_vram_chars(s: &[u8]) -> Vec<u16> {
     s.iter().map(|&b| b as u16).collect()
 }
 
+fn current_shell_psp(machine: &mut machine::Pc9801Ra) -> u16 {
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x62,                         // MOV AH, 62h
+        0xCD, 0x21,                         // INT 21h
+        0x89, 0x1E, 0x00, 0x01,             // MOV [0100h], BX
+        0xC3,                               // RET
+    ];
+    inject_and_run_via_int28(machine, code, INJECT_BUDGET_DISK_IO);
+    result_word(&machine.bus, 0)
+}
+
 /// Typing "install" on A: drive should find and execute INSTALL.EXE
 /// without MCB corruption (error 7).
 ///
@@ -106,5 +118,57 @@ fn shell_exec_install_exe_with_extension() {
     assert!(
         !find_string_in_text_vram(&machine.bus, &error_str),
         "install.exe should execute without errors"
+    );
+}
+
+#[test]
+fn shell_exec_command_starts_nested_shell_until_exit() {
+    let mut machine = boot_hle_with_floppy();
+    let root_psp = current_shell_psp(&mut machine);
+
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"COMMAND\r");
+    run_until_prompt(&mut machine);
+
+    let child_psp = current_shell_psp(&mut machine);
+    assert_ne!(
+        child_psp, root_psp,
+        "COMMAND should switch the active shell PSP to a child command processor"
+    );
+    let child_parent_psp = read_word(&machine.bus, far_to_linear(child_psp, 0) + 0x16);
+    assert_eq!(
+        child_parent_psp, root_psp,
+        "Nested COMMAND PSP should reference the original shell as its parent"
+    );
+
+    type_string(&mut machine.bus, b"EXIT\r");
+    run_until_prompt(&mut machine);
+
+    let restored_psp = current_shell_psp(&mut machine);
+    assert_eq!(
+        restored_psp, root_psp,
+        "EXIT should restore the original command processor PSP"
+    );
+}
+
+#[test]
+fn shell_exec_command_com_c_echo_returns_to_parent_shell() {
+    let mut machine = boot_hle_with_floppy();
+
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    type_string_long(&mut machine, b"A:\\COMMAND.COM /C \"ECHO CHILD\"\r");
+    run_until_prompt(&mut machine);
+
+    let child = ascii_to_vram_chars(b"CHILD");
+    assert!(
+        find_string_in_text_vram(&machine.bus, &child),
+        "COMMAND.COM /C should execute the requested built-in command"
     );
 }

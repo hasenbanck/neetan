@@ -5,6 +5,18 @@ fn boot_with_bat(bat_content: &[u8]) -> machine::Pc9801Ra {
     boot_hle_with_floppy_image(floppy)
 }
 
+fn current_shell_psp(machine: &mut machine::Pc9801Ra) -> u16 {
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x62,                         // MOV AH, 62h
+        0xCD, 0x21,                         // INT 21h
+        0x89, 0x1E, 0x00, 0x01,             // MOV [0100h], BX
+        0xC3,                               // RET
+    ];
+    inject_and_run_via_int28(machine, code, INJECT_BUDGET_DISK_IO);
+    result_word(&machine.bus, 0)
+}
+
 #[test]
 fn batch_echo() {
     let mut machine = boot_with_bat(b"ECHO BATCH OUTPUT\r\n");
@@ -298,5 +310,88 @@ fn batch_drive_change_applies_before_following_lines() {
     assert!(
         find_string_in_text_vram(&machine.bus, &found),
         "batch drive change should affect relative paths used by following lines"
+    );
+}
+
+#[test]
+fn batch_command_c_resumes_parent_batch() {
+    let mut machine = boot_with_bat(b"COMMAND /C ECHO CHILD\r\nECHO PARENT\r\n");
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"TEST\r");
+    run_until_prompt(&mut machine);
+
+    let child = [0x0043, 0x0048, 0x0049, 0x004C, 0x0044]; // "CHILD"
+    let parent = [0x0050, 0x0041, 0x0052, 0x0045, 0x004E, 0x0054]; // "PARENT"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &child),
+        "COMMAND /C inside a batch file should execute the child command"
+    );
+    assert!(
+        find_string_in_text_vram(&machine.bus, &parent),
+        "batch execution should resume after COMMAND /C returns"
+    );
+}
+
+#[test]
+fn batch_command_c_preserves_external_program_errorlevel() {
+    let mut machine = boot_with_bat(b"COMMAND /C A:\\TEST.COM\r\nIF ERRORLEVEL 66 ECHO EXITOK\r\n");
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"TEST\r");
+    run_until_prompt(&mut machine);
+
+    let exitok = [0x0045, 0x0058, 0x0049, 0x0054, 0x004F, 0x004B]; // "EXITOK"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &exitok),
+        "COMMAND /C should preserve the external program exit code for the parent batch"
+    );
+}
+
+#[test]
+fn batch_command_c_bomb_reports_oom_and_returns_to_root_shell() {
+    let mut machine = boot_with_bat(b"COMMAND /C TEST\r\n");
+    let root_psp = current_shell_psp(&mut machine);
+
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"TEST\r");
+    run_until_prompt(&mut machine);
+
+    let oom = [
+        0x0045, 0x0072, 0x0072, 0x006F, 0x0072, 0x0020, 0x006C, 0x006F, 0x0061, 0x0064, 0x0069,
+        0x006E, 0x0067, 0x0020, 0x0070, 0x0072, 0x006F, 0x0067, 0x0072, 0x0061, 0x006D, 0x0020,
+        0x0028, 0x0038, 0x0029,
+    ]; // "Error loading program (8)"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &oom),
+        "Recursive COMMAND /C should stop with insufficient-memory error"
+    );
+
+    let restored_psp = current_shell_psp(&mut machine);
+    assert_eq!(
+        restored_psp, root_psp,
+        "COMMAND /C bomb should unwind back to the root shell after OOM"
+    );
+
+    type_string(&mut machine.bus, b"VER\r");
+    run_until_prompt(&mut machine);
+
+    let version = [0x0036, 0x002E, 0x0032, 0x0030]; // "6.20"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &version),
+        "Root shell should still accept commands after recursive COMMAND /C OOM"
     );
 }

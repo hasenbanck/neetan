@@ -22,6 +22,8 @@ mod shell;
 mod state;
 pub mod tables;
 
+use std::collections::BTreeMap;
+
 pub use common::{
     AudioChannelInfo, CdAudioState, CdAudioStatus, CdromIo, CdromTrackInfo, CdromTrackType,
     ConsoleIo, CpuAccess, DiskIo, DriveIo, MemoryAccess, OsBootStage, Tracing,
@@ -293,8 +295,10 @@ pub struct NeetanOs {
     pub(crate) state: OsState,
     /// Console output state (cursor tracking, ESC parser).
     pub(crate) console: console::Console,
-    /// Shell state machine, `None` before boot completes.
-    pub(crate) shell: Option<shell::Shell>,
+    /// Root COMMAND.COM PSP segment.
+    pub(crate) root_command_com_psp: u16,
+    /// Active shell sessions keyed by PSP segment.
+    pub(crate) shells: BTreeMap<u16, shell::Shell>,
 }
 
 impl Default for NeetanOs {
@@ -342,13 +346,14 @@ impl NeetanOs {
                 memory_manager: None,
             },
             console: console::Console::default(),
-            shell: None,
+            root_command_com_psp: 0,
+            shells: BTreeMap::new(),
         }
     }
 
     /// Returns the COMMAND.COM PSP segment.
     pub fn command_com_psp(&self) -> u16 {
-        self.state.current_psp
+        self.root_command_com_psp
     }
 
     /// Sets the host local time provider for the OS.
@@ -453,10 +458,12 @@ impl NeetanOs {
         tracer.trace_os_boot(OsBootStage::AutoexecReady, cpu, memory);
 
         let psp = self.state.current_psp;
+        self.root_command_com_psp = psp;
         if let Some((lines, bat_path)) = autoexec_lines {
-            self.shell = Some(shell::Shell::new_with_autoexec(psp, lines, bat_path));
+            self.shells
+                .insert(psp, shell::Shell::new_with_autoexec(psp, lines, bat_path));
         } else {
-            self.shell = Some(shell::Shell::new(psp));
+            self.shells.insert(psp, shell::Shell::new(psp));
         }
         tracer.trace_os_boot(OsBootStage::ShellReady, cpu, memory);
         tracer.trace_os_boot(OsBootStage::End, cpu, memory);
@@ -572,23 +579,36 @@ impl NeetanOs {
         None
     }
 
+    fn read_psp_command_tail(&self, memory: &dyn MemoryAccess, psp_segment: u16) -> Vec<u8> {
+        let psp_base = (psp_segment as u32) << 4;
+        let tail_len = memory.read_byte(psp_base + tables::PSP_OFF_CMD_TAIL_LEN) as usize;
+        let tail_len = tail_len.min(127);
+
+        let mut command_tail = Vec::with_capacity(tail_len);
+        for index in 0..tail_len {
+            command_tail.push(memory.read_byte(psp_base + tables::PSP_OFF_CMD_TAIL + index as u32));
+        }
+        command_tail
+    }
+
     /// INT 21h AH=FFh: Shell prompt/command cycle step.
-    ///
-    /// Takes the shell out of `self.shell`, creates an `IoAccess` from
-    /// `self.console` + the `memory` parameter, and calls `shell.step()`.
-    /// This cleanly splits borrows between `self.state`, `self.console`,
-    /// and `self.shell`.
-    ///
-    /// After `shell.step()`, if an external program EXEC is pending, we build
-    /// the parameter block and perform the EXEC here (where we have access to
-    /// the full `NeetanOs` process infrastructure).
     pub(crate) fn int21h_ffh_shell_step(
         &mut self,
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
         disk: &mut dyn DriveIo,
     ) {
-        let mut shell = self.shell.take().expect("shell not initialized");
+        let shell_psp = self.state.current_psp;
+        if !self.shells.contains_key(&shell_psp) {
+            let command_tail = self.read_psp_command_tail(memory, shell_psp);
+            self.shells
+                .insert(shell_psp, shell::Shell::new_child(shell_psp, &command_tail));
+        }
+
+        let mut shell = self
+            .shells
+            .remove(&shell_psp)
+            .expect("shell session not initialized");
         {
             let mut io = IoAccess {
                 console: &mut self.console,
@@ -607,11 +627,16 @@ impl NeetanOs {
             for &byte in msg.as_bytes() {
                 self.console.process_byte(memory, byte);
             }
-            shell.last_exit_code = 1;
-            shell.phase = shell::ShellPhase::ShowPrompt;
+            shell.handle_exec_failure(1);
         }
 
-        self.shell = Some(shell);
+        if let Some(return_code) = shell.pending_terminate.take() {
+            self.shells.insert(shell_psp, shell);
+            self.terminate_process(cpu, memory, return_code, 0);
+            return;
+        }
+
+        self.shells.insert(shell_psp, shell);
     }
 
     /// Performs EXEC for an external program launched from the shell.

@@ -12,7 +12,7 @@ use crate::{
     commands::{self, Command, RunningCommand, StepResult},
     filesystem,
     filesystem::{fat, fat_dir, fat_file},
-    tables,
+    process, tables,
 };
 
 pub(crate) enum RedirectSpec {
@@ -84,10 +84,15 @@ pub(crate) struct Shell {
     current_redirect: Option<RedirectSpec>,
     redirect_buffer: Option<Vec<u8>>,
     pipe_input: Option<Vec<u8>>,
+    startup_command: Option<Vec<u8>>,
+    terminate_after_command: bool,
+    allow_exit: bool,
     /// COMMAND.COM PSP segment, used to detect child process termination.
-    pub(crate) command_com_psp: u16,
+    pub(crate) owner_psp: u16,
     /// External program pending EXEC (set by dispatch, consumed by int21h_ffh_shell_step).
     pub(crate) pending_exec: Option<PendingExec>,
+    /// Child shell termination requested by EXIT or /C completion.
+    pub(crate) pending_terminate: Option<u8>,
 }
 
 impl Shell {
@@ -130,8 +135,12 @@ impl Shell {
             current_redirect: None,
             redirect_buffer: None,
             pipe_input: None,
-            command_com_psp,
+            startup_command: None,
+            terminate_after_command: false,
+            allow_exit: false,
+            owner_psp: command_com_psp,
             pending_exec: None,
+            pending_terminate: None,
         }
     }
 
@@ -153,8 +162,48 @@ impl Shell {
             current_redirect: None,
             redirect_buffer: None,
             pipe_input: None,
-            command_com_psp,
+            startup_command: None,
+            terminate_after_command: false,
+            allow_exit: false,
+            owner_psp: command_com_psp,
             pending_exec: None,
+            pending_terminate: None,
+        }
+    }
+
+    pub(crate) fn new_child(command_com_psp: u16, command_tail: &[u8]) -> Self {
+        let (startup_command, terminate_after_command) = parse_startup_command(command_tail);
+        let pending_terminate = if terminate_after_command && startup_command.is_none() {
+            Some(0)
+        } else {
+            None
+        };
+
+        Self {
+            phase: ShellPhase::ShowPrompt,
+            history: History::new(),
+            commands: Self::build_commands(),
+            echo_on: true,
+            last_exit_code: 0,
+            boot_banner_shown: true,
+            pending_commands: VecDeque::new(),
+            current_redirect: None,
+            redirect_buffer: None,
+            pipe_input: None,
+            startup_command,
+            terminate_after_command,
+            allow_exit: true,
+            owner_psp: command_com_psp,
+            pending_exec: None,
+            pending_terminate,
+        }
+    }
+
+    pub(crate) fn handle_exec_failure(&mut self, return_code: u8) {
+        self.last_exit_code = return_code;
+        self.phase = ShellPhase::ShowPrompt;
+        if self.terminate_after_command {
+            self.pending_terminate = Some(return_code);
         }
     }
 
@@ -162,15 +211,26 @@ impl Shell {
         let phase = std::mem::replace(&mut self.phase, ShellPhase::ShowPrompt);
         self.phase = match phase {
             ShellPhase::ShowPrompt => {
-                if !self.boot_banner_shown {
-                    let (major, minor) = state.version;
-                    let msg = format!("Neetan DOS {}.{}\r\n\r\n", major, minor);
-                    io.print(msg.as_bytes());
-                    self.boot_banner_shown = true;
+                if let Some(startup_command) = self.startup_command.take() {
+                    let next_phase = self.dispatch_command(state, io, disk, &startup_command);
+                    if self.terminate_after_command
+                        && matches!(next_phase, ShellPhase::ShowPrompt)
+                        && self.pending_terminate.is_none()
+                    {
+                        self.pending_terminate = Some(self.last_exit_code);
+                    }
+                    next_phase
+                } else {
+                    if !self.boot_banner_shown {
+                        let (major, minor) = state.version;
+                        let msg = format!("Neetan DOS {}.{}\r\n\r\n", major, minor);
+                        io.print(msg.as_bytes());
+                        self.boot_banner_shown = true;
+                    }
+                    render_prompt(state, io);
+                    let prompt_col = io.console.cursor_col(io.memory);
+                    ShellPhase::ReadingInput(LineEditor::new(prompt_col))
                 }
-                render_prompt(state, io);
-                let prompt_col = io.console.cursor_col(io.memory);
-                ShellPhase::ReadingInput(LineEditor::new(prompt_col))
             }
             ShellPhase::ReadingInput(mut editor) => {
                 if !key_available(io.memory) {
@@ -314,6 +374,9 @@ impl Shell {
                         }
                         if let Some(next) = self.pending_commands.pop_front() {
                             self.setup_and_dispatch(next, output_data, state, io, disk)
+                        } else if self.terminate_after_command {
+                            self.pending_terminate = Some(code);
+                            ShellPhase::ShowPrompt
                         } else {
                             ShellPhase::ShowPrompt
                         }
@@ -325,8 +388,11 @@ impl Shell {
                 // (INT 21h AH=4Ch), terminate_process() restores COMMAND.COM's
                 // PSP and IRET frame. We detect completion by checking if
                 // current_psp has returned to COMMAND.COM's PSP.
-                if state.current_psp == self.command_com_psp {
+                if state.current_psp == self.owner_psp {
                     self.last_exit_code = state.last_return_code;
+                    if self.terminate_after_command {
+                        self.pending_terminate = Some(state.last_return_code);
+                    }
                     ShellPhase::ShowPrompt
                 } else {
                     ShellPhase::WaitingForChild
@@ -335,7 +401,12 @@ impl Shell {
             ShellPhase::ExecutingBatch(mut batch) => {
                 match batch.step_batch(self, state, io, disk) {
                     batch::BatchStepResult::Continue => ShellPhase::ExecutingBatch(batch),
-                    batch::BatchStepResult::Finished => ShellPhase::ShowPrompt,
+                    batch::BatchStepResult::Finished => {
+                        if self.terminate_after_command {
+                            self.pending_terminate = Some(self.last_exit_code);
+                        }
+                        ShellPhase::ShowPrompt
+                    }
                 }
             }
         };
@@ -490,6 +561,13 @@ impl Shell {
             return ShellPhase::ShowPrompt;
         }
 
+        if cmd_upper == b"EXIT" && args.trim_ascii().is_empty() {
+            if self.allow_exit {
+                self.pending_terminate = Some(0);
+            }
+            return ShellPhase::ShowPrompt;
+        }
+
         // Look up in command registry
         if let Some(cmd) = self.find_command(&cmd_upper) {
             let running = cmd.start(args);
@@ -629,6 +707,42 @@ fn split_command(line: &[u8]) -> (&[u8], &[u8]) {
     } else {
         (line, &[])
     }
+}
+
+fn eq_ignore_ascii_case(left: &[u8], right: &[u8]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(&left_byte, &right_byte)| left_byte.eq_ignore_ascii_case(&right_byte))
+}
+
+fn trim_outer_quotes(line: &[u8]) -> Vec<u8> {
+    if line.len() >= 2 && line[0] == b'"' && line[line.len() - 1] == b'"' {
+        line[1..line.len() - 1].to_vec()
+    } else {
+        line.to_vec()
+    }
+}
+
+fn parse_startup_command(command_tail: &[u8]) -> (Option<Vec<u8>>, bool) {
+    let trimmed = command_tail.trim_ascii();
+    if trimmed.is_empty() {
+        return (None, false);
+    }
+
+    let (switch, rest) = split_command(trimmed);
+    let rest = trim_outer_quotes(rest.trim_ascii());
+    if eq_ignore_ascii_case(switch, b"/C") {
+        let command = (!rest.is_empty()).then_some(rest);
+        return (command, true);
+    }
+    if eq_ignore_ascii_case(switch, b"/K") {
+        let command = (!rest.is_empty()).then_some(rest);
+        return (command, false);
+    }
+
+    (None, false)
 }
 
 fn key_available(memory: &dyn MemoryAccess) -> bool {
@@ -921,6 +1035,9 @@ fn try_find_program(
     disk: &mut dyn DriveIo,
 ) -> Option<Vec<u8>> {
     if has_extension {
+        if process::is_command_processor_path(path) {
+            return Some(path.to_vec());
+        }
         if file_exists_on_disk(path, state, memory, disk) {
             return Some(path.to_vec());
         }
@@ -928,6 +1045,9 @@ fn try_find_program(
         // Try .COM first, then .EXE
         let mut com_path = path.to_vec();
         com_path.extend_from_slice(b".COM");
+        if process::is_command_processor_path(&com_path) {
+            return Some(com_path);
+        }
         if file_exists_on_disk(&com_path, state, memory, disk) {
             return Some(com_path);
         }
@@ -940,7 +1060,7 @@ fn try_find_program(
     None
 }
 
-/// Checks if a file exists on a real (non-virtual) drive.
+/// Checks if a file exists on a DOS drive, including the virtual Z: drive.
 fn file_exists_on_disk(
     path: &[u8],
     state: &mut OsState,
@@ -951,6 +1071,14 @@ fn file_exists_on_disk(
         Ok(path) => path,
         Err(_) => return false,
     };
+    if read_path.drive_index == 25 {
+        let (_, _, fcb_name) = match crate::filesystem::resolve_file_path(state, path, memory, disk)
+        {
+            Ok(parts) => parts,
+            Err(_) => return false,
+        };
+        return state.virtual_drive.find_entry(&fcb_name).is_some();
+    }
     let entry = match filesystem::find_read_entry(state, &read_path, disk) {
         Ok(Some(entry)) => entry,
         _ => return false,
