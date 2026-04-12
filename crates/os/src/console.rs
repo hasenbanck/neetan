@@ -209,6 +209,18 @@ impl Console {
         }
     }
 
+    pub(crate) fn hard_clear_screen(&self, memory: &mut dyn MemoryAccess) {
+        for row in 0u32..25 {
+            for col in 0u32..80 {
+                let offset = (row * 80 + col) * 2;
+                memory.write_byte(0xA0000 + offset, 0x00);
+                memory.write_byte(0xA0000 + offset + 1, 0x00);
+                memory.write_byte(0xA2000 + offset, 0xE1);
+                memory.write_byte(0xA2000 + offset + 1, 0x00);
+            }
+        }
+    }
+
     pub(crate) fn clear_screen(&self, memory: &mut dyn MemoryAccess) {
         let clear_ch = self.clear_char(memory);
         let clear_at = self.clear_attr(memory);
