@@ -12,6 +12,18 @@ pub const INJECT_BUDGET_DISK_IO: u64 = 500_000_000;
 const HLE_BOOT_MAX_CYCLES: u64 = 500_000_000;
 const HLE_BOOT_CHECK_INTERVAL: u64 = 1_000_000;
 
+fn set_fat12_entry(fat: &mut [u8], cluster: u16, value: u16) {
+    let masked_value = value & 0x0FFF;
+    let offset = (cluster as usize * 3) / 2;
+    if cluster & 1 == 0 {
+        fat[offset] = (masked_value & 0x00FF) as u8;
+        fat[offset + 1] = (fat[offset + 1] & 0xF0) | ((masked_value >> 8) as u8 & 0x0F);
+    } else {
+        fat[offset] = (fat[offset] & 0x0F) | (((masked_value << 4) as u8) & 0xF0);
+        fat[offset + 1] = (masked_value >> 4) as u8;
+    }
+}
+
 /// Creates a machine with no disk images. The bootstrap will find no bootable
 /// media and activate NEETAN OS HLE DOS automatically.
 pub fn create_hle_machine() -> machine::Pc9801Ra {
@@ -48,6 +60,45 @@ pub fn boot_hle_with_time(time_fn: Option<fn() -> [u8; 6]>) -> machine::Pc9801Ra
             HLE_BOOT_MAX_CYCLES
         );
     }
+    machine
+}
+
+pub fn boot_hle_with_forced_os(
+    floppy: Option<device::floppy::FloppyImage>,
+    hdd: Option<device::disk::HddImage>,
+) -> machine::Pc9801Ra {
+    let mut machine = create_hle_machine();
+    machine.bus.set_boot_device(machine::BootDevice::Os);
+
+    let mut disk_equip_low = 0u8;
+    let mut disk_equip_high = 0u8;
+
+    if let Some(floppy_image) = floppy {
+        disk_equip_low |= 0x01;
+        machine.bus.insert_floppy(0, floppy_image, None);
+    }
+
+    if let Some(hdd_image) = hdd {
+        disk_equip_high |= 0x01;
+        machine.bus.insert_hdd(0, hdd_image, None);
+    }
+
+    machine.bus.write_byte(0x055C, disk_equip_low);
+    machine.bus.write_byte(0x055D, disk_equip_high);
+
+    let mut total_cycles = 0u64;
+    loop {
+        total_cycles += machine.run_for(HLE_BOOT_CHECK_INTERVAL);
+        if hle_prompt_visible(&machine.bus) {
+            break;
+        }
+        assert!(
+            total_cycles < HLE_BOOT_MAX_CYCLES,
+            "HLE OS did not show prompt within {} cycles",
+            HLE_BOOT_MAX_CYCLES
+        );
+    }
+
     machine
 }
 
@@ -364,6 +415,128 @@ pub fn create_test_floppy_with_program(
     }
 
     let d88 = D88Disk::from_tracks("TEST".to_string(), false, D88MediaType::Disk2HD, tracks);
+    device::floppy::FloppyImage::from_d88(d88)
+}
+
+pub fn create_test_floppy_with_autoexec(autoexec_data: &[u8]) -> device::floppy::FloppyImage {
+    use device::floppy::d88::{D88Disk, D88MediaType, D88Sector};
+
+    let cylinders = 77usize;
+    let heads = 2usize;
+    let sectors_per_track = 8usize;
+    let sector_size = 1024usize;
+    let total_tracks = cylinders * heads;
+    let total_sectors = cylinders * heads * sectors_per_track;
+    let mut disk_data = vec![0u8; total_sectors * sector_size];
+
+    {
+        let bpb = &mut disk_data[0..sector_size];
+        bpb[0] = 0xEB;
+        bpb[1] = 0x3C;
+        bpb[2] = 0x90;
+        bpb[3..11].copy_from_slice(b"NEETAN  ");
+        bpb[11..13].copy_from_slice(&1024u16.to_le_bytes());
+        bpb[13] = 1;
+        bpb[14..16].copy_from_slice(&1u16.to_le_bytes());
+        bpb[16] = 2;
+        bpb[17..19].copy_from_slice(&192u16.to_le_bytes());
+        bpb[19..21].copy_from_slice(&1232u16.to_le_bytes());
+        bpb[21] = 0xFE;
+        bpb[22..24].copy_from_slice(&2u16.to_le_bytes());
+        bpb[24..26].copy_from_slice(&8u16.to_le_bytes());
+        bpb[26..28].copy_from_slice(&2u16.to_le_bytes());
+    }
+
+    let fat1_offset = sector_size;
+    let fat = &mut disk_data[fat1_offset..fat1_offset + 2 * sector_size];
+    fat[0] = 0xFE;
+    fat[1] = 0xFF;
+    fat[2] = 0xFF;
+    set_fat12_entry(fat, 2, 0x0FFF);
+    set_fat12_entry(fat, 3, 0x0FFF);
+    set_fat12_entry(fat, 4, 0x0FFF);
+    set_fat12_entry(fat, 5, 0x0FFF);
+
+    let fat2_offset = 3 * sector_size;
+    let fat_copy = disk_data[fat1_offset..fat1_offset + 2 * sector_size].to_vec();
+    disk_data[fat2_offset..fat2_offset + fat_copy.len()].copy_from_slice(&fat_copy);
+
+    let root_offset = 5 * sector_size;
+    {
+        let entry = &mut disk_data[root_offset..root_offset + 32];
+        entry[0..11].copy_from_slice(b"COMMAND COM");
+        entry[11] = 0x20;
+        entry[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        entry[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        entry[26..28].copy_from_slice(&2u16.to_le_bytes());
+        entry[28..32].copy_from_slice(&(TEST_COMMAND_COM.len() as u32).to_le_bytes());
+    }
+    {
+        let entry = &mut disk_data[root_offset + 32..root_offset + 64];
+        entry[0..11].copy_from_slice(b"TESTFILETXT");
+        entry[11] = 0x20;
+        entry[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        entry[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        entry[26..28].copy_from_slice(&3u16.to_le_bytes());
+        entry[28..32].copy_from_slice(&(TEST_FILE_CONTENT.len() as u32).to_le_bytes());
+    }
+    {
+        let entry = &mut disk_data[root_offset + 64..root_offset + 96];
+        entry[0..11].copy_from_slice(b"TEST    COM");
+        entry[11] = 0x20;
+        entry[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        entry[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        entry[26..28].copy_from_slice(&4u16.to_le_bytes());
+        entry[28..32].copy_from_slice(&(TEST_COM_PROGRAM.len() as u32).to_le_bytes());
+    }
+    {
+        let entry = &mut disk_data[root_offset + 96..root_offset + 128];
+        entry[0..11].copy_from_slice(b"AUTOEXECBAT");
+        entry[11] = 0x20;
+        entry[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        entry[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        entry[26..28].copy_from_slice(&5u16.to_le_bytes());
+        entry[28..32].copy_from_slice(&(autoexec_data.len() as u32).to_le_bytes());
+    }
+
+    let cluster2_offset = 11 * sector_size;
+    disk_data[cluster2_offset..cluster2_offset + TEST_COMMAND_COM.len()]
+        .copy_from_slice(TEST_COMMAND_COM);
+    let cluster3_offset = 12 * sector_size;
+    disk_data[cluster3_offset..cluster3_offset + TEST_FILE_CONTENT.len()]
+        .copy_from_slice(TEST_FILE_CONTENT);
+    let cluster4_offset = 13 * sector_size;
+    disk_data[cluster4_offset..cluster4_offset + TEST_COM_PROGRAM.len()]
+        .copy_from_slice(TEST_COM_PROGRAM);
+    let cluster5_offset = 14 * sector_size;
+    disk_data[cluster5_offset..cluster5_offset + autoexec_data.len()]
+        .copy_from_slice(autoexec_data);
+
+    let mut tracks = Vec::with_capacity(total_tracks);
+    for track_index in 0..total_tracks {
+        let cylinder = (track_index / heads) as u8;
+        let head = (track_index % heads) as u8;
+        let mut sectors = Vec::with_capacity(sectors_per_track);
+        for sector in 0..sectors_per_track {
+            let lba = track_index * sectors_per_track + sector;
+            let offset = lba * sector_size;
+            sectors.push(D88Sector {
+                cylinder,
+                head,
+                record: (sector + 1) as u8,
+                size_code: 3,
+                sector_count: sectors_per_track as u16,
+                mfm_flag: 0x40,
+                deleted: 0,
+                status: 0,
+                reserved: [0; 5],
+                data: disk_data[offset..offset + sector_size].to_vec(),
+            });
+        }
+        tracks.push(Some(sectors));
+    }
+
+    let d88 = D88Disk::from_tracks("AUTOEXEC".to_string(), false, D88MediaType::Disk2HD, tracks);
     device::floppy::FloppyImage::from_d88(d88)
 }
 
@@ -991,6 +1164,138 @@ pub fn create_test_hdd(sector_size: u16) -> device::disk::HddImage {
     let cluster3_offset = data_byte_offset + sectors_per_cluster as usize * ss;
     data[cluster3_offset..cluster3_offset + TEST_FILE_CONTENT.len()]
         .copy_from_slice(TEST_FILE_CONTENT);
+
+    let geometry = HddGeometry {
+        cylinders,
+        heads,
+        sectors_per_track,
+        sector_size,
+    };
+    HddImage::from_raw(geometry, HddFormat::Nhd, data)
+}
+
+pub fn create_test_hdd_with_autoexec(
+    sector_size: u16,
+    autoexec_data: &[u8],
+) -> device::disk::HddImage {
+    use device::disk::{HddFormat, HddGeometry, HddImage};
+
+    let cylinders: u16 = 20;
+    let heads: u8 = 8;
+    let sectors_per_track: u8 = 17;
+    let total_sectors = cylinders as u32 * heads as u32 * sectors_per_track as u32;
+    let sector_size_usize = sector_size as usize;
+    let mut data = vec![0u8; total_sectors as usize * sector_size_usize];
+
+    data[0] = 0xEB;
+    data[1] = 0x1E;
+    data[4..8].copy_from_slice(b"IPL1");
+
+    let part_offset = sector_size_usize;
+    let part = &mut data[part_offset..part_offset + 32];
+    part[0] = 0xA0;
+    part[1] = 0x91;
+    part[4] = 0;
+    part[5] = 0;
+    part[6] = 1;
+    part[7] = 0;
+    part[8] = 0;
+    part[9] = 0;
+    part[10] = 1;
+    part[11] = 0;
+    part[12] = sectors_per_track - 1;
+    part[13] = heads - 1;
+    part[14] = (cylinders - 1) as u8;
+    part[15] = ((cylinders - 1) >> 8) as u8;
+    part[16..32].copy_from_slice(b"MS-DOS 6.20\x00\x00\x00\x00\x00");
+
+    let partition_lba = heads as u32 * sectors_per_track as u32;
+    let partition_byte_offset = partition_lba as usize * sector_size_usize;
+    let sectors_per_cluster: u8 = if sector_size == 256 { 8 } else { 4 };
+    let reserved_sectors: u16 = 1;
+    let num_fats: u8 = 2;
+    let root_entry_count: u16 = 512;
+    let root_dir_sectors = (root_entry_count as u32 * 32).div_ceil(sector_size as u32);
+    let partition_sectors = total_sectors - partition_lba;
+    let sectors_per_fat: u16 = 16;
+    let first_data_sector =
+        reserved_sectors as u32 + num_fats as u32 * sectors_per_fat as u32 + root_dir_sectors;
+
+    let boot_sector = &mut data[partition_byte_offset..partition_byte_offset + sector_size_usize];
+    boot_sector[0] = 0xEB;
+    boot_sector[1] = 0x3C;
+    boot_sector[2] = 0x90;
+    boot_sector[3..11].copy_from_slice(b"NEETAN  ");
+    boot_sector[11..13].copy_from_slice(&sector_size.to_le_bytes());
+    boot_sector[13] = sectors_per_cluster;
+    boot_sector[14..16].copy_from_slice(&reserved_sectors.to_le_bytes());
+    boot_sector[16] = num_fats;
+    boot_sector[17..19].copy_from_slice(&root_entry_count.to_le_bytes());
+    if partition_sectors <= 0xFFFF {
+        boot_sector[19..21].copy_from_slice(&(partition_sectors as u16).to_le_bytes());
+    }
+    boot_sector[21] = 0xF8;
+    boot_sector[22..24].copy_from_slice(&sectors_per_fat.to_le_bytes());
+    boot_sector[24..26].copy_from_slice(&(sectors_per_track as u16).to_le_bytes());
+    boot_sector[26..28].copy_from_slice(&(heads as u16).to_le_bytes());
+
+    let fat1_byte_offset = partition_byte_offset + reserved_sectors as usize * sector_size_usize;
+    data[fat1_byte_offset] = 0xF8;
+    data[fat1_byte_offset + 1] = 0xFF;
+    data[fat1_byte_offset + 2] = 0xFF;
+    data[fat1_byte_offset + 3] = 0xFF;
+    data[fat1_byte_offset + 4] = 0xFF;
+    data[fat1_byte_offset + 5] = 0xFF;
+    data[fat1_byte_offset + 6] = 0xFF;
+    data[fat1_byte_offset + 7] = 0xFF;
+    data[fat1_byte_offset + 8] = 0xFF;
+    data[fat1_byte_offset + 9] = 0xFF;
+
+    let fat2_byte_offset = fat1_byte_offset + sectors_per_fat as usize * sector_size_usize;
+    let fat1_data = data
+        [fat1_byte_offset..fat1_byte_offset + sectors_per_fat as usize * sector_size_usize]
+        .to_vec();
+    data[fat2_byte_offset..fat2_byte_offset + fat1_data.len()].copy_from_slice(&fat1_data);
+
+    let root_byte_offset = partition_byte_offset
+        + (reserved_sectors as usize + num_fats as usize * sectors_per_fat as usize)
+            * sector_size_usize;
+    {
+        let entry = &mut data[root_byte_offset..root_byte_offset + 32];
+        entry[0..11].copy_from_slice(b"COMMAND COM");
+        entry[11] = 0x20;
+        entry[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        entry[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        entry[26..28].copy_from_slice(&2u16.to_le_bytes());
+        entry[28..32].copy_from_slice(&(TEST_COMMAND_COM.len() as u32).to_le_bytes());
+    }
+    {
+        let entry = &mut data[root_byte_offset + 32..root_byte_offset + 64];
+        entry[0..11].copy_from_slice(b"TESTFILETXT");
+        entry[11] = 0x20;
+        entry[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        entry[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        entry[26..28].copy_from_slice(&3u16.to_le_bytes());
+        entry[28..32].copy_from_slice(&(TEST_FILE_CONTENT.len() as u32).to_le_bytes());
+    }
+    {
+        let entry = &mut data[root_byte_offset + 64..root_byte_offset + 96];
+        entry[0..11].copy_from_slice(b"AUTOEXECBAT");
+        entry[11] = 0x20;
+        entry[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        entry[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        entry[26..28].copy_from_slice(&4u16.to_le_bytes());
+        entry[28..32].copy_from_slice(&(autoexec_data.len() as u32).to_le_bytes());
+    }
+
+    let data_byte_offset = partition_byte_offset + first_data_sector as usize * sector_size_usize;
+    data[data_byte_offset..data_byte_offset + TEST_COMMAND_COM.len()]
+        .copy_from_slice(TEST_COMMAND_COM);
+    let cluster3_offset = data_byte_offset + sectors_per_cluster as usize * sector_size_usize;
+    data[cluster3_offset..cluster3_offset + TEST_FILE_CONTENT.len()]
+        .copy_from_slice(TEST_FILE_CONTENT);
+    let cluster4_offset = data_byte_offset + 2 * sectors_per_cluster as usize * sector_size_usize;
+    data[cluster4_offset..cluster4_offset + autoexec_data.len()].copy_from_slice(autoexec_data);
 
     let geometry = HddGeometry {
         cylinders,
