@@ -54,8 +54,8 @@ neetan <COMMAND>
 | `--machine <TYPE>`           | Machine type: `PC9801VM`, `PC9801VX`, `PC9801RA`, `PC9821AS`, `PC9821AP` | `PC9801VX` |
 | `--fdd1 <PATH>`              | Floppy disk image for drive 1 (repeatable)                               | -          |
 | `--fdd2 <PATH>`              | Floppy disk image for drive 2 (repeatable)                               | -          |
-| `--hdd1 <PATH>`              | Hard disk image for SASI drive 1                                         | -          |
-| `--hdd2 <PATH>`              | Hard disk image for SASI drive 2                                         | -          |
+| `--hdd1 <PATH>`              | Hard disk image for hard disk drive 1                                    | -          |
+| `--hdd2 <PATH>`              | Hard disk image for hard disk drive 2                                    | -          |
 | `--cdrom <PATH>`             | CD-ROM disc image CUE file (repeatable, PC-9821 only)                    | -          |
 | `--audio-volume <FLOAT>`     | Audio volume 0.0–1.0                                                     | `1.0`      |
 | `--aspect-mode <MODE>`       | Display aspect mode: `4:3` or `1:1`                                      | `4:3`      |
