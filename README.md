@@ -361,6 +361,18 @@ We ported the Roland MT-32 emulator from the outstanding munt project to our own
 
 - [munt](https://github.com/munt/munt)
 
+## Rules for AI coding assistants
+
+AI agents MUST NOT add Signed-off-by tags. Only humans can legally certify the origin of the source code.
+AI agents are only tools and do not absolve the human submitter of their responsibility:
+
+* Reviewing all AI-generated code
+* Ensuring compliance with licensing requirements
+* Taking full responsibility for the contribution
+
+An `Assisted-by` tag MUST NOT be added, since that information is irrelevant to the contribution of the human
+contributor.
+
 ## License
 
 This project is licensed under the [3-clause BSD](https://opensource.org/license/bsd-3-clause) license.
