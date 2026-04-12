@@ -187,10 +187,7 @@ impl RunningDir {
             }
         }
 
-        // Sort if requested
-        if dir_state.sort_order != SortOrder::None {
-            sort_entries(&mut dir_state.entries, dir_state.sort_order);
-        }
+        sort_entries(&mut dir_state.entries, dir_state.sort_order);
 
         self.phase = DirPhase::Header(dir_state);
         StepResult::Continue
@@ -293,13 +290,15 @@ impl RunningDir {
         io: &mut IoAccess,
     ) -> StepResult {
         if !dir_state.bare {
+            let total_bytes = format_decimal_with_commas(dir_state.total_bytes);
             let msg = format!(
                 "{:>9} file(s) {:>12} bytes\r\n",
-                dir_state.total_files, dir_state.total_bytes
+                dir_state.total_files, total_bytes
             );
             io.print(msg.as_bytes());
 
             let free_bytes = calculate_free_space(state, dir_state.drive_index);
+            let free_bytes = format_decimal_with_commas(free_bytes);
             let msg = format!("{:>25} bytes free\r\n", free_bytes);
             io.print(msg.as_bytes());
         }
@@ -459,33 +458,58 @@ fn should_show_entry(entry: &ReadDirEntry, filter: &AttrFilter) -> bool {
 }
 
 fn sort_entries(entries: &mut [ReadDirEntry], order: SortOrder) {
-    entries.sort_by(|a, b| match order {
-        SortOrder::Name => a.name.cmp(&b.name),
-        SortOrder::NameDesc => b.name.cmp(&a.name),
-        SortOrder::Extension => {
-            let ea = &a.name[8..11];
-            let eb = &b.name[8..11];
-            ea.cmp(eb).then_with(|| a.name[..8].cmp(&b.name[..8]))
-        }
-        SortOrder::ExtensionDesc => {
-            let ea = &a.name[8..11];
-            let eb = &b.name[8..11];
-            eb.cmp(ea).then_with(|| b.name[..8].cmp(&a.name[..8]))
-        }
-        SortOrder::Size => a.file_size.cmp(&b.file_size),
-        SortOrder::SizeDesc => b.file_size.cmp(&a.file_size),
-        SortOrder::Date => {
-            let da = ((a.date as u32) << 16) | a.time as u32;
-            let db = ((b.date as u32) << 16) | b.time as u32;
-            da.cmp(&db)
-        }
-        SortOrder::DateDesc => {
-            let da = ((a.date as u32) << 16) | a.time as u32;
-            let db = ((b.date as u32) << 16) | b.time as u32;
-            db.cmp(&da)
-        }
-        SortOrder::None => std::cmp::Ordering::Equal,
-    });
+    entries.sort_by(|a, b| compare_entries(a, b, order));
+}
+
+fn compare_entries(a: &ReadDirEntry, b: &ReadDirEntry, order: SortOrder) -> std::cmp::Ordering {
+    entry_is_directory(b)
+        .cmp(&entry_is_directory(a))
+        .then_with(|| compare_entries_within_group(a, b, order))
+}
+
+fn compare_entries_within_group(
+    a: &ReadDirEntry,
+    b: &ReadDirEntry,
+    order: SortOrder,
+) -> std::cmp::Ordering {
+    match order {
+        SortOrder::None | SortOrder::Name => compare_entry_names(a, b),
+        SortOrder::NameDesc => compare_entry_names(b, a),
+        SortOrder::Extension => compare_entry_extensions(a, b),
+        SortOrder::ExtensionDesc => compare_entry_extensions(b, a),
+        SortOrder::Size => a
+            .file_size
+            .cmp(&b.file_size)
+            .then_with(|| compare_entry_names(a, b)),
+        SortOrder::SizeDesc => b
+            .file_size
+            .cmp(&a.file_size)
+            .then_with(|| compare_entry_names(a, b)),
+        SortOrder::Date => entry_timestamp(a)
+            .cmp(&entry_timestamp(b))
+            .then_with(|| compare_entry_names(a, b)),
+        SortOrder::DateDesc => entry_timestamp(b)
+            .cmp(&entry_timestamp(a))
+            .then_with(|| compare_entry_names(a, b)),
+    }
+}
+
+fn compare_entry_names(a: &ReadDirEntry, b: &ReadDirEntry) -> std::cmp::Ordering {
+    a.name.cmp(&b.name)
+}
+
+fn compare_entry_extensions(a: &ReadDirEntry, b: &ReadDirEntry) -> std::cmp::Ordering {
+    a.name[8..11]
+        .cmp(&b.name[8..11])
+        .then_with(|| compare_entry_names(a, b))
+}
+
+fn entry_is_directory(entry: &ReadDirEntry) -> bool {
+    entry.attribute & fat_dir::ATTR_DIRECTORY != 0
+}
+
+fn entry_timestamp(entry: &ReadDirEntry) -> u32 {
+    ((entry.date as u32) << 16) | entry.time as u32
 }
 
 fn init_dir(
@@ -729,15 +753,12 @@ fn format_standard(entry: &ReadDirEntry, io: &mut IoAccess) {
     if entry.attribute & fat_dir::ATTR_DIRECTORY != 0 {
         io.print(b"     <DIR>   ");
     } else {
-        let size_str = format!("{:>10} ", entry.file_size);
+        let formatted_size = format_decimal_with_commas(entry.file_size as u64);
+        let size_str = format!("{formatted_size:>10} ");
         io.print(size_str.as_bytes());
     }
 
-    // Date: MM-DD-YY
-    let year = ((entry.date >> 9) & 0x7F) + 1980;
-    let month = (entry.date >> 5) & 0x0F;
-    let day = entry.date & 0x1F;
-    let date_str = format!("{:02}-{:02}-{:02}", month, day, year % 100);
+    let date_str = format_dos_date(entry.date);
     io.print(date_str.as_bytes());
     io.output_byte(b' ');
     io.output_byte(b' ');
@@ -787,6 +808,25 @@ fn format_wide(entry: &ReadDirEntry, dir_state: &mut DirState, io: &mut IoAccess
         io.println(b"");
         dir_state.wide_col = 0;
     }
+}
+
+fn format_decimal_with_commas(value: u64) -> String {
+    let digits = value.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, byte) in digits.bytes().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            formatted.push(',');
+        }
+        formatted.push(byte as char);
+    }
+    formatted
+}
+
+fn format_dos_date(date: u16) -> String {
+    let year = ((date >> 9) & 0x7F) + 1980;
+    let month = (date >> 5) & 0x0F;
+    let day = date & 0x1F;
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 fn get_volume_label(
