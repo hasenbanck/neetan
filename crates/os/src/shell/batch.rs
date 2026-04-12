@@ -28,12 +28,12 @@ pub(crate) struct BatchState {
 }
 
 struct WaitingForChildCommand {
-    command_com_psp: u16,
+    owner_psp: u16,
 }
 
 impl WaitingForChildCommand {
-    fn new(command_com_psp: u16) -> Self {
-        Self { command_com_psp }
+    fn new(owner_psp: u16) -> Self {
+        Self { owner_psp }
     }
 }
 
@@ -44,7 +44,7 @@ impl RunningCommand for WaitingForChildCommand {
         _io: &mut IoAccess,
         _disk: &mut dyn DriveIo,
     ) -> StepResult {
-        if state.current_psp == self.command_com_psp {
+        if state.current_psp == self.owner_psp {
             StepResult::Done(state.last_return_code)
         } else {
             StepResult::Continue
@@ -320,8 +320,7 @@ impl BatchState {
                 BatchStepResult::Continue
             }
             super::ShellPhase::WaitingForChild => {
-                self.running_command =
-                    Some(Box::new(WaitingForChildCommand::new(shell.command_com_psp)));
+                self.running_command = Some(Box::new(WaitingForChildCommand::new(shell.owner_psp)));
                 BatchStepResult::Continue
             }
             super::ShellPhase::ExecutingBatch(new_batch) => {

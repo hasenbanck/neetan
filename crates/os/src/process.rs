@@ -213,6 +213,20 @@ fn build_program_path(state: &OsState, mem: &dyn MemoryAccess, path: &[u8]) -> V
         .collect()
 }
 
+fn basename(path: &[u8]) -> &[u8] {
+    let mut basename_start = 0usize;
+    for (index, &byte) in path.iter().enumerate() {
+        if byte == b'\\' || byte == b'/' || byte == b':' {
+            basename_start = index + 1;
+        }
+    }
+    &path[basename_start..]
+}
+
+pub(crate) fn is_command_processor_path(path: &[u8]) -> bool {
+    basename(path).eq_ignore_ascii_case(b"COMMAND.COM")
+}
+
 fn write_environment_program_path(
     mem: &mut dyn MemoryAccess,
     env_segment: u16,
@@ -413,16 +427,14 @@ impl NeetanOs {
             fcb2_addr: ((fcb2_seg as u32) << 4) + fcb2_off as u32,
         };
 
+        if is_command_processor_path(&program_path) {
+            return self.exec_com(cpu, mem, COMMAND_COM_STUB, &params, &program_path);
+        }
+
         // Resolve file path.
         let read_path =
             crate::filesystem::resolve_read_file_path(&mut self.state, &path, mem, disk)?;
         let drive_index = read_path.drive_index;
-
-        // Z: drive contains only COMMAND.COM for COMSPEC compatibility.
-        // All shell commands are built-in and resolved from the command registry,
-        // never through EXEC. Return file-not-found for Z: drive EXEC attempts.
-        // TODO: Support EXEC of Z:\COMMAND.COM for "COMMAND /C <cmd>" pattern.
-        //       Requires nested shell contexts and /C flag handling.
         if drive_index == 25 {
             return Err(0x0002);
         }
@@ -475,10 +487,19 @@ impl NeetanOs {
             fcb2_addr: ((fcb2_seg as u32) << 4) + fcb2_off as u32,
         };
 
+        if is_command_processor_path(&program_path) {
+            let (entry_ss, entry_sp, entry_cs, entry_ip) =
+                self.load_com(mem, COMMAND_COM_STUB, &params, &program_path)?;
+            mem.write_word(pb_addr + 0x0E, entry_sp);
+            mem.write_word(pb_addr + 0x10, entry_ss);
+            mem.write_word(pb_addr + 0x12, entry_ip);
+            mem.write_word(pb_addr + 0x14, entry_cs);
+            return Ok(());
+        }
+
         let read_path =
             crate::filesystem::resolve_read_file_path(&mut self.state, &path, mem, disk)?;
         let drive_index = read_path.drive_index;
-
         if drive_index == 25 {
             return Err(0x0002);
         }
@@ -979,7 +1000,9 @@ impl NeetanOs {
         return_code: u8,
         termination_type: u8,
     ) {
-        let child_psp_base = (self.state.current_psp as u32) << 4;
+        let child_psp = self.state.current_psp;
+        let child_psp_base = (child_psp as u32) << 4;
+        let is_shell_process = self.shells.remove(&child_psp).is_some();
 
         // Close all JFT handles owned by the child.
         for handle in 0..20u16 {
@@ -1025,10 +1048,11 @@ impl NeetanOs {
         self.state.buffered_input = None;
         self.state.pending_key_bytes.clear();
 
-        // Hard-clear text VRAM so the shell prompt starts on a clean screen.
-        // Programs may leave arbitrary content in VRAM; the HLE shell re-renders
-        // the prompt after this, so a full clear is safe.
-        self.console.hard_clear_screen(mem);
+        if !is_shell_process {
+            // Programs may leave arbitrary content in VRAM; the HLE shell
+            // re-renders the prompt after this, so a full clear is safe.
+            self.console.hard_clear_screen(mem);
+        }
 
         // Restore parent's IRET frame.
         cpu.set_ss(parent.return_ss);
@@ -1044,7 +1068,9 @@ impl NeetanOs {
         return_code: u8,
         keep_paragraphs: u16,
     ) {
-        let child_psp_base = (self.state.current_psp as u32) << 4;
+        let child_psp = self.state.current_psp;
+        let child_psp_base = (child_psp as u32) << 4;
+        self.shells.remove(&child_psp);
 
         // Close all JFT handles owned by the child.
         for handle in 0..20u16 {
