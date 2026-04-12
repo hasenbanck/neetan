@@ -3,6 +3,32 @@ use common::Bus;
 use crate::harness;
 
 const IOSYS_BASE: u32 = 0x0600;
+const AUTOEXEC_LINES: &[u8] = b"@ECHO OFF\r\n";
+
+fn assert_boot_and_current_drive_are_a(machine: &mut machine::Pc9801Ra) {
+    let sysvars = harness::get_sysvars_address(machine);
+    let boot_drive = harness::read_byte(&machine.bus, sysvars + 0x43);
+    assert_eq!(
+        boot_drive, 1,
+        "Boot drive should be 1 (A:), got {}",
+        boot_drive
+    );
+
+    let code: &[u8] = &[
+        0xB4, 0x19, // MOV AH, 19h
+        0xCD, 0x21, // INT 21h
+        0xA2, 0x00, 0x01, // MOV [0100h], AL
+        0xFA, // CLI
+        0xF4, // HLT
+    ];
+    harness::inject_and_run(machine, code);
+    let current_drive = harness::result_byte(&machine.bus, 0);
+    assert_eq!(
+        current_drive, 0,
+        "Current drive should be 0 (A:), got {}",
+        current_drive
+    );
+}
 
 #[test]
 fn hdd_gets_lower_drive_letters_when_present() {
@@ -68,6 +94,119 @@ fn floppy_gets_lower_drive_letters_without_hdd() {
         "Drive A: should be FDD (0x90) when no HDDs exist, got {:#04X}",
         drive_a_daua
     );
+}
+
+#[test]
+fn fdd_autoexec_takes_drive_a_when_hdd_is_also_present() {
+    let floppy = harness::create_test_floppy_with_autoexec(AUTOEXEC_LINES);
+    let hdd = harness::create_test_hdd_with_autoexec(256, AUTOEXEC_LINES);
+    let mut machine = harness::boot_hle_with_forced_os(Some(floppy), Some(hdd));
+
+    let drive_a_daua = harness::read_byte(&machine.bus, IOSYS_BASE + 0x006C);
+    assert_eq!(
+        drive_a_daua, 0x90,
+        "Drive A: should be FDD (0x90) when floppy AUTOEXEC.BAT is present, got {:#04X}",
+        drive_a_daua
+    );
+
+    let drive_b_daua = harness::read_byte(&machine.bus, IOSYS_BASE + 0x006C + 1);
+    assert_eq!(
+        drive_b_daua, 0x00,
+        "Drive B: should be reserved when only one floppy is present, got {:#04X}",
+        drive_b_daua
+    );
+
+    let drive_c_daua = harness::read_byte(&machine.bus, IOSYS_BASE + 0x006C + 2);
+    assert_eq!(
+        drive_c_daua, 0x80,
+        "Drive C: should be HDD (0x80) when floppy AUTOEXEC.BAT takes priority, got {:#04X}",
+        drive_c_daua
+    );
+
+    assert_boot_and_current_drive_are_a(&mut machine);
+}
+
+#[test]
+fn hdd_autoexec_takes_drive_a_when_floppy_has_no_autoexec() {
+    let floppy = harness::create_test_floppy();
+    let hdd = harness::create_test_hdd_with_autoexec(256, AUTOEXEC_LINES);
+    let mut machine = harness::boot_hle_with_forced_os(Some(floppy), Some(hdd));
+
+    let drive_a_daua = harness::read_byte(&machine.bus, IOSYS_BASE + 0x006C);
+    assert_eq!(
+        drive_a_daua, 0x80,
+        "Drive A: should be HDD (0x80) when only HDD has AUTOEXEC.BAT, got {:#04X}",
+        drive_a_daua
+    );
+
+    let drive_b_daua = harness::read_byte(&machine.bus, IOSYS_BASE + 0x006C + 1);
+    assert_eq!(
+        drive_b_daua, 0x00,
+        "Drive B: should be reserved when only one HDD is present, got {:#04X}",
+        drive_b_daua
+    );
+
+    let drive_c_daua = harness::read_byte(&machine.bus, IOSYS_BASE + 0x006C + 2);
+    assert_eq!(
+        drive_c_daua, 0x90,
+        "Drive C: should be FDD (0x90) when HDD AUTOEXEC.BAT takes priority, got {:#04X}",
+        drive_c_daua
+    );
+
+    assert_boot_and_current_drive_are_a(&mut machine);
+}
+
+#[test]
+fn hdd_stays_drive_a_when_no_autoexec_exists() {
+    let floppy = harness::create_test_floppy();
+    let hdd = harness::create_test_hdd(256);
+    let mut machine = harness::boot_hle_with_forced_os(Some(floppy), Some(hdd));
+
+    let drive_a_daua = harness::read_byte(&machine.bus, IOSYS_BASE + 0x006C);
+    assert_eq!(
+        drive_a_daua, 0x80,
+        "Drive A: should default to HDD (0x80) when no AUTOEXEC.BAT exists, got {:#04X}",
+        drive_a_daua
+    );
+
+    let drive_c_daua = harness::read_byte(&machine.bus, IOSYS_BASE + 0x006C + 2);
+    assert_eq!(
+        drive_c_daua, 0x90,
+        "Drive C: should be FDD (0x90) when HDD defaults to primary, got {:#04X}",
+        drive_c_daua
+    );
+
+    assert_boot_and_current_drive_are_a(&mut machine);
+}
+
+#[test]
+fn fdd_stays_drive_a_when_only_floppy_is_present_without_autoexec() {
+    let floppy = harness::create_test_floppy();
+    let mut machine = harness::boot_hle_with_forced_os(Some(floppy), None);
+
+    let drive_a_daua = harness::read_byte(&machine.bus, IOSYS_BASE + 0x006C);
+    assert_eq!(
+        drive_a_daua, 0x90,
+        "Drive A: should be FDD (0x90) when only floppy media is present, got {:#04X}",
+        drive_a_daua
+    );
+
+    assert_boot_and_current_drive_are_a(&mut machine);
+}
+
+#[test]
+fn fdd_stays_drive_a_when_only_floppy_is_present_with_autoexec() {
+    let floppy = harness::create_test_floppy_with_autoexec(AUTOEXEC_LINES);
+    let mut machine = harness::boot_hle_with_forced_os(Some(floppy), None);
+
+    let drive_a_daua = harness::read_byte(&machine.bus, IOSYS_BASE + 0x006C);
+    assert_eq!(
+        drive_a_daua, 0x90,
+        "Drive A: should be FDD (0x90) when only floppy AUTOEXEC.BAT is present, got {:#04X}",
+        drive_a_daua
+    );
+
+    assert_boot_and_current_drive_are_a(&mut machine);
 }
 
 #[test]

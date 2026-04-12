@@ -37,6 +37,12 @@ struct DriveInfo {
     is_virtual: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DriveClass {
+    Floppy,
+    HardDisk,
+}
+
 /// State accessible to commands during step() execution.
 ///
 /// Split from `NeetanOs` so `RunningCommand::step()` can borrow this mutably
@@ -395,7 +401,7 @@ impl NeetanOs {
         self.write_dos_data_structures(memory);
         self.write_iosys_work_area(memory);
         tracer.trace_os_boot(OsBootStage::DosDataStructuresReady, cpu, memory);
-        let drives = Self::discover_drives(memory);
+        let drives = Self::discover_drives(memory, device);
         self.write_drive_structures(memory, &drives);
         tracer.trace_os_boot(OsBootStage::DrivesReady, cpu, memory);
 
@@ -947,69 +953,36 @@ impl NeetanOs {
         let _ = con_addr;
     }
 
-    /// Reads the BDA DISK_EQUIP word to discover equipped drives and assigns
-    /// drive letters following the PC-98 HDD-first convention.
-    ///
-    /// When HDDs are present they get A:, B: and floppies always start at C:.
-    /// When no HDDs exist, floppies get A:, B:, C:, D: sequentially.
-    fn discover_drives(mem: &dyn MemoryAccess) -> Vec<DriveInfo> {
+    /// Reads the BDA DISK_EQUIP word, probes mounted media for AUTOEXEC.BAT,
+    /// and assigns drive letters using DOS media precedence.
+    fn discover_drives(mem: &dyn MemoryAccess, disk: &mut dyn DiskIo) -> Vec<DriveInfo> {
         use tables::*;
 
         let disk_equip = mem.read_word(BDA_DISK_EQUIP);
 
-        let mut fdd_dauas: Vec<u8> = Vec::new();
-        let mut hdd_dauas: Vec<u8> = Vec::new();
-
-        // 1MB FDD units (bits 0-3 of disk_equip).
-        for unit in 0..4u8 {
-            if disk_equip & (1 << unit) != 0 {
-                fdd_dauas.push(0x90 + unit);
-            }
-        }
-
-        // 640KB FDD units (bits 12-15 of disk_equip).
-        for unit in 0..4u8 {
-            if disk_equip & (1 << (12 + unit)) != 0 {
-                fdd_dauas.push(0x70 + unit);
-            }
-        }
-
-        // HDD units (bits 8-11 of disk_equip).
-        for unit in 0..4u8 {
-            if disk_equip & (1 << (8 + unit)) != 0 {
-                hdd_dauas.push(0x80 + unit);
-            }
-        }
+        let fdd_dauas = Self::discover_fdd_dauas(disk_equip);
+        let hdd_dauas = Self::discover_hdd_dauas(disk_equip);
+        let fdd_has_autoexec = fdd_dauas
+            .iter()
+            .any(|&da_ua| Self::drive_has_root_autoexec(da_ua, disk));
+        let hdd_has_autoexec = hdd_dauas
+            .iter()
+            .any(|&da_ua| Self::drive_has_root_autoexec(da_ua, disk));
 
         let mut drives = Vec::new();
 
-        if !hdd_dauas.is_empty() {
-            // PC-98 DOS convention: HDDs get A:, B:, and the secondary type
-            // (floppies) always starts at C: (index 2) or later.
-            for (i, da_ua) in hdd_dauas.iter().enumerate() {
-                drives.push(DriveInfo {
-                    drive_index: i as u8,
-                    da_ua: *da_ua,
-                    is_virtual: false,
-                });
+        if fdd_has_autoexec {
+            Self::append_drive_class(&mut drives, &fdd_dauas, 0);
+            if !hdd_dauas.is_empty() {
+                Self::append_drive_class(&mut drives, &hdd_dauas, fdd_dauas.len().max(2));
             }
-            let fdd_start = hdd_dauas.len().max(2);
-            for (i, da_ua) in fdd_dauas.iter().enumerate() {
-                drives.push(DriveInfo {
-                    drive_index: (fdd_start + i) as u8,
-                    da_ua: *da_ua,
-                    is_virtual: false,
-                });
+        } else if hdd_has_autoexec || !hdd_dauas.is_empty() {
+            Self::append_drive_class(&mut drives, &hdd_dauas, 0);
+            if !fdd_dauas.is_empty() {
+                Self::append_drive_class(&mut drives, &fdd_dauas, hdd_dauas.len().max(2));
             }
         } else {
-            // No HDDs: floppies get A:, B:, C:, D: sequentially.
-            for (i, da_ua) in fdd_dauas.iter().enumerate() {
-                drives.push(DriveInfo {
-                    drive_index: i as u8,
-                    da_ua: *da_ua,
-                    is_virtual: false,
-                });
-            }
+            Self::append_drive_class(&mut drives, &fdd_dauas, 0);
         }
 
         // Z: virtual drive is always present.
@@ -1020,6 +993,84 @@ impl NeetanOs {
         });
 
         drives
+    }
+
+    fn discover_fdd_dauas(disk_equip: u16) -> Vec<u8> {
+        let mut fdd_dauas = Vec::new();
+
+        for unit in 0..4u8 {
+            if disk_equip & (1 << unit) != 0 {
+                fdd_dauas.push(0x90 + unit);
+            }
+        }
+
+        for unit in 0..4u8 {
+            if disk_equip & (1 << (12 + unit)) != 0 {
+                fdd_dauas.push(0x70 + unit);
+            }
+        }
+
+        fdd_dauas
+    }
+
+    fn discover_hdd_dauas(disk_equip: u16) -> Vec<u8> {
+        let mut hdd_dauas = Vec::new();
+
+        for unit in 0..4u8 {
+            if disk_equip & (1 << (8 + unit)) != 0 {
+                hdd_dauas.push(0x80 + unit);
+            }
+        }
+
+        hdd_dauas
+    }
+
+    fn append_drive_class(drives: &mut Vec<DriveInfo>, dauas: &[u8], start_index: usize) {
+        for (unit_index, &da_ua) in dauas.iter().enumerate() {
+            drives.push(DriveInfo {
+                drive_index: (start_index + unit_index) as u8,
+                da_ua,
+                is_virtual: false,
+            });
+        }
+    }
+
+    fn drive_class(da_ua: u8) -> Option<DriveClass> {
+        match da_ua & 0xF0 {
+            0x70 | 0x90 => Some(DriveClass::Floppy),
+            0x80 => Some(DriveClass::HardDisk),
+            _ => None,
+        }
+    }
+
+    fn drive_has_root_autoexec(da_ua: u8, disk: &mut dyn DiskIo) -> bool {
+        let drive_class = match Self::drive_class(da_ua) {
+            Some(class) => class,
+            None => return false,
+        };
+
+        let partition_offset = match drive_class {
+            DriveClass::Floppy => 0,
+            DriveClass::HardDisk => {
+                match filesystem::fat_partition::find_partition_offset(da_ua, disk) {
+                    Ok(offset) => offset,
+                    Err(_) => return false,
+                }
+            }
+        };
+
+        let volume = match filesystem::fat::FatVolume::mount(da_ua, partition_offset, disk) {
+            Ok(volume) => volume,
+            Err(_) => return false,
+        };
+
+        let autoexec_name = filesystem::fat_dir::name_to_fcb(b"AUTOEXEC.BAT");
+        let entry = match filesystem::fat_dir::find_entry(&volume, 0, &autoexec_name, disk) {
+            Ok(Some(entry)) => entry,
+            _ => return false,
+        };
+
+        entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY == 0
     }
 
     /// Populates CDS entries, DPB chain, DA/UA mapping tables, and SYSVARS
