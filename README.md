@@ -245,16 +245,16 @@ emulator will print a warning and continue without audio for that module.
 ### MT-32 ROM files
 
 Place your MT-32 ROM files (`.rom` extension) into a single directory and point `--mt32-roms`
-at it. The emulator identifies ROMs by SHA1 hash, so filenames do not matter. You need one
+at it. The emulator identifies ROMs by BLAKE3 hash, so filenames do not matter. You need one
 control ROM and one PCM ROM. Split ROM pairs (two halves) are also supported and merged
 automatically.
 
-| Model                            | Control ROM versions                  |
-|----------------------------------|---------------------------------------|
-| MT-32                            | v1.04, v1.05, v1.06, v1.07, BlueRidge |
-| MT-32 (new / "old" v2)           | v2.03, v2.04, v2.06, v2.07            |
-| CM-32L / LAPC-I                  | v1.00, v1.02                          |
-| CM-32LN / CM-500 / LAPC-N        | v1.00                                 |
+| Model                     | Control ROM versions                  |
+|---------------------------|---------------------------------------|
+| MT-32                     | v1.04, v1.05, v1.06, v1.07, BlueRidge |
+| MT-32 (new / "old" v2)    | v2.04, v2.06, v2.07                   |
+| CM-32L / LAPC-I           | v1.00, v1.02                          |
+| CM-32LN / CM-500 / LAPC-N | v1.00                                 |
 
 It seems that currently the control ROM version v1.04, v1.05, v1.06 and v1.07 of the MT-32 have the best compatibility.
 
