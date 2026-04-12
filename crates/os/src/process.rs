@@ -414,7 +414,8 @@ impl NeetanOs {
         };
 
         // Resolve file path.
-        let read_path = self.state.resolve_read_file_path(&path, mem, disk)?;
+        let read_path =
+            crate::filesystem::resolve_read_file_path(&mut self.state, &path, mem, disk)?;
         let drive_index = read_path.drive_index;
 
         // Z: drive contains only COMMAND.COM for COMSPEC compatibility.
@@ -474,7 +475,8 @@ impl NeetanOs {
             fcb2_addr: ((fcb2_seg as u32) << 4) + fcb2_off as u32,
         };
 
-        let read_path = self.state.resolve_read_file_path(&path, mem, disk)?;
+        let read_path =
+            crate::filesystem::resolve_read_file_path(&mut self.state, &path, mem, disk)?;
         let drive_index = read_path.drive_index;
 
         if drive_index == 25 {

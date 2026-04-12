@@ -441,7 +441,7 @@ impl BatchState {
         }
 
         let (drive_index, dir_cluster, fcb_name) =
-            match state.resolve_file_path(&full_name, io.memory, disk) {
+            match crate::filesystem::resolve_file_path(state, &full_name, io.memory, disk) {
                 Ok(r) => r,
                 Err(_) => {
                     io.println(b"Batch file not found");
@@ -544,7 +544,7 @@ fn check_file_exists(
     filename: &[u8],
 ) -> bool {
     let (drive_index, dir_cluster, fcb_name) =
-        match state.resolve_file_path(filename, io.memory, disk) {
+        match crate::filesystem::resolve_file_path(state, filename, io.memory, disk) {
             Ok(r) => r,
             Err(_) => return false,
         };

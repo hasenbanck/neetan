@@ -5,7 +5,7 @@ use blake3::Hasher;
 use crate::{
     DiskIo, DriveIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
-    dos,
+    dos, filesystem,
     filesystem::{fat_dir, fat_file::FatFileCursor},
 };
 
@@ -265,9 +265,9 @@ fn init_b3sum_state(
 
         let normalized_path = dos::normalize_path(part);
         let has_wildcard = normalized_path.contains(&b'*') || normalized_path.contains(&b'?');
-        let (drive_index, dir_cluster, pattern) = state
-            .resolve_file_path(&normalized_path, io.memory, disk)
-            .map_err(|_| &b"File not found\r\n"[..])?;
+        let (drive_index, dir_cluster, pattern) =
+            filesystem::resolve_file_path(state, &normalized_path, io.memory, disk)
+                .map_err(|_| &b"File not found\r\n"[..])?;
 
         arguments.push(ArgumentState {
             display_path: normalized_path.clone(),

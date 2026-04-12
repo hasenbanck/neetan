@@ -504,7 +504,7 @@ impl Shell {
         bat_name.extend_from_slice(b".BAT");
         if !has_exe_ext
             && let Ok((drive_index, dir_cluster, fcb_name)) =
-                state.resolve_file_path(&bat_name, io.memory, disk)
+                crate::filesystem::resolve_file_path(state, &bat_name, io.memory, disk)
             && drive_index != 25
             && let Some(vol) = state.fat_volumes[drive_index as usize].as_ref()
             && let Ok(Some(entry)) = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk)
@@ -947,7 +947,7 @@ fn file_exists_on_disk(
     memory: &dyn MemoryAccess,
     disk: &mut dyn DriveIo,
 ) -> bool {
-    let read_path = match state.resolve_read_file_path(path, memory, disk) {
+    let read_path = match crate::filesystem::resolve_read_file_path(state, path, memory, disk) {
         Ok(path) => path,
         Err(_) => return false,
     };
@@ -997,7 +997,7 @@ fn write_redirect_to_file(
     let is_append = matches!(spec, RedirectSpec::Append(_));
 
     let (drive_index, dir_cluster, fcb_name) =
-        match state.resolve_file_path(filename, io.memory, disk) {
+        match crate::filesystem::resolve_file_path(state, filename, io.memory, disk) {
             Ok(r) => r,
             Err(_) => {
                 io.console.process_byte(io.memory, b'\r');
@@ -1081,8 +1081,7 @@ fn read_file_data(
     disk: &mut dyn DriveIo,
     filename: &[u8],
 ) -> Result<Vec<u8>, &'static [u8]> {
-    let read_path = state
-        .resolve_read_file_path(filename, io.memory, disk)
+    let read_path = crate::filesystem::resolve_read_file_path(state, filename, io.memory, disk)
         .map_err(|_| &b"File not found\r\n"[..])?;
     if read_path.drive_index == 25 {
         return Err(b"Access denied\r\n");

@@ -3,7 +3,7 @@
 use crate::{
     DiskIo, DriveIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
-    filesystem::{fat::FatVolume, fat_dir, fat_file::FatFileCursor},
+    filesystem::{self, PendingFatFile, fat_dir, fat_file::FatFileCursor},
 };
 
 pub(crate) struct Xcopy;
@@ -42,12 +42,7 @@ struct FileCopyState {
     src_drive: u8,
     src_cursor: FatFileCursor,
     src_entry: fat_dir::DirEntry,
-    dst_drive: u8,
-    dst_dir_cluster: u16,
-    dst_fcb_name: [u8; 11],
-    dst_first_cluster: u16,
-    dst_last_cluster: u16,
-    dst_total_written: u32,
+    dst_file: PendingFatFile,
 }
 
 enum XcopyPhase {
@@ -188,10 +183,11 @@ impl RunningXcopy {
             return StepResult::Continue;
         }
 
-        let dst_cluster_size = match state.fat_volumes[file_state.dst_drive as usize].as_ref() {
-            Some(v) => v.bpb.cluster_size() as usize,
-            None => return StepResult::Done(1),
-        };
+        let dst_cluster_size =
+            match state.fat_volumes[file_state.dst_file.drive_index as usize].as_ref() {
+                Some(v) => v.bpb.cluster_size() as usize,
+                None => return StepResult::Done(1),
+            };
         let src_vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
             Some(v) => v,
             None => return StepResult::Done(1),
@@ -225,36 +221,20 @@ impl RunningXcopy {
         io: &mut IoAccess,
         disk: &mut dyn DiskIo,
     ) -> StepResult {
-        let vol = match state.fat_volumes[file_state.dst_drive as usize].as_mut() {
-            Some(v) => v,
-            None => return StepResult::Done(1),
-        };
+        let (dst_file, _) =
+            match filesystem::write_pending_file_chunk(state, disk, file_state.dst_file, &data) {
+                Ok(result) => result,
+                Err(0x001F) => {
+                    io.println(b"Insufficient disk space");
+                    return StepResult::Done(1);
+                }
+                Err(_) => {
+                    io.println(b"Write error");
+                    return StepResult::Done(1);
+                }
+            };
 
-        let new_cluster = match vol.allocate_cluster(file_state.dst_last_cluster) {
-            Some(c) => c,
-            None => {
-                io.println(b"Insufficient disk space");
-                return StepResult::Done(1);
-            }
-        };
-
-        if file_state.dst_first_cluster == 0 {
-            file_state.dst_first_cluster = new_cluster;
-        }
-        file_state.dst_last_cluster = new_cluster;
-
-        let cluster_size = vol.bpb.cluster_size() as usize;
-        let bytes_to_write = data.len();
-        let mut write_data = data;
-        write_data.resize(cluster_size, 0);
-
-        if vol.write_cluster(new_cluster, &write_data, disk).is_err() {
-            io.println(b"Write error");
-            return StepResult::Done(1);
-        }
-
-        file_state.dst_total_written += bytes_to_write as u32;
-
+        file_state.dst_file = dst_file;
         self.phase = XcopyPhase::ReadChunk(xcopy_state, file_state);
         StepResult::Continue
     }
@@ -267,40 +247,11 @@ impl RunningXcopy {
         io: &mut IoAccess,
         disk: &mut dyn DiskIo,
     ) -> StepResult {
-        let vol = match state.fat_volumes[file_state.dst_drive as usize].as_mut() {
-            Some(v) => v,
-            None => return StepResult::Done(1),
-        };
-
-        if let Ok(Some(existing)) = fat_dir::find_entry(
-            vol,
-            file_state.dst_dir_cluster,
-            &file_state.dst_fcb_name,
-            disk,
-        ) {
-            if existing.start_cluster >= 2 {
-                vol.free_chain(existing.start_cluster);
-            }
-            let _ = fat_dir::delete_entry(vol, &existing, disk);
-        }
-
-        let new_entry = fat_dir::DirEntry {
-            name: file_state.dst_fcb_name,
-            attribute: file_state.src_entry.attribute & 0x27,
-            time: file_state.src_entry.time,
-            date: file_state.src_entry.date,
-            start_cluster: file_state.dst_first_cluster,
-            file_size: file_state.dst_total_written,
-            dir_sector: 0,
-            dir_offset: 0,
-        };
-
-        if fat_dir::create_entry(vol, file_state.dst_dir_cluster, &new_entry, disk).is_err() {
+        if filesystem::finish_pending_file(state, disk, file_state.dst_file).is_err() {
             io.println(b"Unable to create destination");
             return StepResult::Done(1);
         }
 
-        let _ = vol.flush_fat(disk);
         xcopy_state.files_copied += 1;
 
         self.phase = XcopyPhase::FindNext(xcopy_state);
@@ -348,84 +299,31 @@ impl RunningXcopy {
             }
         }
 
-        let (now_time, now_date) = state.dos_timestamp_now();
+        let timestamp = state.dos_timestamp_now();
 
-        // For each subdir: create in dest, push to stack
         for subdir in subdirs {
-            let dst_vol = match state.fat_volumes[xcopy_state.dst_drive as usize].as_mut() {
-                Some(v) => v,
-                None => return StepResult::Done(1),
+            let dst_subdir_cluster = match filesystem::ensure_directory(
+                state,
+                disk,
+                xcopy_state.dst_drive,
+                xcopy_state.dst_dir_cluster,
+                subdir.name,
+                Some(timestamp),
+            ) {
+                Ok(cluster) => cluster,
+                Err(_) => continue,
             };
 
-            // Check if subdir already exists in dest
-            let dst_subdir_cluster = if let Ok(Some(existing)) =
-                fat_dir::find_entry(dst_vol, xcopy_state.dst_dir_cluster, &subdir.name, disk)
+            if !xcopy_state.copy_empty_dirs
+                && filesystem::directory_is_empty_on_drive(
+                    state,
+                    xcopy_state.src_drive,
+                    subdir.start_cluster,
+                    disk,
+                )
+                .unwrap_or(true)
             {
-                if existing.attribute & fat_dir::ATTR_DIRECTORY != 0 {
-                    existing.start_cluster
-                } else {
-                    continue;
-                }
-            } else {
-                // Create the subdirectory in dest
-                let new_cluster = match dst_vol.allocate_cluster(0) {
-                    Some(c) => c,
-                    None => continue,
-                };
-                let cluster_size = dst_vol.bpb.sectors_per_cluster as usize
-                    * dst_vol.bpb.bytes_per_sector as usize;
-                let zeros = vec![0u8; cluster_size];
-                let _ = dst_vol.write_cluster(new_cluster, &zeros, disk);
-
-                let dot = fat_dir::DirEntry {
-                    name: *b".          ",
-                    attribute: fat_dir::ATTR_DIRECTORY,
-                    time: now_time,
-                    date: now_date,
-                    start_cluster: new_cluster,
-                    file_size: 0,
-                    dir_sector: 0,
-                    dir_offset: 0,
-                };
-                let _ = fat_dir::create_entry(dst_vol, new_cluster, &dot, disk);
-
-                let dotdot = fat_dir::DirEntry {
-                    name: *b"..         ",
-                    attribute: fat_dir::ATTR_DIRECTORY,
-                    time: now_time,
-                    date: now_date,
-                    start_cluster: xcopy_state.dst_dir_cluster,
-                    file_size: 0,
-                    dir_sector: 0,
-                    dir_offset: 0,
-                };
-                let _ = fat_dir::create_entry(dst_vol, new_cluster, &dotdot, disk);
-
-                let dir_entry = fat_dir::DirEntry {
-                    name: subdir.name,
-                    attribute: fat_dir::ATTR_DIRECTORY,
-                    time: subdir.time,
-                    date: subdir.date,
-                    start_cluster: new_cluster,
-                    file_size: 0,
-                    dir_sector: 0,
-                    dir_offset: 0,
-                };
-                let _ =
-                    fat_dir::create_entry(dst_vol, xcopy_state.dst_dir_cluster, &dir_entry, disk);
-                let _ = dst_vol.flush_fat(disk);
-                new_cluster
-            };
-
-            // Check /E: if not set, only copy non-empty source subdirs
-            if !xcopy_state.copy_empty_dirs {
-                let src_vol = match state.fat_volumes[xcopy_state.src_drive as usize].as_ref() {
-                    Some(v) => v,
-                    None => continue,
-                };
-                if is_directory_empty(src_vol, subdir.start_cluster, disk) {
-                    continue;
-                }
+                continue;
             }
 
             xcopy_state
@@ -433,7 +331,6 @@ impl RunningXcopy {
                 .push((subdir.start_cluster, dst_subdir_cluster));
         }
 
-        // Pop next dir from stack
         if let Some((src_cluster, dst_cluster)) = xcopy_state.dir_stack.pop() {
             xcopy_state.src_dir_cluster = src_cluster;
             xcopy_state.dst_dir_cluster = dst_cluster;
@@ -478,17 +375,19 @@ impl RunningXcopy {
         let file_state = FileCopyState {
             src_drive: xcopy_state.src_drive,
             src_cursor: FatFileCursor::new(&entry),
+            dst_file: PendingFatFile {
+                drive_index: xcopy_state.dst_drive,
+                dir_cluster: xcopy_state.dst_dir_cluster,
+                name: entry.name,
+                attribute: entry.attribute & 0x27,
+                time: entry.time,
+                date: entry.date,
+                start_cluster: 0,
+                file_size: 0,
+                position: 0,
+            },
             src_entry: entry,
-            dst_drive: xcopy_state.dst_drive,
-            dst_dir_cluster: xcopy_state.dst_dir_cluster,
-            dst_fcb_name: [0; 11],
-            dst_first_cluster: 0,
-            dst_last_cluster: 0,
-            dst_total_written: 0,
         };
-
-        let mut file_state = file_state;
-        file_state.dst_fcb_name = file_state.src_entry.name;
 
         // Take xcopy_state by swapping
         let taken = std::mem::replace(
@@ -528,25 +427,6 @@ fn print_help(io: &mut IoAccess) {
     io.println(b"  /E           Copies directories and subdirectories, including");
     io.println(b"               empty ones. Same as /S /E.");
     io.println(b"  /P           Prompts before copying each file.");
-}
-
-fn is_directory_empty(vol: &FatVolume, dir_cluster: u16, disk: &mut dyn DiskIo) -> bool {
-    let all_pattern = [b'?'; 11];
-    let attr_mask = fat_dir::ATTR_HIDDEN | fat_dir::ATTR_SYSTEM | fat_dir::ATTR_DIRECTORY;
-    let mut si = 0u16;
-
-    loop {
-        let result = fat_dir::find_matching(vol, dir_cluster, &all_pattern, attr_mask, si, disk);
-        match result {
-            Ok(Some((entry, next_index))) => {
-                if entry.name != *b".          " && entry.name != *b"..         " {
-                    return false;
-                }
-                si = next_index;
-            }
-            _ => return true,
-        }
-    }
 }
 
 fn init_xcopy(
@@ -593,21 +473,19 @@ fn init_xcopy(
 
     let has_wildcard = source.contains(&b'*') || source.contains(&b'?');
     let (src_drive, src_dir_cluster, src_pattern) = if has_wildcard {
-        state
-            .resolve_file_path(source, io.memory, disk)
+        crate::filesystem::resolve_file_path(state, source, io.memory, disk)
             .map_err(|_| &b"File not found\r\n"[..])?
     } else {
-        match state.resolve_dir_path(source, io.memory, disk) {
+        match crate::filesystem::resolve_dir_path(state, source, io.memory, disk) {
             Ok((drive, cluster)) => (drive, cluster, [b'?'; 11]),
-            Err(_) => state
-                .resolve_file_path(source, io.memory, disk)
+            Err(_) => crate::filesystem::resolve_file_path(state, source, io.memory, disk)
                 .map_err(|_| &b"File not found\r\n"[..])?,
         }
     };
 
-    let (dst_drive, dst_dir_cluster) = state
-        .resolve_dir_path(dest, io.memory, disk)
-        .map_err(|_| &b"Invalid destination\r\n"[..])?;
+    let (dst_drive, dst_dir_cluster) =
+        crate::filesystem::resolve_dir_path(state, dest, io.memory, disk)
+            .map_err(|_| &b"Invalid destination\r\n"[..])?;
 
     if dst_drive == 25 {
         return Err(b"Access denied\r\n");

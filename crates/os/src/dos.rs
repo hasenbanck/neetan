@@ -4,7 +4,7 @@ use common::warn;
 
 use crate::{
     BufferedInputState, CpuAccess, DriveIo, MemoryAccess, NeetanOs, Tracing, adjust_iret_ip,
-    country, memory, set_iret_carry, set_iret_zf, tables,
+    country, filesystem, memory, set_iret_carry, set_iret_zf, tables,
 };
 
 impl NeetanOs {
@@ -724,7 +724,7 @@ impl NeetanOs {
             path_bytes.push(byte);
         }
 
-        match self.state.change_directory(memory, disk, &path_bytes) {
+        match filesystem::change_directory(&mut self.state, memory, disk, &path_bytes) {
             Ok(()) => {
                 set_iret_carry(cpu, memory, false);
             }

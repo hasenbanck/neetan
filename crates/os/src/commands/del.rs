@@ -1,9 +1,9 @@
 //! DEL / ERASE command.
 
 use crate::{
-    DiskIo, DriveIo, IoAccess, OsState,
+    DriveIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
-    filesystem::fat_dir,
+    filesystem::{self, fat_dir},
 };
 
 pub(crate) struct Del;
@@ -39,7 +39,6 @@ enum DelPhase {
     ConfirmAll(DelState),
     DeleteNext(DelState),
     PromptFile(DelState, fat_dir::DirEntry),
-    Flush(DelState),
 }
 
 struct RunningDel {
@@ -66,7 +65,7 @@ impl RunningDel {
         let path = path.to_vec();
 
         let (drive_index, dir_cluster, fcb_pattern) =
-            match state.resolve_file_path(&path, io.memory, disk) {
+            match filesystem::resolve_file_path(state, &path, io.memory, disk) {
                 Ok(r) => r,
                 Err(_) => {
                     io.println(b"File not found");
@@ -165,14 +164,13 @@ impl RunningDel {
                     self.phase = DelPhase::PromptFile(del_state, entry);
                 } else {
                     // No prompt: delete immediately
-                    let vol = match state.fat_volumes[del_state.drive_index as usize].as_mut() {
-                        Some(v) => v,
-                        None => return StepResult::Done(1),
-                    };
-                    if entry.start_cluster >= 2 {
-                        vol.free_chain(entry.start_cluster);
-                    }
-                    let _ = fat_dir::delete_entry(vol, &entry, disk);
+                    let _ = filesystem::delete_file_by_components(
+                        state,
+                        disk,
+                        del_state.drive_index,
+                        del_state.dir_cluster,
+                        entry.name,
+                    );
                     del_state.deleted_any = true;
                     self.phase = DelPhase::DeleteNext(del_state);
                 }
@@ -183,8 +181,7 @@ impl RunningDel {
                     io.println(b"File not found");
                     return StepResult::Done(1);
                 }
-                self.phase = DelPhase::Flush(del_state);
-                StepResult::Continue
+                StepResult::Done(0)
             }
             Err(_) => {
                 io.println(b"File not found");
@@ -210,33 +207,18 @@ impl RunningDel {
         io.output_byte(b'\n');
 
         if key == b'Y' || key == b'y' {
-            let vol = match state.fat_volumes[del_state.drive_index as usize].as_mut() {
-                Some(v) => v,
-                None => return StepResult::Done(1),
-            };
-            if entry.start_cluster >= 2 {
-                vol.free_chain(entry.start_cluster);
-            }
-            let _ = fat_dir::delete_entry(vol, &entry, disk);
+            let _ = filesystem::delete_file_by_components(
+                state,
+                disk,
+                del_state.drive_index,
+                del_state.dir_cluster,
+                entry.name,
+            );
             del_state.deleted_any = true;
         }
 
         self.phase = DelPhase::DeleteNext(del_state);
         StepResult::Continue
-    }
-
-    fn step_flush(
-        &mut self,
-        del_state: DelState,
-        state: &mut OsState,
-        disk: &mut dyn DiskIo,
-    ) -> StepResult {
-        let vol = match state.fat_volumes[del_state.drive_index as usize].as_mut() {
-            Some(v) => v,
-            None => return StepResult::Done(1),
-        };
-        let _ = vol.flush_fat(disk);
-        StepResult::Done(0)
     }
 }
 
@@ -253,7 +235,6 @@ impl RunningCommand for RunningDel {
             DelPhase::ConfirmAll(ds) => self.step_confirm_all(ds, io),
             DelPhase::DeleteNext(ds) => self.step_delete_next(ds, state, io, disk),
             DelPhase::PromptFile(ds, entry) => self.step_prompt_file(ds, entry, state, io, disk),
-            DelPhase::Flush(ds) => self.step_flush(ds, state, disk),
         }
     }
 }

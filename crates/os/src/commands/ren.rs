@@ -1,9 +1,9 @@
 //! REN / RENAME command.
 
 use crate::{
-    DiskIo, DriveIo, IoAccess, OsState,
+    DriveIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
-    filesystem::fat_dir,
+    filesystem::{self, fat_dir},
 };
 
 pub(crate) struct Ren;
@@ -89,13 +89,13 @@ fn split_two_args(args: &[u8]) -> Option<(&[u8], &[u8])> {
 fn rename_files(
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DiskIo,
+    disk: &mut dyn DriveIo,
     source: &[u8],
     dest: &[u8],
 ) -> Result<(), &'static [u8]> {
-    let (drive_index, dir_cluster, src_fcb_pattern) = state
-        .resolve_file_path(source, io.memory, disk)
-        .map_err(|_| &b"File not found\r\n"[..])?;
+    let (drive_index, dir_cluster, src_fcb_pattern) =
+        filesystem::resolve_file_path(state, source, io.memory, disk)
+            .map_err(|_| &b"File not found\r\n"[..])?;
 
     if drive_index == 25 {
         return Err(b"Access denied\r\n");
@@ -104,38 +104,39 @@ fn rename_files(
     // Dest is just a filename pattern (no path allowed in REN dest)
     let dest_fcb_template = fat_dir::name_to_fcb(dest);
 
-    let vol = state.fat_volumes[drive_index as usize]
-        .as_mut()
-        .ok_or(&b"Invalid drive\r\n"[..])?;
-
     let mut renamed_any = false;
     let mut start_index = 0u16;
 
     loop {
+        let vol = state.fat_volumes[drive_index as usize]
+            .as_mut()
+            .ok_or(&b"Invalid drive\r\n"[..])?;
+
         let result =
             fat_dir::find_matching(vol, dir_cluster, &src_fcb_pattern, 0, start_index, disk)
                 .map_err(|_| &b"File not found\r\n"[..])?;
 
         match result {
-            Some((mut entry, next_index)) => {
+            Some((entry, next_index)) => {
                 // Build new name by merging source name with dest template
                 let new_name = merge_wildcard_name(&entry.name, &dest_fcb_template);
 
                 // Skip if name unchanged
                 if new_name != entry.name {
-                    // Check if the new name already exists
-                    if fat_dir::find_entry(vol, dir_cluster, &new_name, disk)
-                        .map_err(|_| &b"Duplicate file name or file not found\r\n"[..])?
-                        .is_some()
-                    {
-                        io.println(b"Duplicate file name or file not found");
-                        start_index = next_index;
-                        continue;
+                    match filesystem::rename_entry_by_components(
+                        state,
+                        disk,
+                        (drive_index, dir_cluster, entry.name),
+                        (drive_index, dir_cluster, new_name),
+                    ) {
+                        Ok(()) => {}
+                        Err(0x0005 | 0x0002) => {
+                            io.println(b"Duplicate file name or file not found");
+                            start_index = next_index;
+                            continue;
+                        }
+                        Err(_) => return Err(b"Access denied\r\n"),
                     }
-
-                    entry.name = new_name;
-                    fat_dir::update_entry(vol, &entry, disk)
-                        .map_err(|_| &b"Access denied\r\n"[..])?;
                 }
                 renamed_any = true;
                 start_index = next_index;

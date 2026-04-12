@@ -124,6 +124,14 @@ impl FatFileWriter {
         self.position
     }
 
+    pub(crate) fn current_cluster(&self) -> u16 {
+        if self.cached_cluster >= 2 {
+            self.cached_cluster
+        } else {
+            self.start_cluster
+        }
+    }
+
     pub(crate) fn write_chunk(
         &mut self,
         vol: &mut FatVolume,

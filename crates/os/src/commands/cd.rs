@@ -47,7 +47,7 @@ impl RunningCommand for RunningCd {
             return StepResult::Done(0);
         }
 
-        match state.change_directory(io.memory, disk, args) {
+        match crate::filesystem::change_directory(state, io.memory, disk, args) {
             Ok(()) => StepResult::Done(0),
             Err(_) => {
                 io.println(b"Invalid directory");
