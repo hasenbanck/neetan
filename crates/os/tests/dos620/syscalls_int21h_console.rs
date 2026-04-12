@@ -1,3 +1,5 @@
+use common::JisChar;
+
 use crate::harness::{self, *};
 
 #[test]
@@ -40,6 +42,29 @@ fn display_string_09h() {
     assert!(
         harness::find_string_in_text_vram(&machine.bus, &chars),
         "Text VRAM should contain consecutive 'T','E','S','T' after INT 21h/09h"
+    );
+}
+
+#[test]
+fn display_string_09h_shift_jis() {
+    let mut machine = boot_hle();
+    let string = b"\x82\xA0\x82\xA2$";
+    write_bytes(&mut machine.bus, INJECT_CODE_BASE + 0x200, string);
+
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x09,                         // MOV AH, 09h
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xCD, 0x21,                         // INT 21h
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    inject_and_run(&mut machine, code);
+
+    let chars = [JisChar::from_u16(0x2422), JisChar::from_u16(0x2424)];
+    assert!(
+        find_jis_string_in_text_vram(&machine.bus, &chars),
+        "INT 21h/09h should display Shift-JIS strings as full-width glyphs"
     );
 }
 

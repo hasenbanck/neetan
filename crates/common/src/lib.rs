@@ -21,7 +21,10 @@ pub use display_snapshot::{
     cast_u32_slice_as_bytes_mut,
 };
 pub use error::{Context, ContextError, OptionContext, StringError};
-pub use jis::{JisChar, char_to_jis, jis_slice_to_string, jis_to_char, str_to_jis};
+pub use jis::{
+    JisChar, char_to_jis, is_shift_jis_lead_byte, is_shift_jis_trail_byte, jis_slice_to_string,
+    jis_to_char, shift_jis_pair_to_jis, str_to_jis,
+};
 pub use os::{
     AudioChannelInfo, CdAudioState, CdAudioStatus, CdromIo, CdromTrackInfo, CdromTrackType,
     ConsoleIo, CpuAccess, DiskIo, DriveIo, MemoryAccess,

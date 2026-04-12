@@ -1,3 +1,5 @@
+use common::JisChar;
+
 use crate::harness::*;
 
 #[test]
@@ -72,6 +74,29 @@ fn redirect_dir_to_file() {
     assert!(
         find_string_in_text_vram(&machine.bus, &command),
         "DIR redirected output should contain 'COMMAND'"
+    );
+}
+
+#[test]
+fn redirect_type_preserves_shift_jis_bytes() {
+    let floppy = create_test_floppy_with_program(b"JAPAN   TXT", b"\x82\xA0\x82\xA2\r\n");
+    let mut machine = boot_hle_with_floppy_image(floppy);
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    type_string_long(&mut machine, b"TYPE JAPAN.TXT >OUT.TXT\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    type_string_long(&mut machine, b"TYPE OUT.TXT\r");
+    run_until_prompt(&mut machine);
+
+    let chars = [JisChar::from_u16(0x2422), JisChar::from_u16(0x2424)];
+    assert!(
+        find_jis_string_in_text_vram(&machine.bus, &chars),
+        "redirected TYPE output should preserve raw Shift-JIS bytes"
     );
 }
 

@@ -128,6 +128,40 @@ pub fn str_to_jis(text: &str) -> Vec<JisChar> {
     text.chars().map(char_to_jis).collect()
 }
 
+/// Returns `true` if the byte is a Shift-JIS lead byte.
+pub fn is_shift_jis_lead_byte(byte: u8) -> bool {
+    (0x81..=0x9F).contains(&byte) || (0xE0..=0xFC).contains(&byte)
+}
+
+/// Returns `true` if the byte is a Shift-JIS trail byte.
+pub fn is_shift_jis_trail_byte(byte: u8) -> bool {
+    (0x40..=0x7E).contains(&byte) || (0x80..=0xFC).contains(&byte)
+}
+
+/// Converts a Shift-JIS double-byte pair to a JIS character.
+pub fn shift_jis_pair_to_jis(lead: u8, trail: u8) -> Option<JisChar> {
+    if !is_shift_jis_lead_byte(lead) || !is_shift_jis_trail_byte(trail) {
+        return None;
+    }
+
+    let mut row = if lead <= 0x9F {
+        ((lead - 0x81) * 2) + 0x21
+    } else {
+        ((lead - 0xC1) * 2) + 0x21
+    };
+
+    let cell = if trail <= 0x7E {
+        trail - 0x1F
+    } else if trail <= 0x9E {
+        trail - 0x20
+    } else {
+        row += 1;
+        trail - 0x7E
+    };
+
+    Some(JisChar::from_u16(((row as u16) << 8) | cell as u16))
+}
+
 /// Reads character cells from a text VRAM byte slice and converts to a String.
 ///
 /// Each character cell is 2 bytes (even = ten/char code, odd = ku/0x00).
@@ -343,5 +377,47 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn shift_jis_lead_byte_ranges() {
+        assert!(is_shift_jis_lead_byte(0x81));
+        assert!(is_shift_jis_lead_byte(0x9F));
+        assert!(is_shift_jis_lead_byte(0xE0));
+        assert!(is_shift_jis_lead_byte(0xFC));
+        assert!(!is_shift_jis_lead_byte(0x80));
+        assert!(!is_shift_jis_lead_byte(0xA0));
+    }
+
+    #[test]
+    fn shift_jis_trail_byte_ranges() {
+        assert!(is_shift_jis_trail_byte(0x40));
+        assert!(is_shift_jis_trail_byte(0x7E));
+        assert!(is_shift_jis_trail_byte(0x80));
+        assert!(is_shift_jis_trail_byte(0xFC));
+        assert!(!is_shift_jis_trail_byte(0x7F));
+        assert!(!is_shift_jis_trail_byte(0xFD));
+    }
+
+    #[test]
+    fn shift_jis_pair_to_jis_ideographic_space() {
+        assert_eq!(
+            shift_jis_pair_to_jis(0x81, 0x40),
+            Some(JisChar::from_u16(0x2121))
+        );
+    }
+
+    #[test]
+    fn shift_jis_pair_to_jis_hiragana_a() {
+        assert_eq!(
+            shift_jis_pair_to_jis(0x82, 0xA0),
+            Some(JisChar::from_u16(0x2422))
+        );
+    }
+
+    #[test]
+    fn shift_jis_pair_to_jis_rejects_invalid_pairs() {
+        assert_eq!(shift_jis_pair_to_jis(0x20, 0xA0), None);
+        assert_eq!(shift_jis_pair_to_jis(0x82, 0x7F), None);
     }
 }

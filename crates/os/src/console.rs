@@ -59,16 +59,55 @@ impl Console {
         memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_LINE_WRAP) == 0x00
     }
 
-    pub(crate) fn put_char(&self, memory: &mut dyn MemoryAccess, ch: u8) {
-        let row = self.cursor_row(memory);
-        let col = self.cursor_col(memory);
-        let jis = JisChar::from_u16(ch as u16);
+    pub(crate) fn pending_shift_jis_lead(&self, memory: &dyn MemoryAccess) -> Option<u8> {
+        if memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_KANJI_HI_FLAG) == 0 {
+            None
+        } else {
+            Some(memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_KANJI_HI_BYTE))
+        }
+    }
+
+    pub(crate) fn set_pending_shift_jis_lead(&self, memory: &mut dyn MemoryAccess, byte: u8) {
+        memory.write_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_KANJI_HI_FLAG, 0x01);
+        memory.write_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_KANJI_HI_BYTE, byte);
+    }
+
+    pub(crate) fn clear_pending_shift_jis_lead(&self, memory: &mut dyn MemoryAccess) {
+        memory.write_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_KANJI_HI_FLAG, 0x00);
+        memory.write_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_KANJI_HI_BYTE, 0x00);
+    }
+
+    fn write_cell(&self, memory: &mut dyn MemoryAccess, row: u8, col: u8, jis: JisChar, attr: u8) {
         let (even, odd) = jis.to_vram_bytes();
         let char_addr = vram_char_addr(row, col);
         memory.write_byte(char_addr, even);
         memory.write_byte(char_addr + 1, odd);
-        let attr = self.display_attr(memory);
         memory.write_word(vram_attr_addr(row, col), attr as u16);
+    }
+
+    pub(crate) fn put_char(&self, memory: &mut dyn MemoryAccess, ch: u8) {
+        let row = self.cursor_row(memory);
+        let col = self.cursor_col(memory);
+        let attr = self.display_attr(memory);
+        self.write_cell(memory, row, col, JisChar::from_u16(ch as u16), attr);
+        self.advance_cursor(memory);
+    }
+
+    pub(crate) fn put_fullwidth_jis_char(&self, memory: &mut dyn MemoryAccess, jis: JisChar) {
+        let mut row = self.cursor_row(memory);
+        let mut col = self.cursor_col(memory);
+        if col == COLUMNS - 1 {
+            if !self.wrap_to_next_line(memory) {
+                return;
+            }
+            row = self.cursor_row(memory);
+            col = self.cursor_col(memory);
+        }
+
+        let attr = self.display_attr(memory);
+        self.write_cell(memory, row, col, jis, attr);
+        self.write_cell(memory, row, col + 1, JisChar::from_u16(0x0000), attr);
+        self.advance_cursor(memory);
         self.advance_cursor(memory);
     }
 
@@ -76,20 +115,28 @@ impl Console {
         let col = self.cursor_col(memory) + 1;
         let row = self.cursor_row(memory);
         if col >= COLUMNS {
-            if self.line_wrap_enabled(memory) {
-                let scroll_lower = self.scroll_lower(memory);
-                if row >= scroll_lower {
-                    self.scroll_up(memory, 1);
-                    self.set_cursor(memory, scroll_lower, 0);
-                } else {
-                    self.set_cursor(memory, row + 1, 0);
-                }
-            } else {
+            if !self.wrap_to_next_line(memory) {
                 self.set_cursor(memory, row, COLUMNS - 1);
             }
         } else {
             self.set_cursor(memory, row, col);
         }
+    }
+
+    fn wrap_to_next_line(&self, memory: &mut dyn MemoryAccess) -> bool {
+        if !self.line_wrap_enabled(memory) {
+            return false;
+        }
+
+        let row = self.cursor_row(memory);
+        let scroll_lower = self.scroll_lower(memory);
+        if row >= scroll_lower {
+            self.scroll_up(memory, 1);
+            self.set_cursor(memory, scroll_lower, 0);
+        } else {
+            self.set_cursor(memory, row + 1, 0);
+        }
+        true
     }
 
     pub(crate) fn carriage_return(&self, memory: &mut dyn MemoryAccess) {
@@ -505,6 +552,17 @@ mod tests {
         );
     }
 
+    fn assert_vram_jis(memory: &MockMemory, row: u8, col: u8, expected: JisChar) {
+        let (even, odd) = read_vram_char(memory, row, col);
+        assert_eq!(
+            JisChar::from_vram_bytes(even, odd),
+            expected,
+            "VRAM JIS char at ({}, {}) did not match",
+            row,
+            col,
+        );
+    }
+
     fn assert_vram_clear(memory: &MockMemory, row: u8, col_start: u8, col_end: u8) {
         for col in col_start..=col_end {
             assert_vram_char(memory, row, col, 0x20, 0x00);
@@ -613,6 +671,84 @@ mod tests {
         assert_vram_char(&memory, 0, 1, 0x42, 0x00);
         assert_vram_char(&memory, 0, 2, 0x43, 0x00);
         assert_cursor(&console, &memory, 0, 3);
+    }
+
+    #[test]
+    fn process_byte_shift_jis_pair_writes_fullwidth_char() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+
+        console.process_byte(&mut memory, 0x82);
+        assert_eq!(
+            memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_KANJI_HI_FLAG),
+            0x01
+        );
+        assert_cursor(&console, &memory, 0, 0);
+
+        console.process_byte(&mut memory, 0xA0);
+
+        assert_eq!(
+            memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_KANJI_HI_FLAG),
+            0x00
+        );
+        assert_vram_jis(&memory, 0, 0, JisChar::from_u16(0x2422));
+        assert_vram_char(&memory, 0, 1, 0x00, 0x00);
+        assert_cursor(&console, &memory, 0, 2);
+    }
+
+    #[test]
+    fn process_byte_halfwidth_kana_stays_single_cell() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+
+        console.process_byte(&mut memory, 0xA6);
+
+        assert_vram_char(&memory, 0, 0, 0xA6, 0x00);
+        assert_cursor(&console, &memory, 0, 1);
+    }
+
+    #[test]
+    fn process_byte_invalid_shift_jis_trail_falls_back_to_single_byte() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+
+        console.process_byte(&mut memory, 0x82);
+        console.process_byte(&mut memory, 0x0D);
+
+        assert_eq!(
+            memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_KANJI_HI_FLAG),
+            0x00
+        );
+        assert_vram_char(&memory, 0, 0, 0x82, 0x00);
+        assert_cursor(&console, &memory, 0, 0);
+    }
+
+    #[test]
+    fn process_byte_fullwidth_wraps_before_last_column() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+        console.set_cursor(&mut memory, 0, 79);
+
+        console.process_byte(&mut memory, 0x82);
+        console.process_byte(&mut memory, 0xA0);
+
+        assert_vram_jis(&memory, 1, 0, JisChar::from_u16(0x2422));
+        assert_vram_char(&memory, 1, 1, 0x00, 0x00);
+        assert_cursor(&console, &memory, 1, 2);
+    }
+
+    #[test]
+    fn process_byte_fullwidth_at_last_column_no_wrap_is_dropped() {
+        let mut console = make_console();
+        let mut memory = make_memory();
+        memory.write_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_LINE_WRAP, 0x01);
+        console.set_cursor(&mut memory, 0, 79);
+
+        console.process_byte(&mut memory, 0x82);
+        console.process_byte(&mut memory, 0xA0);
+
+        assert_vram_char(&memory, 0, 79, 0x00, 0x00);
+        assert_cursor(&console, &memory, 0, 79);
     }
 
     #[test]

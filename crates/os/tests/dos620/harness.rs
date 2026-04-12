@@ -1,4 +1,4 @@
-use common::{Bus, MachineModel};
+use common::{Bus, JisChar, MachineModel};
 
 static FONT_ROM_DATA: &[u8] = include_bytes!("../../../../utils/font/font.rom");
 
@@ -778,6 +778,55 @@ pub fn find_string_in_text_vram(bus: &machine::Pc9801Bus, chars: &[u16]) -> bool
             return true;
         }
     }
+    false
+}
+
+pub fn find_jis_string_in_text_vram(bus: &machine::Pc9801Bus, chars: &[JisChar]) -> bool {
+    if chars.is_empty() {
+        return true;
+    }
+
+    let vram = bus.text_vram();
+    let total_cells = 80 * 25;
+    for start in 0..total_cells {
+        let mut cell_index = start;
+        let mut matched = true;
+
+        for &expected in chars {
+            if cell_index >= total_cells {
+                matched = false;
+                break;
+            }
+
+            let offset = cell_index * 2;
+            let actual = JisChar::from_vram_bytes(vram[offset], vram[offset + 1]);
+            if actual != expected {
+                matched = false;
+                break;
+            }
+
+            cell_index += 1;
+            if !expected.is_ank() {
+                if cell_index >= total_cells {
+                    matched = false;
+                    break;
+                }
+
+                let offset = cell_index * 2;
+                let placeholder = JisChar::from_vram_bytes(vram[offset], vram[offset + 1]);
+                if placeholder != JisChar::from_u16(0x0000) {
+                    matched = false;
+                    break;
+                }
+                cell_index += 1;
+            }
+        }
+
+        if matched {
+            return true;
+        }
+    }
+
     false
 }
 
