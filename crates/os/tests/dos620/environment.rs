@@ -54,6 +54,13 @@ fn read_program_path_from_environment(bus: &machine::Pc9801Bus, env_segment: u16
     panic!("Could not find double-null terminator in environment block");
 }
 
+fn read_psp_command_tail(bus: &machine::Pc9801Bus, psp_segment: u16) -> String {
+    let psp_addr = harness::far_to_linear(psp_segment, 0);
+    let tail_len = harness::read_byte(bus, psp_addr + 0x80) as usize;
+    let bytes = harness::read_string(bus, psp_addr + 0x81, tail_len);
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 fn exec_load_only(machine: &mut machine::Pc9801Ra, filename: &[u8]) -> (u16, u16, u16, u16, u16) {
     let base = harness::INJECT_CODE_BASE;
     harness::write_bytes(&mut machine.bus, base + 0x0200, filename);
@@ -370,6 +377,51 @@ fn child_process_program_name() {
         "Child environment trailer should have count=1"
     );
     assert_eq!(pathname, "A:\\TEST.COM");
+}
+
+#[test]
+fn shell_config_sets_root_environment_contract() {
+    let floppy = harness::create_test_floppy_with_config_and_autoexec(
+        b"SHELL = A:COMMAND.COM A: /E:384 /P\r\n",
+        b"@ECHO OFF\r\n",
+    );
+    let mut machine = harness::boot_hle_with_forced_os(Some(floppy), None);
+    let psp_segment = harness::get_psp_segment(&mut machine);
+    let psp_linear = harness::far_to_linear(psp_segment, 0);
+    let env_segment = harness::read_word(&machine.bus, psp_linear + 0x2C);
+    let env_linear = harness::far_to_linear(env_segment, 0);
+
+    let strings = read_environment_strings(&machine.bus, env_linear);
+    assert!(
+        strings.iter().any(|s| s == "COMSPEC=A:COMMAND.COM"),
+        "COMSPEC should follow CONFIG.SYS SHELL=, found {:?}",
+        strings
+    );
+
+    let (count, pathname) = read_program_path_from_environment(&machine.bus, env_segment);
+    assert_eq!(
+        count, 1,
+        "Root environment should store one program pathname"
+    );
+    assert_eq!(
+        pathname, "A:COMMAND.COM",
+        "Root environment pathname should follow CONFIG.SYS SHELL="
+    );
+
+    let command_tail = read_psp_command_tail(&machine.bus, psp_segment);
+    assert_eq!(
+        command_tail, "A: /E:384 /P",
+        "Root PSP command tail should preserve the SHELL= argument tail"
+    );
+
+    let sysvars = harness::get_sysvars_address(&mut machine);
+    let first_mcb_segment = harness::read_word(&machine.bus, sysvars - 2);
+    let first_mcb_addr = harness::far_to_linear(first_mcb_segment, 0);
+    let env_mcb_size = harness::read_word(&machine.bus, first_mcb_addr + 3);
+    assert_eq!(
+        env_mcb_size, 24,
+        "Root environment MCB should honor /E:384 as 24 paragraphs"
+    );
 }
 
 #[test]

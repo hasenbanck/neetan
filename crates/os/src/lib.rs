@@ -301,6 +301,13 @@ pub struct NeetanOs {
     pub(crate) shells: BTreeMap<u16, shell::Shell>,
 }
 
+struct RootShellBootConfig {
+    command_path: Vec<u8>,
+    command_tail: Vec<u8>,
+    env_paragraphs: u16,
+    initial_drive: u8,
+}
+
 impl Default for NeetanOs {
     fn default() -> Self {
         Self::new()
@@ -432,7 +439,8 @@ impl NeetanOs {
         }
         tracer.trace_os_boot(OsBootStage::CdromReady, cpu, memory);
 
-        self.write_initial_mcb_and_process(memory);
+        let root_shell_boot = self.build_root_shell_boot_config(&cfg);
+        self.write_initial_mcb_and_process(memory, &root_shell_boot);
         tracer.trace_os_boot(OsBootStage::InitialProcessReady, cpu, memory);
 
         // Initialize EMS/XMS memory manager if extended RAM is available.
@@ -535,6 +543,45 @@ impl NeetanOs {
             let mut padded = name.clone();
             padded.resize(8, b' ');
             self.state.mscdex.device_name = padded;
+        }
+    }
+
+    fn build_root_shell_boot_config(&self, cfg: &config::ConfigSys) -> RootShellBootConfig {
+        let default_command_path = b"Z:\\COMMAND.COM".to_vec();
+        let default_environment_size_bytes = tables::ENV_BLOCK_PARAGRAPHS * 16;
+
+        if let Some(shell) = cfg.shell.as_ref()
+            && process::is_command_processor_path(&shell.path)
+        {
+            let requested_environment_size_bytes = shell
+                .environment_size_bytes
+                .unwrap_or(default_environment_size_bytes);
+
+            return RootShellBootConfig {
+                command_path: shell.path.clone(),
+                command_tail: shell.raw_arguments.clone(),
+                env_paragraphs: process::environment_block_paragraphs(
+                    &shell.path,
+                    requested_environment_size_bytes,
+                ),
+                initial_drive: shell
+                    .initial_drive
+                    .unwrap_or(self.state.boot_drive.saturating_sub(1)),
+            };
+        }
+
+        if cfg.shell.is_some() {
+            // TODO: Honor CONFIG.SYS SHELL= for non-COMMAND.COM custom shells.
+        }
+
+        RootShellBootConfig {
+            command_path: default_command_path,
+            command_tail: Vec::new(),
+            env_paragraphs: process::environment_block_paragraphs(
+                b"Z:\\COMMAND.COM",
+                default_environment_size_bytes,
+            ),
+            initial_drive: self.state.boot_drive.saturating_sub(1),
         }
     }
 
@@ -1283,24 +1330,40 @@ impl NeetanOs {
     }
 
     /// Creates the MCB chain with SFT2 block, environment block, PSP, and COMMAND.COM.
-    fn write_initial_mcb_and_process(&mut self, mem: &mut dyn MemoryAccess) {
-        memory::write_initial_mcb_chain(mem);
-        process::write_environment_block(mem, tables::ENV_SEGMENT);
+    fn write_initial_mcb_and_process(
+        &mut self,
+        mem: &mut dyn MemoryAccess,
+        root_shell_boot: &RootShellBootConfig,
+    ) {
+        let layout = memory::initial_mcb_layout(root_shell_boot.env_paragraphs);
+
+        memory::write_initial_mcb_chain(mem, layout);
+        process::write_environment_block(
+            mem,
+            layout.env_segment,
+            layout.env_paragraphs,
+            &root_shell_boot.command_path,
+        );
         // Write temporary PSP/COMMAND.COM (will be relocated by write_sft2_block)
         process::write_psp(
             mem,
-            tables::PSP_SEGMENT,
-            tables::PSP_SEGMENT,
-            tables::ENV_SEGMENT,
+            layout.psp_segment,
+            layout.psp_segment,
+            layout.env_segment,
             tables::MEMORY_TOP_SEGMENT,
         );
-        process::write_command_com_stub(mem, tables::PSP_SEGMENT);
-        self.state.current_psp = tables::PSP_SEGMENT;
+        process::write_command_com_stub(mem, layout.psp_segment);
+        self.state.current_psp = layout.psp_segment;
 
         // Allocate SFT2 block (this relocates COMMAND.COM MCB and PSP)
-        self.write_sft2_block(mem);
+        self.write_sft2_block(
+            mem,
+            layout.env_segment,
+            layout.env_paragraphs,
+            &root_shell_boot.command_tail,
+        );
 
-        self.state.current_drive = self.state.boot_drive.saturating_sub(1);
+        self.state.current_drive = root_shell_boot.initial_drive;
         self.state.dta_segment = self.state.current_psp;
         self.state.dta_offset = 0x0080;
         self.state.dbcs_table_addr = tables::DBCS_TABLE_ADDR;
@@ -1318,7 +1381,13 @@ impl NeetanOs {
 
     /// Allocates a second SFT block (chained from the first) for additional handles.
     /// The number of entries is determined by `self.state.sft2_count` (from FILES=).
-    fn write_sft2_block(&mut self, mem: &mut dyn MemoryAccess) {
+    fn write_sft2_block(
+        &mut self,
+        mem: &mut dyn MemoryAccess,
+        env_segment: u16,
+        env_paragraphs: u16,
+        root_command_tail: &[u8],
+    ) {
         use tables::*;
 
         let sft2_entry_count = self.state.sft2_count;
@@ -1329,7 +1398,7 @@ impl NeetanOs {
         // Rewrite MCB chain to include SFT2 block.
         // Current chain: ENV_MCB -> COMMAND_MCB -> FREE_MCB
         // New chain: ENV_MCB -> SFT2_MCB -> COMMAND_MCB -> FREE_MCB
-        let sft2_mcb_segment = ENV_SEGMENT + ENV_BLOCK_PARAGRAPHS;
+        let sft2_mcb_segment = env_segment + env_paragraphs;
         let sft2_data_segment = sft2_mcb_segment + 1;
         let new_command_mcb_segment = sft2_data_segment + sft2_paragraphs;
         let new_psp_segment = new_command_mcb_segment + 1;
@@ -1370,9 +1439,10 @@ impl NeetanOs {
             mem,
             new_psp_segment,
             new_psp_segment,
-            ENV_SEGMENT,
+            env_segment,
             MEMORY_TOP_SEGMENT,
         );
+        process::write_psp_command_tail(mem, new_psp_segment, root_command_tail);
         process::write_command_com_stub(mem, new_psp_segment);
         self.state.current_psp = new_psp_segment;
 

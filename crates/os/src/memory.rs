@@ -137,6 +137,30 @@ fn is_valid_mcb_type(t: u8) -> bool {
     t == MCB_TYPE_M || t == MCB_TYPE_Z
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct InitialMcbLayout {
+    pub env_segment: u16,
+    pub env_paragraphs: u16,
+    pub command_mcb_segment: u16,
+    pub psp_segment: u16,
+    pub free_mcb_segment: u16,
+}
+
+pub(crate) fn initial_mcb_layout(env_paragraphs: u16) -> InitialMcbLayout {
+    let env_segment = FIRST_MCB_SEGMENT + 1;
+    let command_mcb_segment = env_segment + env_paragraphs;
+    let psp_segment = command_mcb_segment + 1;
+    let free_mcb_segment = psp_segment + COMMAND_BLOCK_PARAGRAPHS;
+
+    InitialMcbLayout {
+        env_segment,
+        env_paragraphs,
+        command_mcb_segment,
+        psp_segment,
+        free_mcb_segment,
+    }
+}
+
 pub(crate) fn collect_memory_overview(state: &OsState, mem: &dyn MemoryAccess) -> MemoryOverview {
     let (conventional_used_paragraphs, _) = walk_mcb_chain_usage(mem, FIRST_MCB_SEGMENT);
     let conventional_used_bytes = conventional_used_paragraphs * 16;
@@ -335,32 +359,32 @@ pub(crate) fn write_mcb(
 ///   MCB[0]: environment block (owner=DOS, name="SD")
 ///   MCB[1]: COMMAND.COM PSP + code stub (owner=PSP_SEGMENT, name="COMMAND\0")
 ///   MCB[2]: free memory to 640 KB (owner=free)
-pub(crate) fn write_initial_mcb_chain(mem: &mut dyn MemoryAccess) {
+pub(crate) fn write_initial_mcb_chain(mem: &mut dyn MemoryAccess, layout: InitialMcbLayout) {
     // MCB[0]: environment block
     write_mcb(
         mem,
         FIRST_MCB_SEGMENT,
         0x4D, // 'M'
         MCB_OWNER_DOS,
-        ENV_BLOCK_PARAGRAPHS,
+        layout.env_paragraphs,
         b"SD\0\0\0\0\0\0",
     );
 
     // MCB[1]: COMMAND.COM (PSP + code stub)
     write_mcb(
         mem,
-        COMMAND_MCB_SEGMENT,
+        layout.command_mcb_segment,
         0x4D, // 'M'
-        PSP_SEGMENT,
+        layout.psp_segment,
         COMMAND_BLOCK_PARAGRAPHS,
         b"COMMAND\0",
     );
 
     // MCB[2]: free memory (Z block)
-    let free_paragraphs = MEMORY_TOP_SEGMENT - FREE_MCB_SEGMENT - 1;
+    let free_paragraphs = MEMORY_TOP_SEGMENT - layout.free_mcb_segment - 1;
     write_mcb(
         mem,
-        FREE_MCB_SEGMENT,
+        layout.free_mcb_segment,
         0x5A, // 'Z'
         MCB_OWNER_FREE,
         free_paragraphs,

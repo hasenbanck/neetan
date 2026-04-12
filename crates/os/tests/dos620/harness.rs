@@ -540,6 +540,143 @@ pub fn create_test_floppy_with_autoexec(autoexec_data: &[u8]) -> device::floppy:
     device::floppy::FloppyImage::from_d88(d88)
 }
 
+pub fn create_test_floppy_with_config_and_autoexec(
+    config_data: &[u8],
+    autoexec_data: &[u8],
+) -> device::floppy::FloppyImage {
+    use device::floppy::d88::{D88Disk, D88MediaType, D88Sector};
+
+    let cylinders = 77usize;
+    let heads = 2usize;
+    let sectors_per_track = 8usize;
+    let sector_size = 1024usize;
+    let total_tracks = cylinders * heads;
+    let total_sectors = cylinders * heads * sectors_per_track;
+    let mut disk_data = vec![0u8; total_sectors * sector_size];
+
+    {
+        let boot_sector = &mut disk_data[0..sector_size];
+        boot_sector[0] = 0xEB;
+        boot_sector[1] = 0x3C;
+        boot_sector[2] = 0x90;
+        boot_sector[3..11].copy_from_slice(b"NEETAN  ");
+        boot_sector[11..13].copy_from_slice(&1024u16.to_le_bytes());
+        boot_sector[13] = 1;
+        boot_sector[14..16].copy_from_slice(&1u16.to_le_bytes());
+        boot_sector[16] = 2;
+        boot_sector[17..19].copy_from_slice(&192u16.to_le_bytes());
+        boot_sector[19..21].copy_from_slice(&1232u16.to_le_bytes());
+        boot_sector[21] = 0xFE;
+        boot_sector[22..24].copy_from_slice(&2u16.to_le_bytes());
+        boot_sector[24..26].copy_from_slice(&8u16.to_le_bytes());
+        boot_sector[26..28].copy_from_slice(&2u16.to_le_bytes());
+    }
+
+    let fat1_offset = sector_size;
+    let fat = &mut disk_data[fat1_offset..fat1_offset + 2 * sector_size];
+    fat[0] = 0xFE;
+    fat[1] = 0xFF;
+    fat[2] = 0xFF;
+    set_fat12_entry(fat, 2, 0x0FFF);
+    set_fat12_entry(fat, 3, 0x0FFF);
+    set_fat12_entry(fat, 4, 0x0FFF);
+    set_fat12_entry(fat, 5, 0x0FFF);
+    set_fat12_entry(fat, 6, 0x0FFF);
+
+    let fat2_offset = 3 * sector_size;
+    let fat_copy = disk_data[fat1_offset..fat1_offset + 2 * sector_size].to_vec();
+    disk_data[fat2_offset..fat2_offset + fat_copy.len()].copy_from_slice(&fat_copy);
+
+    let root_offset = 5 * sector_size;
+    {
+        let entry = &mut disk_data[root_offset..root_offset + 32];
+        entry[0..11].copy_from_slice(b"COMMAND COM");
+        entry[11] = 0x20;
+        entry[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        entry[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        entry[26..28].copy_from_slice(&2u16.to_le_bytes());
+        entry[28..32].copy_from_slice(&(TEST_COMMAND_COM.len() as u32).to_le_bytes());
+    }
+    {
+        let entry = &mut disk_data[root_offset + 32..root_offset + 64];
+        entry[0..11].copy_from_slice(b"TESTFILETXT");
+        entry[11] = 0x20;
+        entry[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        entry[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        entry[26..28].copy_from_slice(&3u16.to_le_bytes());
+        entry[28..32].copy_from_slice(&(TEST_FILE_CONTENT.len() as u32).to_le_bytes());
+    }
+    {
+        let entry = &mut disk_data[root_offset + 64..root_offset + 96];
+        entry[0..11].copy_from_slice(b"TEST    COM");
+        entry[11] = 0x20;
+        entry[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        entry[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        entry[26..28].copy_from_slice(&4u16.to_le_bytes());
+        entry[28..32].copy_from_slice(&(TEST_COM_PROGRAM.len() as u32).to_le_bytes());
+    }
+    {
+        let entry = &mut disk_data[root_offset + 96..root_offset + 128];
+        entry[0..11].copy_from_slice(b"CONFIG  SYS");
+        entry[11] = 0x20;
+        entry[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        entry[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        entry[26..28].copy_from_slice(&5u16.to_le_bytes());
+        entry[28..32].copy_from_slice(&(config_data.len() as u32).to_le_bytes());
+    }
+    {
+        let entry = &mut disk_data[root_offset + 128..root_offset + 160];
+        entry[0..11].copy_from_slice(b"AUTOEXECBAT");
+        entry[11] = 0x20;
+        entry[22..24].copy_from_slice(&TEST_FILE_TIME.to_le_bytes());
+        entry[24..26].copy_from_slice(&TEST_FILE_DATE.to_le_bytes());
+        entry[26..28].copy_from_slice(&6u16.to_le_bytes());
+        entry[28..32].copy_from_slice(&(autoexec_data.len() as u32).to_le_bytes());
+    }
+
+    let cluster2_offset = 11 * sector_size;
+    disk_data[cluster2_offset..cluster2_offset + TEST_COMMAND_COM.len()]
+        .copy_from_slice(TEST_COMMAND_COM);
+    let cluster3_offset = 12 * sector_size;
+    disk_data[cluster3_offset..cluster3_offset + TEST_FILE_CONTENT.len()]
+        .copy_from_slice(TEST_FILE_CONTENT);
+    let cluster4_offset = 13 * sector_size;
+    disk_data[cluster4_offset..cluster4_offset + TEST_COM_PROGRAM.len()]
+        .copy_from_slice(TEST_COM_PROGRAM);
+    let cluster5_offset = 14 * sector_size;
+    disk_data[cluster5_offset..cluster5_offset + config_data.len()].copy_from_slice(config_data);
+    let cluster6_offset = 15 * sector_size;
+    disk_data[cluster6_offset..cluster6_offset + autoexec_data.len()]
+        .copy_from_slice(autoexec_data);
+
+    let mut tracks = Vec::with_capacity(total_tracks);
+    for track_index in 0..total_tracks {
+        let cylinder = (track_index / heads) as u8;
+        let head = (track_index % heads) as u8;
+        let mut sectors = Vec::with_capacity(sectors_per_track);
+        for sector in 0..sectors_per_track {
+            let lba = track_index * sectors_per_track + sector;
+            let offset = lba * sector_size;
+            sectors.push(D88Sector {
+                cylinder,
+                head,
+                record: (sector + 1) as u8,
+                size_code: 3,
+                sector_count: sectors_per_track as u16,
+                mfm_flag: 0x40,
+                deleted: 0,
+                status: 0,
+                reserved: [0; 5],
+                data: disk_data[offset..offset + sector_size].to_vec(),
+            });
+        }
+        tracks.push(Some(sectors));
+    }
+
+    let d88 = D88Disk::from_tracks("CONFIG".to_string(), false, D88MediaType::Disk2HD, tracks);
+    device::floppy::FloppyImage::from_d88(d88)
+}
+
 /// Boots an HLE machine, then inserts a test floppy as drive A:.
 /// The floppy is inserted after boot so the BIOS doesn't try to boot from it.
 /// BDA_DISK_EQUIP is set before boot so discover_drives() sees the FDD.
