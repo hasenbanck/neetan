@@ -21,6 +21,7 @@ fn parse_blank_2dd() {
     let disk = load_fixture("blank_2DD.d88");
     assert_eq!(disk.media_type, D88MediaType::Disk2DD);
     assert!(!disk.write_protected);
+    assert_eq!(disk.track_slot_count(), 160);
 }
 
 #[test]
@@ -66,6 +67,7 @@ fn parse_blank_2hd() {
     let disk = load_fixture("blank_2HD.d88");
     assert_eq!(disk.media_type, D88MediaType::Disk2HD);
     assert!(!disk.write_protected);
+    assert_eq!(disk.track_slot_count(), 154);
 }
 
 #[test]

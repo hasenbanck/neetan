@@ -108,6 +108,42 @@ fn format_floppy_then_dir() {
 }
 
 #[test]
+fn format_parsed_empty_d88_floppy_then_dir() {
+    let floppy_a = create_test_floppy();
+    let floppy_b = create_parsed_empty_d88_floppy();
+    let mut machine = boot_hle_with_two_floppy_images(floppy_a, floppy_b);
+
+    type_string_long(&mut machine, b"FORMAT B:\r");
+    machine.run_for(10_000_000);
+    type_string(&mut machine.bus, b"Y");
+    run_until_prompt(&mut machine);
+
+    let complete = [
+        0x0046, 0x006F, 0x0072, 0x006D, 0x0061, 0x0074, 0x0020, 0x0063, 0x006F, 0x006D, 0x0070,
+        0x006C, 0x0065, 0x0074, 0x0065,
+    ]; // "Format complete"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &complete),
+        "FORMAT should show 'Format complete' for a parsed empty D88 floppy"
+    );
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"DIR B:\r");
+    run_until_prompt(&mut machine);
+
+    let directory_of = [
+        0x0044, 0x0069, 0x0072, 0x0065, 0x0063, 0x0074, 0x006F, 0x0072, 0x0079, 0x0020, 0x006F,
+        0x0066,
+    ]; // "Directory of"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &directory_of),
+        "DIR B: after FORMAT should show 'Directory of' for a parsed empty D88 floppy"
+    );
+}
+
+#[test]
 fn format_sasi_hdd_then_dir() {
     let mut machine = boot_hle_with_empty_sasi_hdd();
 

@@ -453,6 +453,42 @@ pub fn create_blank_floppy() -> device::floppy::FloppyImage {
     device::floppy::FloppyImage::from_d88(d88)
 }
 
+pub fn create_parsed_empty_d88_floppy() -> device::floppy::FloppyImage {
+    use device::floppy::d88::{D88Disk, D88MediaType, D88Sector};
+
+    let cylinders = 77usize;
+    let heads = 2usize;
+    let sectors_per_track = 8usize;
+    let sector_size = 1024usize;
+    let total_tracks = cylinders * heads;
+
+    let mut tracks: Vec<Option<Vec<D88Sector>>> = Vec::with_capacity(total_tracks);
+    for track_index in 0..total_tracks {
+        let cylinder = (track_index / heads) as u8;
+        let head = (track_index % heads) as u8;
+        let mut sectors = Vec::with_capacity(sectors_per_track);
+        for record in 1..=sectors_per_track as u8 {
+            sectors.push(D88Sector {
+                cylinder,
+                head,
+                record,
+                size_code: 3,
+                sector_count: sectors_per_track as u16,
+                mfm_flag: 0x00,
+                deleted: 0x00,
+                status: 0x00,
+                reserved: [0u8; 5],
+                data: vec![0u8; sector_size],
+            });
+        }
+        tracks.push(Some(sectors));
+    }
+
+    let d88 = D88Disk::from_tracks(String::new(), false, D88MediaType::Disk2HD, tracks);
+    let bytes = d88.to_bytes();
+    device::floppy::FloppyImage::from_d88_bytes(&bytes).expect("parse empty D88 floppy")
+}
+
 pub fn boot_hle_with_two_floppies() -> machine::Pc9801Ra {
     let mut machine = create_hle_machine();
 
