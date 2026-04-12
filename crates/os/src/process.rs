@@ -21,8 +21,16 @@ pub(crate) struct ExecParams {
 /// Saved context of a suspended parent process during nested EXEC.
 pub(crate) struct ProcessContext {
     pub psp_segment: u16,
+    pub return_ax: u16,
+    pub return_bx: u16,
+    pub return_cx: u16,
+    pub return_dx: u16,
     pub return_ss: u16,
     pub return_sp: u16,
+    pub return_si: u16,
+    pub return_di: u16,
+    pub return_ds: u16,
+    pub return_es: u16,
     pub saved_dta_seg: u16,
     pub saved_dta_off: u16,
 }
@@ -1007,8 +1015,16 @@ impl NeetanOs {
         // Push parent context.
         self.state.process_stack.push(ProcessContext {
             psp_segment: self.state.current_psp,
+            return_ax: cpu.ax(),
+            return_bx: cpu.bx(),
+            return_cx: cpu.cx(),
+            return_dx: cpu.dx(),
             return_ss: cpu.ss(),
             return_sp: cpu.sp(),
+            return_si: cpu.si(),
+            return_di: cpu.di(),
+            return_ds: cpu.ds(),
+            return_es: cpu.es(),
             saved_dta_seg: self.state.dta_segment,
             saved_dta_off: self.state.dta_offset,
         });
@@ -1093,6 +1109,14 @@ impl NeetanOs {
         }
 
         // Restore parent's IRET frame.
+        cpu.set_ax(parent.return_ax);
+        cpu.set_bx(parent.return_bx);
+        cpu.set_cx(parent.return_cx);
+        cpu.set_dx(parent.return_dx);
+        cpu.set_si(parent.return_si);
+        cpu.set_di(parent.return_di);
+        cpu.set_ds(parent.return_ds);
+        cpu.set_es(parent.return_es);
         cpu.set_ss(parent.return_ss);
         cpu.set_sp(parent.return_sp);
         set_iret_carry(cpu, mem, false);
@@ -1153,6 +1177,14 @@ impl NeetanOs {
         self.state.last_termination_type = 3;
 
         // Restore parent's IRET frame.
+        cpu.set_ax(parent.return_ax);
+        cpu.set_bx(parent.return_bx);
+        cpu.set_cx(parent.return_cx);
+        cpu.set_dx(parent.return_dx);
+        cpu.set_si(parent.return_si);
+        cpu.set_di(parent.return_di);
+        cpu.set_ds(parent.return_ds);
+        cpu.set_es(parent.return_es);
         cpu.set_ss(parent.return_ss);
         cpu.set_sp(parent.return_sp);
         set_iret_carry(cpu, mem, false);
