@@ -1373,8 +1373,16 @@ impl NeetanOs {
         // the root process is an error).
         self.state.process_stack.push(process::ProcessContext {
             psp_segment: self.state.current_psp,
+            return_ax: 0,
+            return_bx: 0,
+            return_cx: 0,
+            return_dx: 0,
             return_ss: 0,
             return_sp: 0,
+            return_si: 0,
+            return_di: 0,
+            return_ds: 0,
+            return_es: 0,
             saved_dta_seg: self.state.dta_segment,
             saved_dta_off: self.state.dta_offset,
         });

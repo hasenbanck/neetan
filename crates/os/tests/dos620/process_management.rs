@@ -4,6 +4,112 @@ use common::Bus;
 
 use crate::harness::*;
 
+fn create_test_floppy_with_two_programs(
+    first_name: &[u8; 11],
+    first_program: &[u8],
+    second_name: &[u8; 11],
+    second_program: &[u8],
+) -> device::floppy::FloppyImage {
+    use device::floppy::d88::{D88Disk, D88MediaType, D88Sector};
+
+    const CYLINDERS: usize = 77;
+    const HEADS: usize = 2;
+    const SECTORS_PER_TRACK: usize = 8;
+    const SECTOR_SIZE: usize = 1024;
+    const ROOT_DIRECTORY_OFFSET: usize = 5 * SECTOR_SIZE;
+    const CLUSTER2_OFFSET: usize = 11 * SECTOR_SIZE;
+    const CLUSTER3_OFFSET: usize = 12 * SECTOR_SIZE;
+    const FILE_TIME: u16 = 0;
+    const FILE_DATE: u16 = 0;
+
+    let total_tracks = CYLINDERS * HEADS;
+    let total_sectors = CYLINDERS * HEADS * SECTORS_PER_TRACK;
+    let mut disk_data = vec![0u8; total_sectors * SECTOR_SIZE];
+
+    {
+        let boot_sector = &mut disk_data[0..SECTOR_SIZE];
+        boot_sector[0] = 0xEB;
+        boot_sector[1] = 0x3C;
+        boot_sector[2] = 0x90;
+        boot_sector[3..11].copy_from_slice(b"NEETAN  ");
+        boot_sector[11..13].copy_from_slice(&1024u16.to_le_bytes());
+        boot_sector[13] = 1;
+        boot_sector[14..16].copy_from_slice(&1u16.to_le_bytes());
+        boot_sector[16] = 2;
+        boot_sector[17..19].copy_from_slice(&192u16.to_le_bytes());
+        boot_sector[19..21].copy_from_slice(&1232u16.to_le_bytes());
+        boot_sector[21] = 0xFE;
+        boot_sector[22..24].copy_from_slice(&2u16.to_le_bytes());
+        boot_sector[24..26].copy_from_slice(&8u16.to_le_bytes());
+        boot_sector[26..28].copy_from_slice(&2u16.to_le_bytes());
+    }
+
+    let fat1_offset = SECTOR_SIZE;
+    disk_data[fat1_offset] = 0xFE;
+    disk_data[fat1_offset + 1] = 0xFF;
+    disk_data[fat1_offset + 2] = 0xFF;
+    disk_data[fat1_offset + 3] = 0xFF;
+    disk_data[fat1_offset + 4] = 0xFF;
+    disk_data[fat1_offset + 5] = 0xFF;
+
+    let fat2_offset = 3 * SECTOR_SIZE;
+    let fat1_end = fat1_offset + 2 * SECTOR_SIZE;
+    let fat1_copy = disk_data[fat1_offset..fat1_end].to_vec();
+    disk_data[fat2_offset..fat2_offset + fat1_copy.len()].copy_from_slice(&fat1_copy);
+
+    {
+        let first_entry = &mut disk_data[ROOT_DIRECTORY_OFFSET..ROOT_DIRECTORY_OFFSET + 32];
+        first_entry[0..11].copy_from_slice(first_name);
+        first_entry[11] = 0x20;
+        first_entry[22..24].copy_from_slice(&FILE_TIME.to_le_bytes());
+        first_entry[24..26].copy_from_slice(&FILE_DATE.to_le_bytes());
+        first_entry[26..28].copy_from_slice(&2u16.to_le_bytes());
+        first_entry[28..32].copy_from_slice(&(first_program.len() as u32).to_le_bytes());
+    }
+
+    {
+        let second_entry = &mut disk_data[ROOT_DIRECTORY_OFFSET + 32..ROOT_DIRECTORY_OFFSET + 64];
+        second_entry[0..11].copy_from_slice(second_name);
+        second_entry[11] = 0x20;
+        second_entry[22..24].copy_from_slice(&FILE_TIME.to_le_bytes());
+        second_entry[24..26].copy_from_slice(&FILE_DATE.to_le_bytes());
+        second_entry[26..28].copy_from_slice(&3u16.to_le_bytes());
+        second_entry[28..32].copy_from_slice(&(second_program.len() as u32).to_le_bytes());
+    }
+
+    disk_data[CLUSTER2_OFFSET..CLUSTER2_OFFSET + first_program.len()]
+        .copy_from_slice(first_program);
+    disk_data[CLUSTER3_OFFSET..CLUSTER3_OFFSET + second_program.len()]
+        .copy_from_slice(second_program);
+
+    let mut tracks = Vec::with_capacity(total_tracks);
+    for track_index in 0..total_tracks {
+        let cylinder = (track_index / HEADS) as u8;
+        let head = (track_index % HEADS) as u8;
+        let mut sectors = Vec::with_capacity(SECTORS_PER_TRACK);
+        for sector_index in 0..SECTORS_PER_TRACK {
+            let linear_sector = track_index * SECTORS_PER_TRACK + sector_index;
+            let data_offset = linear_sector * SECTOR_SIZE;
+            sectors.push(D88Sector {
+                cylinder,
+                head,
+                record: (sector_index + 1) as u8,
+                size_code: 3,
+                sector_count: SECTORS_PER_TRACK as u16,
+                mfm_flag: 0x40,
+                deleted: 0,
+                status: 0,
+                reserved: [0; 5],
+                data: disk_data[data_offset..data_offset + SECTOR_SIZE].to_vec(),
+            });
+        }
+        tracks.push(Some(sectors));
+    }
+
+    let disk = D88Disk::from_tracks("EXECTEST".to_string(), false, D88MediaType::Disk2HD, tracks);
+    device::floppy::FloppyImage::from_d88(disk)
+}
+
 /// EXECs the given filename, reads flags and return code via INT 21h/4Dh,
 /// and asserts CF=0 and AX matches `expected_return_ax`.
 fn exec_file_and_check_return_code(
@@ -40,7 +146,8 @@ fn exec_file_and_check_return_code(
         0xBB, 0x10, 0x02,               // MOV BX, 0210h (param block)
         0xB8, 0x00, 0x4B,               // MOV AX, 4B00h (EXEC)
         0xCD, 0x21,                     // INT 21h
-        // EXEC destroys all registers except SS:SP; reload DS and ES.
+        // Reload DS and ES before writing results so this helper does not
+        // depend on EXEC register preservation.
         0x9C,                            // PUSHF
         0xB8, SEG_LO, SEG_HI,           // MOV AX, INJECT_CODE_SEGMENT
         0x8E, 0xD8,                     // MOV DS, AX
@@ -101,7 +208,7 @@ fn exec_com_and_get_return_code() {
 
     // Injected code:
     // 1. EXEC A:\TEST.COM (child exits with code 0x42)
-    // 2. Restore DS/ES (EXEC destroys all registers except SS:SP)
+    // 2. Reload DS/ES so the test does not depend on register preservation
     // 3. Save carry flag
     // 4. Get return code via INT 21h/4Dh
     // 5. Get current PSP via INT 21h/62h
@@ -116,7 +223,8 @@ fn exec_com_and_get_return_code() {
         0xB8, 0x00, 0x4B,               // MOV AX, 4B00h (EXEC)
         0xCD, 0x21,                     // INT 21h
         // After child terminates, we return here.
-        // EXEC destroys all registers except SS:SP; reload DS and ES.
+        // Reload DS and ES before writing results so this test does not
+        // depend on EXEC register preservation.
         0x9C,                           // PUSHF (save CF from EXEC result)
         0xB8, SEG_LO, SEG_HI,           // MOV AX, INJECT_CODE_SEGMENT
         0x8E, 0xD8,                     // MOV DS, AX
@@ -198,7 +306,8 @@ fn terminate_frees_child_memory_and_coalesces() {
         0xBB, 0x10, 0x02,                      // MOV BX, 0210h
         0xB8, 0x00, 0x4B,                      // MOV AX, 4B00h
         0xCD, 0x21,                            // INT 21h
-        // Restore DS after EXEC (EXEC destroys all registers except SS:SP)
+        // Reload DS before writing results so this test does not depend on
+        // EXEC register preservation.
         0xB8, SEG_LO2, SEG_HI2,                // MOV AX, INJECT_CODE_SEGMENT
         0x8E, 0xD8,                            // MOV DS, AX
         0xC6, 0x06, RES_LO, RES_HI, 0x01,      // MOV BYTE [result], 01h
@@ -240,6 +349,92 @@ fn terminate_frees_child_memory_and_coalesces() {
         blocks_after.last().map(|b| b.block_type),
         Some(0x5A),
         "MCB chain should end with Z block"
+    );
+}
+
+#[test]
+fn exec_restores_parent_registers_for_post_child_dispatch() {
+    let first_child_program: &[u8] = &[
+        0xB8, 0x01, 0x4C, // MOV AX, 4C01h
+        0xCD, 0x21, // INT 21h
+    ];
+    let second_child_program: &[u8] = &[
+        0xB8, 0x42, 0x4C, // MOV AX, 4C42h
+        0xCD, 0x21, // INT 21h
+    ];
+    let floppy = create_test_floppy_with_two_programs(
+        b"RET1    COM",
+        first_child_program,
+        b"PASS    COM",
+        second_child_program,
+    );
+    let mut machine = boot_hle_with_floppy_image(floppy);
+
+    let base = INJECT_CODE_BASE;
+    let seg = INJECT_CODE_SEGMENT;
+    let seg_lo = (seg & 0xFF) as u8;
+    let seg_hi = (seg >> 8) as u8;
+
+    write_bytes(&mut machine.bus, base + 0x0200, b"A:\\RET1.COM\x00");
+    write_bytes(&mut machine.bus, base + 0x0210, b"A:\\PASS.COM\x00");
+    machine.bus.write_word(base + 0x0220, 0x0000);
+    machine.bus.write_word(base + 0x0222, 0x0210);
+    machine.bus.write_byte(base + 0x0240, 0x00);
+    machine.bus.write_byte(base + 0x0241, 0x0D);
+
+    #[rustfmt::skip]
+    let param_block: [u8; 14] = [
+        0x00, 0x00,
+        0x40, 0x02, seg_lo, seg_hi,
+        0x50, 0x02, seg_lo, seg_hi,
+        0x60, 0x02, seg_lo, seg_hi,
+    ];
+    write_bytes(&mut machine.bus, base + 0x0230, &param_block);
+
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h (RET1.COM)
+        0xBB, 0x30, 0x02,                   // MOV BX, 0230h (param block)
+        0xB8, 0x00, 0x4B,                   // MOV AX, 4B00h
+        0xCD, 0x21,                         // INT 21h
+        0xB4, 0x4D,                         // MOV AH, 4Dh
+        0xCD, 0x21,                         // INT 21h
+        0x2E, 0xA3, 0x00, 0x01,             // MOV CS:[0100], AX
+        0x8B, 0xF0,                         // MOV SI, AX
+        0xD1, 0xE6,                         // SHL SI, 1
+        0x8B, 0x94, 0x20, 0x02,             // MOV DX, [SI+0220]
+        0xBB, 0x30, 0x02,                   // MOV BX, 0230h
+        0xB8, 0x00, 0x4B,                   // MOV AX, 4B00h
+        0xCD, 0x21,                         // INT 21h
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0x2E, 0xA3, 0x02, 0x01,             // MOV CS:[0102], AX
+        0xB4, 0x4D,                         // MOV AH, 4Dh
+        0xCD, 0x21,                         // INT 21h
+        0x2E, 0xA3, 0x04, 0x01,             // MOV CS:[0104], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+
+    inject_and_run_with_budget(&mut machine, code, INJECT_BUDGET_DISK_IO);
+
+    assert_eq!(
+        result_word(&machine.bus, 0),
+        0x0001,
+        "the first child should return code 1 to drive the filename table"
+    );
+
+    let second_exec_flags = result_word(&machine.bus, 2);
+    assert_eq!(
+        second_exec_flags & 0x0001,
+        0,
+        "the second EXEC should succeed when the parent register context is restored"
+    );
+
+    assert_eq!(
+        result_word(&machine.bus, 4),
+        0x0042,
+        "post-child filename dispatch should launch PASS.COM and return code 0x42"
     );
 }
 
