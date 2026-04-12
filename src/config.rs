@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use common::{Context, MachineModel, StringError, bail, info, warn};
 
-use crate::keymap::{self, KeyMap};
+use crate::keyboard::{KeyMap, parse_key_binding};
 
 fn next_value(flag: &str, args: &mut impl Iterator<Item = String>) -> crate::Result<String> {
     match args.next() {
@@ -605,7 +605,7 @@ fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<
             },
             key if key.starts_with("key.") => {
                 let host_name = &key[4..];
-                match keymap::parse_key_binding(host_name, val) {
+                match parse_key_binding(host_name, val) {
                     Some((host, pc98_code)) => config.key_map.set(host, pc98_code),
                     None => warn!("Invalid key binding: {key}={val}"),
                 }
