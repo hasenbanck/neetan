@@ -119,11 +119,13 @@ pub(crate) fn write_psp(
 ///
 /// Contents:
 ///   COMSPEC=<command_path>\0
-///   PATH=Z:\;A:\;B:\;C:\;\0
+///   CONFIG=\0
+///   PATH=\0
 ///   PROMPT=$P$G\0
+///   TEMP=\0
 ///   \0                       (double-null terminator)
 ///   \x01\x00                 (WORD count = 1)
-///   <command_path>\0        (program pathname)
+///   <command_path>\0         (program pathname)
 pub(crate) fn write_environment_block(
     mem: &mut dyn MemoryAccess,
     env_segment: u16,
@@ -145,8 +147,13 @@ pub(crate) fn write_environment_block(
     mem.write_byte(base + offset, 0x00);
     offset += 1;
 
-    // PATH=Z:\;A:\;B:\;C:\;
-    let path = b"PATH=Z:\\;A:\\;B:\\;C:\\;";
+    let config = b"CONFIG=";
+    mem.write_block(base + offset, config);
+    offset += config.len() as u32;
+    mem.write_byte(base + offset, 0x00);
+    offset += 1;
+
+    let path = b"PATH=";
     mem.write_block(base + offset, path);
     offset += path.len() as u32;
     mem.write_byte(base + offset, 0x00);
@@ -156,6 +163,12 @@ pub(crate) fn write_environment_block(
     let prompt = b"PROMPT=$P$G";
     mem.write_block(base + offset, prompt);
     offset += prompt.len() as u32;
+    mem.write_byte(base + offset, 0x00);
+    offset += 1;
+
+    let temp = b"TEMP=";
+    mem.write_block(base + offset, temp);
+    offset += temp.len() as u32;
     mem.write_byte(base + offset, 0x00);
     offset += 1;
 
@@ -177,9 +190,13 @@ fn environment_block_required_bytes(command_path: &[u8]) -> usize {
     b"COMSPEC=".len()
         + command_path.len()
         + 1
-        + b"PATH=Z:\\;A:\\;B:\\;C:\\;".len()
+        + b"CONFIG=".len()
+        + 1
+        + b"PATH=".len()
         + 1
         + b"PROMPT=$P$G".len()
+        + 1
+        + b"TEMP=".len()
         + 1
         + 1
         + 2
