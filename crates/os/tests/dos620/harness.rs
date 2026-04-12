@@ -1,4 +1,9 @@
-use common::{Bus, JisChar, MachineModel};
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+
+use common::{Bus, JisChar, Machine as _, MachineModel};
 
 static FONT_ROM_DATA: &[u8] = include_bytes!("../../../../utils/font/font.rom");
 
@@ -11,6 +16,26 @@ pub const INJECT_BUDGET_DISK_IO: u64 = 500_000_000;
 
 const HLE_BOOT_MAX_CYCLES: u64 = 500_000_000;
 const HLE_BOOT_CHECK_INTERVAL: u64 = 1_000_000;
+static TEMP_CDROM_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+
+pub struct TempCdromCueFiles {
+    pub cue_path: PathBuf,
+    bin_paths: Vec<PathBuf>,
+}
+
+impl Drop for TempCdromCueFiles {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.cue_path);
+        for bin_path in &self.bin_paths {
+            let _ = std::fs::remove_file(bin_path);
+        }
+    }
+}
+
+fn next_temp_cdrom_stem(name: &str) -> String {
+    let sequence = TEMP_CDROM_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("neetan_test_{name}_{}_{}", std::process::id(), sequence)
+}
 
 fn set_fat12_entry(fat: &mut [u8], cluster: u16, value: u16) {
     let masked_value = value & 0x0FFF;
@@ -1905,6 +1930,172 @@ pub fn create_test_cdimage() -> device::cdrom::CdImage {
     device::cdrom::CdImage::from_cue(cue, bin_data).unwrap()
 }
 
+pub fn write_temp_mode2_multi_file_cdrom(name: &str) -> TempCdromCueFiles {
+    const ROOT_DIRECTORY_LBA: u32 = 20;
+    const README_LBA: u32 = 21;
+    const SETUP_LBA: u32 = 22;
+    const DATA_TRACK_SECTOR_COUNT: u32 = 150;
+    const AUDIO_TRACK_TOTAL_SECTOR_COUNT: u32 = 152;
+
+    fn write_both_endian_u16(destination: &mut [u8], value: u16) {
+        destination[..2].copy_from_slice(&value.to_le_bytes());
+        destination[2..4].copy_from_slice(&value.to_be_bytes());
+    }
+
+    fn write_both_endian_u32(destination: &mut [u8], value: u32) {
+        destination[..4].copy_from_slice(&value.to_le_bytes());
+        destination[4..8].copy_from_slice(&value.to_be_bytes());
+    }
+
+    fn recording_time() -> [u8; 7] {
+        [95, 1, 1, 12, 0, 0, 0]
+    }
+
+    fn write_directory_record(
+        buffer: &mut [u8],
+        offset: &mut usize,
+        identifier: &[u8],
+        extent_lba: u32,
+        data_length: u32,
+        is_directory: bool,
+    ) {
+        let padding = usize::from(identifier.len().is_multiple_of(2));
+        let length = 33 + identifier.len() + padding;
+        let record = &mut buffer[*offset..*offset + length];
+        record.fill(0);
+        record[0] = length as u8;
+        write_both_endian_u32(&mut record[2..10], extent_lba);
+        write_both_endian_u32(&mut record[10..18], data_length);
+        record[18..25].copy_from_slice(&recording_time());
+        record[25] = if is_directory { 0x02 } else { 0x00 };
+        write_both_endian_u16(&mut record[28..32], 1);
+        record[32] = identifier.len() as u8;
+        record[33..33 + identifier.len()].copy_from_slice(identifier);
+        *offset += length;
+    }
+
+    fn make_mode2_raw_sector(user_data: &[u8; 2048]) -> Vec<u8> {
+        let mut sector = vec![0u8; 2352];
+        sector[0] = 0x00;
+        for byte in &mut sector[1..11] {
+            *byte = 0xFF;
+        }
+        sector[11] = 0x00;
+        sector[13] = 0x02;
+        sector[15] = 0x02;
+        sector[24..24 + 2048].copy_from_slice(user_data);
+        sector
+    }
+
+    let temp_stem = next_temp_cdrom_stem(name);
+    let cue_path = std::env::temp_dir().join(format!("{temp_stem}.cue"));
+    let data_track_path = std::env::temp_dir().join(format!("{temp_stem}_track01.bin"));
+    let audio_track_path = std::env::temp_dir().join(format!("{temp_stem}_track02.bin"));
+
+    let cue_content = format!(
+        "FILE \"{}\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\nFILE \"{}\" BINARY\n  TRACK 02 AUDIO\n    INDEX 00 00:00:00\n    INDEX 01 00:02:00\n",
+        data_track_path
+            .file_name()
+            .expect("track 1 file name")
+            .to_string_lossy(),
+        audio_track_path
+            .file_name()
+            .expect("track 2 file name")
+            .to_string_lossy(),
+    );
+    std::fs::write(&cue_path, cue_content).expect("failed to write temp multi-file CUE");
+
+    let mut data_track = Vec::with_capacity(DATA_TRACK_SECTOR_COUNT as usize * 2352);
+    for sector_index in 0..DATA_TRACK_SECTOR_COUNT {
+        let mut user_data = [0u8; 2048];
+        match sector_index {
+            16 => {
+                user_data[0] = 1;
+                user_data[1..6].copy_from_slice(b"CD001");
+                user_data[6] = 1;
+                user_data[8..40].fill(b' ');
+                user_data[8..28].copy_from_slice(b"NEETAN MODE2 TEST CD");
+                user_data[40..72].fill(b' ');
+                user_data[40..51].copy_from_slice(b"MODE2_MULTI");
+                write_both_endian_u32(&mut user_data[80..88], DATA_TRACK_SECTOR_COUNT);
+                write_both_endian_u16(&mut user_data[120..124], 1);
+                write_both_endian_u16(&mut user_data[124..128], 1);
+                write_both_endian_u16(&mut user_data[128..132], 2048);
+                write_both_endian_u32(&mut user_data[132..140], 10);
+                let mut root_record_offset = 156usize;
+                write_directory_record(
+                    &mut user_data,
+                    &mut root_record_offset,
+                    &[0],
+                    ROOT_DIRECTORY_LBA,
+                    2048,
+                    true,
+                );
+            }
+            17 => {
+                user_data[0] = 0xFF;
+                user_data[1..6].copy_from_slice(b"CD001");
+                user_data[6] = 1;
+            }
+            ROOT_DIRECTORY_LBA => {
+                let mut offset = 0usize;
+                write_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    &[0],
+                    ROOT_DIRECTORY_LBA,
+                    2048,
+                    true,
+                );
+                write_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    &[1],
+                    ROOT_DIRECTORY_LBA,
+                    2048,
+                    true,
+                );
+                write_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    b"README.TXT;1",
+                    README_LBA,
+                    5,
+                    false,
+                );
+                write_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    b"SETUP.EXE;1",
+                    SETUP_LBA,
+                    4,
+                    false,
+                );
+            }
+            README_LBA => {
+                user_data[..5].copy_from_slice(b"HELLO");
+            }
+            SETUP_LBA => {
+                user_data[..4].copy_from_slice(b"MZ\x90\x00");
+            }
+            _ => {
+                user_data.fill(0x11);
+            }
+        }
+        data_track.extend_from_slice(&make_mode2_raw_sector(&user_data));
+    }
+
+    let audio_track = vec![0xAAu8; AUDIO_TRACK_TOTAL_SECTOR_COUNT as usize * 2352];
+
+    std::fs::write(&data_track_path, data_track).expect("failed to write temp data track");
+    std::fs::write(&audio_track_path, audio_track).expect("failed to write temp audio track");
+
+    TempCdromCueFiles {
+        cue_path,
+        bin_paths: vec![data_track_path, audio_track_path],
+    }
+}
+
 /// Boots an HLE machine (PC-9821AP / IDE) with a test CD-ROM inserted.
 /// The CD-ROM is inserted before boot so MSCDEX activates the Q: drive.
 pub fn boot_hle_with_cdrom() -> machine::Pc9821Ap {
@@ -1930,6 +2121,32 @@ pub fn boot_hle_with_cdrom() -> machine::Pc9821Ap {
             HLE_BOOT_MAX_CYCLES
         );
     }
+    machine
+}
+
+pub fn boot_hle_with_cdrom_path(path: &std::path::Path) -> machine::Pc9821Ap {
+    let mut machine = machine::Pc9821Ap::new(
+        cpu::I386::<{ cpu::CPU_MODEL_486 }>::new(),
+        machine::Pc9801Bus::new(MachineModel::PC9821AP, 48000),
+    );
+    machine.bus.load_font_rom(FONT_ROM_DATA);
+    machine
+        .insert_cdrom(path)
+        .unwrap_or_else(|error| panic!("failed to insert CD-ROM {}: {error}", path.display()));
+
+    let mut total_cycles = 0u64;
+    loop {
+        total_cycles += machine.run_for(HLE_BOOT_CHECK_INTERVAL);
+        if hle_prompt_visible(&machine.bus) {
+            break;
+        }
+        assert!(
+            total_cycles < HLE_BOOT_MAX_CYCLES,
+            "HLE OS did not show prompt within {} cycles (CDROM path)",
+            HLE_BOOT_MAX_CYCLES
+        );
+    }
+
     machine
 }
 

@@ -15,7 +15,10 @@ const SECTOR_SIZE_COOKED: u16 = 2048;
 const SECTOR_SIZE_RAW: u16 = 2352;
 
 /// Offset of user data within a raw Mode 1 sector (12-byte sync + 4-byte header).
-const RAW_DATA_OFFSET: usize = 16;
+const RAW_MODE1_DATA_OFFSET: usize = 16;
+
+/// Offset of user data within a raw Mode 2/XA sector.
+const RAW_MODE2_DATA_OFFSET: usize = 24;
 
 /// Number of frames (sectors) per second of CD audio.
 const FRAMES_PER_SECOND: u32 = 75;
@@ -29,6 +32,14 @@ pub enum TrackType {
     /// Data track (Mode 1 CD-ROM).
     Data,
     /// Audio track (CD-DA).
+    Audio,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SectorLayout {
+    Cooked,
+    RawMode1,
+    RawMode2,
     Audio,
 }
 
@@ -49,6 +60,7 @@ pub struct Track {
     pub sector_count: u32,
     /// Byte offset into the BIN file where this track's first sector begins.
     pub file_offset: u64,
+    sector_layout: SectorLayout,
 }
 
 /// A loaded CD-ROM disc image.
@@ -118,32 +130,156 @@ struct CueTrack {
     number: u8,
     track_type: TrackType,
     sector_size: u16,
+    sector_layout: SectorLayout,
+    file_index: usize,
     index00_lba: Option<u32>,
     index01_lba: Option<u32>,
     pregap_sectors: u32,
+}
+
+struct CueSheet {
+    file_names: Vec<String>,
+    tracks: Vec<CueTrack>,
+}
+
+fn parse_cue_sheet(cue_content: &str) -> Result<CueSheet, CdError> {
+    let mut tracks: Vec<CueTrack> = Vec::new();
+    let mut file_names = Vec::new();
+    let mut current_file_index = None;
+
+    for line in cue_content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        if tokens.is_empty() {
+            continue;
+        }
+
+        match tokens[0].to_uppercase().as_str() {
+            "FILE" => {
+                if tokens.len() < 3 {
+                    return Err(CdError::ParseError(
+                        "FILE directive missing arguments".into(),
+                    ));
+                }
+                let file_type = tokens.last().unwrap().to_uppercase();
+                if file_type != "BINARY" {
+                    return Err(CdError::UnsupportedFormat(format!(
+                        "only BINARY file type is supported, got {file_type}"
+                    )));
+                }
+                let rest = line[tokens[0].len()..].trim();
+                let filename = if let Some(stripped) = rest.strip_prefix('"') {
+                    stripped.split('"').next().unwrap_or("")
+                } else {
+                    tokens[1]
+                };
+                file_names.push(filename.to_string());
+                current_file_index = Some(file_names.len() - 1);
+            }
+            "TRACK" => {
+                let file_index = current_file_index
+                    .ok_or_else(|| CdError::ParseError("TRACK before FILE directive".into()))?;
+                if tokens.len() < 3 {
+                    return Err(CdError::ParseError(
+                        "TRACK directive missing arguments".into(),
+                    ));
+                }
+                let number = tokens[1].parse::<u8>().map_err(|_| {
+                    CdError::ParseError(format!("invalid track number: {}", tokens[1]))
+                })?;
+                let mode = tokens[2].to_uppercase();
+                let (track_type, sector_size, sector_layout) = match mode.as_str() {
+                    "MODE1/2352" => (TrackType::Data, SECTOR_SIZE_RAW, SectorLayout::RawMode1),
+                    "MODE1/2048" => (TrackType::Data, SECTOR_SIZE_COOKED, SectorLayout::Cooked),
+                    "MODE2/2352" => (TrackType::Data, SECTOR_SIZE_RAW, SectorLayout::RawMode2),
+                    "MODE2/2048" => (TrackType::Data, SECTOR_SIZE_COOKED, SectorLayout::Cooked),
+                    "AUDIO" => (TrackType::Audio, SECTOR_SIZE_RAW, SectorLayout::Audio),
+                    _ => {
+                        return Err(CdError::UnsupportedFormat(format!(
+                            "unsupported track mode: {mode}"
+                        )));
+                    }
+                };
+                tracks.push(CueTrack {
+                    number,
+                    track_type,
+                    sector_size,
+                    sector_layout,
+                    file_index,
+                    index00_lba: None,
+                    index01_lba: None,
+                    pregap_sectors: 0,
+                });
+            }
+            "INDEX" => {
+                if tokens.len() < 3 {
+                    return Err(CdError::ParseError(
+                        "INDEX directive missing arguments".into(),
+                    ));
+                }
+                let track = tracks
+                    .last_mut()
+                    .ok_or_else(|| CdError::ParseError("INDEX before TRACK".into()))?;
+                let index_number = tokens[1].parse::<u8>().map_err(|_| {
+                    CdError::ParseError(format!("invalid index number: {}", tokens[1]))
+                })?;
+                let (m, s, f) = parse_msf(tokens[2])?;
+                let lba = msf_to_lba(m, s, f);
+                match index_number {
+                    0 => track.index00_lba = Some(lba),
+                    1 => track.index01_lba = Some(lba),
+                    _ => {}
+                }
+            }
+            "PREGAP" => {
+                if tokens.len() < 2 {
+                    return Err(CdError::ParseError(
+                        "PREGAP directive missing argument".into(),
+                    ));
+                }
+                let track = tracks
+                    .last_mut()
+                    .ok_or_else(|| CdError::ParseError("PREGAP before TRACK".into()))?;
+                let (m, s, f) = parse_msf(tokens[1])?;
+                track.pregap_sectors = msf_to_lba(m, s, f);
+            }
+            "REM" | "CATALOG" | "PERFORMER" | "SONGWRITER" | "TITLE" | "ISRC" | "FLAGS" => {}
+            _ => {}
+        }
+    }
+
+    if tracks.is_empty() {
+        return Err(CdError::ParseError("no tracks found in CUE sheet".into()));
+    }
+    for track in &tracks {
+        if track.index01_lba.is_none() {
+            return Err(CdError::ParseError(format!(
+                "track {} missing INDEX 01",
+                track.number
+            )));
+        }
+    }
+
+    Ok(CueSheet { file_names, tracks })
 }
 
 /// Extracts the BIN filename from a CUE sheet's FILE directive.
 ///
 /// Parses the first `FILE "name" BINARY` line and returns the filename.
 pub fn extract_bin_filename(cue_content: &str) -> Result<String, CdError> {
-    for line in cue_content.lines() {
-        let line = line.trim();
-        let tokens: Vec<&str> = line.split_whitespace().collect();
-        if tokens.len() >= 3 && tokens[0].eq_ignore_ascii_case("FILE") {
-            // Extract the filename, which may be quoted.
-            let rest = line[tokens[0].len()..].trim();
-            let filename = if let Some(stripped) = rest.strip_prefix('"') {
-                stripped.split('"').next().unwrap_or("")
-            } else {
-                tokens[1]
-            };
-            return Ok(filename.to_string());
-        }
-    }
-    Err(CdError::ParseError(
-        "no FILE directive found in CUE sheet".into(),
-    ))
+    extract_bin_filenames(cue_content)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| CdError::ParseError("no FILE directive found in CUE sheet".into()))
+}
+
+/// Extracts all BIN filenames from a CUE sheet's `FILE` directives in order.
+pub fn extract_bin_filenames(cue_content: &str) -> Result<Vec<String>, CdError> {
+    Ok(parse_cue_sheet(cue_content)?.file_names)
 }
 
 impl CdImage {
@@ -152,174 +288,78 @@ impl CdImage {
     /// The `cue_content` is the text of the CUE file. The `bin_data` is the
     /// entire contents of the BIN file referenced by the CUE's FILE directive.
     pub fn from_cue(cue_content: &str, bin_data: Vec<u8>) -> Result<Self, CdError> {
-        let mut cue_tracks: Vec<CueTrack> = Vec::new();
-        let mut has_file = false;
+        Self::from_cue_files(cue_content, vec![bin_data])
+    }
 
-        for line in cue_content.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-
-            let tokens: Vec<&str> = line.split_whitespace().collect();
-            if tokens.is_empty() {
-                continue;
-            }
-
-            match tokens[0].to_uppercase().as_str() {
-                "FILE" => {
-                    if tokens.len() < 3 {
-                        return Err(CdError::ParseError(
-                            "FILE directive missing arguments".into(),
-                        ));
-                    }
-                    let file_type = tokens.last().unwrap().to_uppercase();
-                    if file_type != "BINARY" {
-                        return Err(CdError::UnsupportedFormat(format!(
-                            "only BINARY file type is supported, got {file_type}"
-                        )));
-                    }
-                    has_file = true;
-                }
-                "TRACK" => {
-                    if !has_file {
-                        return Err(CdError::ParseError("TRACK before FILE directive".into()));
-                    }
-                    if tokens.len() < 3 {
-                        return Err(CdError::ParseError(
-                            "TRACK directive missing arguments".into(),
-                        ));
-                    }
-                    let number = tokens[1].parse::<u8>().map_err(|_| {
-                        CdError::ParseError(format!("invalid track number: {}", tokens[1]))
-                    })?;
-                    let mode = tokens[2].to_uppercase();
-                    let (track_type, sector_size) = match mode.as_str() {
-                        "MODE1/2352" => (TrackType::Data, SECTOR_SIZE_RAW),
-                        "MODE1/2048" => (TrackType::Data, SECTOR_SIZE_COOKED),
-                        "MODE2/2352" => (TrackType::Data, SECTOR_SIZE_RAW),
-                        "MODE2/2048" => (TrackType::Data, SECTOR_SIZE_COOKED),
-                        "AUDIO" => (TrackType::Audio, SECTOR_SIZE_RAW),
-                        _ => {
-                            return Err(CdError::UnsupportedFormat(format!(
-                                "unsupported track mode: {mode}"
-                            )));
-                        }
-                    };
-                    cue_tracks.push(CueTrack {
-                        number,
-                        track_type,
-                        sector_size,
-                        index00_lba: None,
-                        index01_lba: None,
-                        pregap_sectors: 0,
-                    });
-                }
-                "INDEX" => {
-                    if tokens.len() < 3 {
-                        return Err(CdError::ParseError(
-                            "INDEX directive missing arguments".into(),
-                        ));
-                    }
-                    let track = cue_tracks
-                        .last_mut()
-                        .ok_or_else(|| CdError::ParseError("INDEX before TRACK".into()))?;
-                    let index_number = tokens[1].parse::<u8>().map_err(|_| {
-                        CdError::ParseError(format!("invalid index number: {}", tokens[1]))
-                    })?;
-                    let (m, s, f) = parse_msf(tokens[2])?;
-                    let lba = msf_to_lba(m, s, f);
-                    match index_number {
-                        0 => track.index00_lba = Some(lba),
-                        1 => track.index01_lba = Some(lba),
-                        _ => {}
-                    }
-                }
-                "PREGAP" => {
-                    if tokens.len() < 2 {
-                        return Err(CdError::ParseError(
-                            "PREGAP directive missing argument".into(),
-                        ));
-                    }
-                    let track = cue_tracks
-                        .last_mut()
-                        .ok_or_else(|| CdError::ParseError("PREGAP before TRACK".into()))?;
-                    let (m, s, f) = parse_msf(tokens[1])?;
-                    track.pregap_sectors = msf_to_lba(m, s, f);
-                }
-                "REM" | "CATALOG" | "PERFORMER" | "SONGWRITER" | "TITLE" | "ISRC" | "FLAGS" => {}
-                _ => {}
-            }
+    /// Parses a CUE sheet and loads the associated BIN files into a `CdImage`.
+    pub fn from_cue_files(cue_content: &str, bin_files: Vec<Vec<u8>>) -> Result<Self, CdError> {
+        let cue_sheet = parse_cue_sheet(cue_content)?;
+        if cue_sheet.file_names.len() != bin_files.len() {
+            return Err(CdError::ParseError(format!(
+                "cue references {} files, but {} were provided",
+                cue_sheet.file_names.len(),
+                bin_files.len()
+            )));
         }
 
-        if cue_tracks.is_empty() {
-            return Err(CdError::ParseError("no tracks found in CUE sheet".into()));
+        let mut file_offsets = Vec::with_capacity(bin_files.len());
+        let total_bytes = bin_files.iter().map(Vec::len).sum();
+        let mut data = Vec::with_capacity(total_bytes);
+        for file_data in &bin_files {
+            file_offsets.push(data.len() as u64);
+            data.extend_from_slice(file_data);
         }
 
-        for (i, track) in cue_tracks.iter().enumerate() {
-            if track.index01_lba.is_none() {
-                return Err(CdError::ParseError(format!(
-                    "track {} missing INDEX 01",
-                    cue_tracks[i].number
-                )));
-            }
-        }
+        let file_sector_counts: Vec<u32> = cue_sheet
+            .tracks
+            .iter()
+            .map(|track| {
+                let file_data = &bin_files[track.file_index];
+                (file_data.len() / track.sector_size as usize) as u32
+            })
+            .collect();
 
-        let bin_size = bin_data.len() as u64;
-        let mut tracks = Vec::with_capacity(cue_tracks.len());
+        let mut tracks = Vec::with_capacity(cue_sheet.tracks.len());
+        let mut next_disc_lba = 0u32;
 
-        for i in 0..cue_tracks.len() {
-            let ct = &cue_tracks[i];
+        for (i, ct) in cue_sheet.tracks.iter().enumerate() {
             let index01_lba = ct.index01_lba.unwrap();
-
-            // File offset: for single-file BINs, the first sector of each track
-            // starts at the position calculated from the MSF times in INDEX directives.
-            // INDEX 00 (if present) marks where pregap data starts in the file,
-            // INDEX 01 marks where the track data starts.
             let file_start_lba = ct.index00_lba.unwrap_or(index01_lba);
-            let file_offset = u64::from(file_start_lba) * u64::from(ct.sector_size);
-
-            // The data for this track in the BIN starts at INDEX 01's position,
-            // not INDEX 00. Calculate the offset adjustment if there's a pregap in the file.
-            let pregap_in_file = if let Some(idx00) = ct.index00_lba {
-                index01_lba.saturating_sub(idx00)
-            } else {
-                0
-            };
             let data_file_offset =
-                file_offset + u64::from(pregap_in_file) * u64::from(ct.sector_size);
+                file_offsets[ct.file_index] + u64::from(index01_lba) * u64::from(ct.sector_size);
 
-            // Calculate sector count from the next track's start or from file size.
-            let sector_count = if i + 1 < cue_tracks.len() {
-                let next_start = cue_tracks[i + 1]
+            let sector_count = if i + 1 < cue_sheet.tracks.len()
+                && cue_sheet.tracks[i + 1].file_index == ct.file_index
+            {
+                let next_start = cue_sheet.tracks[i + 1]
                     .index00_lba
-                    .unwrap_or_else(|| cue_tracks[i + 1].index01_lba.unwrap());
+                    .unwrap_or_else(|| cue_sheet.tracks[i + 1].index01_lba.unwrap());
                 next_start.saturating_sub(index01_lba)
             } else {
-                let remaining_bytes = bin_size.saturating_sub(data_file_offset);
-                (remaining_bytes / u64::from(ct.sector_size)) as u32
+                file_sector_counts[i].saturating_sub(index01_lba)
             };
+
+            let pregap_lba = next_disc_lba;
+            let start_lba = pregap_lba + index01_lba.saturating_sub(file_start_lba);
 
             tracks.push(Track {
                 number: ct.number,
                 track_type: ct.track_type,
                 sector_size: ct.sector_size,
-                start_lba: index01_lba,
-                pregap_lba: ct.index00_lba.unwrap_or(index01_lba),
+                start_lba,
+                pregap_lba,
                 sector_count,
                 file_offset: data_file_offset,
+                sector_layout: ct.sector_layout,
             });
-        }
 
-        let total_sectors = tracks
-            .last()
-            .map(|t| t.start_lba + t.sector_count)
-            .unwrap_or(0);
+            next_disc_lba = start_lba + sector_count;
+        }
 
         Ok(CdImage {
             tracks,
-            data: bin_data,
-            total_sectors,
+            data,
+            total_sectors: next_disc_lba,
         })
     }
 
@@ -375,24 +415,19 @@ impl CdImage {
             return None;
         }
 
-        match track.sector_size {
-            SECTOR_SIZE_RAW => {
-                let start = byte_offset + RAW_DATA_OFFSET;
-                let end = start + copy_size;
-                if end > self.data.len() {
-                    return None;
-                }
-                buf[..copy_size].copy_from_slice(&self.data[start..end]);
-            }
-            SECTOR_SIZE_COOKED => {
-                let end = byte_offset + copy_size;
-                if end > self.data.len() {
-                    return None;
-                }
-                buf[..copy_size].copy_from_slice(&self.data[byte_offset..end]);
-            }
-            _ => return None,
+        let data_offset = match track.sector_layout {
+            SectorLayout::Cooked => 0,
+            SectorLayout::RawMode1 => RAW_MODE1_DATA_OFFSET,
+            SectorLayout::RawMode2 => RAW_MODE2_DATA_OFFSET,
+            SectorLayout::Audio => return None,
+        };
+
+        let start = byte_offset + data_offset;
+        let end = start + copy_size;
+        if end > self.data.len() {
+            return None;
         }
+        buf[..copy_size].copy_from_slice(&self.data[start..end]);
 
         Some(copy_size)
     }
@@ -586,6 +621,38 @@ mod tests {
     }
 
     #[test]
+    fn multi_file_cue_uses_file_relative_indices() {
+        let cue = r#"FILE "track01.bin" BINARY
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+FILE "track02.bin" BINARY
+  TRACK 02 AUDIO
+    INDEX 00 00:00:00
+    INDEX 01 00:02:00
+"#;
+        let file_one = vec![0x11u8; 4 * 2352];
+        let file_two = vec![0xAAu8; 152 * 2352];
+
+        let image = CdImage::from_cue_files(cue, vec![file_one, file_two]).unwrap();
+
+        let track_one = image.track(1).unwrap();
+        assert_eq!(track_one.start_lba, 0);
+        assert_eq!(track_one.sector_count, 4);
+
+        let track_two = image.track(2).unwrap();
+        assert_eq!(track_two.pregap_lba, 4);
+        assert_eq!(track_two.start_lba, 154);
+        assert_eq!(track_two.sector_count, 2);
+
+        let mut buf = [0u8; 2048];
+        assert!(image.read_sector(0, &mut buf).is_some());
+
+        let mut raw_buf = [0u8; 2352];
+        assert!(image.read_sector_raw(154, &mut raw_buf).is_some());
+        assert!(raw_buf.iter().all(|&byte| byte == 0xAA));
+    }
+
+    #[test]
     fn track_for_lba_empty_disc() {
         // Edge case: valid disc but LBA way out of range.
         let cue = r#"FILE "test.bin" BINARY
@@ -749,5 +816,28 @@ FILE "test.bin" BINARY
         assert_eq!(image.track_count(), 1);
         assert_eq!(image.track(1).unwrap().track_type, TrackType::Data);
         assert_eq!(image.track(1).unwrap().sector_size, 2352);
+    }
+
+    #[test]
+    fn mode2_track_cooked_read_uses_mode2_user_data_offset() {
+        let cue = r#"FILE "test.bin" BINARY
+  TRACK 01 MODE2/2352
+    INDEX 01 00:00:00
+"#;
+        let mut sector = vec![0u8; 2352];
+        sector[15] = 0x02;
+        sector[16..24].copy_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x11, 0x22, 0x33, 0x44]);
+        sector[24] = 0x01;
+        sector[25..30].copy_from_slice(b"CD001");
+        sector[30] = 0x01;
+
+        let image = CdImage::from_cue(cue, sector).unwrap();
+
+        let mut buf = [0u8; 2048];
+        let count = image.read_sector(0, &mut buf).unwrap();
+        assert_eq!(count, 2048);
+        assert_eq!(buf[0], 0x01);
+        assert_eq!(&buf[1..6], b"CD001");
+        assert_eq!(buf[6], 0x01);
     }
 }
