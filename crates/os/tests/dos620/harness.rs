@@ -1112,6 +1112,44 @@ pub fn create_test_hdd(sector_size: u16) -> device::disk::HddImage {
     })
 }
 
+pub fn create_test_hdd_with_many_txt_files(
+    sector_size: u16,
+    file_count: usize,
+) -> device::disk::HddImage {
+    let mut files = Vec::with_capacity(file_count + 1);
+    files.push(TestFileSpec {
+        name: *b"COMMAND COM",
+        data: TEST_COMMAND_COM,
+        attributes: 0x20,
+        time: TEST_FILE_TIME,
+        date: TEST_FILE_DATE,
+    });
+
+    for index in 0..file_count {
+        let mut name = [b' '; 11];
+        let stem = format!("F{index:07}");
+        name[..8].copy_from_slice(stem.as_bytes());
+        name[8..11].copy_from_slice(b"TXT");
+        files.push(TestFileSpec {
+            name,
+            data: TEST_FILE_CONTENT,
+            attributes: 0x20,
+            time: TEST_FILE_TIME,
+            date: TEST_FILE_DATE,
+        });
+    }
+
+    build_hdd_image(HddVolumeSpec {
+        physical_sector_size: sector_size,
+        logical_sector_size: sector_size,
+        sectors_per_cluster: if sector_size == 256 { 8 } else { 4 },
+        root_entry_count: 512,
+        sectors_per_fat: 16,
+        fat_kind: FatKind::Fat16,
+        files: &files,
+    })
+}
+
 pub fn create_test_hdd_with_autoexec(
     sector_size: u16,
     autoexec_data: &[u8],

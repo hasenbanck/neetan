@@ -96,6 +96,34 @@ fn del_file() {
 }
 
 #[test]
+fn del_wildcard_deletes_large_directory() {
+    let hdd = create_test_hdd_with_many_txt_files(256, 300);
+    let mut machine = boot_hle_with_forced_os(None, Some(hdd));
+
+    type_string(&mut machine.bus, b"C:\r");
+    run_until_prompt(&mut machine);
+
+    type_string_long(&mut machine, b"DEL *.*\r");
+    machine.run_for(50_000_000);
+    type_string(&mut machine.bus, b"Y");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+    type_string_long(&mut machine, b"DIR F0000000.TXT\r");
+    run_until_prompt(&mut machine);
+
+    let file_name = [
+        0x0046, 0x0030, 0x0030, 0x0030, 0x0030, 0x0030, 0x0030, 0x0030, 0x0020, 0x0054, 0x0058,
+        0x0054,
+    ]; // "F0000000 TXT"
+    assert!(
+        !find_string_in_text_vram(&machine.bus, &file_name),
+        "DEL *.* should remove generated files even in large directories"
+    );
+}
+
+#[test]
 fn md_rd_directory() {
     let mut machine = boot_hle_with_floppy();
     type_string(&mut machine.bus, b"A:\r");
