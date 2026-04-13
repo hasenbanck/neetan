@@ -1022,11 +1022,11 @@ impl AtapiState {
         }
         self.data_buffer[offset] = 0x0F; // Page code (vendor specific).
         self.data_buffer[offset + 1] = 0x10; // Page length.
-        // Byte 4 contains drive capability flags consumed by DOS CD-ROM
-        // drivers. Bit 1 is the compatibility-critical flag for directory
-        // enumeration. Without it, the disc mounts but file listings appear
-        // empty under the low-level DOS path.
-        self.data_buffer[offset + 4] = 0x13;
+        // Byte 4: NEC drive capability flags for neccdd.sys.
+        //   bit 0 = audio play supported  (from page 0x2A byte 4, bit 0)
+        //   bit 7 = lock state            (from page 0x2A byte 6, bit 1)
+        // Bit 7 is required for CD-audio playback under MS-DOS.
+        self.data_buffer[offset + 4] = 0x81;
         // Byte 5 carries the related audio capability bits expected by the
         // same vendor-specific interface.
         self.data_buffer[offset + 5] = 0x18;
@@ -1046,7 +1046,7 @@ impl AtapiState {
         // flags through the vendor-specific interface.
         self.data_buffer[offset + 4] = 0x71;
         self.data_buffer[offset + 5] = 0x65;
-        self.data_buffer[offset + 6] = 0x29;
+        self.data_buffer[offset + 6] = 0x2B;
         self.data_buffer[offset + 7] = 0x07;
         // Max speed: 4x (706 KB/s).
         self.data_buffer[offset + 8] = 0x02;
@@ -1733,9 +1733,9 @@ mod tests {
         assert_eq!(state.data_buffer[0], 0x00);
         assert_eq!(state.data_buffer[1], 0x16);
 
-        // Byte 4 bit 1 is the compatibility-critical flag for real-mode DOS
-        // directory enumeration. Byte 5 carries the paired audio bits.
-        assert_eq!(state.data_buffer[12], 0x13);
+        // Byte 4: bit 0 (audio play) | bit 7 (lock state).
+        // Byte 5: audio manipulation bits.
+        assert_eq!(state.data_buffer[12], 0x81);
         assert_eq!(state.data_buffer[13], 0x18);
 
         // Requesting page 0x0F activates BCD MSF mode (NEC neccdd.sys quirk).

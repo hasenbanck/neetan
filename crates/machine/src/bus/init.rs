@@ -212,7 +212,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             mouse_ppi: I8255MousePpi::new(),
             mouse_timer_setting: MOUSE_TIMER_DEFAULT_SETTING,
             sasi: SasiController::new(),
-            ide: device::ide::IdeController::new(),
+            ide: device::ide::IdeController::new(sample_rate),
             sdip: Sdip::new(),
             bios: device::bios::BiosController::new(),
             a20_enabled: false,

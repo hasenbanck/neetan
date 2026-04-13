@@ -665,8 +665,8 @@ fn atapi_mode_sense_page_0f_nec_vendor() {
     );
     let nec_capability_byte = data[6] as u8;
     assert_eq!(
-        nec_capability_byte, 0x13,
-        "page 0x0F byte 4 should advertise the DOS compatibility bit"
+        nec_capability_byte, 0x81,
+        "page 0x0F byte 4: bit 0 (audio play) | bit 7 (lock state)"
     );
 }
 

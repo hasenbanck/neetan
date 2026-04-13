@@ -67,6 +67,8 @@ pub struct CdAudioPlayer {
     channels: AudioChannelControl,
     resampler: ResamplerFir,
     resample_output: Vec<f32>,
+    resample_output_position: usize,
+    resample_output_available: usize,
     output_sample_rate: u32,
 }
 
@@ -92,6 +94,8 @@ impl CdAudioPlayer {
             channels: AudioChannelControl::default(),
             resampler,
             resample_output,
+            resample_output_position: 0,
+            resample_output_available: 0,
             output_sample_rate,
         }
     }
@@ -103,6 +107,8 @@ impl CdAudioPlayer {
         self.current_lba = start_lba;
         self.buffer_position = 0;
         self.sector_buffer.clear();
+        self.resample_output_position = 0;
+        self.resample_output_available = 0;
         self.load_sector(cd_image);
         self.state = CdAudioState::Playing;
     }
@@ -135,6 +141,8 @@ impl CdAudioPlayer {
         self.current_lba = 0;
         self.buffer_position = 0;
         self.sector_buffer.clear();
+        self.resample_output_position = 0;
+        self.resample_output_available = 0;
     }
 
     /// Returns the current playback state.
@@ -170,6 +178,21 @@ impl CdAudioPlayer {
         let mut output_position = 0;
 
         while output_position < output.len() {
+            // Drain any leftover resampled output from a previous call/iteration.
+            if self.resample_output_position < self.resample_output_available {
+                let available = self.resample_output_available - self.resample_output_position;
+                let needed = output.len() - output_position;
+                let mix_count = available.min(needed);
+                for i in 0..mix_count {
+                    output[output_position + i] +=
+                        self.resample_output[self.resample_output_position + i] * volume;
+                }
+                output_position += mix_count;
+                self.resample_output_position += mix_count;
+                continue;
+            }
+
+            // Load the next sector when the current one is exhausted.
             if self.buffer_position >= self.sector_buffer.len() {
                 if self.current_lba >= self.end_lba {
                     self.state = CdAudioState::Stopped;
@@ -189,12 +212,8 @@ impl CdAudioPlayer {
                 .unwrap_or((0, 0));
 
             self.buffer_position += consumed;
-
-            let mix_count = produced.min(output.len() - output_position);
-            for i in 0..mix_count {
-                output[output_position + i] += self.resample_output[i] * volume;
-            }
-            output_position += mix_count;
+            self.resample_output_position = 0;
+            self.resample_output_available = produced;
 
             if consumed == 0 && produced == 0 {
                 break;

@@ -103,6 +103,7 @@ impl crate::NeetanOs {
         let transfer_addr = (transfer_segment << 4) + transfer_offset;
 
         let status = match command {
+            0 => STATUS_DONE, // INIT: no-op for HLE driver.
             3 => self.ioctl_input(memory, cdrom, transfer_addr),
             7 => STATUS_DONE,
             12 => self.ioctl_output(memory, cdrom, transfer_addr),

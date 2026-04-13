@@ -22,6 +22,7 @@ impl NeetanOs {
             0x43 => self.int2fh_43h_xms_check(cpu),
             0x48 => self.int2fh_48h_doskey_check(cpu),
             0x4A => self.int2fh_4ah_hma_query(cpu),
+            0x4F => set_iret_carry(cpu, memory, true), // Keyboard intercept: no translation.
             _ => warn!("INT 2Fh AH={ah:#04X} is unimplemented"),
         }
     }
@@ -49,8 +50,8 @@ impl NeetanOs {
                 if cdrom.cdrom_present() {
                     let buffer_addr = (cpu.es() as u32) << 4 | cpu.bx() as u32;
                     memory.write_byte(buffer_addr, 0); // Subunit 0.
-                    memory.write_word(buffer_addr + 1, 0x0000); // Device header offset.
-                    memory.write_word(buffer_addr + 3, 0x0000); // Device header segment.
+                    memory.write_word(buffer_addr + 1, tables::DEV_CDROM_OFFSET);
+                    memory.write_word(buffer_addr + 3, tables::DOS_DATA_SEGMENT);
                 }
             }
             0x02 => {
@@ -159,7 +160,7 @@ impl NeetanOs {
                 // Send device driver request.
                 let es = cpu.es() as u32;
                 let bx = cpu.bx() as u32;
-                let request_addr = (es << 4) | bx;
+                let request_addr = (es << 4) + bx;
                 if cdrom.cdrom_present() {
                     self.handle_device_request(memory, cdrom, request_addr);
                 }

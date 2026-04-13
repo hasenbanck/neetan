@@ -42,7 +42,7 @@ pub const DEV_NUL_OFFSET: u16 = 0x0022; // Embedded in SYSVARS
 pub const DEV_CON_OFFSET: u16 = 0x0048;
 pub const DEV_CLOCK_OFFSET: u16 = 0x005A;
 pub const DEV_AID_NEC_OFFSET: u16 = 0x006C;
-pub const DEV_MS_KANJI_OFFSET: u16 = 0x007E;
+pub const DEV_CDROM_OFFSET: u16 = 0x007E;
 
 // Device header structure (18 bytes each)
 pub const DEVHDR_SIZE: usize = 18;
