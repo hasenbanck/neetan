@@ -9,6 +9,7 @@ mod cdrom;
 mod commands;
 mod config;
 mod console;
+mod console_adapter;
 mod console_esc;
 mod country;
 mod dos;
@@ -282,6 +283,10 @@ impl IoAccess<'_> {
         self.print(msg);
         self.output_byte(b'\r');
         self.output_byte(b'\n');
+    }
+
+    pub(crate) fn console_io(&mut self) -> console_adapter::ConsoleAdapter<'_> {
+        console_adapter::ConsoleAdapter::new(self.console, self.memory)
     }
 }
 

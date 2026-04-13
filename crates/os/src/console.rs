@@ -77,7 +77,14 @@ impl Console {
         memory.write_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_KANJI_HI_BYTE, 0x00);
     }
 
-    fn write_cell(&self, memory: &mut dyn MemoryAccess, row: u8, col: u8, jis: JisChar, attr: u8) {
+    pub(crate) fn write_cell(
+        &self,
+        memory: &mut dyn MemoryAccess,
+        row: u8,
+        col: u8,
+        jis: JisChar,
+        attr: u8,
+    ) {
         let (even, odd) = jis.to_vram_bytes();
         let char_addr = vram_char_addr(row, col);
         memory.write_byte(char_addr, even);
@@ -405,6 +412,22 @@ impl Console {
 
     pub(crate) fn set_attribute(&self, memory: &mut dyn MemoryAccess, attr: u8) {
         memory.write_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DISPLAY_ATTR, attr);
+    }
+
+    pub(crate) fn set_cursor_visible(&self, memory: &mut dyn MemoryAccess, visible: bool) {
+        memory.write_byte(
+            tables::IOSYS_BASE + tables::IOSYS_OFF_CURSOR_VISIBLE,
+            u8::from(visible),
+        );
+    }
+
+    pub(crate) fn screen_size(&self, memory: &dyn MemoryAccess) -> (u8, u8) {
+        let rows = if memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_SCREEN_LINES) == 0 {
+            20
+        } else {
+            25
+        };
+        (COLUMNS, rows)
     }
 
     pub(crate) fn cursor_up(&self, memory: &mut dyn MemoryAccess, count: u8) {

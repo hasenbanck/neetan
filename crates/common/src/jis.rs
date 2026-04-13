@@ -67,6 +67,23 @@ impl JisChar {
     pub const fn is_ank(self) -> bool {
         (self.0 & 0xFF00) == 0
     }
+
+    /// Returns `true` if this is a half-width JIS glyph that occupies one text cell.
+    #[inline]
+    pub const fn is_halfwidth_jis(self) -> bool {
+        let ku = (self.0 >> 8) as u8;
+        ku >= 0x29 && ku <= 0x2B
+    }
+
+    /// Returns the number of text cells this character occupies on a PC-98 text console.
+    #[inline]
+    pub const fn display_width(self) -> u8 {
+        if self.is_ank() || self.is_halfwidth_jis() {
+            1
+        } else {
+            2
+        }
+    }
 }
 
 /// Converts a JIS character to its Unicode equivalent.
@@ -160,6 +177,65 @@ pub fn shift_jis_pair_to_jis(lead: u8, trail: u8) -> Option<JisChar> {
     };
 
     Some(JisChar::from_u16(((row as u16) << 8) | cell as u16))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShiftJisChar {
+    Single(u8),
+    Double([u8; 2]),
+}
+
+impl ShiftJisChar {
+    #[inline]
+    pub const fn len(self) -> usize {
+        match self {
+            Self::Single(_) => 1,
+            Self::Double(_) => 2,
+        }
+    }
+
+    #[inline]
+    pub const fn is_empty(self) -> bool {
+        false
+    }
+
+    #[inline]
+    pub fn write_to(self, output: &mut Vec<u8>) {
+        match self {
+            Self::Single(byte) => output.push(byte),
+            Self::Double(bytes) => output.extend_from_slice(&bytes),
+        }
+    }
+}
+
+/// Converts a JIS character to Shift-JIS bytes.
+pub fn jis_to_shift_jis(jis: JisChar) -> Option<ShiftJisChar> {
+    if jis.is_ank() {
+        return Some(ShiftJisChar::Single(jis.as_u16() as u8));
+    }
+
+    let code = jis.as_u16();
+    let row = (code >> 8) as u8;
+    let cell = code as u8;
+    if !(0x21..=0x7E).contains(&row) || !(0x21..=0x7E).contains(&cell) {
+        return None;
+    }
+
+    let lead = if row <= 0x5E {
+        0x81 + ((row - 0x21) / 2)
+    } else {
+        0xE0 + ((row - 0x5F) / 2)
+    };
+
+    let trail = if row & 1 == 0 {
+        cell + 0x7E
+    } else if cell <= 0x5F {
+        cell + 0x1F
+    } else {
+        cell + 0x20
+    };
+
+    Some(ShiftJisChar::Double([lead, trail]))
 }
 
 /// Reads character cells from a text VRAM byte slice and converts to a String.
@@ -311,6 +387,13 @@ mod tests {
     }
 
     #[test]
+    fn jis_char_display_width_matches_halfwidth_blocks() {
+        assert_eq!(JisChar::from_u16(0x0041).display_width(), 1);
+        assert_eq!(JisChar::from_u16(0x2B30).display_width(), 1);
+        assert_eq!(JisChar::from_u16(0x2121).display_width(), 2);
+    }
+
+    #[test]
     fn str_to_jis_ascii() {
         let jis_chars = str_to_jis("Hello");
         assert_eq!(jis_chars.len(), 5);
@@ -419,5 +502,21 @@ mod tests {
     fn shift_jis_pair_to_jis_rejects_invalid_pairs() {
         assert_eq!(shift_jis_pair_to_jis(0x20, 0xA0), None);
         assert_eq!(shift_jis_pair_to_jis(0x82, 0x7F), None);
+    }
+
+    #[test]
+    fn jis_to_shift_jis_encodes_ank() {
+        assert_eq!(
+            jis_to_shift_jis(JisChar::from_u16(0x41)),
+            Some(ShiftJisChar::Single(0x41))
+        );
+    }
+
+    #[test]
+    fn jis_to_shift_jis_encodes_double_byte() {
+        assert_eq!(
+            jis_to_shift_jis(JisChar::from_u16(0x2422)),
+            Some(ShiftJisChar::Double([0x82, 0xA0]))
+        );
     }
 }
