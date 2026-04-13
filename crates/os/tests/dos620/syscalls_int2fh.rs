@@ -499,12 +499,12 @@ fn mscdex_get_drive_device_list() {
     let header_seg = harness::result_word(&machine.bus, 3);
     assert_eq!(subunit, 0, "Subunit should be 0, got {subunit}");
     assert_eq!(
-        header_off, 0x0000,
-        "Device header offset should be 0000h, got {header_off:#06X}"
+        header_off, 0x007E,
+        "Device header offset should be DEV_CDROM_OFFSET, got {header_off:#06X}"
     );
     assert_eq!(
-        header_seg, 0x0000,
-        "Device header segment should be 0000h, got {header_seg:#06X}"
+        header_seg, 0x0200,
+        "Device header segment should be DOS_DATA_SEGMENT, got {header_seg:#06X}"
     );
 }
 

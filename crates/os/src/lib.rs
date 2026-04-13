@@ -915,7 +915,7 @@ impl NeetanOs {
         mem.write_word(FCB_SFT_BASE + 4, 0);
     }
 
-    /// Writes the device header chain: NUL -> CON -> $AID#NEC -> MS$KANJI.
+    /// Writes the device header chain: NUL -> CON -> $AID#NEC -> CD-ROM.
     /// CLOCK is separate (not in chain, only referenced by SYSVARS+0x08).
     fn write_device_chain(&self, mem: &mut dyn MemoryAccess) {
         use tables::*;
@@ -952,24 +952,28 @@ impl NeetanOs {
             b"CLOCK   ",
         );
 
-        // $AID#NEC -> MS$KANJI
+        // $AID#NEC -> CD-ROM driver
         write_device_header(
             mem,
             base + DEV_AID_NEC_OFFSET as u32,
             DOS_DATA_SEGMENT,
-            DEV_MS_KANJI_OFFSET,
+            DEV_CDROM_OFFSET,
             DEVATTR_CHAR,
             b"$AID#NEC",
         );
 
-        // MS$KANJI (end of chain)
+        // CD-ROM driver (end of chain)
+        let mut cdrom_name = [b' '; 8];
+        let name = &self.state.mscdex.device_name;
+        let len = name.len().min(8);
+        cdrom_name[..len].copy_from_slice(&name[..len]);
         write_device_header(
             mem,
-            base + DEV_MS_KANJI_OFFSET as u32,
+            base + DEV_CDROM_OFFSET as u32,
             0xFFFF,
             0xFFFF,
-            DEVATTR_CHAR,
-            b"MS$KANJI",
+            DEVATTR_CHAR | DEVATTR_IOCTL,
+            &cdrom_name,
         );
     }
 

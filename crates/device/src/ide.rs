@@ -51,13 +51,13 @@ pub struct IdeController {
 
 impl Default for IdeController {
     fn default() -> Self {
-        Self::new()
+        Self::new(44100)
     }
 }
 
 impl IdeController {
     /// Creates a new idle IDE controller.
-    pub fn new() -> Self {
+    pub fn new(output_sample_rate: u32) -> Self {
         Self {
             lle_controller: lle::Controller::new(),
             hle_pending: false,
@@ -68,7 +68,7 @@ impl IdeController {
             drive_dirty: [false, false],
             cdrom: None,
             atapi_state: atapi::AtapiState::new(),
-            cd_audio_player: CdAudioPlayer::new(44100),
+            cd_audio_player: CdAudioPlayer::new(output_sample_rate),
             work_area_mapped: false,
         }
     }
@@ -749,7 +749,7 @@ mod tests {
 
     #[test]
     fn trap_triggers_on_single_byte() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         assert!(!ide.hle_pending());
         ide.write_trap_port(0x00);
         assert!(ide.hle_pending());
@@ -759,7 +759,7 @@ mod tests {
 
     #[test]
     fn rom_image_has_correct_signature() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         assert!(!ide.rom_installed());
 
         ide.insert_drive(0, make_test_drive(), None);
@@ -772,7 +772,7 @@ mod tests {
 
     #[test]
     fn work_area_port_read_write() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         assert_eq!(ide.read_work_area_port(), 0x80);
 
         ide.write_work_area_port(0x81);
@@ -787,7 +787,7 @@ mod tests {
 
     #[test]
     fn cdrom_insert_installs_rom() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         assert!(!ide.rom_installed());
 
         ide.insert_cdrom(make_test_cdimage());
@@ -797,7 +797,7 @@ mod tests {
 
     #[test]
     fn cdrom_eject() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         assert!(ide.has_cdrom());
 
@@ -807,7 +807,7 @@ mod tests {
 
     #[test]
     fn atapi_identify_device_returns_signature() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
 
         // Switch to channel 1.
@@ -827,7 +827,7 @@ mod tests {
 
     #[test]
     fn atapi_identify_packet_device() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
 
         // Switch to channel 1.
@@ -849,7 +849,7 @@ mod tests {
 
     #[test]
     fn atapi_packet_inquiry() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
 
         // Switch to channel 1.
@@ -881,7 +881,7 @@ mod tests {
 
     #[test]
     fn atapi_packet_read_sector() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
 
         // Directly clear the media change state so we can test READ without
@@ -915,7 +915,7 @@ mod tests {
 
     #[test]
     fn hdd_still_works_with_cdrom() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_drive(0, make_test_drive(), None);
         ide.insert_cdrom(make_test_cdimage());
 
@@ -942,7 +942,7 @@ mod tests {
 
     #[test]
     fn presence_returns_0x02_when_channel1_selected_and_cdrom() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         // Channel 1 not yet selected: returns 0x00.
         assert_eq!(ide.read_presence(), 0x00);
@@ -953,7 +953,7 @@ mod tests {
 
     #[test]
     fn connection_flags_hdd_and_cdrom() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_drive(0, make_test_drive(), None);
         ide.insert_cdrom(make_test_cdimage());
         // Compatibility mode: only HDD bits set.
@@ -962,7 +962,7 @@ mod tests {
 
     #[test]
     fn connection_flags_hdd_only() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_drive(0, make_test_drive(), None);
         // No CD-ROM, non-compmode: HDD on slot 0.
         assert_eq!(ide.compute_connection_flags(), 0x01);
@@ -970,7 +970,7 @@ mod tests {
 
     #[test]
     fn connection_flags_two_hdds_and_cdrom() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_drive(0, make_test_drive(), None);
         ide.insert_drive(1, make_test_drive(), None);
         ide.insert_cdrom(make_test_cdimage());
@@ -980,7 +980,7 @@ mod tests {
 
     #[test]
     fn connection_flags_cdrom_only() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         // Compatibility mode, no HDDs: 0x00.
         assert_eq!(ide.compute_connection_flags(), 0x00);
@@ -988,13 +988,13 @@ mod tests {
 
     #[test]
     fn connection_flags_nothing() {
-        let ide = IdeController::new();
+        let ide = IdeController::new(44100);
         assert_eq!(ide.compute_connection_flags(), 0x00);
     }
 
     #[test]
     fn cdrom_insert_sets_atapi_signature_on_channel1() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
 
         ide.write_bank(1, 0x01);
@@ -1008,7 +1008,7 @@ mod tests {
 
     #[test]
     fn execute_diagnostic_on_atapi_sets_signature() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         ide.write_bank(1, 0x01);
 
@@ -1025,7 +1025,7 @@ mod tests {
 
     #[test]
     fn set_features_write_cache_succeeds_on_atapi() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         ide.write_bank(1, 0x01);
 
@@ -1039,7 +1039,7 @@ mod tests {
 
     #[test]
     fn set_features_transfer_mode_succeeds_on_atapi() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         ide.write_bank(1, 0x01);
 
@@ -1051,7 +1051,7 @@ mod tests {
 
     #[test]
     fn set_features_invalid_aborts_on_atapi() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         ide.write_bank(1, 0x01);
 
@@ -1063,7 +1063,7 @@ mod tests {
 
     #[test]
     fn media_lock_succeeds_on_atapi() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         ide.write_bank(1, 0x01);
 
@@ -1075,7 +1075,7 @@ mod tests {
 
     #[test]
     fn media_unlock_succeeds_on_atapi() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         ide.write_bank(1, 0x01);
 
@@ -1087,7 +1087,7 @@ mod tests {
 
     #[test]
     fn atapi_packet_command_returns_none_action() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         ide.write_bank(1, 0x01);
         ide.write_cylinder_low(0xFE);
@@ -1102,7 +1102,7 @@ mod tests {
 
     #[test]
     fn atapi_read_status_signals_irq_deassertion() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         ide.write_bank(1, 0x01);
 
@@ -1118,7 +1118,7 @@ mod tests {
 
     #[test]
     fn srst_on_atapi_channel_preserves_signature() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         ide.write_bank(1, 0x01);
 
@@ -1135,7 +1135,7 @@ mod tests {
 
     #[test]
     fn packet_command_status_has_drdy_dsc_drq() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         ide.write_bank(1, 0x01);
         ide.write_cylinder_low(0xFE);
@@ -1152,47 +1152,47 @@ mod tests {
 
     #[test]
     fn additional_status_no_drives() {
-        let ide = IdeController::new();
+        let ide = IdeController::new(44100);
         assert_eq!(ide.read_additional_status(), 0x02);
     }
 
     #[test]
     fn additional_status_with_hdd() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_drive(0, make_test_drive(), None);
         assert_eq!(ide.read_additional_status(), 0x00);
     }
 
     #[test]
     fn additional_status_cdrom_only() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         assert_eq!(ide.read_additional_status(), 0x02);
     }
 
     #[test]
     fn has_any_hdd_empty() {
-        let ide = IdeController::new();
+        let ide = IdeController::new(44100);
         assert!(!ide.has_any_hdd());
     }
 
     #[test]
     fn has_any_hdd_with_drive() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_drive(0, make_test_drive(), None);
         assert!(ide.has_any_hdd());
     }
 
     #[test]
     fn has_any_hdd_cdrom_only() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         assert!(!ide.has_any_hdd());
     }
 
     #[test]
     fn data_in_phase_has_dsc_drq() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
 
         ide.atapi_state.media_loaded = true;
@@ -1236,7 +1236,7 @@ mod tests {
 
     #[test]
     fn multi_sector_read_fires_interrupt_per_chunk() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         ide.atapi_state.media_loaded = true;
         ide.atapi_state.media_changed = false;
@@ -1280,7 +1280,7 @@ mod tests {
 
     #[test]
     fn single_sector_read_fires_completion_at_end() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         ide.atapi_state.media_loaded = true;
         ide.atapi_state.media_changed = false;
@@ -1300,7 +1300,7 @@ mod tests {
 
     #[test]
     fn large_byte_count_limit_delivers_per_sector_chunks() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         ide.atapi_state.media_loaded = true;
         ide.atapi_state.media_changed = false;
@@ -1367,7 +1367,7 @@ mod tests {
 
     #[test]
     fn read_sub_channel_no_subq_returns_header_only() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         ide.atapi_state.media_loaded = true;
         ide.atapi_state.media_changed = false;
@@ -1386,7 +1386,7 @@ mod tests {
 
     #[test]
     fn read_sub_channel_format_01_returns_16_bytes() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         ide.atapi_state.media_loaded = true;
         ide.atapi_state.media_changed = false;
@@ -1413,7 +1413,7 @@ mod tests {
 
     #[test]
     fn read_sub_channel_format_01_bcd_mode() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         ide.atapi_state.media_loaded = true;
         ide.atapi_state.media_changed = false;
@@ -1438,7 +1438,7 @@ mod tests {
 
     #[test]
     fn read_toc_clears_media_changed() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         ide.atapi_state.media_loaded = true;
         ide.atapi_state.media_changed = false;
@@ -1465,7 +1465,7 @@ mod tests {
 
     #[test]
     fn read_cd_header_only_flag() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         ide.atapi_state.media_loaded = true;
         ide.atapi_state.media_changed = false;
@@ -1481,7 +1481,7 @@ mod tests {
 
     #[test]
     fn read_cd_sync_without_header_not_returned() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         ide.atapi_state.media_loaded = true;
         ide.atapi_state.media_changed = false;
@@ -1503,7 +1503,7 @@ mod tests {
 
     #[test]
     fn read_cd_sync_with_header_both_returned() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         ide.atapi_state.media_loaded = true;
         ide.atapi_state.media_changed = false;
@@ -1526,7 +1526,7 @@ mod tests {
 
     #[test]
     fn read_cd_sub_header_only() {
-        let mut ide = IdeController::new();
+        let mut ide = IdeController::new(44100);
         ide.insert_cdrom(make_test_cdimage());
         ide.atapi_state.media_loaded = true;
         ide.atapi_state.media_changed = false;
