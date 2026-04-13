@@ -164,14 +164,18 @@ impl RunningDel {
                     self.phase = DelPhase::PromptFile(del_state, entry);
                 } else {
                     // No prompt: delete immediately
-                    let _ = filesystem::delete_file_by_components(
+                    if filesystem::delete_file_by_components(
                         state,
                         disk,
                         del_state.drive_index,
                         del_state.dir_cluster,
                         entry.name,
-                    );
-                    del_state.deleted_any = true;
+                    )
+                    .is_ok()
+                    {
+                        del_state.deleted_any = true;
+                        del_state.start_index = del_state.start_index.saturating_sub(1);
+                    }
                     self.phase = DelPhase::DeleteNext(del_state);
                 }
                 StepResult::Continue
@@ -206,15 +210,18 @@ impl RunningDel {
         io.output_byte(b'\r');
         io.output_byte(b'\n');
 
-        if key == b'Y' || key == b'y' {
-            let _ = filesystem::delete_file_by_components(
+        if (key == b'Y' || key == b'y')
+            && filesystem::delete_file_by_components(
                 state,
                 disk,
                 del_state.drive_index,
                 del_state.dir_cluster,
                 entry.name,
-            );
+            )
+            .is_ok()
+        {
             del_state.deleted_any = true;
+            del_state.start_index = del_state.start_index.saturating_sub(1);
         }
 
         self.phase = DelPhase::DeleteNext(del_state);
