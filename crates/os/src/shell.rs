@@ -102,6 +102,7 @@ impl Shell {
             Box::new(commands::cls::Cls),
             Box::new(commands::ver::Ver),
             Box::new(commands::echo::Echo),
+            Box::new(commands::editor::Editor),
             Box::new(commands::rem::Rem),
             Box::new(commands::cd::Cd),
             Box::new(commands::set::Set),

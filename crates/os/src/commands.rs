@@ -15,6 +15,7 @@ pub mod dir;
 pub mod diskcopy;
 pub mod dosmock;
 pub mod echo;
+pub mod editor;
 pub mod format;
 pub mod md;
 pub mod mem;

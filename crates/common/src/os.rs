@@ -1,5 +1,7 @@
 //! Shared OS/machine bridge traits and related media types.
 
+use crate::jis::JisChar;
+
 /// CPU register access for the HLE OS.
 pub trait CpuAccess {
     /// Returns the AX register.
@@ -211,6 +213,14 @@ pub trait ConsoleIo {
     fn write_char(&mut self, ch: u8);
     /// Write a string to the console.
     fn write_str(&mut self, s: &[u8]);
+    /// Write a JIS character at the given position.
+    fn write_jis_char(&mut self, row: u8, col: u8, ch: JisChar, attr: u8);
+    /// Write a JIS string at the given position and return the next column.
+    fn write_jis(&mut self, row: u8, col: u8, s: &[JisChar], attr: u8) -> u8;
+    /// Write an ANK string at the given position and return the next column.
+    fn write_ank_at(&mut self, row: u8, col: u8, s: &[u8], attr: u8) -> u8;
+    /// Fill a region with a single character and attribute.
+    fn fill_region(&mut self, top: u8, left: u8, height: u8, width: u8, ch: JisChar, attr: u8);
     /// Read a character from the keyboard buffer (blocking).
     fn read_char(&mut self) -> u8;
     /// Check if a character is available in the keyboard buffer.
@@ -225,6 +235,8 @@ pub trait ConsoleIo {
     fn scroll_up(&mut self);
     /// Clear the screen.
     fn clear_screen(&mut self);
+    /// Set whether the cursor is visible.
+    fn set_cursor_visible(&mut self, visible: bool);
     /// Get the screen dimensions.
     fn screen_size(&self) -> (u8, u8);
 }
