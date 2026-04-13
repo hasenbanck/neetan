@@ -22,9 +22,9 @@ version = "1.0.0"
 
 [[package]]
 name = "cc"
-version = "1.2.58"
+version = "1.2.60"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1e928d4b69e3077709075a938a05ffbedfa53a84c8f766efbf8220bb1ff60e1"
+checksum = "43c5703da9466b66a946814e1adf53ea2c90f10063b86290cc9eb67ce3478a20"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -116,9 +116,9 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jay-ash"
-version = "0.3.0+1.4.344"
+version = "0.5.0+1.4.349"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21147dfffbcd8181b797d2be3615c94773075611544d6afb89bb81b30dc37642"
+checksum = "21e59d7646329ed7d1f5dddff45dcbb6e615d606c436b54b8c6aacccc445d0a8"
 
 [[package]]
 name = "machine"
@@ -191,9 +191,9 @@ dependencies = [
 
 [[package]]
 name = "pkg-config"
-version = "0.3.32"
+version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
+checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "proc-macro2"
@@ -232,15 +232,15 @@ dependencies = [
 
 [[package]]
 name = "sdl3-src"
-version = "3.4.2"
+version = "3.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8cdee3a2e98fa6c01aff481da8b61594b40bf7dbc98fd0356c1e123661da3e7"
+checksum = "d98f1cdcc5eb877ad663216c3133bfa5af469628c9573b3d2364e584efe19ab0"
 
 [[package]]
 name = "sdl3-sys"
-version = "0.6.1+SDL-3.4.2"
+version = "0.6.2+SDL-3.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d73fc820b0b6b9bd0557de7b799ec9da1ca4f35fcd1cb42f7ceb85e640d1477"
+checksum = "852c6c7b943f26f81f4a2da37a5ef424c3fc1677e404dce76ce8b078e7f7da5e"
 dependencies = [
  "cc",
  "cmake",

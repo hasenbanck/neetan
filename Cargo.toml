@@ -25,7 +25,7 @@ munt_oxide = { path = "crates/munt_oxide" }
 nuked_sc55_oxide = { path = "crates/nuked_sc55_oxide" }
 ymfm_oxide = { path = "crates/ymfm_oxide" }
 # External dependencies
-jay-ash = { version = "0.3", default-features = false }
+jay-ash = { version = "0.5", default-features = false }
 sdl3-sys = "0.6"
 # Dependencies only used for the verification tests of the V30
 flate2 = "1"
