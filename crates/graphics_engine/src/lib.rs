@@ -27,8 +27,8 @@ use crate::{
     descriptors::{DescriptorResources, FrameDescriptorSets},
     layout_transitioner::LayoutTransitioner,
     passes::{
-        Blitter, Compose, Scale, clear_frame_pass, render_blitter_pass, render_compose_pass,
-        render_scale_pass,
+        Blitter, Compose, Crt, Scale, clear_frame_pass, render_blitter_pass, render_compose_pass,
+        render_crt_pass, render_scale_pass,
     },
     pipeline_loader::PipelineLoader,
     plumbing::{
@@ -103,6 +103,8 @@ pub struct GraphicsEngine {
     compose: Compose,
     /// Scales the native-resolution image to the window resolution.
     scale: Scale,
+    /// Applies CRT scaling from the native-resolution image to the window resolution.
+    crt: Crt,
     /// Copies the color target to the swapchain.
     blitter: Blitter,
     /// Pipeline loader for creating graphics pipelines.
@@ -188,6 +190,9 @@ impl GraphicsEngine {
         let scale = Scale::new(&pipeline_loader, descriptor_resources.pipeline_layout())
             .context("Can't create scale pipeline")?;
 
+        let crt = Crt::new(&pipeline_loader, descriptor_resources.pipeline_layout())
+            .context("Can't create crt pipeline")?;
+
         let blitter = Blitter::new(
             &pipeline_loader,
             DEFAULT_BLITTER_IMAGE_FORMAT,
@@ -218,6 +223,7 @@ impl GraphicsEngine {
             layout_transitioner,
             compose,
             scale,
+            crt,
             blitter,
             pipeline_loader,
             frame_resources: None,
@@ -526,10 +532,8 @@ impl GraphicsEngine {
                         encoder.end_debug_label();
                     }
 
-                    // Stage 2 - Scale: read native_target, write to color_target (window res).
+                    // Stage 2 - Upscale: read native_target, write to color_target (window res).
                     {
-                        encoder.begin_debug_label(c"Scale Pass", [0.0, 1.0, 0.0, 1.0]);
-
                         let gdc_al = render_instructions.display_snapshot.gdc_graphics_al;
                         let native_height = if (render_instructions.display_snapshot.display_flags
                             & DISPLAY_FLAG_PEGC_256_COLOR)
@@ -541,13 +545,25 @@ impl GraphicsEngine {
                             400
                         };
 
-                        render_scale_pass(
-                            &mut encoder,
-                            self.resources.color_target(),
-                            &self.scale,
-                            native_height,
-                            self.descriptor_resources.pipeline_layout(),
-                        );
+                        if render_instructions.crt {
+                            encoder.begin_debug_label(c"CRT Pass", [0.0, 1.0, 0.0, 1.0]);
+                            render_crt_pass(
+                                &mut encoder,
+                                self.resources.color_target(),
+                                &self.crt,
+                                native_height,
+                                self.descriptor_resources.pipeline_layout(),
+                            );
+                        } else {
+                            encoder.begin_debug_label(c"Scale Pass", [0.0, 1.0, 0.0, 1.0]);
+                            render_scale_pass(
+                                &mut encoder,
+                                self.resources.color_target(),
+                                &self.scale,
+                                native_height,
+                                self.descriptor_resources.pipeline_layout(),
+                            );
+                        }
                         encoder.end_debug_label();
                     }
 

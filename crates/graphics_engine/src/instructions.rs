@@ -8,4 +8,6 @@ pub struct RenderInstructions<'a> {
     pub display_snapshot: &'a DisplaySnapshotUpload,
     /// Optional PEGC snapshot for 256-color mode rendering.
     pub pegc_snapshot: Option<&'a PegcSnapshotUpload>,
+    /// Whether the CRT upscale effect is enabled.
+    pub crt: bool,
 }

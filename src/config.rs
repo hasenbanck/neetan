@@ -42,6 +42,7 @@ Options:
       --cdrom <PATH>            CD-ROM disc image CUE file (repeatable, PC-9821 only)
       --audio-volume <FLOAT>    Audio volume 0.0-1.0
       --aspect-mode <MODE>      Display aspect mode: 4:3 or 1:1
+      --crt <on|off>            Enable CRT effect (default: on)
       --window-mode <MODE>      Window mode: windowed or fullscreen
       --force-gdc-clock <2.5|5> Force GDC clock to 2.5 or 5 MHz (default: auto)
       --bios-rom <PATH>         Path to BIOS ROM file
@@ -330,16 +331,24 @@ fn parse_convert_hdd_args(args: &mut impl Iterator<Item = String>) -> crate::Res
 }
 
 pub fn parse_args() -> crate::Result<Action> {
+    parse_args_from(std::env::args().skip(1), true)
+}
+
+fn parse_args_from(
+    args: impl IntoIterator<Item = String>,
+    load_global_config: bool,
+) -> crate::Result<Action> {
     let mut config = EmulatorConfig::default();
 
-    if let Some(global_path) = global_config_path()
+    if load_global_config
+        && let Some(global_path) = global_config_path()
         && global_path.exists()
     {
         apply_config_file(&mut config, &global_path)?;
         info!("Loaded global config: {}", global_path.display());
     }
 
-    let mut args = std::env::args().skip(1);
+    let mut args = args.into_iter();
 
     while let Some(arg) = args.next() {
         if arg == "create-fdd" {
@@ -395,6 +404,10 @@ pub fn parse_args() -> crate::Result<Action> {
             "--aspect-mode" => {
                 let val = value(&flag)?;
                 config.aspect_mode = val.parse::<AspectMode>().map_err(StringError)?;
+            }
+            "--crt" => {
+                let val = value(&flag)?;
+                config.crt = parse_on_off(&val, &flag)?;
             }
             "--window-mode" => {
                 let val = value(&flag)?;
@@ -479,6 +492,7 @@ pub struct EmulatorConfig {
     pub hdd2: Option<PathBuf>,
     pub cdrom: Vec<PathBuf>,
     pub aspect_mode: AspectMode,
+    pub crt: bool,
     pub window_mode: WindowMode,
     pub audio_volume: f32,
     pub bios_rom: Option<PathBuf>,
@@ -506,6 +520,7 @@ impl Default for EmulatorConfig {
             hdd2: None,
             cdrom: Vec::new(),
             aspect_mode: AspectMode::Aspect4By3,
+            crt: true,
             window_mode: WindowMode::Windowed,
             audio_volume: 1.0,
             bios_rom: None,
@@ -558,6 +573,11 @@ fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<
             "aspect-mode" => match val.parse::<AspectMode>() {
                 Ok(mode) => config.aspect_mode = mode,
                 Err(_) => warn!("Unknown aspect mode in config: {val}"),
+            },
+            "crt" => match val {
+                "on" => config.crt = true,
+                "off" => config.crt = false,
+                _ => warn!("Invalid crt in config: {val}, expected on or off"),
             },
             "window-mode" => match val.parse::<WindowMode>() {
                 Ok(mode) => config.window_mode = mode,

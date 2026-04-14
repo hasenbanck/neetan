@@ -1,19 +1,19 @@
 #[allow(clippy::module_inception)]
-mod scale;
+mod crt;
 
 use jay_ash::vk;
 
-pub(crate) use self::scale::Scale;
+pub(crate) use self::crt::Crt;
 use crate::{
     passes::{Renderer, UpscalePushConstants},
     plumbing::{ColorTargetImage, CommandEncoder},
 };
 
-/// Renders the scale pass (Stage 2): native-resolution to window-resolution color target.
-pub(crate) fn render_scale_pass(
+/// Renders the CRT pass (Stage 2): native-resolution to window-resolution color target.
+pub(crate) fn render_crt_pass(
     encoder: &mut CommandEncoder,
     color_target: &ColorTargetImage,
-    scale: &Scale,
+    crt: &Crt,
     native_height: u32,
     pipeline_layout: vk::PipelineLayout,
 ) {
@@ -86,7 +86,7 @@ pub(crate) fn render_scale_pass(
             &push_constants.to_le_bytes(),
         );
 
-        scale.render(&rendering_encoder, ());
+        crt.render(&rendering_encoder, ());
     }
 
     encoder.image_barrier(
