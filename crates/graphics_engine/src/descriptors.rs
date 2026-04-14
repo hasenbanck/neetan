@@ -101,7 +101,7 @@ impl DescriptorResources {
         let push_constant_range = vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
-            .size(8); // int2 = 2 × i32 = 8 bytes
+            .size(32);
 
         let set_layouts = [set_layout_0, set_layout_1];
         let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()

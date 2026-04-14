@@ -308,6 +308,8 @@ struct Application {
     cdrom_index: Option<usize>,
     /// Active image selection screen, if open.
     image_selector: Option<ImageSelector>,
+    /// Whether the CRT effect is enabled.
+    crt_enabled: bool,
     /// Whether the window is currently in fullscreen mode.
     fullscreen: bool,
     /// Accumulated emulation busy time in the current measurement window.
@@ -378,6 +380,7 @@ impl Application {
         }
 
         let cpu_hz = machine.cpu_clock_hz();
+        let crt_enabled = config.crt;
 
         let graphics_engine = GraphicsEngine::new(
             platform_extensions,
@@ -389,6 +392,7 @@ impl Application {
         let scale_factor = window.display_scale();
 
         info!("Window created with scale factor: {scale_factor}");
+        info!("CRT effect set to {}", on_off(crt_enabled));
 
         Ok(Self {
             machine,
@@ -414,6 +418,7 @@ impl Application {
             cdrom_entries,
             cdrom_index,
             image_selector: None,
+            crt_enabled,
             fullscreen: config.window_mode == WindowMode::Fullscreen,
             busy_duration: Duration::ZERO,
             window_title_last_update: Instant::now(),
@@ -532,6 +537,8 @@ impl Application {
                                 self.fullscreen = !self.fullscreen;
                             }
                         }
+                    } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F1) {
+                        self.toggle_crt();
                     } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F9) {
                         self.open_or_toggle_selector(MediaType::Floppy(0));
                     } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F10) {
@@ -733,6 +740,11 @@ impl Application {
         }
     }
 
+    fn toggle_crt(&mut self) {
+        self.crt_enabled = !self.crt_enabled;
+        info!("CRT effect set to {}", on_off(self.crt_enabled));
+    }
+
     fn handle_selector_key(&mut self, scancode: Option<Scancode>, alt_gui_held: bool) {
         let Some(code) = scancode else { return };
 
@@ -861,11 +873,16 @@ impl Application {
             .render_frame(Some(&RenderInstructions {
                 display_snapshot,
                 pegc_snapshot,
+                crt: self.crt_enabled,
             }))
             .context("Graphics engine failed to render frame")?;
 
         Ok(())
     }
+}
+
+const fn on_off(enabled: bool) -> &'static str {
+    if enabled { "on" } else { "off" }
 }
 
 /// Returns the current host local time as a 6-byte BCD buffer for the µPD4990A RTC.

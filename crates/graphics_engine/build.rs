@@ -137,6 +137,9 @@ fn main() {
     let pass_files = discover_pass_files(&passes_dir);
 
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed={}", shader_dir.display());
+    println!("cargo:rerun-if-changed={}", modules_dir.display());
+    println!("cargo:rerun-if-changed={}", passes_dir.display());
     for module_file in &module_files {
         println!("cargo:rerun-if-changed={}", module_file.display());
     }

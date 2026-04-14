@@ -59,6 +59,7 @@ neetan <COMMAND>
 | `--cdrom <PATH>`             | CD-ROM disc image CUE file (repeatable, PC-9821 only)                    | -          |
 | `--audio-volume <FLOAT>`     | Audio volume 0.0–1.0                                                     | `1.0`      |
 | `--aspect-mode <MODE>`       | Display aspect mode: `4:3` or `1:1`                                      | `4:3`      |
+| `--crt <on\|off>`            | Enable the CRT effect                                                    | `on`       |
 | `--window-mode <MODE>`       | Window mode: `windowed` or `fullscreen`                                  | `windowed` |
 | `--force-gdc-clock <2.5\|5>` | Force GDC clock to 2.5 or 5 MHz. VX and later only                       | auto       |
 | `--bios-rom <PATH>`          | Path to BIOS ROM file                                                    | HLE BIOS   |
@@ -113,6 +114,7 @@ soundboard = 86+26k
 force-gdc-clock = 2.5
 audio-volume = 0.8
 aspect-mode = 4:3
+crt = on
 fdd1 = /path/to/disk_a.d88
 fdd1 = /path/to/disk_b.d88
 fdd2 = /path/to/save_game.d88
@@ -162,6 +164,7 @@ For example, if your global config sets `machine = PC9801RA` and you run
 | Right Ctrl         | Toggle mouse capture             |
 | GUI + Alt + Enter  | Toggle fullscreen                |
 | GUI + Alt + Escape | Quit the emulator                |
+| GUI + Alt + F1     | Toggle CRT effect                |
 | GUI + Alt + F9     | Open floppy selector for drive 1 |
 | GUI + Alt + F10    | Open floppy selector for drive 2 |
 | GUI + Alt + F11    | Open CD-ROM selector             |
