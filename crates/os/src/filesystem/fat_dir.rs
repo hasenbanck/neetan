@@ -223,7 +223,7 @@ pub(crate) fn find_matching(
 /// Creates a new directory entry in the given directory.
 /// Finds the first free slot (0x00 or 0xE5) and writes the entry.
 pub(crate) fn create_entry(
-    vol: &FatVolume,
+    vol: &mut FatVolume,
     dir_cluster: u16,
     entry: &DirEntry,
     disk: &mut dyn DiskIo,
@@ -249,7 +249,35 @@ pub(crate) fn create_entry(
             }
         }
     }
-    Err(0x0005) // access denied / directory full
+
+    if dir_cluster == 0 {
+        return Err(0x0005);
+    }
+
+    let mut last_cluster = dir_cluster;
+    while let Some(next_cluster) = vol.next_cluster(last_cluster) {
+        last_cluster = next_cluster;
+    }
+
+    let new_cluster = vol.allocate_cluster(last_cluster).ok_or(0x0005u16)?;
+    let cluster_size = vol.bpb.sectors_per_cluster as usize * vol.bpb.bytes_per_sector as usize;
+    let zero_data = vec![0u8; cluster_size];
+    if let Err(error) = vol.write_cluster(new_cluster, &zero_data, disk) {
+        vol.write_fat_entry(last_cluster, if vol.is_fat16 { 0xFFFF } else { 0x0FFF });
+        vol.write_fat_entry(new_cluster, 0);
+        return Err(error);
+    }
+
+    let abs_sector = vol.cluster_to_lba(new_cluster);
+    let mut sector_data = vec![0u8; sector_size];
+    let entry_bytes = entry.to_bytes();
+    sector_data[..DIR_ENTRY_SIZE].copy_from_slice(&entry_bytes);
+    vol.write_sector_abs(abs_sector, &sector_data, disk)?;
+
+    let mut created = entry.clone();
+    created.dir_sector = abs_sector;
+    created.dir_offset = 0;
+    Ok(created)
 }
 
 /// Updates an existing directory entry on disk at its stored location.

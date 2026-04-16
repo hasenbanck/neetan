@@ -1488,6 +1488,240 @@ pub fn create_test_cdimage() -> device::cdrom::CdImage {
     device::cdrom::CdImage::from_cue(cue, bin_data).unwrap()
 }
 
+pub fn create_test_cdimage_with_xcopy_tree() -> device::cdrom::CdImage {
+    let cue = r#"FILE "xcopy.bin" BINARY
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+  TRACK 02 AUDIO
+    INDEX 01 00:02:00
+"#;
+    const ROOT_DIR_LBA: u32 = 20;
+    const SOURCE_DIR_LBA: u32 = 21;
+    const SUBONE_DIR_LBA: u32 = 22;
+    const SUBTWO_DIR_LBA: u32 = 23;
+    const EMPTY_DIR_LBA: u32 = 24;
+    const ROOT1_LBA: u32 = 30;
+    const ROOT2_LBA: u32 = 31;
+    const CHILD1_LBA: u32 = 32;
+    const CHILD2_LBA: u32 = 33;
+    const ROOT1_DATA: &[u8] = b"ROOT1\r\n";
+    const ROOT2_DATA: &[u8] = b"ROOT2\r\n";
+    const CHILD1_DATA: &[u8] = b"CHILD1\r\n";
+    const CHILD2_DATA: &[u8] = b"CHILD2\r\n";
+
+    let mut bin_data = Vec::with_capacity(2352 * 200);
+    for sector_index in 0..150u32 {
+        let mut user_data = [0u8; 2048];
+        match sector_index {
+            16 => {
+                user_data[0] = 1;
+                user_data[1..6].copy_from_slice(b"CD001");
+                user_data[6] = 1;
+                user_data[8..40].fill(b' ');
+                user_data[8..28].copy_from_slice(b"NEETAN XCOPY TREE CD");
+                user_data[40..72].fill(b' ');
+                user_data[40..53].copy_from_slice(b"XCOPY_TREE_CD");
+                write_both_endian_u32(&mut user_data[80..88], 150);
+                write_both_endian_u16(&mut user_data[120..124], 1);
+                write_both_endian_u16(&mut user_data[124..128], 1);
+                write_both_endian_u16(&mut user_data[128..132], 2048);
+                write_both_endian_u32(&mut user_data[132..140], 10);
+                let mut root_record_offset = 156usize;
+                write_cd_directory_record(
+                    &mut user_data,
+                    &mut root_record_offset,
+                    &[0],
+                    ROOT_DIR_LBA,
+                    2048,
+                    true,
+                );
+            }
+            17 => {
+                user_data[0] = 0xFF;
+                user_data[1..6].copy_from_slice(b"CD001");
+                user_data[6] = 1;
+            }
+            ROOT_DIR_LBA => {
+                let mut offset = 0usize;
+                write_cd_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    &[0],
+                    ROOT_DIR_LBA,
+                    2048,
+                    true,
+                );
+                write_cd_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    &[1],
+                    ROOT_DIR_LBA,
+                    2048,
+                    true,
+                );
+                write_cd_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    b"YOURFOLD",
+                    SOURCE_DIR_LBA,
+                    2048,
+                    true,
+                );
+            }
+            SOURCE_DIR_LBA => {
+                let mut offset = 0usize;
+                write_cd_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    &[0],
+                    SOURCE_DIR_LBA,
+                    2048,
+                    true,
+                );
+                write_cd_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    &[1],
+                    ROOT_DIR_LBA,
+                    2048,
+                    true,
+                );
+                write_cd_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    b"ROOT1.TXT;1",
+                    ROOT1_LBA,
+                    ROOT1_DATA.len() as u32,
+                    false,
+                );
+                write_cd_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    b"ROOT2.TXT;1",
+                    ROOT2_LBA,
+                    ROOT2_DATA.len() as u32,
+                    false,
+                );
+                write_cd_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    b"SUBONE",
+                    SUBONE_DIR_LBA,
+                    2048,
+                    true,
+                );
+                write_cd_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    b"SUBTWO",
+                    SUBTWO_DIR_LBA,
+                    2048,
+                    true,
+                );
+                write_cd_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    b"EMPTY",
+                    EMPTY_DIR_LBA,
+                    2048,
+                    true,
+                );
+            }
+            SUBONE_DIR_LBA => {
+                let mut offset = 0usize;
+                write_cd_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    &[0],
+                    SUBONE_DIR_LBA,
+                    2048,
+                    true,
+                );
+                write_cd_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    &[1],
+                    SOURCE_DIR_LBA,
+                    2048,
+                    true,
+                );
+                write_cd_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    b"CHILD1.TXT;1",
+                    CHILD1_LBA,
+                    CHILD1_DATA.len() as u32,
+                    false,
+                );
+            }
+            SUBTWO_DIR_LBA => {
+                let mut offset = 0usize;
+                write_cd_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    &[0],
+                    SUBTWO_DIR_LBA,
+                    2048,
+                    true,
+                );
+                write_cd_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    &[1],
+                    SOURCE_DIR_LBA,
+                    2048,
+                    true,
+                );
+                write_cd_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    b"CHILD2.TXT;1",
+                    CHILD2_LBA,
+                    CHILD2_DATA.len() as u32,
+                    false,
+                );
+            }
+            EMPTY_DIR_LBA => {
+                let mut offset = 0usize;
+                write_cd_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    &[0],
+                    EMPTY_DIR_LBA,
+                    2048,
+                    true,
+                );
+                write_cd_directory_record(
+                    &mut user_data,
+                    &mut offset,
+                    &[1],
+                    SOURCE_DIR_LBA,
+                    2048,
+                    true,
+                );
+            }
+            ROOT1_LBA => {
+                user_data[..ROOT1_DATA.len()].copy_from_slice(ROOT1_DATA);
+            }
+            ROOT2_LBA => {
+                user_data[..ROOT2_DATA.len()].copy_from_slice(ROOT2_DATA);
+            }
+            CHILD1_LBA => {
+                user_data[..CHILD1_DATA.len()].copy_from_slice(CHILD1_DATA);
+            }
+            CHILD2_LBA => {
+                user_data[..CHILD2_DATA.len()].copy_from_slice(CHILD2_DATA);
+            }
+            _ => {
+                user_data.fill(0x11);
+            }
+        }
+        bin_data.extend_from_slice(&make_mode1_raw_sector(&user_data));
+    }
+    bin_data.extend_from_slice(&vec![0xAAu8; 2352 * 50]);
+    device::cdrom::CdImage::from_cue(cue, bin_data).unwrap()
+}
+
 pub fn write_temp_mode2_multi_file_cdrom(name: &str) -> TempCdromCueFiles {
     const ROOT_DIRECTORY_LBA: u32 = 20;
     const README_LBA: u32 = 21;
@@ -1629,6 +1863,19 @@ pub fn boot_hle_with_cdrom_path(path: &std::path::Path) -> machine::Pc9821Ap {
         HLE_BOOT_MAX_CYCLES,
         HLE_BOOT_CHECK_INTERVAL,
         "HLE OS did not show prompt within 500000000 cycles (CDROM path)",
+    );
+
+    machine
+}
+
+pub fn boot_hle_with_cdrom_image(cdimage: device::cdrom::CdImage) -> machine::Pc9821Ap {
+    let mut machine = create_hle_machine_ap();
+    machine.bus.insert_cdrom(cdimage);
+    wait_for_prompt(
+        &mut machine,
+        HLE_BOOT_MAX_CYCLES,
+        HLE_BOOT_CHECK_INTERVAL,
+        "HLE OS did not show prompt within 500000000 cycles (custom CDROM)",
     );
 
     machine
