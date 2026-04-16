@@ -289,6 +289,10 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     sdip: Sdip,
     /// BIOS HLE trap controller.
     bios: device::bios::BiosController,
+    /// Whether the BIOS interval timer single-shot service is currently armed.
+    bios_interval_timer_active: bool,
+    /// Cached CPU mode for deciding whether PIT IRQ0 still flows through BIOS INT 08h HLE.
+    current_cpu_protected_mode: bool,
     a20_enabled: bool,
     machine_model: MachineModel,
     reset_pending: bool,
@@ -385,6 +389,11 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
 }
 
 impl<T: Tracing> Pc9801Bus<T> {
+    /// Updates the cached CPU mode used for IRQ0 / BIOS interval-timer routing.
+    pub(crate) fn set_cpu_protected_mode_enabled(&mut self, enabled: bool) {
+        self.current_cpu_protected_mode = enabled;
+    }
+
     /// Sets the boot device for the HLE bootstrap.
     pub fn set_boot_device(&mut self, device: BootDevice) {
         self.boot_device = device;
@@ -1370,6 +1379,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             tram_wait: self.tram_wait,
             vram_wait: self.vram_wait,
             grcg_wait: self.grcg_wait,
+            bios_interval_timer_active: self.bios_interval_timer_active,
         }
     }
 
@@ -1437,6 +1447,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.tram_wait = state.tram_wait;
         self.vram_wait = state.vram_wait;
         self.grcg_wait = state.grcg_wait;
+        self.bios_interval_timer_active = state.bios_interval_timer_active;
         self.reset_pending = false;
         self.shutdown_requested = false;
     }
@@ -1716,6 +1727,9 @@ impl<T: Tracing> Pc9801Bus<T> {
                         self.current_cycle,
                     );
                     if raise_irq {
+                        if self.current_cpu_protected_mode {
+                            self.handle_bios_interval_timer_tick();
+                        }
                         self.pic.set_irq(0);
                         self.tracer.trace_irq_raise(0);
                     }

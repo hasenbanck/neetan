@@ -125,4 +125,6 @@ pub struct MachineState {
     pub vram_wait: i64,
     /// Current GRCG VRAM access wait penalty in CPU cycles.
     pub grcg_wait: i64,
+    /// Whether the BIOS interval timer single-shot service is currently armed.
+    pub bios_interval_timer_active: bool,
 }

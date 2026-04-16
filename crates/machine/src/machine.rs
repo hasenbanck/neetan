@@ -23,9 +23,13 @@ impl<C: Cpu, T: Tracing> Machine<C, T> {
     pub fn run_for(&mut self, budget: u64) -> u64 {
         let mut total = 0u64;
         while total < budget {
+            self.bus
+                .set_cpu_protected_mode_enabled(self.cpu.cr0() & 1 != 0);
             let remaining = budget - total;
             let ran = self.cpu.run_for(remaining, &mut self.bus);
             total += ran;
+            self.bus
+                .set_cpu_protected_mode_enabled(self.cpu.cr0() & 1 != 0);
 
             if let Some(warm_ctx) = self.bus.take_reset_pending() {
                 if self.bus.shutdown_requested() {
@@ -44,13 +48,19 @@ impl<C: Cpu, T: Tracing> Machine<C, T> {
 
             if self.bus.sasi_hle_pending() {
                 self.bus.set_hle_paging(self.cpu.cr0(), self.cpu.cr3());
-                self.bus.execute_sasi_hle(self.cpu.ss(), self.cpu.sp());
+                self.bus.execute_sasi_hle(
+                    self.cpu.segment_base(common::SegmentRegister::SS),
+                    self.cpu.sp(),
+                );
                 continue;
             }
 
             if self.bus.ide_hle_pending() {
                 self.bus.set_hle_paging(self.cpu.cr0(), self.cpu.cr3());
-                self.bus.execute_ide_hle(self.cpu.ss(), self.cpu.sp());
+                self.bus.execute_ide_hle(
+                    self.cpu.segment_base(common::SegmentRegister::SS),
+                    self.cpu.sp(),
+                );
                 continue;
             }
 
@@ -82,6 +92,8 @@ impl<C: Cpu, T: Tracing> Machine<C, T> {
                         let idle = event_cycle - current;
                         self.bus.set_current_cycle(event_cycle);
                         total += idle;
+                        self.bus
+                            .set_cpu_protected_mode_enabled(self.cpu.cr0() & 1 != 0);
                         let retry = self.cpu.run_for(1, &mut self.bus);
                         if retry == 0 && self.cpu.halted() {
                             continue;

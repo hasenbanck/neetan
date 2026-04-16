@@ -697,6 +697,12 @@ pub trait Cpu {
     /// and the CPU must use the new base for subsequent memory accesses.
     fn load_segment_real_mode(&mut self, seg: SegmentRegister, selector: u16);
 
+    /// Returns the cached linear base for the given segment register.
+    ///
+    /// In real mode this is `selector << 4`. In protected mode it is the
+    /// descriptor base cached by the CPU core.
+    fn segment_base(&self, seg: SegmentRegister) -> u32;
+
     /// Returns CR0 (control register 0). Only meaningful for 386+.
     fn cr0(&self) -> u32 {
         0

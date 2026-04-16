@@ -17,7 +17,8 @@ use crate::{Tracing, memory::Pc9801Memory};
 const PIT_CLOCK_8MHZ_LINEAGE: u32 = 1_996_800;
 
 fn iret_stack_base(cpu: &impl Cpu) -> u32 {
-    (u32::from(cpu.ss()) << 4).wrapping_add(u32::from(cpu.sp()))
+    cpu.segment_base(common::SegmentRegister::SS)
+        .wrapping_add(u32::from(cpu.sp()))
 }
 
 pub(super) fn hle_page_translate(cr0: u32, cr3: u32, linear: u32, memory: &Pc9801Memory) -> u32 {
@@ -47,6 +48,47 @@ pub(super) fn hle_page_translate(cr0: u32, cr3: u32, linear: u32, memory: &Pc980
 }
 
 impl<T: Tracing> Pc9801Bus<T> {
+    pub(crate) fn handle_bios_interval_timer_tick(&mut self) {
+        if !self.bios_interval_timer_active {
+            return;
+        }
+
+        let count = self.ram_read_u16(0x058A);
+        let new_count = count.wrapping_sub(1);
+        self.ram_write_u16(0x058A, new_count);
+
+        if count > 0 && new_count == 0 {
+            self.bios_interval_timer_active = false;
+            self.pic.state.chips[0].imr |= 0x01;
+            self.pic.invalidate_irq_cache();
+        }
+    }
+
+    fn hle_linear_address(&self, cpu: &impl Cpu, seg: common::SegmentRegister, off: u32) -> u32 {
+        cpu.segment_base(seg).wrapping_add(off)
+    }
+
+    fn hle_physical_address(&self, cpu: &impl Cpu, seg: common::SegmentRegister, off: u32) -> u32 {
+        let linear = self.hle_linear_address(cpu, seg, off);
+        hle_page_translate(self.hle_cr0, self.hle_cr3, linear, &self.memory)
+    }
+
+    fn hle_read_byte(&self, cpu: &impl Cpu, seg: common::SegmentRegister, off: u32) -> u8 {
+        let phys = self.hle_physical_address(cpu, seg, off);
+        self.read_byte_direct(phys)
+    }
+
+    fn hle_write_byte(
+        &mut self,
+        cpu: &impl Cpu,
+        seg: common::SegmentRegister,
+        off: u32,
+        value: u8,
+    ) {
+        let phys = self.hle_physical_address(cpu, seg, off);
+        self.memory.write_byte(phys, value);
+    }
+
     /// Configures paging state used by HLE BIOS routines (SASI, INT 1Fh, etc.).
     /// When paging is active (CR0.PG + CR0.PE), HLE memory accesses translate
     /// linear addresses through the page tables rooted at CR3.
@@ -64,7 +106,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         // trap port address and vector number. Restore the caller's original
         // values and adjust SP so the IRET frame sits at SS:SP+0.
         let sp = cpu.sp();
-        let ss_base = u32::from(cpu.ss()) << 4;
+        let ss_base = cpu.segment_base(common::SegmentRegister::SS);
         let saved_dx = self.read_word_direct(ss_base.wrapping_add(u32::from(sp)));
         let saved_ax = self.read_word_direct(ss_base.wrapping_add(u32::from(sp.wrapping_add(2))));
         cpu.set_dx(saved_dx);
@@ -171,6 +213,11 @@ impl<T: Tracing> Pc9801Bus<T> {
     }
 
     fn hle_int08h(&mut self, cpu: &mut impl Cpu) {
+        if !self.bios_interval_timer_active {
+            self.pic.write_port0(0, 0x20);
+            return;
+        }
+
         // IRET frame layout at SS:SP: [IP +0] [CS +2] [FLAGS +4].
         let iret_base = iret_stack_base(cpu);
 
@@ -179,6 +226,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.ram_write_u16(0x058A, new_count);
 
         if new_count == 0 && count > 0 {
+            self.bios_interval_timer_active = false;
             // Timer expired (decremented from 1 to 0).
             // Mask IRQ 0 in master PIC. The real BIOS masks the timer
             // before calling the callback, preventing re-entrant timer
@@ -2297,7 +2345,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 let pos = geometry
                     .map(|g| device::sasi::sector_position(drive_select, cx, dx, &g))
                     .unwrap_or(0);
-                let addr = device::sasi::buffer_address(es, bp);
+                let addr = self.hle_linear_address(cpu, common::SegmentRegister::ES, u32::from(bp));
                 let cr0 = self.hle_cr0;
                 let cr3 = self.hle_cr3;
                 let memory = &self.memory;
@@ -2312,7 +2360,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 let pos = geometry
                     .map(|g| device::sasi::sector_position(drive_select, cx, dx, &g))
                     .unwrap_or(0);
-                let addr = device::sasi::buffer_address(es, bp);
+                let addr = self.hle_linear_address(cpu, common::SegmentRegister::ES, u32::from(bp));
                 let cr0 = self.hle_cr0;
                 let cr3 = self.hle_cr3;
                 let memory = &mut self.memory;
@@ -2413,7 +2461,8 @@ impl<T: Tracing> Pc9801Bus<T> {
                     let pos = geometry
                         .map(|g| device::ide::sector_position(drive_select, cx, dx, &g))
                         .unwrap_or(0);
-                    let addr = device::ide::buffer_address(es, bp);
+                    let addr =
+                        self.hle_linear_address(cpu, common::SegmentRegister::ES, u32::from(bp));
                     let cr0 = self.hle_cr0;
                     let cr3 = self.hle_cr3;
                     let memory = &self.memory;
@@ -2428,7 +2477,8 @@ impl<T: Tracing> Pc9801Bus<T> {
                     let pos = geometry
                         .map(|g| device::ide::sector_position(drive_select, cx, dx, &g))
                         .unwrap_or(0);
-                    let addr = device::ide::buffer_address(es, bp);
+                    let addr =
+                        self.hle_linear_address(cpu, common::SegmentRegister::ES, u32::from(bp));
                     let cr0 = self.hle_cr0;
                     let cr3 = self.hle_cr3;
                     let memory = &mut self.memory;
@@ -2470,23 +2520,24 @@ impl<T: Tracing> Pc9801Bus<T> {
 
     fn int1ch_get_datetime(&mut self, cpu: &mut impl Cpu) {
         let time = (self.host_local_time_fn)();
-        let dest_seg = cpu.es();
-        let dest_off = cpu.bx();
-        let dest_base = (u32::from(dest_seg) << 4).wrapping_add(u32::from(dest_off));
-
         for (i, &byte) in time.iter().enumerate() {
-            self.memory.write_byte(dest_base + i as u32, byte);
+            self.hle_write_byte(
+                cpu,
+                common::SegmentRegister::ES,
+                u32::from(cpu.bx()) + i as u32,
+                byte,
+            );
         }
     }
 
     fn int1ch_set_datetime(&mut self, cpu: &mut impl Cpu) {
-        let src_seg = cpu.es();
-        let src_off = cpu.bx();
-        let src_base = (u32::from(src_seg) << 4).wrapping_add(u32::from(src_off));
-
         let mut buf = [0u8; 6];
         for (i, buf_byte) in buf.iter_mut().enumerate() {
-            *buf_byte = self.read_byte_direct(src_base + i as u32);
+            *buf_byte = self.hle_read_byte(
+                cpu,
+                common::SegmentRegister::ES,
+                u32::from(cpu.bx()) + i as u32,
+            );
         }
 
         // Store year in Memory Switch 8 (text VRAM offset 0x3FFE).
@@ -2507,6 +2558,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         // Store counter at CA_TIM_CNT (0x058A).
         self.ram_write_u16(0x058A, count);
+        self.bios_interval_timer_active = true;
 
         // Program PIT channel 0 for 10ms interval timer.
         let divider: u16 = if self.clocks.pit_clock_hz == PIT_CLOCK_8MHZ_LINEAGE {

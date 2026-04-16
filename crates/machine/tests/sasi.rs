@@ -90,7 +90,7 @@ fn read_sasi_result(bus: &mut Pc9801Bus<NoTracing>) -> (u8, u8) {
 /// SP+0x0A: ES, SP+0x0C: DI, SP+0x0E: SI, SP+0x10: DS,
 /// SP+0x12: IP, SP+0x14: CS, SP+0x16: FLAGS
 struct SasiTestFrame {
-    ss: u16,
+    ss_base: u32,
     sp: u16,
 }
 
@@ -107,7 +107,8 @@ impl SasiTestFrame {
         bp: u16,
         es: u16,
     ) -> Self {
-        let base = (u32::from(Self::SS) << 4) + u32::from(Self::SP);
+        let ss_base = u32::from(Self::SS) << 4;
+        let base = ss_base + u32::from(Self::SP);
         let words: [u16; 12] = [
             ax, bx, cx, dx, bp, es, // registers
             0, 0, 0, // DI, SI, DS
@@ -119,23 +120,23 @@ impl SasiTestFrame {
             bus.write_byte(addr + 1, (w >> 8) as u8);
         }
         Self {
-            ss: Self::SS,
+            ss_base,
             sp: Self::SP,
         }
     }
 
     fn result_ah(&self, bus: &mut Pc9801Bus<NoTracing>) -> u8 {
-        let base = (u32::from(self.ss) << 4) + u32::from(self.sp);
+        let base = self.ss_base + u32::from(self.sp);
         bus.read_byte(base + 1)
     }
 
     fn result_cf(&self, bus: &mut Pc9801Bus<NoTracing>) -> bool {
-        let base = (u32::from(self.ss) << 4) + u32::from(self.sp);
+        let base = self.ss_base + u32::from(self.sp);
         bus.read_byte(base + 0x16) & 0x01 != 0
     }
 
     fn read_stack_word(&self, bus: &mut Pc9801Bus<NoTracing>, offset: u32) -> u16 {
-        let base = (u32::from(self.ss) << 4) + u32::from(self.sp);
+        let base = self.ss_base + u32::from(self.sp);
         let lo = bus.read_byte(base + offset) as u16;
         let hi = bus.read_byte(base + offset + 1) as u16;
         lo | (hi << 8)
@@ -367,7 +368,7 @@ fn sasi_hle_init_sets_disk_equipment_word() {
     // AH=0x03 (init), AL=0x80 (drive 0).
     let frame = SasiTestFrame::new(&mut bus, 0x0380, 0, 0, 0, 0, 0);
 
-    bus.execute_sasi_hle(frame.ss, frame.sp);
+    bus.execute_sasi_hle(frame.ss_base, frame.sp);
 
     // Disk equipment word at 0000:055C should indicate drive 0 present.
     let equip_lo = bus.read_byte(0x055C);
@@ -403,7 +404,7 @@ fn sasi_hle_read_copies_sector_to_memory() {
     // CX=0x0000 (cylinder 0), DX=0x0005 (DH=0 head 0, DL=5 sector 5).
     let frame = SasiTestFrame::new(&mut bus, 0x0680, 0x0100, 0x0000, 0x0005, 0x0000, 0x2000);
 
-    bus.execute_sasi_hle(frame.ss, frame.sp);
+    bus.execute_sasi_hle(frame.ss_base, frame.sp);
 
     // LBA 5 marker bytes: 0x00, 0x05.
     assert_eq!(bus.read_byte(0x20000), 0x00, "sector 5 byte 0");
@@ -426,7 +427,7 @@ fn sasi_hle_write_modifies_drive_image() {
     // AH=0x05 (write), AL=0x80 (drive 0), BX=256 (1 sector), CX=10 (LBA 10).
     let frame = SasiTestFrame::new(&mut bus, 0x0580, 0x0100, 0x000A, 0x0000, 0x0000, 0x2000);
 
-    bus.execute_sasi_hle(frame.ss, frame.sp);
+    bus.execute_sasi_hle(frame.ss_base, frame.sp);
 
     assert_eq!(frame.result_ah(&mut bus), 0x00, "write should succeed");
 
@@ -435,7 +436,7 @@ fn sasi_hle_write_modifies_drive_image() {
         bus.write_byte(0x30000 + i, 0x00);
     }
     let frame2 = SasiTestFrame::new(&mut bus, 0x0680, 0x0100, 0x000A, 0x0000, 0x0000, 0x3000);
-    bus.execute_sasi_hle(frame2.ss, frame2.sp);
+    bus.execute_sasi_hle(frame2.ss_base, frame2.sp);
 
     for i in 0..256u32 {
         assert_eq!(
@@ -457,7 +458,7 @@ fn sasi_hle_sense_returns_media_type() {
     // Keep a sentinel value in ES:BP to ensure legacy sense does not write a buffer byte.
     bus.write_byte(0x20000, 0xFF);
 
-    bus.execute_sasi_hle(frame.ss, frame.sp);
+    bus.execute_sasi_hle(frame.ss_base, frame.sp);
 
     // 5 MB SASI = media type 0 in AH.
     assert_eq!(
@@ -481,7 +482,7 @@ fn sasi_hle_new_sense_84_returns_geometry_in_registers() {
     // AH=0x84 (new sense), AL=0x80 (drive 0).
     let frame = SasiTestFrame::new(&mut bus, 0x8480, 0xFFFF, 0xFFFF, 0xFFFF, 0, 0);
 
-    bus.execute_sasi_hle(frame.ss, frame.sp);
+    bus.execute_sasi_hle(frame.ss_base, frame.sp);
 
     assert_eq!(
         frame.result_ah(&mut bus),
@@ -519,7 +520,7 @@ fn sasi_hle_read_no_drive_sets_error_and_carry() {
 
     let frame = SasiTestFrame::new(&mut bus, 0x0680, 0x0100, 0x0000, 0x0000, 0x0000, 0x2000);
 
-    bus.execute_sasi_hle(frame.ss, frame.sp);
+    bus.execute_sasi_hle(frame.ss_base, frame.sp);
 
     assert_ne!(
         frame.result_ah(&mut bus),
@@ -547,7 +548,7 @@ fn sasi_hle_yield_flag_triggers_and_clears() {
 
     // Set up a valid stack frame and execute.
     let frame = SasiTestFrame::new(&mut bus, 0x0180, 0, 0, 0, 0, 0); // AH=0x01 (verify, no-op)
-    bus.execute_sasi_hle(frame.ss, frame.sp);
+    bus.execute_sasi_hle(frame.ss_base, frame.sp);
 
     // Flag should be cleared after execution.
     assert!(!bus.sasi_hle_pending());
@@ -609,7 +610,7 @@ fn sasi_hle_unsupported_function_returns_error() {
 
     // AH=0x02 is unsupported. Should return 0x40 (Equipment Check) with CF set.
     let frame = SasiTestFrame::new(&mut bus, 0x0280, 0, 0, 0, 0, 0);
-    bus.execute_sasi_hle(frame.ss, frame.sp);
+    bus.execute_sasi_hle(frame.ss_base, frame.sp);
 
     assert_eq!(
         frame.result_ah(&mut bus),
@@ -664,7 +665,7 @@ fn sasi_hle_read_with_paging() {
     // ES:BP = 0x2000:0x0000 -> linear 0x20000 -> remapped to physical 0x30000.
     let frame = SasiTestFrame::new(&mut bus, 0x0680, 0x0100, 0x0000, 0x0005, 0x0000, 0x2000);
 
-    bus.execute_sasi_hle(frame.ss, frame.sp);
+    bus.execute_sasi_hle(frame.ss_base, frame.sp);
 
     // Data should appear at physical 0x30000, NOT at 0x20000.
     assert_eq!(
@@ -709,7 +710,7 @@ fn sasi_hle_write_with_paging() {
     // ES:BP = 0x2000:0x0000 -> linear 0x20000 -> remapped to physical 0x30000.
     let frame = SasiTestFrame::new(&mut bus, 0x0580, 0x0100, 0x000A, 0x0000, 0x0000, 0x2000);
 
-    bus.execute_sasi_hle(frame.ss, frame.sp);
+    bus.execute_sasi_hle(frame.ss_base, frame.sp);
 
     assert_eq!(frame.result_ah(&mut bus), 0x00, "write should succeed");
 
@@ -719,7 +720,7 @@ fn sasi_hle_write_with_paging() {
         bus.write_byte(0x40000 + i, 0x00);
     }
     let frame2 = SasiTestFrame::new(&mut bus, 0x0680, 0x0100, 0x000A, 0x0000, 0x0000, 0x4000);
-    bus.execute_sasi_hle(frame2.ss, frame2.sp);
+    bus.execute_sasi_hle(frame2.ss_base, frame2.sp);
 
     for i in 0..256u32 {
         assert_eq!(

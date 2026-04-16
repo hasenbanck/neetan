@@ -30,7 +30,7 @@ fn make_test_drive() -> HddImage {
 /// SP+0x0A: ES, SP+0x0C: DI, SP+0x0E: SI, SP+0x10: DS,
 /// SP+0x12: IP, SP+0x14: CS, SP+0x16: FLAGS
 struct IdeTestFrame {
-    ss: u16,
+    ss_base: u32,
     sp: u16,
 }
 
@@ -47,7 +47,8 @@ impl IdeTestFrame {
         bp: u16,
         es: u16,
     ) -> Self {
-        let base = (u32::from(Self::SS) << 4) + u32::from(Self::SP);
+        let ss_base = u32::from(Self::SS) << 4;
+        let base = ss_base + u32::from(Self::SP);
         let words: [u16; 12] = [
             ax, bx, cx, dx, bp, es, // registers
             0, 0, 0, // DI, SI, DS
@@ -59,23 +60,23 @@ impl IdeTestFrame {
             bus.write_byte(addr + 1, (w >> 8) as u8);
         }
         Self {
-            ss: Self::SS,
+            ss_base,
             sp: Self::SP,
         }
     }
 
     fn result_ah(&self, bus: &mut Pc9801Bus<NoTracing>) -> u8 {
-        let base = (u32::from(self.ss) << 4) + u32::from(self.sp);
+        let base = self.ss_base + u32::from(self.sp);
         bus.read_byte(base + 1)
     }
 
     fn result_cf(&self, bus: &mut Pc9801Bus<NoTracing>) -> bool {
-        let base = (u32::from(self.ss) << 4) + u32::from(self.sp);
+        let base = self.ss_base + u32::from(self.sp);
         bus.read_byte(base + 0x16) & 0x01 != 0
     }
 
     fn read_stack_word(&self, bus: &mut Pc9801Bus<NoTracing>, offset: u32) -> u16 {
-        let base = (u32::from(self.ss) << 4) + u32::from(self.sp);
+        let base = self.ss_base + u32::from(self.sp);
         let lo = bus.read_byte(base + offset) as u16;
         let hi = bus.read_byte(base + offset + 1) as u16;
         lo | (hi << 8)
@@ -318,7 +319,7 @@ fn ide_hle_init_sets_disk_equipment_word() {
     // AH=0x03 (init), AL=0x80 (drive 0).
     let frame = IdeTestFrame::new(&mut bus, 0x0380, 0, 0, 0, 0, 0);
 
-    bus.execute_ide_hle(frame.ss, frame.sp);
+    bus.execute_ide_hle(frame.ss_base, frame.sp);
 
     // Disk equipment word at 0000:055C should indicate drive 0 present.
     let equip_lo = bus.read_byte(0x055C);
@@ -350,7 +351,7 @@ fn ide_hle_read_copies_sector_to_memory() {
     // CX=0x0000 (cylinder 0), DX=0x0005 (DH=0 head 0, DL=5 sector 5).
     let frame = IdeTestFrame::new(&mut bus, 0x0680, 0x0200, 0x0000, 0x0005, 0x0000, 0x2000);
 
-    bus.execute_ide_hle(frame.ss, frame.sp);
+    bus.execute_ide_hle(frame.ss_base, frame.sp);
 
     // LBA 5 marker bytes: 0x00, 0x05.
     assert_eq!(bus.read_byte(0x20000), 0x00, "sector 5 byte 0");
@@ -373,7 +374,7 @@ fn ide_hle_write_modifies_drive_image() {
     // AH=0x05 (write), AL=0x80 (drive 0), BX=512 (1 sector), CX=10 (LBA 10).
     let frame = IdeTestFrame::new(&mut bus, 0x0580, 0x0200, 0x000A, 0x0000, 0x0000, 0x2000);
 
-    bus.execute_ide_hle(frame.ss, frame.sp);
+    bus.execute_ide_hle(frame.ss_base, frame.sp);
 
     assert_eq!(frame.result_ah(&mut bus), 0x00, "write should succeed");
 
@@ -382,7 +383,7 @@ fn ide_hle_write_modifies_drive_image() {
         bus.write_byte(0x30000 + i, 0x00);
     }
     let frame2 = IdeTestFrame::new(&mut bus, 0x0680, 0x0200, 0x000A, 0x0000, 0x0000, 0x3000);
-    bus.execute_ide_hle(frame2.ss, frame2.sp);
+    bus.execute_ide_hle(frame2.ss_base, frame2.sp);
 
     for i in 0..512u32 {
         assert_eq!(
@@ -404,7 +405,7 @@ fn ide_hle_sense_returns_media_type() {
     // Keep a sentinel value in ES:BP.
     bus.write_byte(0x20000, 0xFF);
 
-    bus.execute_ide_hle(frame.ss, frame.sp);
+    bus.execute_ide_hle(frame.ss_base, frame.sp);
 
     // IDE media type is 0x0F.
     assert_eq!(
@@ -427,7 +428,7 @@ fn ide_hle_new_sense_84_returns_geometry_in_registers() {
     // AH=0x84 (new sense), AL=0x80 (drive 0).
     let frame = IdeTestFrame::new(&mut bus, 0x8480, 0xFFFF, 0xFFFF, 0xFFFF, 0, 0);
 
-    bus.execute_ide_hle(frame.ss, frame.sp);
+    bus.execute_ide_hle(frame.ss_base, frame.sp);
 
     assert_eq!(
         frame.result_ah(&mut bus),
@@ -464,7 +465,7 @@ fn ide_hle_read_no_drive_sets_error_and_carry() {
 
     let frame = IdeTestFrame::new(&mut bus, 0x0680, 0x0200, 0x0000, 0x0000, 0x0000, 0x2000);
 
-    bus.execute_ide_hle(frame.ss, frame.sp);
+    bus.execute_ide_hle(frame.ss_base, frame.sp);
 
     assert_ne!(
         frame.result_ah(&mut bus),
@@ -490,7 +491,7 @@ fn ide_hle_yield_flag_triggers_and_clears() {
 
     // Set up a valid stack frame and execute.
     let frame = IdeTestFrame::new(&mut bus, 0x0180, 0, 0, 0, 0, 0); // AH=0x01 (verify, no-op)
-    bus.execute_ide_hle(frame.ss, frame.sp);
+    bus.execute_ide_hle(frame.ss_base, frame.sp);
 
     // Flag should be cleared after execution.
     assert!(!bus.ide_hle_pending());
@@ -503,7 +504,7 @@ fn ide_hle_unsupported_function_returns_error() {
 
     // AH=0x02 is unsupported. Should return 0x40 (Equipment Check) with CF set.
     let frame = IdeTestFrame::new(&mut bus, 0x0280, 0, 0, 0, 0, 0);
-    bus.execute_ide_hle(frame.ss, frame.sp);
+    bus.execute_ide_hle(frame.ss_base, frame.sp);
 
     assert_eq!(
         frame.result_ah(&mut bus),
@@ -520,7 +521,7 @@ fn ide_hle_check_power_mode() {
 
     // AH=0xD0 (check power mode), AL=0x80 (drive 0).
     let frame = IdeTestFrame::new(&mut bus, 0xD080, 0, 0, 0, 0, 0);
-    bus.execute_ide_hle(frame.ss, frame.sp);
+    bus.execute_ide_hle(frame.ss_base, frame.sp);
 
     assert_eq!(
         frame.result_ah(&mut bus),
@@ -537,7 +538,7 @@ fn ide_hle_motor_on() {
 
     // AH=0xE0 (motor on), AL=0x80 (drive 0).
     let frame = IdeTestFrame::new(&mut bus, 0xE080, 0, 0, 0, 0, 0);
-    bus.execute_ide_hle(frame.ss, frame.sp);
+    bus.execute_ide_hle(frame.ss_base, frame.sp);
 
     assert_eq!(
         frame.result_ah(&mut bus),
@@ -554,7 +555,7 @@ fn ide_hle_motor_off() {
 
     // AH=0xF0 (motor off), AL=0x80 (drive 0).
     let frame = IdeTestFrame::new(&mut bus, 0xF080, 0, 0, 0, 0, 0);
-    bus.execute_ide_hle(frame.ss, frame.sp);
+    bus.execute_ide_hle(frame.ss_base, frame.sp);
 
     assert_eq!(
         frame.result_ah(&mut bus),
@@ -628,7 +629,7 @@ fn ide_hle_read_with_paging() {
     // ES:BP = 0x2000:0x0000 -> linear 0x20000 -> remapped to physical 0x30000.
     let frame = IdeTestFrame::new(&mut bus, 0x0680, 0x0200, 0x0000, 0x0005, 0x0000, 0x2000);
 
-    bus.execute_ide_hle(frame.ss, frame.sp);
+    bus.execute_ide_hle(frame.ss_base, frame.sp);
 
     // Data should appear at physical 0x30000, NOT at 0x20000.
     assert_eq!(
@@ -673,7 +674,7 @@ fn ide_hle_write_with_paging() {
     // ES:BP = 0x2000:0x0000 -> linear 0x20000 -> remapped to physical 0x30000.
     let frame = IdeTestFrame::new(&mut bus, 0x0580, 0x0200, 0x000A, 0x0000, 0x0000, 0x2000);
 
-    bus.execute_ide_hle(frame.ss, frame.sp);
+    bus.execute_ide_hle(frame.ss_base, frame.sp);
 
     assert_eq!(frame.result_ah(&mut bus), 0x00, "write should succeed");
 
@@ -683,7 +684,7 @@ fn ide_hle_write_with_paging() {
         bus.write_byte(0x40000 + i, 0x00);
     }
     let frame2 = IdeTestFrame::new(&mut bus, 0x0680, 0x0200, 0x000A, 0x0000, 0x0000, 0x4000);
-    bus.execute_ide_hle(frame2.ss, frame2.sp);
+    bus.execute_ide_hle(frame2.ss_base, frame2.sp);
 
     for i in 0..512u32 {
         assert_eq!(
@@ -800,7 +801,7 @@ fn ide_sasi_compat_hle_sense_returns_sasi_media_type() {
 
     // AH=0x04 (legacy sense), AL=0x80 (drive 0).
     let frame = IdeTestFrame::new(&mut bus, 0x0480, 0, 0, 0, 0x0000, 0x2000);
-    bus.execute_ide_hle(frame.ss, frame.sp);
+    bus.execute_ide_hle(frame.ss_base, frame.sp);
 
     // 5 MB SASI type returns 0x00 (new sense code for type 0).
     assert_eq!(
@@ -818,7 +819,7 @@ fn ide_sasi_compat_hle_new_sense_returns_geometry() {
 
     // AH=0x84 (new sense), AL=0x80 (drive 0).
     let frame = IdeTestFrame::new(&mut bus, 0x8480, 0xFFFF, 0xFFFF, 0xFFFF, 0, 0);
-    bus.execute_ide_hle(frame.ss, frame.sp);
+    bus.execute_ide_hle(frame.ss_base, frame.sp);
 
     assert_eq!(
         frame.result_ah(&mut bus),
@@ -859,7 +860,7 @@ fn ide_sasi_compat_hle_read_copies_256_byte_sector() {
     // AH=0x06 (read), AL=0x80 (drive 0, CHS mode), BX=256 (1 sector).
     // CHS(0, 0, 5) = LBA 5 for geometry 153C/4H/33S.
     let frame = IdeTestFrame::new(&mut bus, 0x0680, 0x0100, 0x0000, 0x0005, 0x0000, 0x2000);
-    bus.execute_ide_hle(frame.ss, frame.sp);
+    bus.execute_ide_hle(frame.ss_base, frame.sp);
 
     // LBA 5 marker bytes: 0x00, 0x05.
     assert_eq!(bus.read_byte(0x20000), 0x00, "sector 5 byte 0");
@@ -881,7 +882,7 @@ fn ide_sasi_compat_hle_write_modifies_drive_image() {
 
     // AH=0x05 (write), AL=0x80 (drive 0), BX=256 (1 sector), CX=10 (LBA 10).
     let frame = IdeTestFrame::new(&mut bus, 0x0580, 0x0100, 0x000A, 0x0000, 0x0000, 0x2000);
-    bus.execute_ide_hle(frame.ss, frame.sp);
+    bus.execute_ide_hle(frame.ss_base, frame.sp);
 
     assert_eq!(frame.result_ah(&mut bus), 0x00, "write should succeed");
 
@@ -890,7 +891,7 @@ fn ide_sasi_compat_hle_write_modifies_drive_image() {
         bus.write_byte(0x30000 + i, 0x00);
     }
     let frame2 = IdeTestFrame::new(&mut bus, 0x0680, 0x0100, 0x000A, 0x0000, 0x0000, 0x3000);
-    bus.execute_ide_hle(frame2.ss, frame2.sp);
+    bus.execute_ide_hle(frame2.ss_base, frame2.sp);
 
     for i in 0..256u32 {
         assert_eq!(
