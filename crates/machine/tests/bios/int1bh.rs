@@ -1,3 +1,4 @@
+use common::Bus;
 use device::{
     disk::{HddFormat, HddGeometry, HddImage},
     floppy::FloppyImage,
@@ -109,6 +110,23 @@ fn make_int1bh_simple(ah: u8, al: u8) -> Vec<u8> {
         0xCD, 0x1B,             // INT 0x1B
         0xA3, 0x00, 0x06,       // MOV [RESULT], AX
         0xF4,                   // HLT
+    ]
+}
+
+#[rustfmt::skip]
+fn make_int1bh_hle_trap(ah: u8, al: u8, bx: u16, cx: u16, dx: u16, bp: u16) -> Vec<u8> {
+    vec![
+        0xB8, al, ah,                     // MOV AX, ah:al
+        0xBB, bx as u8, (bx >> 8) as u8, // MOV BX, imm16
+        0xB9, cx as u8, (cx >> 8) as u8, // MOV CX, imm16
+        0xBA, dx as u8, (dx >> 8) as u8, // MOV DX, imm16
+        0xBD, bp as u8, (bp >> 8) as u8, // MOV BP, imm16
+        0x50,                             // PUSH AX
+        0x52,                             // PUSH DX
+        0xBA, 0xF0, 0x07,                 // MOV DX, 0x07F0
+        0xB0, 0x1B,                       // MOV AL, 0x1B
+        0xEE,                             // OUT DX, AL
+        0xF4,                             // HLT
     ]
 }
 
@@ -2671,6 +2689,69 @@ fn int1bh_ide_sense_new_pc9821() {
     assert_eq!(cx, 19, "CX should be cylinders - 1 (20 - 1 = 19)");
     let dx = read_ram_u16(&state.memory.ram, RESULT as usize + 6);
     assert_eq!(dx, 0x0411, "DX should encode DH=heads(4), DL=sectors(17)");
+}
+
+#[test]
+fn int1bh_ide_read_uses_segment_base_in_protected_mode_pc9821() {
+    const ES_SELECTOR: u16 = 0x1234;
+    const WRONG_RESULT: u32 = (ES_SELECTOR as u32) << 4;
+
+    let code = make_int1bh_hle_trap(0x06, DA_IDE_CHS_DRIVE0, 0x0200, 0x0000, 0x0005, 0x0000);
+    let mut machine = create_machine_pc9821as();
+    machine.bus.insert_hdd(0, make_ide_test_drive(), None);
+    boot_to_halt!(machine);
+    write_bytes(&mut machine.bus, TEST_CODE, &code);
+
+    for i in 0..512u32 {
+        machine.bus.write_byte(RESULT + i, 0x00);
+        machine.bus.write_byte(WRONG_RESULT + i, 0x00);
+    }
+
+    machine.cpu.load_state(&{
+        let mut s = cpu::I386State {
+            ip: TEST_CODE as u16,
+            cr0: 0x0000_0001,
+            ..Default::default()
+        };
+        s.set_esp(0x4000);
+
+        s.set_cs(0x0008);
+        s.seg_bases[cpu::SegReg32::CS as usize] = 0x0000_0000;
+        s.seg_limits[cpu::SegReg32::CS as usize] = 0x0000_FFFF;
+        s.seg_rights[cpu::SegReg32::CS as usize] = 0x9B;
+
+        s.set_ss(0x0010);
+        s.seg_bases[cpu::SegReg32::SS as usize] = 0x0000_0000;
+        s.seg_limits[cpu::SegReg32::SS as usize] = 0x0000_FFFF;
+        s.seg_rights[cpu::SegReg32::SS as usize] = 0x93;
+
+        s.set_ds(0x0010);
+        s.seg_bases[cpu::SegReg32::DS as usize] = 0x0000_0000;
+        s.seg_limits[cpu::SegReg32::DS as usize] = 0x0000_FFFF;
+        s.seg_rights[cpu::SegReg32::DS as usize] = 0x93;
+
+        s.set_es(ES_SELECTOR);
+        s.seg_bases[cpu::SegReg32::ES as usize] = RESULT;
+        s.seg_limits[cpu::SegReg32::ES as usize] = 0x0000_FFFF;
+        s.seg_rights[cpu::SegReg32::ES as usize] = 0x93;
+
+        s.seg_valid = [true, true, true, true, false, false];
+        s
+    });
+    machine.run_for(INT1BH_BUDGET);
+
+    assert_eq!(machine.bus.read_byte(RESULT), 0x00, "sector 5 byte 0");
+    assert_eq!(machine.bus.read_byte(RESULT + 1), 0x05, "sector 5 byte 1");
+    assert_eq!(
+        machine.bus.read_byte(WRONG_RESULT),
+        0x00,
+        "INT 1Bh IDE read must not use selector<<4 in protected mode"
+    );
+    assert_eq!(
+        machine.bus.read_byte(WRONG_RESULT + 1),
+        0x00,
+        "INT 1Bh IDE read must not use selector<<4 in protected mode"
+    );
 }
 
 #[test]

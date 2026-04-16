@@ -37,6 +37,21 @@ const GET_DATETIME_CODE: &[u8] = &[
     0xF4,             // HLT
 ];
 
+// Get date/time through the BIOS HLE trap with a protected-mode ES base that
+// differs from selector<<4. This must use the cached segment base, not the
+// real-mode formula.
+#[rustfmt::skip]
+const GET_DATETIME_HLE_TRAP_CODE: &[u8] = &[
+    0xBB, 0x00, 0x00, // MOV BX, 0x0000
+    0xB4, 0x00,       // MOV AH, 0x00
+    0x50,             // PUSH AX
+    0x52,             // PUSH DX
+    0xBA, 0xF0, 0x07, // MOV DX, 0x07F0
+    0xB0, 0x1C,       // MOV AL, 0x1C
+    0xEE,             // OUT DX, AL
+    0xF4,             // HLT
+];
+
 // Set date/time: ES:BX = 0000:0600 (buffer), AH=01h, then write marker.
 #[rustfmt::skip]
 const SET_DATETIME_CODE: &[u8] = &[
@@ -182,6 +197,65 @@ fn get_datetime_reads_calendar_ra() {
     machine.run_for(INT1CH_BUDGET);
 
     verify_datetime_buffer(&mut machine.bus, RESULT);
+}
+
+#[test]
+fn get_datetime_uses_segment_base_in_protected_mode_ra() {
+    const ES_SELECTOR: u16 = 0x1234;
+    const WRONG_RESULT: u32 = (ES_SELECTOR as u32) << 4;
+
+    let mut machine = create_machine_ra();
+    boot_to_halt!(machine);
+    machine.bus.set_host_local_time_fn(test_local_time);
+
+    for i in 0..6 {
+        machine.bus.write_byte(RESULT + i, 0x00);
+        machine.bus.write_byte(WRONG_RESULT + i, 0x00);
+    }
+
+    write_bytes(&mut machine.bus, TEST_CODE, GET_DATETIME_HLE_TRAP_CODE);
+    machine.cpu.load_state(&{
+        let mut s = cpu::I386State {
+            ip: TEST_CODE as u16,
+            cr0: 0x0000_0001,
+            ..Default::default()
+        };
+        s.set_esp(0x4000);
+
+        s.set_cs(0x0008);
+        s.seg_bases[cpu::SegReg32::CS as usize] = 0x0000_0000;
+        s.seg_limits[cpu::SegReg32::CS as usize] = 0x0000_FFFF;
+        s.seg_rights[cpu::SegReg32::CS as usize] = 0x9B;
+
+        s.set_ss(0x0010);
+        s.seg_bases[cpu::SegReg32::SS as usize] = 0x0000_0000;
+        s.seg_limits[cpu::SegReg32::SS as usize] = 0x0000_FFFF;
+        s.seg_rights[cpu::SegReg32::SS as usize] = 0x93;
+
+        s.set_ds(0x0010);
+        s.seg_bases[cpu::SegReg32::DS as usize] = 0x0000_0000;
+        s.seg_limits[cpu::SegReg32::DS as usize] = 0x0000_FFFF;
+        s.seg_rights[cpu::SegReg32::DS as usize] = 0x93;
+
+        s.set_es(ES_SELECTOR);
+        s.seg_bases[cpu::SegReg32::ES as usize] = RESULT;
+        s.seg_limits[cpu::SegReg32::ES as usize] = 0x0000_FFFF;
+        s.seg_rights[cpu::SegReg32::ES as usize] = 0x93;
+
+        s.seg_valid = [true, true, true, true, false, false];
+        s
+    });
+    machine.run_for(INT1CH_BUDGET);
+
+    verify_datetime_buffer(&mut machine.bus, RESULT);
+
+    for i in 0..6 {
+        assert_eq!(
+            machine.bus.read_byte(WRONG_RESULT + i),
+            0x00,
+            "INT 1Ch AH=00h must not use selector<<4 in protected mode"
+        );
+    }
 }
 
 // ============================================================================

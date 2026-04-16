@@ -2580,4 +2580,14 @@ impl<const CPU_MODEL: u8> common::Cpu for I386<CPU_MODEL> {
         self.state.sregs[seg32 as usize] = selector;
         self.set_real_segment_cache(seg32, selector);
     }
+
+    fn segment_base(&self, seg: common::SegmentRegister) -> u32 {
+        let seg32 = match seg {
+            common::SegmentRegister::ES => SegReg32::ES,
+            common::SegmentRegister::CS => SegReg32::CS,
+            common::SegmentRegister::SS => SegReg32::SS,
+            common::SegmentRegister::DS => SegReg32::DS,
+        };
+        self.state.seg_bases[seg32 as usize]
+    }
 }

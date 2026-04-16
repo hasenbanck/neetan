@@ -78,8 +78,8 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// SP+0x0A: ES, SP+0x0C: DI, SP+0x0E: SI, SP+0x10: DS
     /// After these 9 words, the INT frame follows:
     /// SP+0x12: IP, SP+0x14: CS, SP+0x16: FLAGS
-    pub fn execute_sasi_hle(&mut self, ss: u16, sp: u16) {
-        let stack_base = (u32::from(ss) << 4).wrapping_add(u32::from(sp));
+    pub fn execute_sasi_hle(&mut self, ss_base: u32, sp: u16) {
+        let stack_base = ss_base.wrapping_add(u32::from(sp));
 
         let ax = self.read_word_direct(stack_base);
         let bx = self.read_word_direct(stack_base + 0x02);
@@ -250,8 +250,8 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// SP+0x0A: ES, SP+0x0C: DI, SP+0x0E: SI, SP+0x10: DS
     /// After these 9 words, the INT frame follows:
     /// SP+0x12: IP, SP+0x14: CS, SP+0x16: FLAGS
-    pub fn execute_ide_hle(&mut self, ss: u16, sp: u16) {
-        let stack_base = (u32::from(ss) << 4).wrapping_add(u32::from(sp));
+    pub fn execute_ide_hle(&mut self, ss_base: u32, sp: u16) {
+        let stack_base = ss_base.wrapping_add(u32::from(sp));
 
         let ax = self.read_word_direct(stack_base);
         let bx = self.read_word_direct(stack_base + 0x02);

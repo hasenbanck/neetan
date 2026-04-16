@@ -477,4 +477,13 @@ impl common::Cpu for V30 {
             common::SegmentRegister::DS => self.state.set_ds(selector),
         }
     }
+
+    fn segment_base(&self, seg: common::SegmentRegister) -> u32 {
+        match seg {
+            common::SegmentRegister::ES => u32::from(self.state.es()) << 4,
+            common::SegmentRegister::CS => u32::from(self.state.cs()) << 4,
+            common::SegmentRegister::SS => u32::from(self.state.ss()) << 4,
+            common::SegmentRegister::DS => u32::from(self.state.ds()) << 4,
+        }
+    }
 }
