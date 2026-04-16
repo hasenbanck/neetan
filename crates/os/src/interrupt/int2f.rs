@@ -193,11 +193,9 @@ impl NeetanOs {
                     cpu.set_ax(cpu.ax() & 0xFF00);
                 }
             }
-            0x10 => {
-                if xms_active {
-                    cpu.set_es(tables::XMS_ENTRY_STUB_SEGMENT);
-                    cpu.set_bx(tables::XMS_ENTRY_STUB_OFFSET);
-                }
+            0x10 if xms_active => {
+                cpu.set_es(tables::XMS_ENTRY_STUB_SEGMENT);
+                cpu.set_bx(tables::XMS_ENTRY_STUB_OFFSET);
             }
             _ => {}
         }

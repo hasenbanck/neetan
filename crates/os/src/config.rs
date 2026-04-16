@@ -147,12 +147,10 @@ pub(crate) fn parse_config_sys(data: &[u8]) -> ConfigSys {
                     config.buffers = n;
                 }
             }
-            b"LASTDRIVE" => {
-                if value_trimmed.len() == 1 {
-                    let ch = value_trimmed[0].to_ascii_uppercase();
-                    if ch.is_ascii_uppercase() {
-                        config.lastdrive = ch - b'A' + 1;
-                    }
+            b"LASTDRIVE" if value_trimmed.len() == 1 => {
+                let ch = value_trimmed[0].to_ascii_uppercase();
+                if ch.is_ascii_uppercase() {
+                    config.lastdrive = ch - b'A' + 1;
                 }
             }
             b"COUNTRY" => {
@@ -171,10 +169,8 @@ pub(crate) fn parse_config_sys(data: &[u8]) -> ConfigSys {
                     config.ctrl_break = false;
                 }
             }
-            b"SHELL" => {
-                if !value_trimmed.is_empty() {
-                    config.shell = ShellConfig::parse(value_trimmed);
-                }
+            b"SHELL" if !value_trimmed.is_empty() => {
+                config.shell = ShellConfig::parse(value_trimmed);
             }
             b"DEVICE" | b"DEVICEHIGH" => {
                 parse_device_line(value_trimmed, &mut config);

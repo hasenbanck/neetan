@@ -566,14 +566,11 @@ impl Pc9801Memory {
                     0xFF
                 }
             }
-            E_PLANE_VRAM_START..=E_PLANE_VRAM_END => {
-                if self.e_plane_enabled {
-                    // Raw memory reads target page 0. Access/display page routing is applied by the bus.
-                    self.e_plane_vram[(address - E_PLANE_VRAM_START) as usize]
-                } else {
-                    0xFF
-                }
+            E_PLANE_VRAM_START..=E_PLANE_VRAM_END if self.e_plane_enabled => {
+                // Raw memory reads target page 0. Access/display page routing is applied by the bus.
+                self.e_plane_vram[(address - E_PLANE_VRAM_START) as usize]
             }
+            E_PLANE_VRAM_START..=E_PLANE_VRAM_END => 0xFF,
             BIOS_ROM_START..=BIOS_ROM_END => {
                 let offset = (address - BIOS_ROM_START) as usize;
                 if let Some(ref shadow) = self.state.shadow_ram
@@ -632,11 +629,9 @@ impl Pc9801Memory {
                     umb[(address - UMB_START) as usize] = value;
                 }
             }
-            E_PLANE_VRAM_START..=E_PLANE_VRAM_END => {
-                if self.e_plane_enabled {
-                    // Raw memory writes target page 0. Access/display page routing is applied by the bus.
-                    self.e_plane_vram[(address - E_PLANE_VRAM_START) as usize] = value;
-                }
+            E_PLANE_VRAM_START..=E_PLANE_VRAM_END if self.e_plane_enabled => {
+                // Raw memory writes target page 0. Access/display page routing is applied by the bus.
+                self.e_plane_vram[(address - E_PLANE_VRAM_START) as usize] = value;
             }
             BIOS_ROM_START..=BIOS_ROM_END => {
                 if let Some(ref mut shadow) = self.state.shadow_ram {

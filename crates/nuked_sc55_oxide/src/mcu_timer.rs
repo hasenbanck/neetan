@@ -210,36 +210,15 @@ pub(crate) fn timer_clock(state: &mut Sc55State, cycles: u64) {
             let _ = offset;
 
             match state.frt[i as usize].tcr & 3 {
-                0 => {
-                    // o / 4
-                    if state.timer_cycles & 3 != 0 {
-                        continue;
-                    }
-                }
-                1 => {
-                    // o / 8
-                    if state.timer_cycles & 7 != 0 {
-                        continue;
-                    }
-                }
-                2 => {
-                    // o / 32
-                    if state.timer_cycles & 31 != 0 {
-                        continue;
-                    }
-                }
-                3 => {
-                    // ext (o / 2)
-                    if state.mcu_mk1 {
-                        if state.timer_cycles & 3 != 0 {
-                            continue;
-                        }
-                    } else {
-                        if state.timer_cycles & 1 != 0 {
-                            continue;
-                        }
-                    }
-                }
+                // o / 4
+                0 if state.timer_cycles & 3 != 0 => continue,
+                // o / 8
+                1 if state.timer_cycles & 7 != 0 => continue,
+                // o / 32
+                2 if state.timer_cycles & 31 != 0 => continue,
+                // ext (o / 2)
+                3 if state.mcu_mk1 && state.timer_cycles & 3 != 0 => continue,
+                3 if !state.mcu_mk1 && state.timer_cycles & 1 != 0 => continue,
                 _ => {}
             }
 
@@ -281,36 +260,15 @@ pub(crate) fn timer_clock(state: &mut Sc55State, cycles: u64) {
 
         match state.timer.tcr & 7 {
             0 | 4 => {}
-            1 => {
-                // o / 8
-                if (state.timer_cycles & 7) == 0 {
-                    timer_step = 1;
-                }
-            }
-            2 => {
-                // o / 64
-                if (state.timer_cycles & 63) == 0 {
-                    timer_step = 1;
-                }
-            }
-            3 => {
-                // o / 1024
-                if (state.timer_cycles & 1023) == 0 {
-                    timer_step = 1;
-                }
-            }
-            5..=7 => {
-                // ext (o / 2)
-                if state.mcu_mk1 {
-                    if (state.timer_cycles & 3) == 0 {
-                        timer_step = 1;
-                    }
-                } else {
-                    if (state.timer_cycles & 1) == 0 {
-                        timer_step = 1;
-                    }
-                }
-            }
+            // o / 8
+            1 if (state.timer_cycles & 7) == 0 => timer_step = 1,
+            // o / 64
+            2 if (state.timer_cycles & 63) == 0 => timer_step = 1,
+            // o / 1024
+            3 if (state.timer_cycles & 1023) == 0 => timer_step = 1,
+            // ext (o / 2)
+            5..=7 if state.mcu_mk1 && (state.timer_cycles & 3) == 0 => timer_step = 1,
+            5..=7 if !state.mcu_mk1 && (state.timer_cycles & 1) == 0 => timer_step = 1,
             _ => {}
         }
         if timer_step != 0 {

@@ -417,14 +417,12 @@ impl MpuPc98ii {
                     self.flag2 &= !bit;
                 }
                 match value & 0x0F {
-                    0x04 => {
-                        // 0x94: CLK to Host OFF
-                        if self.flag1 & FLAG1_PLAY == 0 {
-                            self.timer_active = false;
-                        }
+                    // 0x94: CLK to Host OFF
+                    0x04 if self.flag1 & FLAG1_PLAY == 0 => {
+                        self.timer_active = false;
                     }
+                    // 0x95: CLK to Host ON
                     0x05 => {
-                        // 0x95: CLK to Host ON
                         self.ensure_timer_active();
                     }
                     _ => {}

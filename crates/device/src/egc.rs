@@ -213,15 +213,11 @@ impl Egc {
             0x07 => {
                 self.state.fg = (self.state.fg & 0x00FF) | (u16::from(value) << 8);
             }
-            0x08 => {
-                if self.state.fgbg & 0x6000 == 0 {
-                    self.state.mask = (self.state.mask & 0xFF00) | u16::from(value);
-                }
+            0x08 if self.state.fgbg & 0x6000 == 0 => {
+                self.state.mask = (self.state.mask & 0xFF00) | u16::from(value);
             }
-            0x09 => {
-                if self.state.fgbg & 0x6000 == 0 {
-                    self.state.mask = (self.state.mask & 0x00FF) | (u16::from(value) << 8);
-                }
+            0x09 if self.state.fgbg & 0x6000 == 0 => {
+                self.state.mask = (self.state.mask & 0x00FF) | (u16::from(value) << 8);
             }
             0x0A => {
                 self.state.bg = (self.state.bg & 0xFF00) | u16::from(value);
@@ -266,10 +262,8 @@ impl Egc {
                 let color = (value & 0x0F) as usize;
                 self.state.fgc = MASKWORD[color];
             }
-            0x08 => {
-                if self.state.fgbg & 0x6000 == 0 {
-                    self.state.mask = value;
-                }
+            0x08 if self.state.fgbg & 0x6000 == 0 => {
+                self.state.mask = value;
             }
             0x0A => {
                 self.state.bg = value;

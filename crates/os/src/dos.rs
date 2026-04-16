@@ -423,14 +423,13 @@ impl NeetanOs {
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
     ) {
-        let mut addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
-        for _ in 0..0xFFFFu32 {
+        let start = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
+        for addr in start..start + 0xFFFFu32 {
             let byte = memory.read_byte(addr);
             if byte == b'$' {
                 break;
             }
             self.console.process_byte(memory, byte);
-            addr += 1;
         }
         cpu.set_ax((cpu.ax() & 0xFF00) | 0x24);
     }

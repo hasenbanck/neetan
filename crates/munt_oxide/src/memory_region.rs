@@ -103,7 +103,7 @@ impl MemoryRegionDescriptor {
         len: u32,
         init: bool,
     ) {
-        let mut mem_off = entry * self.entry_size + off;
+        let mem_off = entry * self.entry_size + off;
         let mut len = len;
 
         // NOTE: The original C++ write() checks bounds using the relative `off` instead of the
@@ -121,7 +121,7 @@ impl MemoryRegionDescriptor {
             None => return,
         };
 
-        for &src_value in src.iter().take(len as usize) {
+        for (mem_off, &src_value) in (mem_off..).zip(src.iter().take(len as usize)) {
             let mut desired_value = src_value;
             let max_value = get_max_value(max_table, self.entry_size, mem_off);
             // maxValue == 0 means write-protected unless called from initialisation code, in which case it really means the maximum value is 0.
@@ -131,7 +131,6 @@ impl MemoryRegionDescriptor {
                 }
                 dest[mem_off as usize] = desired_value;
             }
-            mem_off += 1;
         }
     }
 }

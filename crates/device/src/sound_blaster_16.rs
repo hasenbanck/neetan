@@ -611,19 +611,15 @@ impl SoundBlaster16 {
             }
 
             // 8-bit direct DAC output (PIO)
-            0x10 => {
-                if !params.is_empty() {
-                    let sample = params[0];
-                    self.write_pcm_byte(sample);
-                }
+            0x10 if !params.is_empty() => {
+                let sample = params[0];
+                self.write_pcm_byte(sample);
             }
 
             // 8-bit DMA single transfer
-            0x14 => {
-                if params.len() >= 2 {
-                    let length = params[0] as u32 | ((params[1] as u32) << 8);
-                    self.start_dma(DMA_FORMAT_UNSIGNED_8_MONO, length + 1, false, false);
-                }
+            0x14 if params.len() >= 2 => {
+                let length = params[0] as u32 | ((params[1] as u32) << 8);
+                self.start_dma(DMA_FORMAT_UNSIGNED_8_MONO, length + 1, false, false);
             }
 
             // 8-bit auto-init DMA
@@ -637,82 +633,69 @@ impl SoundBlaster16 {
             }
 
             // Set time constant
-            0x40 => {
-                if !params.is_empty() {
-                    self.state.dsp.time_constant = params[0];
-                    let tc = params[0] as u32;
-                    if tc < 256 {
-                        self.state.dsp.sample_rate = 1_000_000 / (256 - tc);
-                        self.pcm_rate_dirty = true;
-                    }
+            0x40 if !params.is_empty() => {
+                self.state.dsp.time_constant = params[0];
+                let tc = params[0] as u32;
+                if tc < 256 {
+                    self.state.dsp.sample_rate = 1_000_000 / (256 - tc);
+                    self.pcm_rate_dirty = true;
                 }
             }
 
             // Set output/input sampling rate
-            0x41 | 0x42 => {
-                if params.len() >= 2 {
-                    let rate = ((params[0] as u32) << 8) | params[1] as u32;
-                    if rate > 0 {
-                        self.state.dsp.sample_rate = rate;
-                        self.pcm_rate_dirty = true;
-                    }
+            0x41 | 0x42 if params.len() >= 2 => {
+                let rate = ((params[0] as u32) << 8) | params[1] as u32;
+                if rate > 0 {
+                    self.state.dsp.sample_rate = rate;
+                    self.pcm_rate_dirty = true;
                 }
             }
 
             // Set block size
-            0x48 => {
-                if params.len() >= 2 {
-                    self.state.dsp.dma_block_size =
-                        (params[0] as u32 | ((params[1] as u32) << 8)) + 1;
-                }
+            0x48 if params.len() >= 2 => {
+                self.state.dsp.dma_block_size = (params[0] as u32 | ((params[1] as u32) << 8)) + 1;
             }
 
             // Pause DAC duration (stub)
             0x80 => {}
 
             // SB16-style 16-bit DMA (0xB0-0xBF)
-            0xB0..=0xBF => {
-                if params.len() >= 3 {
-                    let auto_init = cmd & 0x04 != 0;
-                    let is_input = cmd & 0x08 != 0;
-                    let mode = params[0];
-                    let length = (params[1] as u32 | ((params[2] as u32) << 8)) + 1;
-                    let stereo = mode & 0x20 != 0;
-                    let format = if stereo {
-                        DMA_FORMAT_SIGNED_16_STEREO
-                    } else {
-                        DMA_FORMAT_SIGNED_16_MONO
-                    };
-                    // Length counts individual 16-bit samples (both channels
-                    // interleaved for stereo). Each sample is 2 bytes.
-                    let byte_length = length * 2;
-                    self.start_dma(format, byte_length, auto_init, is_input);
-                }
+            0xB0..=0xBF if params.len() >= 3 => {
+                let auto_init = cmd & 0x04 != 0;
+                let is_input = cmd & 0x08 != 0;
+                let mode = params[0];
+                let length = (params[1] as u32 | ((params[2] as u32) << 8)) + 1;
+                let stereo = mode & 0x20 != 0;
+                let format = if stereo {
+                    DMA_FORMAT_SIGNED_16_STEREO
+                } else {
+                    DMA_FORMAT_SIGNED_16_MONO
+                };
+                // Length counts individual 16-bit samples (both channels
+                // interleaved for stereo). Each sample is 2 bytes.
+                let byte_length = length * 2;
+                self.start_dma(format, byte_length, auto_init, is_input);
             }
 
             // SB16-style 8-bit DMA (0xC0-0xCF)
-            0xC0..=0xCF => {
-                if params.len() >= 3 {
-                    let auto_init = cmd & 0x04 != 0;
-                    let is_input = cmd & 0x08 != 0;
-                    let mode = params[0];
-                    let length = (params[1] as u32 | ((params[2] as u32) << 8)) + 1;
-                    let stereo = mode & 0x20 != 0;
-                    let format = if stereo {
-                        DMA_FORMAT_UNSIGNED_8_STEREO
-                    } else {
-                        DMA_FORMAT_UNSIGNED_8_MONO
-                    };
-                    self.start_dma(format, length, auto_init, is_input);
-                }
+            0xC0..=0xCF if params.len() >= 3 => {
+                let auto_init = cmd & 0x04 != 0;
+                let is_input = cmd & 0x08 != 0;
+                let mode = params[0];
+                let length = (params[1] as u32 | ((params[2] as u32) << 8)) + 1;
+                let stereo = mode & 0x20 != 0;
+                let format = if stereo {
+                    DMA_FORMAT_UNSIGNED_8_STEREO
+                } else {
+                    DMA_FORMAT_UNSIGNED_8_MONO
+                };
+                self.start_dma(format, length, auto_init, is_input);
             }
 
             // Pause 8-bit DMA
-            0xD0 => {
-                if self.state.dsp.dma_active {
-                    self.state.dsp.dma_active = false;
-                    self.pending_dsp_actions.push(SoundboardSb16Action::StopDma);
-                }
+            0xD0 if self.state.dsp.dma_active => {
+                self.state.dsp.dma_active = false;
+                self.pending_dsp_actions.push(SoundboardSb16Action::StopDma);
             }
 
             // Speaker on
@@ -726,33 +709,27 @@ impl SoundBlaster16 {
             }
 
             // Continue 8-bit DMA
-            0xD4 => {
-                if !self.state.dsp.dma_active && self.state.dsp.dma_bytes_remaining > 0 {
-                    self.state.dsp.dma_active = true;
-                    self.pending_dsp_actions
-                        .push(SoundboardSb16Action::StartDma {
-                            channel: self.state.dsp.dma_channel,
-                        });
-                }
+            0xD4 if !self.state.dsp.dma_active && self.state.dsp.dma_bytes_remaining > 0 => {
+                self.state.dsp.dma_active = true;
+                self.pending_dsp_actions
+                    .push(SoundboardSb16Action::StartDma {
+                        channel: self.state.dsp.dma_channel,
+                    });
             }
 
             // Pause 16-bit DMA
-            0xD5 => {
-                if self.state.dsp.dma_active {
-                    self.state.dsp.dma_active = false;
-                    self.pending_dsp_actions.push(SoundboardSb16Action::StopDma);
-                }
+            0xD5 if self.state.dsp.dma_active => {
+                self.state.dsp.dma_active = false;
+                self.pending_dsp_actions.push(SoundboardSb16Action::StopDma);
             }
 
             // Continue 16-bit DMA
-            0xD6 => {
-                if !self.state.dsp.dma_active && self.state.dsp.dma_bytes_remaining > 0 {
-                    self.state.dsp.dma_active = true;
-                    self.pending_dsp_actions
-                        .push(SoundboardSb16Action::StartDma {
-                            channel: self.state.dsp.dma_channel,
-                        });
-                }
+            0xD6 if !self.state.dsp.dma_active && self.state.dsp.dma_bytes_remaining > 0 => {
+                self.state.dsp.dma_active = true;
+                self.pending_dsp_actions
+                    .push(SoundboardSb16Action::StartDma {
+                        channel: self.state.dsp.dma_channel,
+                    });
             }
 
             // Get speaker status
@@ -778,10 +755,8 @@ impl SoundBlaster16 {
             }
 
             // DSP identification
-            0xE0 => {
-                if !params.is_empty() {
-                    self.state.dsp.output_buffer.push_back(!params[0]);
-                }
+            0xE0 if !params.is_empty() => {
+                self.state.dsp.output_buffer.push_back(!params[0]);
             }
 
             // Get version
@@ -798,10 +773,8 @@ impl SoundBlaster16 {
             }
 
             // Write test register
-            0xE4 => {
-                if !params.is_empty() {
-                    self.state.dsp.test_register = params[0];
-                }
+            0xE4 if !params.is_empty() => {
+                self.state.dsp.test_register = params[0];
             }
 
             // Read test register
@@ -1258,11 +1231,12 @@ impl SoundBlaster16 {
             let format = self.state.dsp.dma_format;
             let bytes_per_sample = dma_format_bytes_per_sample(format) as usize;
 
-            let available_samples = if bytes_per_sample > 0 {
-                self.state.dsp.pcm_buffered / bytes_per_sample
-            } else {
-                0
-            };
+            let available_samples = self
+                .state
+                .dsp
+                .pcm_buffered
+                .checked_div(bytes_per_sample)
+                .unwrap_or(0);
 
             // Only drain as many input frames as the resampler needs to fill the
             // output buffer. This prevents data loss: without this limit, we could
