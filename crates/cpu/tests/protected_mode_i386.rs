@@ -2530,6 +2530,38 @@ fn i386_retf_32bit_protected_mode() {
     assert_eq!(cpu.cs(), PM_CS_SEL);
 }
 
+#[test]
+fn i386_ret_near_imm_uses_full_esp_on_32bit_stack() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode(&mut bus, 0xFFFF);
+    state.seg_granularity[cpu::SegReg32::CS as usize] = 0x40;
+    state.seg_limits[cpu::SegReg32::CS as usize] = 0xFFFF_FFFF;
+    state.seg_granularity[cpu::SegReg32::SS as usize] = 0x40;
+    state.seg_limits[cpu::SegReg32::SS as usize] = 0xFFFF_FFFF;
+    state.set_esp(0x0003_FFF8);
+    cpu.load_state(&state);
+
+    let stack_pointer = cpu.esp();
+    let target_eip = 0x0200;
+    write_dword_at(&mut bus, PM_STACK_BASE + stack_pointer, target_eip);
+
+    place_at(&mut bus, PM_CODE_BASE, &[0xC2, 0x04, 0x00]);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(
+        cpu.ip(),
+        target_eip,
+        "RET imm16 should pop a 32-bit return EIP"
+    );
+    assert_eq!(
+        cpu.esp(),
+        stack_pointer.wrapping_add(8),
+        "RET imm16 on a 32-bit stack must advance the full ESP"
+    );
+}
 /// PUSHFD/POPFD preserves upper EFLAGS bits.
 #[test]
 fn i386_pushfd_popfd_upper_eflags() {

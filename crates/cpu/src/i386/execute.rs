@@ -1899,8 +1899,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.ip = self.pop(bus);
             self.ip_upper = 0;
         }
-        let sp = self.regs.word(WordReg::SP).wrapping_add(imm);
-        self.regs.set_word(WordReg::SP, sp);
+        if self.use_esp() {
+            let stack_pointer = self.regs.dword(DwordReg::ESP).wrapping_add(imm as u32);
+            self.regs.set_dword(DwordReg::ESP, stack_pointer);
+        } else {
+            let stack_pointer = self.regs.word(WordReg::SP).wrapping_add(imm);
+            self.regs.set_word(WordReg::SP, stack_pointer);
+        }
         match CPU_MODEL {
             CPU_MODEL_386 => {
                 let m = self.next_instruction_length_approx(bus);
