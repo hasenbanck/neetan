@@ -424,6 +424,30 @@ fn control_word_write_clears_irq0() {
     assert!(!bus.has_irq());
 }
 
+#[test]
+fn pit_latch_command_does_not_clear_irq0() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+
+    init_pic(&mut bus);
+
+    bus.io_write_byte(0x77, 0x34);
+    bus.io_write_byte(0x71, 0x64);
+    bus.io_write_byte(0x71, 0x00);
+
+    bus.set_current_cycle(1001);
+    assert!(
+        bus.has_irq(),
+        "timer IRQ should be pending before the latch command"
+    );
+
+    bus.io_write_byte(0x77, 0x00);
+
+    assert!(
+        bus.has_irq(),
+        "latching PIT channel 0 must not clear a pending IRQ0"
+    );
+}
+
 fn init_pic(bus: &mut Pc9801Bus) {
     bus.io_write_byte(0x00, 0x11);
     bus.io_write_byte(0x02, 0x08);

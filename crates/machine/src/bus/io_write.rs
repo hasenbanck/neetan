@@ -900,6 +900,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         if channel >= 3 {
             return;
         }
+        let is_mode_set = value & 0x30 != 0;
         self.pit.write_control(
             channel,
             value,
@@ -907,12 +908,10 @@ impl<T: Tracing> Pc9801Bus<T> {
             self.clocks.cpu_clock_hz,
             self.clocks.pit_clock_hz,
         );
-        if channel == 0 {
+        if channel == 0 && is_mode_set {
             self.pic.clear_irq(0);
             self.tracer.trace_irq_clear(0);
-            if value & 0x30 != 0 {
-                self.pit.channels[0].flag |= PIT_FLAG_I;
-            }
+            self.pit.channels[0].flag |= PIT_FLAG_I;
         }
     }
 
