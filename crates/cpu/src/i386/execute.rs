@@ -1210,7 +1210,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.regs.set_dword(DwordReg::ESI, esi);
             let ebp = self.pop_dword(bus);
             self.regs.set_dword(DwordReg::EBP, ebp);
-            let popped_esp = self.pop_dword(bus);
+            let _discarded_esp = self.pop_dword(bus);
             let ebx = self.pop_dword(bus);
             self.regs.set_dword(DwordReg::EBX, ebx);
             let edx = self.pop_dword(bus);
@@ -1219,9 +1219,6 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.regs.set_dword(DwordReg::ECX, ecx);
             let eax = self.pop_dword(bus);
             self.regs.set_dword(DwordReg::EAX, eax);
-            let esp_low = self.regs.word(WordReg::SP) as u32;
-            let esp = (popped_esp & 0xFFFF_0000) | esp_low;
-            self.regs.set_dword(DwordReg::ESP, esp);
         } else {
             let iy = self.pop(bus);
             self.regs.set_word(WordReg::DI, iy);

@@ -2562,6 +2562,48 @@ fn i386_ret_near_imm_uses_full_esp_on_32bit_stack() {
         "RET imm16 on a 32-bit stack must advance the full ESP"
     );
 }
+
+#[test]
+fn i386_popa_ignores_discarded_esp_slot() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode(&mut bus, 0xFFFF);
+    state.seg_granularity[cpu::SegReg32::CS as usize] = 0x40;
+    state.seg_limits[cpu::SegReg32::CS as usize] = 0xFFFF_FFFF;
+    state.seg_granularity[cpu::SegReg32::SS as usize] = 0x40;
+    state.seg_limits[cpu::SegReg32::SS as usize] = 0xFFFF_FFFF;
+    state.set_esp(0x0001_0000);
+    cpu.load_state(&state);
+
+    let stack_pointer = cpu.esp();
+    write_dword_at(&mut bus, PM_STACK_BASE + stack_pointer, 0x1111_1111);
+    write_dword_at(&mut bus, PM_STACK_BASE + stack_pointer + 4, 0x2222_2222);
+    write_dword_at(&mut bus, PM_STACK_BASE + stack_pointer + 8, 0x3333_3333);
+    write_dword_at(&mut bus, PM_STACK_BASE + stack_pointer + 12, 0xC036_1234);
+    write_dword_at(&mut bus, PM_STACK_BASE + stack_pointer + 16, 0x4444_4444);
+    write_dword_at(&mut bus, PM_STACK_BASE + stack_pointer + 20, 0x5555_5555);
+    write_dword_at(&mut bus, PM_STACK_BASE + stack_pointer + 24, 0x6666_6666);
+    write_dword_at(&mut bus, PM_STACK_BASE + stack_pointer + 28, 0x7777_7777);
+
+    place_at(&mut bus, PM_CODE_BASE, &[0x61]);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.edi(), 0x1111_1111);
+    assert_eq!(cpu.esi(), 0x2222_2222);
+    assert_eq!(cpu.ebp(), 0x3333_3333);
+    assert_eq!(cpu.ebx(), 0x4444_4444);
+    assert_eq!(cpu.edx(), 0x5555_5555);
+    assert_eq!(cpu.ecx(), 0x6666_6666);
+    assert_eq!(cpu.eax(), 0x7777_7777);
+    assert_eq!(
+        cpu.esp(),
+        stack_pointer.wrapping_add(32),
+        "POPAD must ignore the discarded ESP slot and keep the post-pop ESP"
+    );
+}
+
 /// PUSHFD/POPFD preserves upper EFLAGS bits.
 #[test]
 fn i386_pushfd_popfd_upper_eflags() {
