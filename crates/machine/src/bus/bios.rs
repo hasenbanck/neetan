@@ -59,8 +59,6 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         if count > 0 && new_count == 0 {
             self.bios_interval_timer_active = false;
-            self.pic.state.chips[0].imr |= 0x01;
-            self.pic.invalidate_irq_cache();
         }
     }
 
