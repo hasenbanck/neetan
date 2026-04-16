@@ -1752,9 +1752,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             }
         } else {
             let penalty = self.sp_penalty();
-            let disp = self.fetchword(bus);
+            let disp = self.fetchword(bus) as i16;
             self.push(bus, self.ip);
-            self.ip = self.ip.wrapping_add(disp);
+            self.ip = self.ip.wrapping_add(disp as u16);
             self.ip_upper = 0;
             match CPU_MODEL {
                 CPU_MODEL_386 => {
@@ -1787,8 +1787,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
             }
         } else {
-            let disp = self.fetchword(bus);
-            self.ip = self.ip.wrapping_add(disp);
+            let disp = self.fetchword(bus) as i16;
+            self.ip = self.ip.wrapping_add(disp as u16);
             self.ip_upper = 0;
             match CPU_MODEL {
                 CPU_MODEL_386 => {
