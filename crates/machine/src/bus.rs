@@ -2211,6 +2211,10 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
         }
     }
 
+    fn is_io_port_unrestricted(&self, port: u16) -> bool {
+        matches!(port, 0x07EE..=0x07F0)
+    }
+
     fn has_irq(&self) -> bool {
         self.pic.has_pending_irq()
     }

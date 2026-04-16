@@ -436,6 +436,15 @@ pub trait Bus {
         self.io_write_byte(port.wrapping_add(1), (value >> 8) as u8);
     }
 
+    /// Returns `true` if the given I/O port should bypass privilege checks.
+    ///
+    /// The CPU calls this during I/O privilege validation. Ports that return
+    /// `true` are always accessible regardless of IOPL or the I/O Permission
+    /// Bitmap. The default returns `false` (all ports follow normal rules).
+    fn is_io_port_unrestricted(&self, _port: u16) -> bool {
+        false
+    }
+
     /// Returns `true` if a maskable hardware interrupt is pending.
     ///
     /// The CPU calls this after each instruction when the interrupt flag (IF)

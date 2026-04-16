@@ -8,6 +8,7 @@ struct TestBus {
     ram: Vec<u8>,
     irq_pending: bool,
     irq_vector: u8,
+    hle_port_bypass: bool,
 }
 
 impl TestBus {
@@ -16,6 +17,7 @@ impl TestBus {
             ram: vec![0u8; RAM_SIZE],
             irq_pending: false,
             irq_vector: 0,
+            hle_port_bypass: false,
         }
     }
 }
@@ -34,6 +36,10 @@ impl common::Bus for TestBus {
     }
 
     fn io_write_byte(&mut self, _port: u16, _value: u8) {}
+
+    fn is_io_port_unrestricted(&self, port: u16) -> bool {
+        self.hle_port_bypass && matches!(port, 0x07EE..=0x07F0)
+    }
 
     fn has_irq(&self) -> bool {
         self.irq_pending
@@ -7190,5 +7196,181 @@ fn task_switch_tss_t_bit_sets_dr6_bt() {
         cpu.dr6 & 0x000F,
         0,
         "DR6 B0-B3 bits should not be set for T-bit trap"
+    );
+}
+
+/// Sets up VM86 mode with an IOPB that denies all ports and a #GP handler.
+/// Returns the VM86 code physical address where test instructions should be placed.
+fn setup_vm86_with_iopb(bus: &mut TestBus) -> (cpu::I386State, u32) {
+    const GP_HANDLER_IP: u16 = 0x0200;
+
+    write_gdt_entry16(bus, VM86_GDT_BASE, 0, 0, 0, 0);
+    write_gdt_entry16(bus, VM86_GDT_BASE, 1, VM86_CODE_BASE, 0xFFFF, 0x9B);
+    write_gdt_entry16(bus, VM86_GDT_BASE, 2, 0x00000, 0xFFFF, 0x93);
+    write_gdt_entry(bus, VM86_GDT_BASE, 3, 0x00000, 0xFFFF, 0x93, 0x40);
+    // 386 TSS (type=9): limit covers IOPB for ports up to 0x07FF.
+    // IOPB at offset 0x68, port 0x07F0 is in byte 0xFE, need +1 for sentinel.
+    write_gdt_entry16(bus, VM86_GDT_BASE, 4, VM86_TSS_BASE, 0x168, 0x89);
+
+    // #GP handler (vector 13): 386 interrupt gate, DPL=0, targets CPL0 code.
+    write_idt_gate(
+        bus,
+        VM86_IDT_BASE,
+        13,
+        GP_HANDLER_IP as u32,
+        VM86_CS_SEL,
+        14,
+        0,
+    );
+    bus.ram[(VM86_CODE_BASE + GP_HANDLER_IP as u32) as usize] = 0xF4; // HLT
+
+    // TSS: ESP0/SS0 for the VM86->CPL0 transition on #GP.
+    write_dword_at(bus, VM86_TSS_BASE + 0x04, 0x1000);
+    write_word_at(bus, VM86_TSS_BASE + 0x08, VM86_SS0_SEL);
+    // IOPB pointer at TSS offset 0x66.
+    write_word_at(bus, VM86_TSS_BASE + 0x66, 0x0068);
+    // Fill IOPB with 0xFF (all ports denied) for bytes covering ports 0-0x07FF.
+    for i in 0..0x100u32 {
+        bus.ram[(VM86_TSS_BASE + 0x68 + i) as usize] = 0xFF;
+    }
+
+    let mut state = cpu::I386State {
+        cr0: 0x0001,
+        eflags_upper: 0x0002_0000,
+        seg_valid: [true; 6],
+        gdt_base: VM86_GDT_BASE,
+        gdt_limit: 5 * 8 - 1,
+        idt_base: VM86_IDT_BASE,
+        idt_limit: 256 * 8 - 1,
+        tr: 0x0020,
+        tr_base: VM86_TSS_BASE,
+        tr_limit: 0x168,
+        tr_rights: 0x89,
+        ..cpu::I386State::default()
+    };
+    state.flags.iopl = 3;
+
+    state.set_cs(0x1000);
+    state.seg_bases[cpu::SegReg32::CS as usize] = 0x10000;
+    state.seg_limits[cpu::SegReg32::CS as usize] = 0xFFFF;
+    state.seg_rights[cpu::SegReg32::CS as usize] = 0x9B;
+
+    state.set_ss(0x2000);
+    state.set_esp(0xF000);
+    state.seg_bases[cpu::SegReg32::SS as usize] = 0x20000;
+    state.seg_limits[cpu::SegReg32::SS as usize] = 0xFFFF;
+    state.seg_rights[cpu::SegReg32::SS as usize] = 0x93;
+
+    state.set_ds(0x4000);
+    state.seg_bases[cpu::SegReg32::DS as usize] = 0x40000;
+    state.seg_limits[cpu::SegReg32::DS as usize] = 0xFFFF;
+    state.seg_rights[cpu::SegReg32::DS as usize] = 0x93;
+
+    state.set_es(0x3000);
+    state.seg_bases[cpu::SegReg32::ES as usize] = 0x30000;
+    state.seg_limits[cpu::SegReg32::ES as usize] = 0xFFFF;
+    state.seg_rights[cpu::SegReg32::ES as usize] = 0x93;
+
+    // VM86 code at CS:0000 = physical 0x10000.
+    (state, 0x10000)
+}
+
+#[test]
+fn vm86_hle_port_bypass_allows_bios_trap_port() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    bus.hle_port_bypass = true;
+
+    let (state, code_base) = setup_vm86_with_iopb(&mut bus);
+    cpu.load_state(&state);
+
+    // OUT DX, AL to BIOS HLE port 0x07F0 (IOPB denies it, but bypass allows).
+    #[rustfmt::skip]
+    place_at(&mut bus, code_base, &[
+        0xBA, 0xF0, 0x07, // MOV DX, 0x07F0
+        0xEE,             // OUT DX, AL
+    ]);
+
+    cpu.step(&mut bus); // MOV DX, 0x07F0
+    cpu.step(&mut bus); // OUT DX, AL
+    assert!(
+        !cpu.halted(),
+        "OUT to BIOS HLE port 0x07F0 must not raise #GP when bypass is enabled"
+    );
+    assert_eq!(cpu.ip(), 4, "IP should advance past both instructions");
+}
+
+#[test]
+fn vm86_hle_port_bypass_allows_sasi_trap_port() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    bus.hle_port_bypass = true;
+
+    let (state, code_base) = setup_vm86_with_iopb(&mut bus);
+    cpu.load_state(&state);
+
+    // OUT DX, AL to SASI HLE port 0x07EF.
+    #[rustfmt::skip]
+    place_at(&mut bus, code_base, &[
+        0xBA, 0xEF, 0x07, // MOV DX, 0x07EF
+        0xEE,             // OUT DX, AL
+    ]);
+
+    cpu.step(&mut bus); // MOV DX, 0x07EF
+    cpu.step(&mut bus); // OUT DX, AL
+    assert!(
+        !cpu.halted(),
+        "OUT to SASI HLE port 0x07EF must not raise #GP when bypass is enabled"
+    );
+    assert_eq!(cpu.ip(), 4, "IP should advance past both instructions");
+}
+
+#[test]
+fn vm86_hle_port_bypass_allows_ide_trap_port() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    bus.hle_port_bypass = true;
+
+    let (state, code_base) = setup_vm86_with_iopb(&mut bus);
+    cpu.load_state(&state);
+
+    // OUT DX, AL to IDE HLE port 0x07EE.
+    #[rustfmt::skip]
+    place_at(&mut bus, code_base, &[
+        0xBA, 0xEE, 0x07, // MOV DX, 0x07EE
+        0xEE,             // OUT DX, AL
+    ]);
+
+    cpu.step(&mut bus); // MOV DX, 0x07EE
+    cpu.step(&mut bus); // OUT DX, AL
+    assert!(
+        !cpu.halted(),
+        "OUT to IDE HLE port 0x07EE must not raise #GP when bypass is enabled"
+    );
+    assert_eq!(cpu.ip(), 4, "IP should advance past both instructions");
+}
+
+#[test]
+fn vm86_non_hle_port_still_denied_by_iopb() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    bus.hle_port_bypass = true;
+
+    let (state, code_base) = setup_vm86_with_iopb(&mut bus);
+    cpu.load_state(&state);
+
+    // OUT DX, AL to a non-HLE port (0x0060). IOPB denies it, bypass does not help.
+    #[rustfmt::skip]
+    place_at(&mut bus, code_base, &[
+        0xBA, 0x60, 0x00, // MOV DX, 0x0060
+        0xEE,             // OUT DX, AL
+    ]);
+
+    cpu.step(&mut bus); // MOV DX, 0x0060
+    cpu.step(&mut bus); // OUT DX, AL -> #GP dispatched
+    cpu.step(&mut bus); // HLT at #GP handler
+    assert!(
+        cpu.halted(),
+        "OUT to non-HLE port 0x0060 must raise #GP even with HLE bypass enabled"
     );
 }

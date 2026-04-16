@@ -549,6 +549,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         if !self.is_virtual_mode() && self.cpl() <= u16::from(self.flags.iopl) {
             return true;
         }
+        if bus.is_io_port_unrestricted(port) {
+            return true;
+        }
         // CPL > IOPL (or VM86 with IOPL < 3): consult I/O Permission Bitmap in TSS.
         // TSS must be a 386 TSS (type field >= 9) and large enough to hold the IOPB pointer.
         if self.tr_limit < 0x67 || (self.tr_rights & 0x0F) < 9 {
