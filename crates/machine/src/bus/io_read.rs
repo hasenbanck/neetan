@@ -9,6 +9,21 @@ use crate::{
 };
 
 impl<T: Tracing> Pc9801Bus<T> {
+    fn next_gdc_frame_event_cycle(&self) -> Option<u64> {
+        let vsync_cycle = self.scheduler.state.fire_cycles[EventKind::GdcVsync as usize];
+        let display_start_cycle =
+            self.scheduler.state.fire_cycles[EventKind::GdcDisplayStart as usize];
+
+        match (vsync_cycle, display_start_cycle) {
+            (Some(vsync_cycle), Some(display_start_cycle)) => {
+                Some(vsync_cycle.min(display_start_cycle))
+            }
+            (Some(vsync_cycle), None) => Some(vsync_cycle),
+            (None, Some(display_start_cycle)) => Some(display_start_cycle),
+            (None, None) => None,
+        }
+    }
+
     #[inline]
     pub(super) fn io_read_byte_impl(&mut self, port: u16) -> u8 {
         self.pending_wait_cycles += IO_WAIT_CYCLES;
@@ -114,7 +129,14 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x43 => self.keyboard.read_status(),
 
             // GDC master (text)
-            0x60 => self.gdc_master.read_status(),
+            0x60 => {
+                let cycles_until_frame_event = self
+                    .next_gdc_frame_event_cycle()
+                    .map(|cycle| cycle.saturating_sub(self.current_cycle));
+                self.gdc_master
+                    .update_hblank_status(cycles_until_frame_event);
+                self.gdc_master.read_status()
+            }
             0x62 => self.gdc_master.read_data(),
 
             // Video mode
@@ -152,7 +174,14 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x82 if self.machine_model.has_sasi() => self.sasi.read_status(),
 
             // GDC slave (graphics)
-            0xA0 => self.gdc_slave.read_status(),
+            0xA0 => {
+                let cycles_until_frame_event = self
+                    .next_gdc_frame_event_cycle()
+                    .map(|cycle| cycle.saturating_sub(self.current_cycle));
+                self.gdc_slave
+                    .update_hblank_status(cycles_until_frame_event);
+                self.gdc_slave.read_status()
+            }
             0xA2 => {
                 if self.gdc_slave.state.dma_active && !self.gdc_slave.state.dma_is_write {
                     self.read_gdc_slave_dmar()
