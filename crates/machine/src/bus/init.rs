@@ -187,7 +187,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             keyboard: I8251Keyboard::new(),
             serial: I8251Serial::new(),
             gdc_master: Gdc::new_master(clocks.cpu_clock_hz),
-            gdc_slave: Gdc::new(),
+            gdc_slave: Gdc::new_slave(clocks.cpu_clock_hz),
             floppy: FloppyController::new(),
             system_ppi: I8255SystemPpi::new(is_8mhz_lineage),
             printer: Printer::new(),

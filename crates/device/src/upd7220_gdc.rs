@@ -27,7 +27,7 @@ pub const STATUS_DMA_EXECUTE: u8 = 0x10;
 const STATUS_VSYNC: u8 = 0x20;
 
 /// Status register bit 6: horizontal blanking period.
-const _STATUS_HBLANK: u8 = 0x40;
+const STATUS_HBLANK: u8 = 0x40;
 
 /// Status register bit 7: light pen detect (always 1 on PC-98 slave GDC).
 const STATUS_LIGHT_PEN: u8 = 0x80;
@@ -260,83 +260,7 @@ impl DerefMut for Gdc {
     }
 }
 
-impl Default for Gdc {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Gdc {
-    /// Creates a new slave (graphics) GDC with FIFO-empty status.
-    pub fn new() -> Self {
-        Self {
-            state: GdcState {
-                status: STATUS_FIFO_EMPTY,
-                display_enabled: false,
-                master_mode: false,
-                is_slave: true,
-                fifo: FifoState::new(),
-                current_command: 0,
-                param_index: 0,
-                param_buffer: [0; 16],
-                params_remaining: 0,
-                ead: 0,
-                dad: 0,
-                lad: 0,
-                mask: 0xFFFF,
-                pattern: 0xFFFF,
-                ra: [0; 16],
-                pitch: SLAVE_DEFAULT_PITCH,
-                drawing_dir: 0,
-                figure_type: 0,
-                drawing_dc: 0,
-                drawing_d: 8,
-                drawing_d2: 8,
-                drawing_d1: 0xFFFF,
-                drawing_dm: 0,
-                drawing_gd: false,
-                bitmap_mod: 0,
-                display_mode: 0,
-                interlace_mode: 0,
-                draw_on_retrace: false,
-                aw: 0,
-                hs: 0,
-                vs: 0,
-                hfp: 0,
-                hbp: 0,
-                vfp: 0,
-                vbp: 0,
-                al: 0,
-                cursor_display: false,
-                cursor_blink: false,
-                cursor_top: 0,
-                cursor_bottom: 0,
-                cursor_blink_rate: 0,
-                lines_per_row: 1,
-                zoom_gchr: 0,
-                zoom_display: 0,
-                cpu_clock_hz: 0,
-                dot_clock_hz: 0,
-                current_field: 0,
-                vsync_period: 0,
-                display_period: 0,
-                vsync_blanking_period: 0,
-                scroll: [GdcScrollPartition::default(); 4],
-                blink_counter: 0,
-                rdat_pending: false,
-                rdat_remaining: 0,
-                rdat_type: 0,
-                dma_active: false,
-                dma_is_write: false,
-                dma_type: 0,
-                dma_mod: 0,
-                dma_transfer_length: 0,
-                dma_data: 0,
-            },
-            draw_buffer: Vec::new(),
-        }
-    }
-
     /// Creates a new master (text) GDC that owns the VSYNC timing.
     ///
     /// Computes initial timing from the default 400-line SYNC parameters
@@ -410,6 +334,76 @@ impl Gdc {
         };
         gdc.recompute_timing();
         gdc
+    }
+
+    /// Creates a new slave (graphics) GDC with FIFO-empty status.
+    pub fn new_slave(cpu_clock_hz: u32) -> Self {
+        Self {
+            state: GdcState {
+                status: STATUS_FIFO_EMPTY,
+                display_enabled: false,
+                master_mode: false,
+                is_slave: true,
+                fifo: FifoState::new(),
+                current_command: 0,
+                param_index: 0,
+                param_buffer: [0; 16],
+                params_remaining: 0,
+                ead: 0,
+                dad: 0,
+                lad: 0,
+                mask: 0xFFFF,
+                pattern: 0xFFFF,
+                ra: [0; 16],
+                pitch: SLAVE_DEFAULT_PITCH,
+                drawing_dir: 0,
+                figure_type: 0,
+                drawing_dc: 0,
+                drawing_d: 8,
+                drawing_d2: 8,
+                drawing_d1: 0xFFFF,
+                drawing_dm: 0,
+                drawing_gd: false,
+                bitmap_mod: 0,
+                display_mode: 0,
+                interlace_mode: 0,
+                draw_on_retrace: false,
+                aw: 0,
+                hs: 0,
+                vs: 0,
+                hfp: 0,
+                hbp: 0,
+                vfp: 0,
+                vbp: 0,
+                al: 0,
+                cursor_display: false,
+                cursor_blink: false,
+                cursor_top: 0,
+                cursor_bottom: 0,
+                cursor_blink_rate: 0,
+                lines_per_row: 1,
+                zoom_gchr: 0,
+                zoom_display: 0,
+                cpu_clock_hz,
+                dot_clock_hz: 0,
+                current_field: 0,
+                vsync_period: 0,
+                display_period: 0,
+                vsync_blanking_period: 0,
+                scroll: [GdcScrollPartition::default(); 4],
+                blink_counter: 0,
+                rdat_pending: false,
+                rdat_remaining: 0,
+                rdat_type: 0,
+                dma_active: false,
+                dma_is_write: false,
+                dma_type: 0,
+                dma_mod: 0,
+                dma_transfer_length: 0,
+                dma_data: 0,
+            },
+            draw_buffer: Vec::new(),
+        }
     }
 
     /// Updates the dot clock and recomputes all timing parameters.
@@ -495,6 +489,52 @@ impl Gdc {
         } else {
             self.status &= !STATUS_VSYNC;
         }
+    }
+
+    /// Sets or clears the HBLANK status flag.
+    pub fn set_hblank(&mut self, active: bool) {
+        if active {
+            self.status |= STATUS_HBLANK;
+        } else {
+            self.status &= !STATUS_HBLANK;
+        }
+    }
+
+    /// Recomputes the HBLANK status flag from the time remaining until the
+    /// next frame transition event.
+    ///
+    /// Real PC-98 software polls GDC status bit 6 directly while waiting for
+    /// horizontal retrace. We model this from the remaining cycles to the
+    /// next frame event, which preserves the correct phase relationship across
+    /// both display and vertical blank intervals.
+    pub fn update_hblank_status(&mut self, cycles_until_frame_event: Option<u64>) {
+        if self.aw == 0 || self.al == 0 || self.dot_clock_hz == 0 || self.cpu_clock_hz == 0 {
+            self.set_hblank(false);
+            return;
+        }
+
+        let total_chars = u64::from(self.hs + self.hbp + self.aw + self.hfp);
+        let horiz_mult: u64 = if self.display_mode == 0x02 { 16 } else { 8 };
+        let cpu = u64::from(self.cpu_clock_hz);
+        let dot = u64::from(self.dot_clock_hz);
+        let line_period = cpu * total_chars * horiz_mult / dot;
+        let mut hblank_period = cpu * u64::from(self.hs) * horiz_mult / dot;
+
+        if line_period == 0 {
+            self.set_hblank(false);
+            return;
+        }
+
+        if hblank_period == 0 && self.hs != 0 {
+            hblank_period = 1;
+        }
+
+        let Some(remaining) = cycles_until_frame_event else {
+            self.set_hblank(false);
+            return;
+        };
+
+        self.set_hblank(remaining % line_period < hblank_period);
     }
 
     /// Handles the VSYNC event: sets the status flag, increments the blink counter,
