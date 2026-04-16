@@ -120,16 +120,10 @@ fn pcm_read_rom(state: &Sc55State) -> u8 {
                 waverom_read(&state.waverom3, (address & 0xFFFFF) as usize)
             }
         }
-        3..=6 => {
-            if state.mcu_jv880 {
-                waverom_read(
-                    &state.waverom_exp,
-                    ((address & 0x1FFFFF) + (bank as u32 - 3) * 0x200000) as usize,
-                )
-            } else {
-                0
-            }
-        }
+        3..=6 if state.mcu_jv880 => waverom_read(
+            &state.waverom_exp,
+            ((address & 0x1FFFFF) + (bank as u32 - 3) * 0x200000) as usize,
+        ),
         _ => 0,
     }
 }
@@ -163,16 +157,10 @@ fn pcm_read_rom_addr(state: &Sc55State, address: u32) -> u8 {
                 waverom_read(&state.waverom3, (address & 0xFFFFF) as usize)
             }
         }
-        3..=6 => {
-            if state.mcu_jv880 {
-                waverom_read(
-                    &state.waverom_exp,
-                    ((address & 0x1FFFFF) + (bank as u32 - 3) * 0x200000) as usize,
-                )
-            } else {
-                0
-            }
-        }
+        3..=6 if state.mcu_jv880 => waverom_read(
+            &state.waverom_exp,
+            ((address & 0x1FFFFF) + (bank as u32 - 3) * 0x200000) as usize,
+        ),
         _ => 0,
     }
 }

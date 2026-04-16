@@ -1244,23 +1244,17 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
 
             match ope {
-                0 => {
-                    // SET: set bit if pattern bit is 1.
-                    if pixel_bit != 0 {
-                        self.memory.state.graphics_vram[byte_idx] |= bit_mask;
-                    }
+                // SET: set bit if pattern bit is 1.
+                0 if pixel_bit != 0 => {
+                    self.memory.state.graphics_vram[byte_idx] |= bit_mask;
                 }
-                1 => {
-                    // CLEAR: clear bit if pattern bit is 1.
-                    if pixel_bit != 0 {
-                        self.memory.state.graphics_vram[byte_idx] &= !bit_mask;
-                    }
+                // CLEAR: clear bit if pattern bit is 1.
+                1 if pixel_bit != 0 => {
+                    self.memory.state.graphics_vram[byte_idx] &= !bit_mask;
                 }
-                2 => {
-                    // COMPLEMENT: toggle bit if pattern bit is 1.
-                    if pixel_bit != 0 {
-                        self.memory.state.graphics_vram[byte_idx] ^= bit_mask;
-                    }
+                // COMPLEMENT: toggle bit if pattern bit is 1.
+                2 if pixel_bit != 0 => {
+                    self.memory.state.graphics_vram[byte_idx] ^= bit_mask;
                 }
                 _ => {}
             }
@@ -1830,20 +1824,10 @@ impl<T: Tracing> Pc9801Bus<T> {
             // RA returns 0x02 for both (unsupported device).
             0x00 | 0x01 => 0x00,
             0x02 | 0x03 => 0x00,
-            0x04 => {
-                if self.clocks.pit_clock_hz == PIT_CLOCK_8MHZ_LINEAGE {
-                    0x02
-                } else {
-                    0x00
-                }
-            }
-            0x05 => {
-                if self.clocks.pit_clock_hz == PIT_CLOCK_8MHZ_LINEAGE {
-                    0x02
-                } else {
-                    0x27
-                }
-            }
+            0x04 if self.clocks.pit_clock_hz == PIT_CLOCK_8MHZ_LINEAGE => 0x02,
+            0x04 => 0x00,
+            0x05 if self.clocks.pit_clock_hz == PIT_CLOCK_8MHZ_LINEAGE => 0x02,
+            0x05 => 0x27,
             // Printer functions.
             0x10 => {
                 self.system_ppi.write_control(0x0D);
@@ -1852,24 +1836,16 @@ impl<T: Tracing> Pc9801Bus<T> {
                 self.system_ppi.write_control(0x0C);
                 u8::from(self.printer.is_ready())
             }
-            0x11 => {
-                if self.printer.is_ready() {
-                    self.printer.write_data(cpu.al());
-                    let old_c = self.printer.read_port_c();
-                    self.printer.write_port_c(old_c | 0x80);
-                    self.printer.write_port_c(old_c & !0x80);
-                    0x01
-                } else {
-                    0x00
-                }
+            0x11 if self.printer.is_ready() => {
+                self.printer.write_data(cpu.al());
+                let old_c = self.printer.read_port_c();
+                self.printer.write_port_c(old_c | 0x80);
+                self.printer.write_port_c(old_c & !0x80);
+                0x01
             }
-            0x12 => {
-                if self.printer.is_ready() {
-                    0x01
-                } else {
-                    0x00
-                }
-            }
+            0x11 => 0x00,
+            0x12 if self.printer.is_ready() => 0x01,
+            0x12 => 0x00,
             0x30 => {
                 let count = cpu.cx();
                 if count == 0 {

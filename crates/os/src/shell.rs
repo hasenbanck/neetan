@@ -259,21 +259,17 @@ impl Shell {
                         }
                         0x00 => {
                             match scan {
-                                SCAN_LEFT => {
-                                    if editor.cursor > 0 {
-                                        editor.cursor -= 1;
-                                        let row = io.console.cursor_row(io.memory);
-                                        let col = editor.prompt_col + editor.cursor as u8;
-                                        io.console.set_cursor(io.memory, row, col);
-                                    }
+                                SCAN_LEFT if editor.cursor > 0 => {
+                                    editor.cursor -= 1;
+                                    let row = io.console.cursor_row(io.memory);
+                                    let col = editor.prompt_col + editor.cursor as u8;
+                                    io.console.set_cursor(io.memory, row, col);
                                 }
-                                SCAN_RIGHT => {
-                                    if editor.cursor < editor.buffer.len() {
-                                        editor.cursor += 1;
-                                        let row = io.console.cursor_row(io.memory);
-                                        let col = editor.prompt_col + editor.cursor as u8;
-                                        io.console.set_cursor(io.memory, row, col);
-                                    }
+                                SCAN_RIGHT if editor.cursor < editor.buffer.len() => {
+                                    editor.cursor += 1;
+                                    let row = io.console.cursor_row(io.memory);
+                                    let col = editor.prompt_col + editor.cursor as u8;
+                                    io.console.set_cursor(io.memory, row, col);
                                 }
                                 SCAN_HOME => {
                                     editor.cursor = 0;
@@ -289,11 +285,9 @@ impl Shell {
                                 SCAN_INSERT => {
                                     editor.insert_mode = !editor.insert_mode;
                                 }
-                                SCAN_DELETE => {
-                                    if editor.cursor < editor.buffer.len() {
-                                        editor.buffer.remove(editor.cursor);
-                                        redraw_from_cursor(&editor, io);
-                                    }
+                                SCAN_DELETE if editor.cursor < editor.buffer.len() => {
+                                    editor.buffer.remove(editor.cursor);
+                                    redraw_from_cursor(&editor, io);
                                 }
                                 SCAN_UP => {
                                     if self.history.at_end() && !self.history.is_empty() {
@@ -304,18 +298,16 @@ impl Shell {
                                         replace_line(&mut editor, entry, io);
                                     }
                                 }
-                                SCAN_DOWN => {
-                                    if !self.history.at_end() {
-                                        match self.history.navigate_down() {
-                                            Some(entry) => {
-                                                let entry = entry.to_vec();
-                                                replace_line(&mut editor, entry, io);
-                                            }
-                                            None => {
-                                                let restored =
-                                                    editor.saved_line.take().unwrap_or_default();
-                                                replace_line(&mut editor, restored, io);
-                                            }
+                                SCAN_DOWN if !self.history.at_end() => {
+                                    match self.history.navigate_down() {
+                                        Some(entry) => {
+                                            let entry = entry.to_vec();
+                                            replace_line(&mut editor, entry, io);
+                                        }
+                                        None => {
+                                            let restored =
+                                                editor.saved_line.take().unwrap_or_default();
+                                            replace_line(&mut editor, restored, io);
                                         }
                                     }
                                 }

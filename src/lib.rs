@@ -485,10 +485,8 @@ impl Application {
             Event::Window {
                 win_event: WindowEvent::FocusGained,
                 ..
-            } => {
-                if self.image_selector.is_none() {
-                    self.audio_engine.resume();
-                }
+            } if self.image_selector.is_none() => {
+                self.audio_engine.resume();
             }
             Event::Display {
                 display_event: DisplayEvent::ContentScaleChanged,
@@ -563,41 +561,35 @@ impl Application {
                     self.machine.push_keyboard_scancode(code);
                 }
             }
-            Event::MouseMotion { xrel, yrel, .. } => {
-                if self.mouse_captured {
-                    self.mouse_dx += xrel;
-                    self.mouse_dy += yrel;
-                }
+            Event::MouseMotion { xrel, yrel, .. } if self.mouse_captured => {
+                self.mouse_dx += xrel;
+                self.mouse_dy += yrel;
             }
-            Event::MouseButtonDown { mouse_btn, .. } => {
-                if self.mouse_captured {
-                    match mouse_btn {
-                        MouseButton::Left => self.mouse_left = true,
-                        MouseButton::Right => self.mouse_right = true,
-                        MouseButton::Middle => self.mouse_middle = true,
-                        _ => {}
-                    }
-                    self.machine.set_mouse_buttons(
-                        self.mouse_left,
-                        self.mouse_right,
-                        self.mouse_middle,
-                    );
+            Event::MouseButtonDown { mouse_btn, .. } if self.mouse_captured => {
+                match mouse_btn {
+                    MouseButton::Left => self.mouse_left = true,
+                    MouseButton::Right => self.mouse_right = true,
+                    MouseButton::Middle => self.mouse_middle = true,
+                    _ => {}
                 }
+                self.machine.set_mouse_buttons(
+                    self.mouse_left,
+                    self.mouse_right,
+                    self.mouse_middle,
+                );
             }
-            Event::MouseButtonUp { mouse_btn, .. } => {
-                if self.mouse_captured {
-                    match mouse_btn {
-                        MouseButton::Left => self.mouse_left = false,
-                        MouseButton::Right => self.mouse_right = false,
-                        MouseButton::Middle => self.mouse_middle = false,
-                        _ => {}
-                    }
-                    self.machine.set_mouse_buttons(
-                        self.mouse_left,
-                        self.mouse_right,
-                        self.mouse_middle,
-                    );
+            Event::MouseButtonUp { mouse_btn, .. } if self.mouse_captured => {
+                match mouse_btn {
+                    MouseButton::Left => self.mouse_left = false,
+                    MouseButton::Right => self.mouse_right = false,
+                    MouseButton::Middle => self.mouse_middle = false,
+                    _ => {}
                 }
+                self.machine.set_mouse_buttons(
+                    self.mouse_left,
+                    self.mouse_right,
+                    self.mouse_middle,
+                );
             }
             _ => {}
         }

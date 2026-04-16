@@ -517,13 +517,11 @@ pub(crate) fn mcu_operand_general(state: &mut Sc55State, operand: u8) {
                 }
             }
         }
-        0x10 => {
-            if reg == 5 {
-                type_ = GENERAL_ABSOLUTE;
-                addr = (mcu_read_code_advance(state) as u32) << 8;
-                addr |= mcu_read_code_advance(state) as u32;
-                addrpage = state.mcu.dp as u32;
-            }
+        0x10 if reg == 5 => {
+            type_ = GENERAL_ABSOLUTE;
+            addr = (mcu_read_code_advance(state) as u32) << 8;
+            addr |= mcu_read_code_advance(state) as u32;
+            addrpage = state.mcu.dp as u32;
         }
         _ => {}
     }
