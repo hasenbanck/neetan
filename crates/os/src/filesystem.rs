@@ -889,18 +889,6 @@ pub(crate) fn ensure_directory(
     Ok(entry.start_cluster)
 }
 
-pub(crate) fn directory_is_empty_on_drive(
-    state: &OsState,
-    drive_index: u8,
-    dir_cluster: u16,
-    disk: &mut dyn DiskIo,
-) -> Result<bool, u16> {
-    let volume = state.fat_volumes[drive_index as usize]
-        .as_ref()
-        .ok_or(0x000Fu16)?;
-    directory_is_empty(volume, dir_cluster, disk)
-}
-
 pub(crate) fn create_dos_mock_files(
     state: &mut OsState,
     memory: &dyn MemoryAccess,
