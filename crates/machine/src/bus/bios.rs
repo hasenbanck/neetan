@@ -2753,6 +2753,12 @@ impl<T: Tracing> Pc9801Bus<T> {
             self.memory.state.ram[0x05BA] = hdd_flags;
             // 0x05BB: same HDD-only backup used by the WinNT4.0 workaround.
             self.memory.state.ram[0x05BB] = hdd_flags;
+            // 0x0457: IDE drive capacity (1).
+            // Ref: undoc98 `memsys.txt`
+            self.memory.state.ram[0x0457] = self.ide.bios_capacity_byte();
+            // 0x05B0: IDE HDD capacity type ("IDE drive capacity (2)").
+            // Ref: undoc98 `memsys.txt`
+            self.memory.state.ram[0x05B0] = 0xFF;
             // ROM 0xF8E80+0x10 (offset 0x10E90): all connected device bits including CD-ROM.
             // Bit 2 set when CD-ROM present on channel 1 master - read by NECCD.SYS to detect the drive.
             let all_device_flags = hdd_flags | if self.ide.has_cdrom() { 0x04 } else { 0x00 };

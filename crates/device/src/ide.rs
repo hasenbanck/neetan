@@ -153,6 +153,14 @@ impl IdeController {
         self.drives[0].is_some() || self.drives[1].is_some()
     }
 
+    /// Returns the BIOS IDE geometry flags stored at memory address `0x0457`.
+    pub fn bios_capacity_byte(&self) -> u8 {
+        let primary_drive = if self.drives[0].is_some() { 0x90 } else { 0x38 };
+        let secondary_drive = if self.drives[1].is_some() { 0x42 } else { 0x07 };
+
+        primary_drive | secondary_drive
+    }
+
     fn install_rom(&mut self) {
         if self.rom.is_none() {
             self.rom = Some(Box::new(*ROM_IMAGE));
@@ -444,10 +452,7 @@ impl IdeController {
             // DataIn phase (IDENTIFY PACKET DEVICE) uses the drive's buffer.
             // Fall through to standard read_data_word handling.
         }
-        (
-            self.lle_controller.read_data_word(&self.drives),
-            IdeAction::None,
-        )
+        self.lle_controller.read_data_word(&self.drives)
     }
 
     /// Writes the 16-bit data register (port 0x0640).
@@ -839,12 +844,17 @@ mod tests {
 
         // Read 256 words.
         let mut data = vec![0u16; 256];
+        let mut final_action = IdeAction::None;
         for word in data.iter_mut() {
-            *word = ide.read_data_word().0;
+            let (value, action) = ide.read_data_word();
+            *word = value;
+            final_action = action;
         }
 
         // Word 0: 0x8580 (ATAPI CD-ROM).
         assert_eq!(data[0], 0x8580);
+        assert_eq!(final_action, IdeAction::ScheduleCompletion);
+        assert_eq!(ide.read_alt_status() & 0x18, 0x10);
     }
 
     #[test]

@@ -81,6 +81,7 @@ struct IdeDrive {
     buffer_size: usize,
     sector_size: usize,
     sectors_pending: u16,
+    data_in_updates_sector_registers: bool,
     interrupt_pending: bool,
     block_size: u16,
     sectors_in_block: u16,
@@ -106,6 +107,7 @@ impl IdeDrive {
             buffer_size: 0,
             sector_size: IDE_SECTOR_SIZE,
             sectors_pending: 0,
+            data_in_updates_sector_registers: false,
             interrupt_pending: false,
             block_size: 1,
             sectors_in_block: 0,
@@ -124,6 +126,7 @@ impl IdeDrive {
         self.buffer_position = 0;
         self.buffer_size = 0;
         self.sectors_pending = 0;
+        self.data_in_updates_sector_registers = false;
         self.interrupt_pending = false;
         self.block_size = 1;
         self.sectors_in_block = 0;
@@ -133,6 +136,14 @@ impl IdeDrive {
 
     fn interrupts_enabled(&self) -> bool {
         self.control & CONTROL_NIEN == 0
+    }
+
+    fn decrement_sector_count_register(&mut self) {
+        self.sector_count = if self.sector_count == 0 {
+            0xFF
+        } else {
+            self.sector_count - 1
+        };
     }
 }
 
@@ -249,10 +260,10 @@ impl Controller {
     }
 
     /// Reads the 16-bit data register (port 0x0640).
-    pub(super) fn read_data_word(&mut self, drives: &[Option<HddImage>; 2]) -> u16 {
+    pub(super) fn read_data_word(&mut self, drives: &[Option<HddImage>; 2]) -> (u16, IdeAction) {
         let ch = self.active_channel;
         if self.channels[ch].phase != IdePhase::DataIn {
-            return 0xFFFF;
+            return (0xFFFF, IdeAction::None);
         }
 
         let sel = self.channels[ch].selected_drive;
@@ -266,19 +277,21 @@ impl Controller {
             };
             drive.buffer_position = drive.buffer_size;
             let word = low | (high << 8);
-            self.check_data_in_complete(drives);
-            return word;
+            let action = self.check_data_in_complete(drives);
+            return (word, action);
         }
 
         let pos = drive.buffer_position;
         let word = u16::from(drive.buffer[pos]) | (u16::from(drive.buffer[pos + 1]) << 8);
         drive.buffer_position += 2;
 
-        if drive.buffer_position >= drive.buffer_size {
-            self.check_data_in_complete(drives);
-        }
+        let action = if drive.buffer_position >= drive.buffer_size {
+            self.check_data_in_complete(drives)
+        } else {
+            IdeAction::None
+        };
 
-        word
+        (word, action)
     }
 
     /// Writes the 16-bit data register (port 0x0640).
@@ -599,6 +612,7 @@ impl Controller {
                 ch.phase = IdePhase::DataIn;
                 let drive = ch.drive_mut();
                 drive.status = STATUS_DRDY | STATUS_DSC | STATUS_DRQ;
+                drive.data_in_updates_sector_registers = false;
                 drive.interrupt_pending = true;
                 IdeAction::ScheduleCompletion
             }
@@ -714,7 +728,7 @@ impl Controller {
     /// Called when the scheduled completion event fires.
     /// Returns true if an interrupt should be raised.
     pub(super) fn complete_operation(&mut self) -> bool {
-        let ch = self.channel();
+        let ch = &mut self.channels[self.active_channel];
         let drive = ch.drive();
         let should_interrupt = drive.interrupt_pending && drive.interrupts_enabled();
         if should_interrupt {
@@ -842,47 +856,58 @@ impl Controller {
             return self.abort_command();
         };
 
-        let ch = self.channel_mut();
-        let drive = ch.drive_mut();
-        let sector_size = drive.sector_size;
-        drive.buffer[..sector_size].copy_from_slice(sector_data);
-        drive.buffer_position = 0;
-        drive.buffer_size = sector_size;
-        drive.sectors_pending = count - 1;
-        drive.block_size = if multiple {
-            drive.multiple_count as u16
-        } else {
-            1
-        };
-        drive.sectors_in_block = 1;
-        drive.status = STATUS_DRDY | STATUS_DSC | STATUS_DRQ;
-        drive.error = 0;
-        drive.interrupt_pending = true;
-        ch.phase = IdePhase::DataIn;
+        {
+            let ch = self.channel_mut();
+            let drive = ch.drive_mut();
+            let sector_size = drive.sector_size;
+            drive.buffer[..sector_size].copy_from_slice(sector_data);
+            drive.buffer_position = 0;
+            drive.buffer_size = sector_size;
+            drive.sectors_pending = count - 1;
+            drive.data_in_updates_sector_registers = true;
+            drive.block_size = if multiple {
+                drive.multiple_count as u16
+            } else {
+                1
+            };
+            drive.sectors_in_block = 1;
+            drive.status = STATUS_DRDY | STATUS_DSC | STATUS_DRQ;
+            drive.error = 0;
+            drive.interrupt_pending = true;
+            ch.phase = IdePhase::DataIn;
+        }
         IdeAction::ScheduleCompletion
     }
 
-    fn check_data_in_complete(&mut self, drives: &[Option<HddImage>; 2]) {
+    fn check_data_in_complete(&mut self, drives: &[Option<HddImage>; 2]) -> IdeAction {
         let ch_idx = self.active_channel;
         let sel = self.channels[ch_idx].selected_drive;
         let drive = &self.channels[ch_idx].drives[sel];
         if drive.buffer_position < drive.buffer_size {
-            return;
+            return IdeAction::None;
         }
 
         if drive.sectors_pending == 0 {
+            let data_in_updates_sector_registers = drive.data_in_updates_sector_registers;
+            if data_in_updates_sector_registers && let Some(drive) = drives[sel].as_ref() {
+                let geometry = drive.geometry;
+                self.advance_sector_address(&geometry);
+            }
             let ch = &mut self.channels[ch_idx];
             let drive = &mut ch.drives[sel];
+            if data_in_updates_sector_registers {
+                drive.decrement_sector_count_register();
+            }
+            drive.data_in_updates_sector_registers = false;
             drive.status = STATUS_DRDY | STATUS_DSC;
             drive.interrupt_pending = true;
             ch.phase = IdePhase::Idle;
-            return;
+            return IdeAction::ScheduleCompletion;
         }
 
         let geometry = drives[sel].as_ref().unwrap().geometry;
         self.advance_sector_address(&geometry);
         let lba = self.get_current_sector(&geometry);
-
         let Some(sector_data) = drives[sel].as_ref().unwrap().read_sector(lba) else {
             let ch = &mut self.channels[ch_idx];
             let drive = &mut ch.drives[sel];
@@ -890,7 +915,7 @@ impl Controller {
             drive.error = ERROR_ABRT;
             drive.interrupt_pending = true;
             ch.phase = IdePhase::Idle;
-            return;
+            return IdeAction::ScheduleCompletion;
         };
 
         let ch = &mut self.channels[ch_idx];
@@ -899,13 +924,17 @@ impl Controller {
         drive.buffer[..sector_size].copy_from_slice(sector_data);
         drive.buffer_position = 0;
         drive.sectors_pending -= 1;
-        drive.status = STATUS_DRDY | STATUS_DSC | STATUS_DRQ;
+        drive.decrement_sector_count_register();
         let at_block_boundary = drive.sectors_in_block >= drive.block_size;
+        drive.status = STATUS_DRDY | STATUS_DSC | STATUS_DRQ;
+        ch.phase = IdePhase::DataIn;
         if at_block_boundary {
             drive.sectors_in_block = 1;
             drive.interrupt_pending = true;
+            IdeAction::ScheduleCompletion
         } else {
             drive.sectors_in_block += 1;
+            IdeAction::None
         }
     }
 
@@ -1108,6 +1137,7 @@ impl Controller {
         atapi::build_identify_packet_device(&mut drive.buffer);
         drive.buffer_position = 0;
         drive.buffer_size = IDE_SECTOR_SIZE;
+        drive.data_in_updates_sector_registers = false;
         drive.status = STATUS_DRDY | STATUS_DSC | STATUS_DRQ;
         drive.interrupt_pending = true;
         ch.phase = IdePhase::DataIn;
@@ -1119,7 +1149,7 @@ impl Controller {
         let drive = &mut ch.drives[0];
         drive.status = STATUS_DRDY | STATUS_DSC | STATUS_ERR;
         drive.error = ERROR_ABRT;
-        atapi::AtapiState::set_signature(
+        AtapiState::set_signature(
             &mut drive.sector_count,
             &mut drive.sector_number,
             &mut drive.cylinder_low,
@@ -1239,7 +1269,7 @@ mod tests {
         // Read 256 words.
         let mut data = vec![0u16; 256];
         for word in data.iter_mut() {
-            *word = controller.read_data_word(&drives);
+            (*word, _) = controller.read_data_word(&drives);
         }
 
         // Word 0: 0x0040
@@ -1292,7 +1322,7 @@ mod tests {
         // Read 256 words (512 bytes).
         let mut data = vec![0u16; 256];
         for word in data.iter_mut() {
-            *word = controller.read_data_word(&drives);
+            (*word, _) = controller.read_data_word(&drives);
         }
 
         // First two bytes should be LBA 5: 0x00, 0x05.
@@ -1317,7 +1347,7 @@ mod tests {
         let action = controller.write_command(0x20, &drives);
         assert_eq!(action, IdeAction::ScheduleCompletion);
 
-        let first_word = controller.read_data_word(&drives);
+        let (first_word, _) = controller.read_data_word(&drives);
         assert_eq!(first_word & 0xFF, 0x00);
         assert_eq!(first_word >> 8, 42);
     }
@@ -1371,7 +1401,7 @@ mod tests {
         assert_eq!(controller.phase(), IdePhase::DataIn);
 
         // Read second sector - first word should be LBA 1.
-        let first_word = controller.read_data_word(&drives);
+        let (first_word, _) = controller.read_data_word(&drives);
         assert_eq!(first_word & 0xFF, 0x00);
         assert_eq!(first_word >> 8, 0x01);
 
@@ -1684,7 +1714,7 @@ mod tests {
         controller.write_command(0xEC, &drives);
         let mut data = vec![0u16; 256];
         for word in data.iter_mut() {
-            *word = controller.read_data_word(&drives);
+            (*word, _) = controller.read_data_word(&drives);
         }
 
         assert_eq!(data[59], 0x0104);
@@ -1699,7 +1729,7 @@ mod tests {
         controller.write_command(0xEC, &drives);
         let mut data = vec![0u16; 256];
         for word in data.iter_mut() {
-            *word = controller.read_data_word(&drives);
+            (*word, _) = controller.read_data_word(&drives);
         }
 
         assert_eq!(data[93], 0x4B00);
@@ -1779,7 +1809,7 @@ mod tests {
         controller.write_command(0xEC, &drives);
         let mut data = vec![0u16; 256];
         for word in data.iter_mut() {
-            *word = controller.read_data_word(&drives);
+            (*word, _) = controller.read_data_word(&drives);
         }
         assert_eq!(data[47], 0x8080);
     }
@@ -2002,7 +2032,7 @@ mod tests {
         let action = controller.write_command(0x20, &drives);
         assert_eq!(action, IdeAction::ScheduleCompletion);
 
-        let first_word = controller.read_data_word(&drives);
+        let (first_word, _) = controller.read_data_word(&drives);
         // LBA 16: high byte = 0x00, low byte = 16.
         assert_eq!(first_word & 0xFF, 0x00);
         assert_eq!(first_word >> 8, 16);
