@@ -799,9 +799,24 @@ impl NeetanOs {
     fn int21h_48h_allocate(&mut self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
         let paragraphs = cpu.bx();
         let first_mcb = memory.read_word(self.state.sysvars_base - 2);
-        match memory::allocate(
+        // UMB is considered for allocation only when DOS has been told to
+        // link UMB (INT 21h AX=5803h) and the memory manager has a UMB
+        // region. Strategy flags +0x40/+0x80 drive the actual preference.
+        let umb_first = if self.state.umb_link
+            && self
+                .state
+                .memory_manager
+                .as_ref()
+                .is_some_and(|mm| mm.is_umb_enabled())
+        {
+            Some(tables::UMB_FIRST_MCB_SEGMENT)
+        } else {
+            None
+        };
+        match memory::allocate_dos(
             memory,
             first_mcb,
+            umb_first,
             paragraphs,
             self.state.current_psp,
             self.state.allocation_strategy,
@@ -825,7 +840,18 @@ impl NeetanOs {
     fn int21h_49h_free(&self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
         let data_segment = cpu.es();
         let first_mcb = memory.read_word(self.state.sysvars_base - 2);
-        match memory::free(memory, first_mcb, data_segment) {
+        let umb_first = if self.state.umb_link
+            && self
+                .state
+                .memory_manager
+                .as_ref()
+                .is_some_and(|mm| mm.is_umb_enabled())
+        {
+            Some(tables::UMB_FIRST_MCB_SEGMENT)
+        } else {
+            None
+        };
+        match memory::free_dos(memory, first_mcb, umb_first, data_segment) {
             Ok(()) => {
                 set_iret_carry(cpu, memory, false);
             }
@@ -844,7 +870,18 @@ impl NeetanOs {
         let data_segment = cpu.es();
         let new_paragraphs = cpu.bx();
         let first_mcb = memory.read_word(self.state.sysvars_base - 2);
-        match memory::resize(memory, first_mcb, data_segment, new_paragraphs) {
+        let umb_first = if self.state.umb_link
+            && self
+                .state
+                .memory_manager
+                .as_ref()
+                .is_some_and(|mm| mm.is_umb_enabled())
+        {
+            Some(tables::UMB_FIRST_MCB_SEGMENT)
+        } else {
+            None
+        };
+        match memory::resize_dos(memory, first_mcb, umb_first, data_segment, new_paragraphs) {
             Ok(()) => {
                 set_iret_carry(cpu, memory, false);
             }
@@ -901,9 +938,12 @@ impl NeetanOs {
         cpu.set_bx(tables::SYSVARS_OFFSET);
     }
 
-    /// AH=58h: Get/set memory allocation strategy.
-    /// AL=00h: Get -> AX = strategy (0=first fit, 1=best fit, 2=last fit).
+    /// AH=58h: Get/set memory allocation strategy / UMB link.
+    /// AL=00h: Get -> AX = strategy (0=first fit, 1=best fit, 2=last fit,
+    ///         +0x40 high-first-then-low, +0x80 high-only).
     /// AL=01h: Set <- BX = strategy.
+    /// AL=02h: Get -> AX = UMB link state (0 = not linked, 1 = linked).
+    /// AL=03h: Set <- BX = UMB link state.
     fn int21h_58h_allocation_strategy(
         &mut self,
         cpu: &mut dyn CpuAccess,
@@ -916,8 +956,63 @@ impl NeetanOs {
                 set_iret_carry(cpu, memory, false);
             }
             0x01 => {
-                self.state.allocation_strategy = cpu.bx();
+                // Valid strategies: low nibble 0..=2 (first/best/last fit),
+                // high byte 0x00 (low-only), 0x40 (high-first-then-low), or
+                // 0x80 (high-only). Anything else is rejected with
+                // AX=01h/CF=1 per INT 21h convention.
+                let strategy = cpu.bx();
+                if matches!(
+                    strategy,
+                    0x00 | 0x01 | 0x02 | 0x40 | 0x41 | 0x42 | 0x80 | 0x81 | 0x82
+                ) {
+                    self.state.allocation_strategy = strategy;
+                    set_iret_carry(cpu, memory, false);
+                } else {
+                    cpu.set_ax(0x0001);
+                    set_iret_carry(cpu, memory, true);
+                }
+            }
+            0x02 => {
+                cpu.set_ax(if self.state.umb_link { 1 } else { 0 });
                 set_iret_carry(cpu, memory, false);
+            }
+            0x03 => {
+                let link_state = cpu.bx();
+                if link_state > 1 {
+                    cpu.set_ax(0x0001);
+                    set_iret_carry(cpu, memory, true);
+                    return;
+                }
+
+                // Only accept the UMB link request if UMB is actually
+                // available (memory manager initialized and UMB enabled).
+                let umb_available = self
+                    .state
+                    .memory_manager
+                    .as_ref()
+                    .is_some_and(|mm| mm.is_umb_enabled());
+                if umb_available {
+                    let first_mcb = memory.read_word(self.state.sysvars_base - 2);
+                    let linked = link_state != 0;
+                    match memory::set_dos_umb_link_state(
+                        memory,
+                        first_mcb,
+                        Some(tables::UMB_FIRST_MCB_SEGMENT),
+                        linked,
+                    ) {
+                        Ok(()) => {
+                            self.state.umb_link = linked;
+                            set_iret_carry(cpu, memory, false);
+                        }
+                        Err(error_code) => {
+                            cpu.set_ax(error_code as u16);
+                            set_iret_carry(cpu, memory, true);
+                        }
+                    }
+                } else {
+                    self.state.umb_link = false;
+                    set_iret_carry(cpu, memory, false);
+                }
             }
             _ => {
                 cpu.set_ax(0x0001); // invalid function
@@ -1213,4 +1308,184 @@ pub(crate) fn normalize_path(path: &[u8]) -> Vec<u8> {
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        CpuAccess, MemoryAccess, NeetanOs,
+        memory::{self, memory_manager::MemoryManager},
+        tables::{
+            ENV_BLOCK_PARAGRAPHS, FIRST_MCB_SEGMENT, FREE_MCB_SEGMENT, MCB_OFF_NAME, MCB_OFF_OWNER,
+            MCB_OFF_SIZE, MCB_OFF_TYPE, MCB_OWNER_DOS, MEMORY_TOP_SEGMENT, SYSVARS_BASE,
+            UMB_FIRST_MCB_SEGMENT,
+        },
+        test_support::{MockCpu, MockMemory},
+    };
+
+    fn prepare_os_with_umb() -> (NeetanOs, MockMemory) {
+        let mut os = NeetanOs::new();
+        let mut memory = MockMemory::with_extended_memory(0x200000, 0x200000);
+        let layout = memory::initial_mcb_layout(ENV_BLOCK_PARAGRAPHS);
+        memory::write_initial_mcb_chain(&mut memory, layout);
+        memory.write_word(SYSVARS_BASE - 2, FIRST_MCB_SEGMENT);
+        os.state.memory_manager = Some(MemoryManager::new(
+            memory.extended_memory_size(),
+            true,
+            true,
+            false,
+            &mut memory,
+        ));
+        (os, memory)
+    }
+
+    fn iret_carry(memory: &MockMemory, cpu: &MockCpu) -> bool {
+        memory.read_word(cpu.iret_flags_addr()) & 0x0001 != 0
+    }
+
+    fn mcb_addr(segment: u16) -> u32 {
+        (segment as u32) << 4
+    }
+
+    #[test]
+    fn int21h_5803_links_and_unlinks_umb_with_spanning_entry() {
+        let (mut os, mut memory) = prepare_os_with_umb();
+        let mut cpu = MockCpu::default();
+
+        cpu.set_ax(0x0003);
+        cpu.set_bx(1);
+        os.int21h_58h_allocation_strategy(&mut cpu, &mut memory);
+
+        assert!(os.state.umb_link);
+        assert!(!iret_carry(&memory, &cpu));
+        assert_eq!(
+            memory.read_byte(mcb_addr(FREE_MCB_SEGMENT) + MCB_OFF_TYPE),
+            0x4D
+        );
+        assert_eq!(
+            memory.read_byte(mcb_addr(MEMORY_TOP_SEGMENT) + MCB_OFF_TYPE),
+            0x4D
+        );
+        assert_eq!(
+            memory.read_word(mcb_addr(MEMORY_TOP_SEGMENT) + MCB_OFF_OWNER),
+            MCB_OWNER_DOS
+        );
+        assert_eq!(
+            memory.read_word(mcb_addr(MEMORY_TOP_SEGMENT) + MCB_OFF_SIZE),
+            UMB_FIRST_MCB_SEGMENT - MEMORY_TOP_SEGMENT - 1
+        );
+        assert_eq!(
+            memory.read_byte(mcb_addr(MEMORY_TOP_SEGMENT) + MCB_OFF_NAME),
+            b'C'
+        );
+        assert_eq!(
+            memory.read_byte(mcb_addr(MEMORY_TOP_SEGMENT) + MCB_OFF_NAME + 1),
+            b'S'
+        );
+
+        cpu.set_ax(0x0003);
+        cpu.set_bx(0);
+        os.int21h_58h_allocation_strategy(&mut cpu, &mut memory);
+
+        assert!(!os.state.umb_link);
+        assert!(!iret_carry(&memory, &cpu));
+        assert_eq!(
+            memory.read_byte(mcb_addr(FREE_MCB_SEGMENT) + MCB_OFF_TYPE),
+            0x5A
+        );
+    }
+
+    #[test]
+    fn int21h_4ah_requires_linked_umb_and_sets_bx_to_max_on_invalid_block() {
+        let (mut os, mut memory) = prepare_os_with_umb();
+        let mut cpu = MockCpu::default();
+        let segment = os
+            .state
+            .memory_manager
+            .as_ref()
+            .expect("memory manager should exist")
+            .umb_allocate(0x10, &mut memory)
+            .expect("UMB allocation should succeed")
+            .0;
+
+        let first_mcb = memory.read_word(SYSVARS_BASE - 2);
+        let expected_max = memory::largest_available_dos(&memory, first_mcb, None, 0);
+
+        cpu.set_es(segment);
+        cpu.set_bx(0x0008);
+        os.int21h_4ah_resize(&mut cpu, &mut memory);
+
+        assert!(iret_carry(&memory, &cpu));
+        assert_eq!(cpu.ax(), 0x0009);
+        assert_eq!(cpu.bx(), expected_max);
+
+        cpu.set_ax(0x0003);
+        cpu.set_bx(1);
+        os.int21h_58h_allocation_strategy(&mut cpu, &mut memory);
+
+        cpu.set_es(segment);
+        cpu.set_bx(0x0008);
+        os.int21h_4ah_resize(&mut cpu, &mut memory);
+
+        assert!(!iret_carry(&memory, &cpu));
+
+        let first_mcb_after = memory.read_word(SYSVARS_BASE - 2);
+        let umb_first = Some(UMB_FIRST_MCB_SEGMENT);
+        let expected_max_linked =
+            memory::largest_available_dos(&memory, first_mcb_after, umb_first, 0);
+
+        cpu.set_es(0xEEEE);
+        cpu.set_bx(0x1234);
+        os.int21h_4ah_resize(&mut cpu, &mut memory);
+
+        assert!(iret_carry(&memory, &cpu));
+        assert_eq!(cpu.ax(), 0x0009);
+        assert_eq!(cpu.bx(), expected_max_linked);
+        assert_ne!(cpu.bx(), 0x1234);
+    }
+
+    #[test]
+    fn int21h_4ah_sets_bx_on_mcb_destroyed_error() {
+        let (os, mut memory) = prepare_os_with_umb();
+        let mut cpu = MockCpu::default();
+
+        let first_mcb = memory.read_word(SYSVARS_BASE - 2);
+        memory.write_byte((first_mcb as u32) << 4, 0x42);
+
+        cpu.set_es(first_mcb + 1);
+        cpu.set_bx(0xAAAA);
+        os.int21h_4ah_resize(&mut cpu, &mut memory);
+
+        assert!(iret_carry(&memory, &cpu));
+        assert_eq!(cpu.ax(), 0x0007);
+        assert_ne!(cpu.bx(), 0xAAAA);
+    }
+
+    #[test]
+    fn int21h_4ah_sets_bx_on_insufficient_memory_error() {
+        let (mut os, mut memory) = prepare_os_with_umb();
+        let mut cpu = MockCpu::default();
+
+        let mm = os
+            .state
+            .memory_manager
+            .as_mut()
+            .expect("memory manager should exist");
+        let (alloc_segment, _) = mm
+            .umb_allocate(0x10, &mut memory)
+            .expect("UMB allocation should succeed");
+
+        cpu.set_ax(0x0003);
+        cpu.set_bx(1);
+        os.int21h_58h_allocation_strategy(&mut cpu, &mut memory);
+        assert!(!iret_carry(&memory, &cpu));
+
+        cpu.set_es(alloc_segment);
+        cpu.set_bx(0xFFFF);
+        os.int21h_4ah_resize(&mut cpu, &mut memory);
+
+        assert!(iret_carry(&memory, &cpu));
+        assert_eq!(cpu.ax(), 0x0008);
+        assert_ne!(cpu.bx(), 0xFFFF);
+    }
 }

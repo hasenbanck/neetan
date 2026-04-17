@@ -522,6 +522,59 @@ pub fn boot_hle_with_time(time_fn: Option<fn() -> [u8; 6]>) -> machine::Pc9801Ra
     machine
 }
 
+/// Boots a machine with XMS disabled on the bus (no XMS driver, no XMSXXXX0 device).
+pub fn boot_hle_without_xms() -> machine::Pc9801Ra {
+    let mut machine = create_hle_machine();
+    machine.bus.set_xms_enabled(false);
+    wait_for_prompt(
+        &mut machine,
+        HLE_BOOT_MAX_CYCLES,
+        HLE_BOOT_CHECK_INTERVAL,
+        "HLE OS did not show prompt within 500000000 cycles",
+    );
+    machine
+}
+
+/// Boots a machine with EMS disabled on the bus (no EMS driver, no EMMXXXX0 device).
+pub fn boot_hle_without_ems() -> machine::Pc9801Ra {
+    let mut machine = create_hle_machine();
+    machine.bus.set_ems_enabled(false);
+    wait_for_prompt(
+        &mut machine,
+        HLE_BOOT_MAX_CYCLES,
+        HLE_BOOT_CHECK_INTERVAL,
+        "HLE OS did not show prompt within 500000000 cycles",
+    );
+    machine
+}
+
+/// Boots a machine with both XMS and EMS disabled on the bus.
+pub fn boot_hle_without_xms_and_ems() -> machine::Pc9801Ra {
+    let mut machine = create_hle_machine();
+    machine.bus.set_xms_enabled(false);
+    machine.bus.set_ems_enabled(false);
+    wait_for_prompt(
+        &mut machine,
+        HLE_BOOT_MAX_CYCLES,
+        HLE_BOOT_CHECK_INTERVAL,
+        "HLE OS did not show prompt within 500000000 cycles",
+    );
+    machine
+}
+
+/// Boots a machine with the XMS /HMAMIN= threshold set to the given KB.
+pub fn boot_hle_with_hmamin_kb(hmamin_kb: u16) -> machine::Pc9801Ra {
+    let mut machine = create_hle_machine();
+    machine.bus.set_xms_hmamin_kb(hmamin_kb);
+    wait_for_prompt(
+        &mut machine,
+        HLE_BOOT_MAX_CYCLES,
+        HLE_BOOT_CHECK_INTERVAL,
+        "HLE OS did not show prompt within 500000000 cycles",
+    );
+    machine
+}
+
 pub fn boot_hle_with_forced_os(
     floppy: Option<device::floppy::FloppyImage>,
     hdd: Option<device::disk::HddImage>,

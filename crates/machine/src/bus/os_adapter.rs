@@ -189,6 +189,11 @@ impl MemoryAccess for OsMemoryAccess<'_> {
         self.0.enable_ems_page_frame();
     }
 
+    fn map_ems_page_frame_slot(&mut self, physical_page: u8, backing_linear_addr: Option<u32>) {
+        self.0
+            .map_ems_page_frame_slot(physical_page, backing_linear_addr);
+    }
+
     fn enable_umb_region(&mut self) {
         self.0.enable_umb_region();
     }

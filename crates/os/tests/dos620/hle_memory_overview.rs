@@ -124,13 +124,15 @@ fn host_memory_overview_reports_shared_ems_xms_pool_usage() {
         "unexpected EMS line: {ems_line}"
     );
     assert!(
-        xms_line.contains("used=64K (65,536 bytes)"),
+        xms_line.contains("total=12,224K (12,517,376 bytes)")
+            && xms_line.contains("used=80K (81,920 bytes)")
+            && xms_line.contains("free=12,144K (12,435,456 bytes)"),
         "unexpected XMS line: {xms_line}"
     );
     assert!(
-        pool_line.contains("total=12,288K (12,582,912 bytes)")
+        pool_line.contains("total=12,224K (12,517,376 bytes)")
             && pool_line.contains("used=80K (81,920 bytes)")
-            && pool_line.contains("free=12,208K (12,500,992 bytes)"),
+            && pool_line.contains("free=12,144K (12,435,456 bytes)"),
         "unexpected shared pool line: {pool_line}"
     );
 }

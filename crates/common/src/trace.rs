@@ -153,6 +153,8 @@ pub trait Tracing {
     fn trace_intdch(&mut self, _cpu: &dyn CpuAccess, _memory: &dyn MemoryAccess) {}
     /// The XMS entry trampoline entered the HLE DOS dispatcher.
     fn trace_xms_entry(&mut self, _cpu: &dyn CpuAccess, _memory: &dyn MemoryAccess) {}
+    /// The XMS handler completed and returned to the caller.
+    fn trace_xms_exit(&mut self, _cpu: &dyn CpuAccess, _memory: &dyn MemoryAccess) {}
 
     /// INT 21h AH=3Bh change-directory handling is about to run.
     fn trace_int21h_chdir(&mut self, _cpu: &dyn CpuAccess, _memory: &dyn MemoryAccess) {}

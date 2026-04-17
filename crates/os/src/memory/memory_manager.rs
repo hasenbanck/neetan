@@ -25,6 +25,32 @@ const EMS_PAGE_SIZE: u32 = 0x4000;
 const MAX_EMS_HANDLES: usize = 255;
 const MAX_XMS_HANDLES: usize = 128;
 const PHYSICAL_PAGES: usize = 4;
+const HMA_POOL_RESERVATION_BYTES: u32 = 64 * 1024;
+const EMS_OS_RESERVED_HANDLE: usize = 0;
+
+#[derive(Clone, Copy)]
+enum EmsTransferRegion {
+    Conventional { linear_address: u32 },
+    Expanded { handle: u16, region_offset: u32 },
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct EmsPageMapCallContext {
+    pub(crate) segphys_mode: u8,
+    pub(crate) handle: u16,
+    pub(crate) old_len: u8,
+    pub(crate) old_map_addr: u32,
+}
+
+fn physical_page_for_segment(segment: u16) -> Option<usize> {
+    match segment {
+        0xC000 => Some(0),
+        0xC400 => Some(1),
+        0xC800 => Some(2),
+        0xCC00 => Some(3),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct EmsMapping {
@@ -72,6 +98,8 @@ impl XmsHandle {
 pub(crate) struct MemoryManager {
     allocator: TlsfAllocator,
     extended_memory_size: u32,
+    allocator_base_offset: u32,
+    hma_exists: bool,
 
     ems_enabled: bool,
     ems_handles: Vec<EmsHandle>,
@@ -84,8 +112,23 @@ pub(crate) struct MemoryManager {
 
     umb_enabled: bool,
 
+    // XMS A20 state. PC-98 hardware has no A20 line (A20 is permanently
+    // enabled), so these fields only track API-level state so that
+    // applications see the correct nesting-counter semantics required by
+    // XMS 3.0 A20 Management. No machine-level gate is driven.
+    a20_global_enabled: bool,
+    a20_local_enable_count: u32,
+
+    // /HMAMIN= threshold. Request HMA (function 01h) rejects size requests
+    // below this KB threshold, letting a larger consumer win the HMA
+    // (XMS 3.0 Prioritizing HMA Usage). 0 = first-come-first-served.
+    hmamin_kb: u16,
+
     ems_os_access_key: Option<u32>,
     ems_os_functions_enabled: bool,
+    ems_os_next_access_key: u32,
+    ems_alt_map_context_save_area: Option<(u16, u16)>,
+    ems_page_map_call_stack: Vec<EmsPageMapCallContext>,
 }
 
 impl MemoryManager {
@@ -96,7 +139,14 @@ impl MemoryManager {
         xms_32_enabled: bool,
         mem: &mut dyn MemoryAccess,
     ) -> Self {
-        let allocator = TlsfAllocator::new(extended_memory_size);
+        let hma_exists = xms_enabled && extended_memory_size >= HMA_POOL_RESERVATION_BYTES;
+        let allocator_base_offset = if hma_exists {
+            HMA_POOL_RESERVATION_BYTES
+        } else {
+            0
+        };
+        let allocator_size = extended_memory_size.saturating_sub(allocator_base_offset);
+        let allocator = TlsfAllocator::new(allocator_size);
 
         if ems_enabled {
             mem.enable_ems_page_frame();
@@ -119,6 +169,7 @@ impl MemoryManager {
         for _ in 0..MAX_EMS_HANDLES {
             ems_handles.push(EmsHandle::new_inactive());
         }
+        ems_handles[EMS_OS_RESERVED_HANDLE].active = true;
 
         let mut xms_handles = Vec::with_capacity(MAX_XMS_HANDLES);
         for _ in 0..MAX_XMS_HANDLES {
@@ -128,6 +179,8 @@ impl MemoryManager {
         Self {
             allocator,
             extended_memory_size,
+            allocator_base_offset,
+            hma_exists,
             ems_enabled,
             ems_handles,
             ems_page_mapping: [None; PHYSICAL_PAGES],
@@ -136,13 +189,105 @@ impl MemoryManager {
             xms_handles,
             hma_allocated: false,
             umb_enabled,
+            a20_global_enabled: false,
+            a20_local_enable_count: 0,
+            hmamin_kb: 0,
             ems_os_access_key: None,
-            ems_os_functions_enabled: false,
+            ems_os_functions_enabled: true,
+            ems_os_next_access_key: 0x4E45_4554,
+            ems_alt_map_context_save_area: None,
+            ems_page_map_call_stack: Vec::new(),
         }
     }
 
+    /// Sets the /HMAMIN= threshold (in KB). Consulted by `xms_request_hma`
+    /// to prioritize HMA for larger consumers.
+    pub(crate) fn set_hmamin_kb(&mut self, hmamin_kb: u16) {
+        self.hmamin_kb = hmamin_kb;
+    }
+
+    /// Function 03h: Global Enable A20. Sets the global flag; reports
+    /// success. On PC-98 the physical line is always enabled so there is
+    /// nothing to toggle.
+    pub(crate) fn xms_global_enable_a20(&mut self) {
+        self.a20_global_enabled = true;
+    }
+
+    /// Function 04h: Global Disable A20. Fails with 0x94 if a local enable
+    /// is still outstanding; otherwise clears the global flag.
+    pub(crate) fn xms_global_disable_a20(&mut self) -> Result<(), u8> {
+        if self.a20_local_enable_count > 0 {
+            return Err(0x94);
+        }
+        self.a20_global_enabled = false;
+        Ok(())
+    }
+
+    /// Function 05h: Local Enable A20. Increments the nesting counter.
+    pub(crate) fn xms_local_enable_a20(&mut self) {
+        self.a20_local_enable_count = self.a20_local_enable_count.saturating_add(1);
+    }
+
+    /// Function 06h: Local Disable A20. Fails with 0x94 if the counter is
+    /// already zero; otherwise decrements it.
+    pub(crate) fn xms_local_disable_a20(&mut self) -> Result<(), u8> {
+        if self.a20_local_enable_count == 0 {
+            return Err(0x94);
+        }
+        self.a20_local_enable_count -= 1;
+        Ok(())
+    }
+
+    /// Function 07h: Query A20. PC-98 has no A20 gate so the physical line
+    /// is always enabled, but XMS still exposes a virtual visible state.
+    pub(crate) fn xms_query_a20(&self) -> bool {
+        self.a20_global_enabled || self.a20_local_enable_count > 0
+    }
+
+    fn extended_pool_linear_address(&self, allocation_offset: u32) -> u32 {
+        EXTENDED_RAM_BASE + self.allocator_base_offset + allocation_offset
+    }
+
+    fn allocator_total_bytes(&self) -> u32 {
+        self.extended_memory_size
+            .saturating_sub(self.allocator_base_offset)
+    }
+
+    fn next_ems_os_access_key(&mut self) -> u32 {
+        let key = self.ems_os_next_access_key;
+        self.ems_os_next_access_key = self.ems_os_next_access_key.wrapping_add(1);
+        if self.ems_os_next_access_key == 0 {
+            self.ems_os_next_access_key = 1;
+        }
+        key
+    }
+
+    pub(crate) fn hma_exists(&self) -> bool {
+        self.hma_exists
+    }
+
+    pub(crate) fn ems_os_functions_enabled(&self) -> bool {
+        self.ems_os_functions_enabled
+    }
+
+    pub(crate) fn ems_alt_map_context_save_area(&self) -> Option<(u16, u16)> {
+        self.ems_alt_map_context_save_area
+    }
+
+    pub(crate) fn ems_set_alt_map_context_save_area(&mut self, save_area: Option<(u16, u16)>) {
+        self.ems_alt_map_context_save_area = save_area;
+    }
+
+    pub(crate) fn ems_push_page_map_call_context(&mut self, context: EmsPageMapCallContext) {
+        self.ems_page_map_call_stack.push(context);
+    }
+
+    pub(crate) fn ems_pop_page_map_call_context(&mut self) -> Option<EmsPageMapCallContext> {
+        self.ems_page_map_call_stack.pop()
+    }
+
     fn total_ems_pages(&self) -> u16 {
-        (self.extended_memory_size / EMS_PAGE_SIZE) as u16
+        (self.allocator_total_bytes() / EMS_PAGE_SIZE) as u16
     }
 
     fn allocated_ems_pages(&self) -> u16 {
@@ -155,18 +300,8 @@ impl MemoryManager {
         count
     }
 
-    fn allocated_xms_kb(&self) -> u32 {
-        let mut total: u32 = 0;
-        for handle in &self.xms_handles {
-            if handle.active {
-                total += handle.size_kb;
-            }
-        }
-        total
-    }
-
     fn find_free_ems_handle(&self) -> Option<u16> {
-        for (i, handle) in self.ems_handles.iter().enumerate() {
+        for (i, handle) in self.ems_handles.iter().enumerate().skip(1) {
             if !handle.active {
                 return Some(i as u16);
             }
@@ -187,22 +322,16 @@ impl MemoryManager {
         self.xms_handles.iter().filter(|h| !h.active).count() as u16
     }
 
-    fn save_page_frame_slot(&self, physical: usize, mem: &mut dyn MemoryAccess) {
-        if let Some(mapping) = self.ems_page_mapping[physical] {
-            let frame_addr = EMS_PAGE_FRAME_BASE + physical as u32 * EMS_PAGE_SIZE;
-            let pool_addr = EXTENDED_RAM_BASE + mapping.allocation_offset;
-            let mut buf = [0u8; EMS_PAGE_SIZE as usize];
-            mem.read_block(frame_addr, &mut buf);
-            mem.write_block(pool_addr, &buf);
-        }
+    fn apply_ems_page_frame_slot_mapping(&self, physical: usize, mem: &mut dyn MemoryAccess) {
+        let backing_linear_addr = self.ems_page_mapping[physical]
+            .map(|mapping| self.extended_pool_linear_address(mapping.allocation_offset));
+        mem.map_ems_page_frame_slot(physical as u8, backing_linear_addr);
     }
 
-    fn load_page_frame_slot(&self, physical: usize, offset: u32, mem: &mut dyn MemoryAccess) {
-        let frame_addr = EMS_PAGE_FRAME_BASE + physical as u32 * EMS_PAGE_SIZE;
-        let pool_addr = EXTENDED_RAM_BASE + offset;
-        let mut buf = [0u8; EMS_PAGE_SIZE as usize];
-        mem.read_block(pool_addr, &mut buf);
-        mem.write_block(frame_addr, &buf);
+    fn xms_vdisk_conflict_present(&self) -> bool {
+        // XMS defines error 81h when VDISK occupies the HMA. VDISK support is not
+        // historically relevant for the PC-98, so this path stays intentionally disabled.
+        false
     }
 
     pub(crate) fn ems_status(&self) -> u8 {
@@ -224,6 +353,13 @@ impl MemoryManager {
             return Err(0x89);
         }
         let handle_index = self.find_free_ems_handle().ok_or(0x85u8)?;
+        // EMS 4.0 Function 43h distinguishes error 87h ("more pages
+        // requested than physically exist in the system") from 88h ("more
+        // pages requested than currently available"). Check total capacity
+        // first, then currently-free pages.
+        if count > self.total_ems_pages() {
+            return Err(0x87);
+        }
         let (free, _total) = self.ems_unallocated_pages();
         if count > free {
             return Err(0x88);
@@ -254,6 +390,9 @@ impl MemoryManager {
     pub(crate) fn ems_allocate_pages_zero_allowed(&mut self, count: u16) -> Result<u16, u8> {
         let handle_index = self.find_free_ems_handle().ok_or(0x85u8)?;
         if count > 0 {
+            if count > self.total_ems_pages() {
+                return Err(0x87);
+            }
             let (free, _total) = self.ems_unallocated_pages();
             if count > free {
                 return Err(0x88);
@@ -303,14 +442,12 @@ impl MemoryManager {
         }
         let allocation_offset = handle.pages[logical_page as usize].offset();
 
-        self.save_page_frame_slot(physical_page as usize, mem);
-        self.load_page_frame_slot(physical_page as usize, allocation_offset, mem);
-
         self.ems_page_mapping[physical_page as usize] = Some(EmsMapping {
             handle: handle_index,
             logical_page,
             allocation_offset,
         });
+        self.apply_ems_page_frame_slot_mapping(physical_page as usize, mem);
         0x00
     }
 
@@ -318,8 +455,8 @@ impl MemoryManager {
         if physical_page as usize >= PHYSICAL_PAGES {
             return 0x8B;
         }
-        self.save_page_frame_slot(physical_page as usize, mem);
         self.ems_page_mapping[physical_page as usize] = None;
+        self.apply_ems_page_frame_slot_mapping(physical_page as usize, mem);
         0x00
     }
 
@@ -329,13 +466,19 @@ impl MemoryManager {
         {
             return 0x83;
         }
+        if self.ems_handles[handle_index as usize]
+            .save_context
+            .is_some()
+        {
+            return 0x86;
+        }
 
         for slot in 0..PHYSICAL_PAGES {
             if let Some(mapping) = self.ems_page_mapping[slot]
                 && mapping.handle == handle_index
             {
-                self.save_page_frame_slot(slot, mem);
                 self.ems_page_mapping[slot] = None;
+                self.apply_ems_page_frame_slot_mapping(slot, mem);
             }
         }
 
@@ -344,9 +487,11 @@ impl MemoryManager {
         for alloc in pages {
             self.allocator.deallocate(alloc);
         }
-        handle.active = false;
         handle.name = [0u8; 8];
         handle.save_context = None;
+        if handle_index as usize != EMS_OS_RESERVED_HANDLE {
+            handle.active = false;
+        }
         0x00
     }
 
@@ -379,15 +524,10 @@ impl MemoryManager {
             None => return 0x8E,
         };
 
-        for slot in 0..PHYSICAL_PAGES {
-            self.save_page_frame_slot(slot, mem);
-        }
-        for (slot, entry) in saved.iter().enumerate() {
-            if let Some(mapping) = entry {
-                self.load_page_frame_slot(slot, mapping.allocation_offset, mem);
-            }
-        }
         self.ems_page_mapping = saved;
+        for slot in 0..PHYSICAL_PAGES {
+            self.apply_ems_page_frame_slot_mapping(slot, mem);
+        }
         self.ems_handles[handle_index as usize].save_context = None;
         0x00
     }
@@ -401,19 +541,87 @@ impl MemoryManager {
         saved: [Option<EmsMapping>; PHYSICAL_PAGES],
         mem: &mut dyn MemoryAccess,
     ) {
-        for slot in 0..PHYSICAL_PAGES {
-            self.save_page_frame_slot(slot, mem);
-        }
-        for (slot, entry) in saved.iter().enumerate() {
-            if let Some(mapping) = entry {
-                self.load_page_frame_slot(slot, mapping.allocation_offset, mem);
-            }
-        }
         self.ems_page_mapping = saved;
+        for slot in 0..PHYSICAL_PAGES {
+            self.apply_ems_page_frame_slot_mapping(slot, mem);
+        }
     }
 
     pub(crate) fn ems_page_map_size(&self) -> u16 {
-        (PHYSICAL_PAGES * size_of::<u32>() * 2) as u16
+        (PHYSICAL_PAGES * (size_of::<u16>() * 2)) as u16
+    }
+
+    /// Size of the save array returned by Get Partial Page Map (Function 16
+    /// subfunction 02h). Format: 1 byte count + N * 6 bytes per entry
+    /// (segment + handle + logical_page).
+    pub(crate) fn ems_partial_page_map_size(&self, page_count: u16) -> Result<u8, u8> {
+        if page_count as usize > PHYSICAL_PAGES {
+            return Err(0x8B);
+        }
+        Ok(1u8 + (page_count as u8) * 6)
+    }
+
+    /// Serializes the current mapping for the specified physical-page frame
+    /// segments. Returns the save-array bytes or an error status.
+    pub(crate) fn ems_get_partial_page_map(&self, segments: &[u16]) -> Result<Vec<u8>, u8> {
+        if segments.len() > PHYSICAL_PAGES {
+            return Err(0xA3);
+        }
+        let mut out = Vec::with_capacity(1 + segments.len() * 6);
+        out.push(segments.len() as u8);
+        for &seg in segments {
+            let slot = match physical_page_for_segment(seg) {
+                Some(s) => s,
+                None => return Err(0x8B),
+            };
+            out.extend_from_slice(&seg.to_le_bytes());
+            match self.ems_page_mapping[slot] {
+                Some(m) => {
+                    out.extend_from_slice(&m.handle.to_le_bytes());
+                    out.extend_from_slice(&m.logical_page.to_le_bytes());
+                }
+                None => {
+                    out.extend_from_slice(&0xFFFFu16.to_le_bytes());
+                    out.extend_from_slice(&0xFFFFu16.to_le_bytes());
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Restores a partial mapping context from a save-array produced by
+    /// `ems_get_partial_page_map`.
+    pub(crate) fn ems_set_partial_page_map(
+        &mut self,
+        src: &[u8],
+        mem: &mut dyn MemoryAccess,
+    ) -> u8 {
+        if src.is_empty() {
+            return 0xA3;
+        }
+        let count = src[0] as usize;
+        if count > PHYSICAL_PAGES || src.len() < 1 + count * 6 {
+            return 0xA3;
+        }
+        for i in 0..count {
+            let base = 1 + i * 6;
+            let seg = u16::from_le_bytes([src[base], src[base + 1]]);
+            let handle = u16::from_le_bytes([src[base + 2], src[base + 3]]);
+            let logical = u16::from_le_bytes([src[base + 4], src[base + 5]]);
+            let physical = match physical_page_for_segment(seg) {
+                Some(p) => p as u8,
+                None => return 0x8B,
+            };
+            let status = if handle == 0xFFFF || logical == 0xFFFF {
+                self.ems_unmap_page(physical, mem)
+            } else {
+                self.ems_map_page(handle, logical, physical, mem)
+            };
+            if status != 0 {
+                return status;
+            }
+        }
+        0x00
     }
 
     pub(crate) fn ems_reallocate(&mut self, handle_index: u16, new_count: u16) -> Result<u16, u8> {
@@ -421,6 +629,13 @@ impl MemoryManager {
             || !self.ems_handles[handle_index as usize].active
         {
             return Err(0x83);
+        }
+        // EMS 4.0 Function 51h distinguishes 87h ("more pages than
+        // physically exist") from 88h ("more pages than currently
+        // available"). Check total capacity against the new allocation
+        // size before checking currently-free pages.
+        if new_count > self.total_ems_pages() {
+            return Err(0x87);
         }
         let current_count = self.ems_handles[handle_index as usize].pages.len() as u16;
         if new_count == current_count {
@@ -432,15 +647,22 @@ impl MemoryManager {
             if extra > free {
                 return Err(0x88);
             }
+            let mut new_pages: Vec<Allocation> = Vec::with_capacity(extra as usize);
             for _ in 0..extra {
                 let size = (EMS_PAGE_SIZE as u64 + ALIGN_MASK) & !ALIGN_MASK;
                 match self.allocator.allocate(size as u32) {
-                    Some(alloc) => {
-                        self.ems_handles[handle_index as usize].pages.push(alloc);
+                    Some(alloc) => new_pages.push(alloc),
+                    None => {
+                        for alloc in new_pages {
+                            self.allocator.deallocate(alloc);
+                        }
+                        return Err(0x88);
                     }
-                    None => return Err(0x88),
                 }
             }
+            self.ems_handles[handle_index as usize]
+                .pages
+                .extend(new_pages);
         } else {
             let handle = &mut self.ems_handles[handle_index as usize];
             while handle.pages.len() > new_count as usize {
@@ -493,7 +715,7 @@ impl MemoryManager {
         if name != [0u8; 8] {
             for (i, h) in self.ems_handles.iter().enumerate() {
                 if h.active && i as u16 != handle_index && h.name == name {
-                    return 0x92;
+                    return 0xA1;
                 }
             }
         }
@@ -512,6 +734,9 @@ impl MemoryManager {
     }
 
     pub(crate) fn ems_search_handle_name(&self, name: &[u8; 8]) -> Result<u16, u8> {
+        if *name == [0u8; 8] {
+            return Err(0xA1);
+        }
         for (i, handle) in self.ems_handles.iter().enumerate() {
             if handle.active && handle.name == *name {
                 return Ok(i as u16);
@@ -539,83 +764,262 @@ impl MemoryManager {
     }
 
     pub(crate) fn ems_move_memory(&self, params: &EmsMoveParams, mem: &mut dyn MemoryAccess) -> u8 {
+        self.ems_transfer_memory(params, false, mem)
+    }
+
+    pub(crate) fn ems_exchange_memory(
+        &self,
+        params: &EmsMoveParams,
+        mem: &mut dyn MemoryAccess,
+    ) -> u8 {
+        self.ems_transfer_memory(params, true, mem)
+    }
+
+    fn ems_transfer_memory(
+        &self,
+        params: &EmsMoveParams,
+        exchange: bool,
+        mem: &mut dyn MemoryAccess,
+    ) -> u8 {
         let region_length = params.region_length;
-        let src_type = params.src_type;
-        let src_handle = params.src_handle;
-        let src_offset = params.src_offset;
-        let src_seg_page = params.src_seg_page;
-        let dst_type = params.dst_type;
-        let dst_handle = params.dst_handle;
-        let dst_offset = params.dst_offset;
-        let dst_seg_page = params.dst_seg_page;
         if region_length == 0 {
             return 0x00;
         }
+        if region_length > 0x100000 {
+            return 0x96;
+        }
 
-        let src_linear = match src_type {
-            0 => {
-                let addr = (src_seg_page as u32) * 16 + src_offset as u32;
-                if addr + region_length > 0x100000 {
-                    return 0x96;
-                }
-                addr
-            }
-            1 => {
-                if !self.ems_is_valid_handle(src_handle) {
-                    return 0x83;
-                }
-                let offset = match self.ems_page_allocation_offset(src_handle, src_seg_page) {
-                    Some(o) => o,
-                    None => return 0x8A,
-                };
-                EXTENDED_RAM_BASE + offset + src_offset as u32
-            }
-            _ => return 0x98,
+        let src_region = match self.resolve_ems_transfer_region(
+            params.src_type,
+            params.src_handle,
+            params.src_offset,
+            params.src_seg_page,
+            region_length,
+        ) {
+            Ok(region) => region,
+            Err(code) => return code,
+        };
+        let dst_region = match self.resolve_ems_transfer_region(
+            params.dst_type,
+            params.dst_handle,
+            params.dst_offset,
+            params.dst_seg_page,
+            region_length,
+        ) {
+            Ok(region) => region,
+            Err(code) => return code,
         };
 
-        let dst_linear = match dst_type {
+        if self.ems_regions_overlap_page_frame(src_region, dst_region, region_length) {
+            return 0x94;
+        }
+
+        let mut status = 0x00;
+        if let (
+            EmsTransferRegion::Expanded {
+                handle: src_handle,
+                region_offset: src_region_offset,
+            },
+            EmsTransferRegion::Expanded {
+                handle: dst_handle,
+                region_offset: dst_region_offset,
+            },
+        ) = (src_region, dst_region)
+            && src_handle == dst_handle
+            && Self::ranges_overlap(
+                src_region_offset,
+                region_length,
+                dst_region_offset,
+                region_length,
+            )
+        {
+            if exchange {
+                return 0x97;
+            }
+            status = 0x92;
+        }
+
+        let src_buffer = self.read_ems_transfer_region(src_region, region_length, mem);
+        if exchange {
+            let dst_buffer = self.read_ems_transfer_region(dst_region, region_length, mem);
+            self.write_ems_transfer_region(src_region, &dst_buffer, mem);
+            self.write_ems_transfer_region(dst_region, &src_buffer, mem);
+        } else {
+            self.write_ems_transfer_region(dst_region, &src_buffer, mem);
+        }
+        status
+    }
+
+    fn resolve_ems_transfer_region(
+        &self,
+        memory_type: u8,
+        handle: u16,
+        offset: u16,
+        seg_page: u16,
+        region_length: u32,
+    ) -> Result<EmsTransferRegion, u8> {
+        match memory_type {
             0 => {
-                let addr = (dst_seg_page as u32) * 16 + dst_offset as u32;
-                if addr + region_length > 0x100000 {
-                    return 0x96;
+                let linear_address = (seg_page as u32)
+                    .checked_mul(16)
+                    .and_then(|base| base.checked_add(offset as u32))
+                    .ok_or(0xA2u8)?;
+                if linear_address
+                    .checked_add(region_length)
+                    .is_none_or(|end| end > 0x100000)
+                {
+                    return Err(0xA2);
                 }
-                addr
+                Ok(EmsTransferRegion::Conventional { linear_address })
             }
             1 => {
-                if !self.ems_is_valid_handle(dst_handle) {
-                    return 0x83;
+                if offset as u32 >= EMS_PAGE_SIZE {
+                    return Err(0x95);
                 }
-                let offset = match self.ems_page_allocation_offset(dst_handle, dst_seg_page) {
-                    Some(o) => o,
-                    None => return 0x8A,
-                };
-                EXTENDED_RAM_BASE + offset + dst_offset as u32
+                if !self.ems_is_valid_handle(handle) {
+                    return Err(0x83);
+                }
+                let page_count = self.ems_handle_pages(handle)? as u32;
+                let region_offset = (seg_page as u32)
+                    .checked_mul(EMS_PAGE_SIZE)
+                    .and_then(|page_offset| page_offset.checked_add(offset as u32))
+                    .ok_or(0x93u8)?;
+                if seg_page as u32 >= page_count {
+                    return Err(0x8A);
+                }
+                let total_bytes = page_count.checked_mul(EMS_PAGE_SIZE).ok_or(0x93u8)?;
+                if region_offset
+                    .checked_add(region_length)
+                    .is_none_or(|end| end > total_bytes)
+                {
+                    return Err(0x93);
+                }
+                Ok(EmsTransferRegion::Expanded {
+                    handle,
+                    region_offset,
+                })
             }
-            _ => return 0x98,
-        };
+            _ => Err(0x98),
+        }
+    }
 
-        let mut buf = vec![0u8; region_length as usize];
-        mem.read_block(src_linear, &mut buf);
-        mem.write_block(dst_linear, &buf);
-        0x00
+    fn read_ems_transfer_region(
+        &self,
+        region: EmsTransferRegion,
+        region_length: u32,
+        mem: &mut dyn MemoryAccess,
+    ) -> Vec<u8> {
+        let mut buffer = vec![0u8; region_length as usize];
+        self.with_ems_transfer_region_chunks(region, region_length, |src_linear, offset, len| {
+            mem.read_block(
+                src_linear,
+                &mut buffer[offset as usize..(offset + len) as usize],
+            );
+        });
+        buffer
+    }
+
+    fn write_ems_transfer_region(
+        &self,
+        region: EmsTransferRegion,
+        data: &[u8],
+        mem: &mut dyn MemoryAccess,
+    ) {
+        self.with_ems_transfer_region_chunks(
+            region,
+            data.len() as u32,
+            |dst_linear, offset, len| {
+                mem.write_block(dst_linear, &data[offset as usize..(offset + len) as usize]);
+            },
+        );
+    }
+
+    fn with_ems_transfer_region_chunks(
+        &self,
+        region: EmsTransferRegion,
+        region_length: u32,
+        mut visitor: impl FnMut(u32, u32, u32),
+    ) {
+        match region {
+            EmsTransferRegion::Conventional { linear_address } => {
+                visitor(linear_address, 0, region_length);
+            }
+            EmsTransferRegion::Expanded {
+                handle,
+                region_offset,
+            } => {
+                let mut copied = 0u32;
+                while copied < region_length {
+                    let absolute_offset = region_offset + copied;
+                    let logical_page = (absolute_offset / EMS_PAGE_SIZE) as u16;
+                    let page_offset = absolute_offset % EMS_PAGE_SIZE;
+                    let chunk_len = (EMS_PAGE_SIZE - page_offset).min(region_length - copied);
+                    let allocation_offset = self
+                        .ems_page_allocation_offset(handle, logical_page)
+                        .unwrap();
+                    let linear_address =
+                        self.extended_pool_linear_address(allocation_offset + page_offset);
+                    visitor(linear_address, copied, chunk_len);
+                    copied += chunk_len;
+                }
+            }
+        }
+    }
+
+    fn ems_regions_overlap_page_frame(
+        &self,
+        src_region: EmsTransferRegion,
+        dst_region: EmsTransferRegion,
+        region_length: u32,
+    ) -> bool {
+        match (src_region, dst_region) {
+            (
+                EmsTransferRegion::Conventional { linear_address },
+                EmsTransferRegion::Expanded { .. },
+            )
+            | (
+                EmsTransferRegion::Expanded { .. },
+                EmsTransferRegion::Conventional { linear_address },
+            ) => Self::ranges_overlap(
+                linear_address,
+                region_length,
+                EMS_PAGE_FRAME_BASE,
+                (PHYSICAL_PAGES as u32) * EMS_PAGE_SIZE,
+            ),
+            _ => false,
+        }
+    }
+
+    fn ranges_overlap(start_a: u32, len_a: u32, start_b: u32, len_b: u32) -> bool {
+        let end_a = start_a + len_a;
+        let end_b = start_b + len_b;
+        start_a < end_b && start_b < end_a
     }
 
     pub(crate) fn xms_version(&self) -> (u16, u16, u16) {
-        (
-            0x0300,
-            0x0001,
-            if self.extended_memory_size > 0 { 1 } else { 0 },
-        )
+        (0x0300, 0x0001, if self.hma_exists() { 1 } else { 0 })
     }
 
     pub(crate) fn xms_request_hma(&mut self, size: u16) -> Result<(), u8> {
-        if self.extended_memory_size == 0 {
+        if !self.hma_exists() {
             return Err(0x90);
+        }
+        if self.xms_vdisk_conflict_present() {
+            return Err(0x81);
         }
         if self.hma_allocated {
             return Err(0x91);
         }
-        if size == 0 {
+        // Size semantics (XMS 3.0 Request HMA): DX is the amount requested
+        // in bytes. Applications pass 0xFFFF to bypass the HMAMIN check;
+        // TSRs/drivers pass their actual byte requirement and lose the HMA
+        // if it is below /HMAMIN=.
+        if size == 0xFFFF {
+            self.hma_allocated = true;
+            return Ok(());
+        }
+        let hmamin_bytes = (self.hmamin_kb as u32) * 1024;
+        if (size as u32) < hmamin_bytes {
             return Err(0x92);
         }
         self.hma_allocated = true;
@@ -623,6 +1027,12 @@ impl MemoryManager {
     }
 
     pub(crate) fn xms_release_hma(&mut self) -> Result<(), u8> {
+        if !self.hma_exists() {
+            return Err(0x90);
+        }
+        if self.xms_vdisk_conflict_present() {
+            return Err(0x81);
+        }
         if !self.hma_allocated {
             return Err(0x93);
         }
@@ -631,11 +1041,12 @@ impl MemoryManager {
     }
 
     pub(crate) fn xms_query_free(&self) -> (u16, u16) {
-        let total_kb = self.extended_memory_size / 1024;
-        let used_kb = self.allocated_xms_kb();
-        let free_kb = total_kb.saturating_sub(used_kb);
-        let free_kb_u16 = free_kb.min(0xFFFF) as u16;
-        (free_kb_u16, free_kb_u16)
+        let total_free_kb = self.allocator.total_free_size() / 1024;
+        let largest_free_kb = self.allocator.largest_free_block_size() / 1024;
+        (
+            largest_free_kb.min(0xFFFF) as u16,
+            total_free_kb.min(0xFFFF) as u16,
+        )
     }
 
     pub(crate) fn xms_allocate(&mut self, size_kb: u16) -> Result<u16, u8> {
@@ -690,36 +1101,65 @@ impl MemoryManager {
         if length == 0 {
             return Ok(());
         }
+        // XMS 3.0 Move EMB: "Length must be even."
+        if length & 1 != 0 {
+            return Err(0xA7);
+        }
 
         let src_addr = if src_handle_id == 0 {
-            src_offset
+            // XMS 3.0 Move EMB: "If SourceHandle is set to 0000h, the
+            // SourceOffset is interpreted as a standard segment:offset
+            // pair... stored in Intel DWORD notation" (low 16 = offset,
+            // high 16 = segment).
+            let seg = (src_offset >> 16) & 0xFFFF;
+            let off = src_offset & 0xFFFF;
+            (seg << 4) + off
         } else {
             let index = src_handle_id.checked_sub(1).ok_or(0xA3u8)? as usize;
             if index >= self.xms_handles.len() || !self.xms_handles[index].active {
                 return Err(0xA3);
             }
-            let alloc = self.xms_handles[index].allocation.as_ref().ok_or(0xA4u8)?;
-            let base = EXTENDED_RAM_BASE + alloc.offset();
-            if src_offset > self.xms_handles[index].size_kb * 1024 {
+            let size_bytes = self.xms_handles[index].size_kb * 1024;
+            if src_offset
+                .checked_add(length)
+                .is_none_or(|end| end > size_bytes)
+            {
                 return Err(0xA4);
             }
-            base + src_offset
+            let alloc = self.xms_handles[index].allocation.as_ref().ok_or(0xA4u8)?;
+            self.extended_pool_linear_address(alloc.offset() + src_offset)
         };
 
         let dst_addr = if dst_handle_id == 0 {
-            dst_offset
+            let seg = (dst_offset >> 16) & 0xFFFF;
+            let off = dst_offset & 0xFFFF;
+            (seg << 4) + off
         } else {
             let index = dst_handle_id.checked_sub(1).ok_or(0xA5u8)? as usize;
             if index >= self.xms_handles.len() || !self.xms_handles[index].active {
                 return Err(0xA5);
             }
-            let alloc = self.xms_handles[index].allocation.as_ref().ok_or(0xA6u8)?;
-            let base = EXTENDED_RAM_BASE + alloc.offset();
-            if dst_offset > self.xms_handles[index].size_kb * 1024 {
+            let size_bytes = self.xms_handles[index].size_kb * 1024;
+            if dst_offset
+                .checked_add(length)
+                .is_none_or(|end| end > size_bytes)
+            {
                 return Err(0xA6);
             }
-            base + dst_offset
+            let alloc = self.xms_handles[index].allocation.as_ref().ok_or(0xA6u8)?;
+            self.extended_pool_linear_address(alloc.offset() + dst_offset)
         };
+
+        // XMS 3.0 Move EMB: "If the source and destination blocks overlap,
+        // only forward moves (i.e. where the source base is less than the
+        // destination base) are guaranteed to work properly." Backward
+        // overlapping moves are therefore invalid per spec; return 0xA8.
+        let src_end = src_addr.saturating_add(length);
+        let dst_end = dst_addr.saturating_add(length);
+        let ranges_overlap = src_addr < dst_end && dst_addr < src_end;
+        if ranges_overlap && src_addr > dst_addr {
+            return Err(0xA8);
+        }
 
         let mut buf = vec![0u8; length as usize];
         mem.read_block(src_addr, &mut buf);
@@ -737,8 +1177,8 @@ impl MemoryManager {
         }
         self.xms_handles[index].lock_count += 1;
         let addr = match self.xms_handles[index].allocation {
-            Some(ref alloc) => EXTENDED_RAM_BASE + alloc.offset(),
-            None => EXTENDED_RAM_BASE,
+            Some(ref alloc) => self.extended_pool_linear_address(alloc.offset()),
+            None => self.extended_pool_linear_address(0),
         };
         Ok(addr)
     }
@@ -766,7 +1206,21 @@ impl MemoryManager {
         Ok((lock_count, free_handles, size_kb))
     }
 
-    pub(crate) fn xms_reallocate(&mut self, handle_id: u16, new_size_kb: u16) -> Result<(), u8> {
+    pub(crate) fn xms_reallocate(
+        &mut self,
+        handle_id: u16,
+        new_size_kb: u16,
+        mem: &mut dyn MemoryAccess,
+    ) -> Result<(), u8> {
+        self.xms_reallocate_internal(handle_id, new_size_kb as u32, mem)
+    }
+
+    fn xms_reallocate_internal(
+        &mut self,
+        handle_id: u16,
+        new_size_kb: u32,
+        mem: &mut dyn MemoryAccess,
+    ) -> Result<(), u8> {
         let index = handle_id.checked_sub(1).ok_or(0xA2u8)? as usize;
         if index >= self.xms_handles.len() || !self.xms_handles[index].active {
             return Err(0xA2);
@@ -775,28 +1229,100 @@ impl MemoryManager {
             return Err(0xAB);
         }
 
-        if let Some(old_alloc) = self.xms_handles[index].allocation.take() {
-            self.allocator.deallocate(old_alloc);
+        let old_size_kb = self.xms_handles[index].size_kb;
+        if new_size_kb == old_size_kb {
+            return Ok(());
         }
 
         if new_size_kb == 0 {
-            self.xms_handles[index].allocation = None;
+            if let Some(old_alloc) = self.xms_handles[index].allocation.take() {
+                self.allocator.deallocate(old_alloc);
+            }
             self.xms_handles[index].size_kb = 0;
             return Ok(());
         }
 
         let size_bytes = (new_size_kb as u64) * 1024;
         let aligned_size = ((size_bytes + ALIGN_MASK) & !ALIGN_MASK) as u32;
+        let copy_bytes = old_size_kb.min(new_size_kb) * 1024;
+
+        // XMS only guarantees a locked block stays at a fixed physical
+        // address; after unlock and reallocate the driver is free to move
+        // it. In practice, DX386 as used by Doom grows an unlocked block
+        // and then expects the next lock to return the same base address
+        // again. Prefer an in-place resize when possible to preserve that
+        // compatibility, and only relocate when the current range cannot
+        // satisfy the new size.
+        if let Some(old_alloc) = self.xms_handles[index].allocation
+            && let Some(resized_alloc) = self.allocator.reallocate_in_place(old_alloc, aligned_size)
+        {
+            self.xms_handles[index].allocation = Some(resized_alloc);
+            self.xms_handles[index].size_kb = new_size_kb;
+            return Ok(());
+        }
+
+        if let Some(new_alloc) = self.allocator.allocate(aligned_size) {
+            if copy_bytes > 0
+                && let Some(ref old_alloc) = self.xms_handles[index].allocation
+            {
+                let old_base = self.extended_pool_linear_address(old_alloc.offset());
+                let new_base = self.extended_pool_linear_address(new_alloc.offset());
+                let mut buf = vec![0u8; copy_bytes as usize];
+                mem.read_block(old_base, &mut buf);
+                mem.write_block(new_base, &buf);
+            }
+            if let Some(old_alloc) = self.xms_handles[index].allocation.take() {
+                self.allocator.deallocate(old_alloc);
+            }
+            self.xms_handles[index].allocation = Some(new_alloc);
+            self.xms_handles[index].size_kb = new_size_kb;
+            return Ok(());
+        }
+
+        let old_alloc = match self.xms_handles[index].allocation.take() {
+            Some(a) => a,
+            None => return Err(0xA0),
+        };
+
+        let old_base = self.extended_pool_linear_address(old_alloc.offset());
+        let mut saved_data = vec![0u8; copy_bytes as usize];
+        if copy_bytes > 0 {
+            mem.read_block(old_base, &mut saved_data);
+        }
+        self.allocator.deallocate(old_alloc);
+
         match self.allocator.allocate(aligned_size) {
-            Some(alloc) => {
-                self.xms_handles[index].allocation = Some(alloc);
-                self.xms_handles[index].size_kb = new_size_kb as u32;
+            Some(new_alloc) => {
+                let new_base = self.extended_pool_linear_address(new_alloc.offset());
+                if copy_bytes > 0 {
+                    mem.write_block(new_base, &saved_data);
+                }
+                self.xms_handles[index].allocation = Some(new_alloc);
+                self.xms_handles[index].size_kb = new_size_kb;
                 Ok(())
             }
             None => {
-                self.xms_handles[index].active = false;
-                self.xms_handles[index].size_kb = 0;
-                Err(0xA0)
+                let old_aligned_size =
+                    (((old_size_kb as u64) * 1024 + ALIGN_MASK) & !ALIGN_MASK) as u32;
+                if old_aligned_size == 0 {
+                    self.xms_handles[index].size_kb = 0;
+                    return Err(0xA0);
+                }
+                match self.allocator.allocate(old_aligned_size) {
+                    Some(restored) => {
+                        let restored_base = self.extended_pool_linear_address(restored.offset());
+                        if copy_bytes > 0 {
+                            mem.write_block(restored_base, &saved_data);
+                        }
+                        self.xms_handles[index].allocation = Some(restored);
+                        self.xms_handles[index].size_kb = old_size_kb;
+                        Err(0xA0)
+                    }
+                    None => {
+                        self.xms_handles[index].size_kb = 0;
+                        Err(0xA0)
+                    }
+                }
             }
         }
     }
@@ -841,13 +1367,23 @@ impl MemoryManager {
         if !self.umb_enabled {
             return Err((0xB2, 0));
         }
-        memory::resize(mem, UMB_FIRST_MCB_SEGMENT, segment, new_paragraphs)
-            .map_err(|(_code, largest)| (0xB0, largest))
+        let largest_available =
+            memory::largest_free_block_paragraphs_pub(mem, UMB_FIRST_MCB_SEGMENT);
+        memory::resize_without_grow_failure(mem, UMB_FIRST_MCB_SEGMENT, segment, new_paragraphs)
+            .map_err(|(code, _largest)| {
+                if code == 0x09 {
+                    (0xB2, 0)
+                } else if largest_available == 0 {
+                    (0xB1, 0)
+                } else {
+                    (0xB0, largest_available)
+                }
+            })
     }
 
     pub(crate) fn ems_total_kb(&self) -> u32 {
         if self.ems_enabled {
-            self.extended_memory_size / 1024
+            self.allocator_total_bytes() / 1024
         } else {
             0
         }
@@ -864,7 +1400,7 @@ impl MemoryManager {
 
     pub(crate) fn xms_total_kb(&self) -> u32 {
         if self.xms_enabled {
-            self.extended_memory_size / 1024
+            self.allocator_total_bytes() / 1024
         } else {
             0
         }
@@ -872,24 +1408,24 @@ impl MemoryManager {
 
     pub(crate) fn xms_free_kb(&self) -> u32 {
         if self.xms_enabled {
-            let (_, free) = self.xms_query_free();
-            free as u32
+            let (_largest, total) = self.xms_query_free();
+            total as u32
         } else {
             0
         }
     }
 
     pub(crate) fn extended_pool_total_bytes(&self) -> u32 {
-        self.extended_memory_size
+        self.allocator_total_bytes()
     }
 
     pub(crate) fn extended_pool_used_bytes(&self) -> u32 {
-        (self.allocated_ems_pages() as u32) * EMS_PAGE_SIZE + self.allocated_xms_kb() * 1024
+        self.extended_pool_total_bytes()
+            .saturating_sub(self.allocator.total_free_size())
     }
 
     pub(crate) fn extended_pool_free_bytes(&self) -> u32 {
-        self.extended_memory_size
-            .saturating_sub(self.extended_pool_used_bytes())
+        self.allocator.total_free_size()
     }
 
     pub(crate) fn hma_is_allocated(&self) -> bool {
@@ -917,16 +1453,18 @@ impl MemoryManager {
     }
 
     pub(crate) fn xms_query_free_32(&self) -> (u32, u32) {
-        let total_kb = self.extended_memory_size / 1024;
-        let used_kb = self.allocated_xms_kb();
-        let free_kb = total_kb.saturating_sub(used_kb);
-        (free_kb, free_kb)
+        (
+            self.allocator.largest_free_block_size() / 1024,
+            self.allocator.total_free_size() / 1024,
+        )
     }
 
     pub(crate) fn xms_allocate_32(&mut self, size_kb: u32) -> Result<u16, u8> {
         let handle_index = self.find_free_xms_handle().ok_or(0xA1u8)?;
-        let size_bytes = (size_kb as u64) * 1024;
-        let aligned_size = ((size_bytes + ALIGN_MASK) & !ALIGN_MASK) as u32;
+        let size_bytes = size_kb.checked_mul(1024).ok_or(0xA0u8)? as u64;
+        let aligned_size = ((size_bytes + ALIGN_MASK) & !ALIGN_MASK)
+            .try_into()
+            .map_err(|_| 0xA0u8)?;
 
         if aligned_size == 0 {
             let handle = &mut self.xms_handles[handle_index as usize];
@@ -957,45 +1495,20 @@ impl MemoryManager {
         Ok((lock_count, free_handles, size_kb))
     }
 
-    pub(crate) fn xms_reallocate_32(&mut self, handle_id: u16, new_size_kb: u32) -> Result<(), u8> {
-        let index = handle_id.checked_sub(1).ok_or(0xA2u8)? as usize;
-        if index >= self.xms_handles.len() || !self.xms_handles[index].active {
-            return Err(0xA2);
-        }
-        if self.xms_handles[index].lock_count > 0 {
-            return Err(0xAB);
-        }
-
-        if let Some(old_alloc) = self.xms_handles[index].allocation.take() {
-            self.allocator.deallocate(old_alloc);
-        }
-
-        if new_size_kb == 0 {
-            self.xms_handles[index].allocation = None;
-            self.xms_handles[index].size_kb = 0;
-            return Ok(());
-        }
-
-        let size_bytes = (new_size_kb as u64) * 1024;
-        let aligned_size = ((size_bytes + ALIGN_MASK) & !ALIGN_MASK) as u32;
-        match self.allocator.allocate(aligned_size) {
-            Some(alloc) => {
-                self.xms_handles[index].allocation = Some(alloc);
-                self.xms_handles[index].size_kb = new_size_kb;
-                Ok(())
-            }
-            None => {
-                self.xms_handles[index].active = false;
-                self.xms_handles[index].size_kb = 0;
-                Err(0xA0)
-            }
-        }
+    pub(crate) fn xms_reallocate_32(
+        &mut self,
+        handle_id: u16,
+        new_size_kb: u32,
+        mem: &mut dyn MemoryAccess,
+    ) -> Result<(), u8> {
+        let _ = new_size_kb.checked_mul(1024).ok_or(0xA0u8)?;
+        self.xms_reallocate_internal(handle_id, new_size_kb, mem)
     }
 
     pub(crate) fn ems_enable_os_functions(&mut self, provided_key: u32) -> Result<Option<u32>, u8> {
         match self.ems_os_access_key {
             None => {
-                let key = 0x4E45_4554;
+                let key = self.next_ems_os_access_key();
                 self.ems_os_access_key = Some(key);
                 self.ems_os_functions_enabled = true;
                 Ok(Some(key))
@@ -1016,7 +1529,7 @@ impl MemoryManager {
     ) -> Result<Option<u32>, u8> {
         match self.ems_os_access_key {
             None => {
-                let key = 0x4E45_4554;
+                let key = self.next_ems_os_access_key();
                 self.ems_os_access_key = Some(key);
                 self.ems_os_functions_enabled = false;
                 Ok(Some(key))
@@ -1035,7 +1548,7 @@ impl MemoryManager {
         match self.ems_os_access_key {
             Some(stored_key) if provided_key == stored_key => {
                 self.ems_os_access_key = None;
-                self.ems_os_functions_enabled = false;
+                self.ems_os_functions_enabled = true;
                 Ok(())
             }
             _ => Err(0xA4),
@@ -1052,6 +1565,7 @@ mod tests {
     struct MockMemory {
         data: HashMap<u32, u8>,
         ext_mem_size: u32,
+        ems_page_frame_slot_mappings: [Option<u32>; 4],
     }
 
     impl MockMemory {
@@ -1059,16 +1573,40 @@ mod tests {
             Self {
                 data: HashMap::new(),
                 ext_mem_size: ext_mem_size_kb * 1024,
+                ems_page_frame_slot_mappings: [None; 4],
             }
         }
     }
 
     impl MemoryAccess for MockMemory {
         fn read_byte(&self, address: u32) -> u8 {
+            if (EMS_PAGE_FRAME_BASE..EMS_PAGE_FRAME_BASE + (PHYSICAL_PAGES as u32) * EMS_PAGE_SIZE)
+                .contains(&address)
+            {
+                let slot = ((address - EMS_PAGE_FRAME_BASE) / EMS_PAGE_SIZE) as usize;
+                let slot_offset = (address - EMS_PAGE_FRAME_BASE) % EMS_PAGE_SIZE;
+                if let Some(base) = self.ems_page_frame_slot_mappings[slot] {
+                    return self
+                        .data
+                        .get(&(base + slot_offset))
+                        .copied()
+                        .unwrap_or(0x00);
+                }
+            }
             self.data.get(&address).copied().unwrap_or(0x00)
         }
 
         fn write_byte(&mut self, address: u32, value: u8) {
+            if (EMS_PAGE_FRAME_BASE..EMS_PAGE_FRAME_BASE + (PHYSICAL_PAGES as u32) * EMS_PAGE_SIZE)
+                .contains(&address)
+            {
+                let slot = ((address - EMS_PAGE_FRAME_BASE) / EMS_PAGE_SIZE) as usize;
+                let slot_offset = (address - EMS_PAGE_FRAME_BASE) % EMS_PAGE_SIZE;
+                if let Some(base) = self.ems_page_frame_slot_mappings[slot] {
+                    self.data.insert(base + slot_offset, value);
+                    return;
+                }
+            }
             self.data.insert(address, value);
         }
 
@@ -1097,6 +1635,13 @@ mod tests {
 
         fn extended_memory_size(&self) -> u32 {
             self.ext_mem_size
+        }
+
+        fn map_ems_page_frame_slot(&mut self, physical_page: u8, backing_linear_addr: Option<u32>) {
+            let physical_page = usize::from(physical_page);
+            if physical_page < self.ems_page_frame_slot_mappings.len() {
+                self.ems_page_frame_slot_mappings[physical_page] = backing_linear_addr;
+            }
         }
     }
 
@@ -1147,11 +1692,11 @@ mod tests {
     fn test_initial_free_pages() {
         let (mm, _mem) = create_manager(1024);
         let (free, total) = mm.ems_unallocated_pages();
-        assert_eq!(total, 64);
-        assert_eq!(free, 64);
+        assert_eq!(total, 60);
+        assert_eq!(free, 60);
         let (largest, total_free) = mm.xms_query_free();
-        assert_eq!(total_free, 1024);
-        assert_eq!(largest, 1024);
+        assert_eq!(total_free, 960);
+        assert_eq!(largest, 960);
     }
 
     #[test]
@@ -1175,8 +1720,8 @@ mod tests {
     #[test]
     fn test_ems_total_and_free_kb() {
         let (mm, _mem) = create_manager(1024);
-        assert_eq!(mm.ems_total_kb(), 1024);
-        assert_eq!(mm.ems_free_kb(), 1024);
+        assert_eq!(mm.ems_total_kb(), 960);
+        assert_eq!(mm.ems_free_kb(), 960);
 
         let (mm_disabled, _mem) = create_manager_selective(1024, false, true);
         assert_eq!(mm_disabled.ems_total_kb(), 0);
@@ -1187,10 +1732,10 @@ mod tests {
     fn test_ems_allocate_single_page() {
         let (mut mm, _mem) = create_manager(1024);
         let handle = mm.ems_allocate_pages(1).unwrap();
-        assert_eq!(mm.ems_handle_count(), 1);
+        assert_eq!(mm.ems_handle_count(), 2);
         assert_eq!(mm.ems_handle_pages(handle).unwrap(), 1);
         let (free, _) = mm.ems_unallocated_pages();
-        assert_eq!(free, 63);
+        assert_eq!(free, 59);
     }
 
     #[test]
@@ -1199,7 +1744,7 @@ mod tests {
         let handle = mm.ems_allocate_pages(4).unwrap();
         assert_eq!(mm.ems_handle_pages(handle).unwrap(), 4);
         let (free, _) = mm.ems_unallocated_pages();
-        assert_eq!(free, 60);
+        assert_eq!(free, 56);
     }
 
     #[test]
@@ -1208,9 +1753,9 @@ mod tests {
         let h1 = mm.ems_allocate_pages(2).unwrap();
         let h2 = mm.ems_allocate_pages(3).unwrap();
         assert_ne!(h1, h2);
-        assert_eq!(mm.ems_handle_count(), 2);
+        assert_eq!(mm.ems_handle_count(), 3);
         let (free, _) = mm.ems_unallocated_pages();
-        assert_eq!(free, 59);
+        assert_eq!(free, 55);
     }
 
     #[test]
@@ -1224,19 +1769,35 @@ mod tests {
         let (mut mm, _mem) = create_manager(1024);
         let handle = mm.ems_allocate_pages_zero_allowed(0).unwrap();
         assert_eq!(mm.ems_handle_pages(handle).unwrap(), 0);
-        assert_eq!(mm.ems_handle_count(), 1);
+        assert_eq!(mm.ems_handle_count(), 2);
+    }
+
+    #[test]
+    fn test_ems_allocate_zero_allowed_exceeds_total() {
+        let (mut mm, _mem) = create_manager(1024);
+        assert_eq!(mm.ems_allocate_pages_zero_allowed(65), Err(0x87));
     }
 
     #[test]
     fn test_ems_allocate_exceeds_free() {
         let (mut mm, _mem) = create_manager(1024);
-        assert_eq!(mm.ems_allocate_pages(65), Err(0x88));
+        // Total is 64 pages; consume 50 so 14 remain free, then request 20.
+        // That is <= total but > free, exercising the 0x88 path only.
+        mm.ems_allocate_pages(50).unwrap();
+        assert_eq!(mm.ems_allocate_pages(20), Err(0x88));
+    }
+
+    #[test]
+    fn test_ems_allocate_exceeds_total() {
+        let (mut mm, _mem) = create_manager(1024);
+        // Total pool is 64 pages; asking for 65 exceeds physical capacity.
+        assert_eq!(mm.ems_allocate_pages(65), Err(0x87));
     }
 
     #[test]
     fn test_ems_allocate_exhausts_handles() {
         let (mut mm, _mem) = create_manager(4096);
-        for _ in 0..MAX_EMS_HANDLES {
+        for _ in 1..MAX_EMS_HANDLES {
             mm.ems_allocate_pages_zero_allowed(0).unwrap();
         }
         assert_eq!(mm.ems_allocate_pages_zero_allowed(0), Err(0x85));
@@ -1250,7 +1811,7 @@ mod tests {
         let (free, total) = mm.ems_unallocated_pages();
         assert_eq!(free, total);
         assert!(!mm.ems_is_valid_handle(handle));
-        assert_eq!(mm.ems_handle_count(), 0);
+        assert_eq!(mm.ems_handle_count(), 1);
     }
 
     #[test]
@@ -1266,6 +1827,26 @@ mod tests {
         assert_eq!(mm.ems_deallocate(handle, &mut mem), 0x00);
         let handle2 = mm.ems_allocate_pages(60).unwrap();
         assert_eq!(mm.ems_handle_pages(handle2).unwrap(), 60);
+    }
+
+    #[test]
+    fn test_ems_deallocate_saved_context_returns_86() {
+        let (mut mm, mut mem) = create_manager(1024);
+        let handle = mm.ems_allocate_pages(1).unwrap();
+
+        assert_eq!(mm.ems_save_page_map(handle), 0x00);
+        assert_eq!(mm.ems_deallocate(handle, &mut mem), 0x86);
+        assert!(mm.ems_is_valid_handle(handle));
+    }
+
+    #[test]
+    fn test_ems_deallocate_reserved_handle_keeps_os_handle_active() {
+        let (mut mm, mut mem) = create_manager(1024);
+
+        assert_eq!(mm.ems_deallocate(0, &mut mem), 0x00);
+        assert!(mm.ems_is_valid_handle(0));
+        assert_eq!(mm.ems_handle_pages(0).unwrap(), 0);
+        assert_eq!(mm.ems_handle_count(), 1);
     }
 
     #[test]
@@ -1303,7 +1884,7 @@ mod tests {
 
         // Write a pattern into extended RAM at the allocation's offset.
         let pattern = [0xDE, 0xAD, 0xBE, 0xEF];
-        mem.write_block(EXTENDED_RAM_BASE + offset, &pattern);
+        mem.write_block(mm.extended_pool_linear_address(offset), &pattern);
 
         // Map page to physical slot 0 (copies data into page frame at 0xC0000).
         assert_eq!(mm.ems_map_page(handle, 0, 0, &mut mem), 0x00);
@@ -1321,6 +1902,19 @@ mod tests {
         mm.ems_map_page(handle, 0, 0, &mut mem);
         assert_eq!(mm.ems_unmap_page(0, &mut mem), 0x00);
         assert_eq!(mm.ems_unmap_page(4, &mut mem), 0x8B);
+    }
+
+    #[test]
+    fn test_ems_same_logical_page_aliases_across_physical_slots() {
+        let (mut mm, mut mem) = create_manager(1024);
+        let handle = mm.ems_allocate_pages(1).unwrap();
+
+        assert_eq!(mm.ems_map_page(handle, 0, 0, &mut mem), 0x00);
+        assert_eq!(mm.ems_map_page(handle, 0, 1, &mut mem), 0x00);
+
+        mem.write_byte(EMS_PAGE_FRAME_BASE, 0x5A);
+
+        assert_eq!(mem.read_byte(EMS_PAGE_FRAME_BASE + EMS_PAGE_SIZE), 0x5A);
     }
 
     #[test]
@@ -1439,7 +2033,19 @@ mod tests {
     fn test_ems_reallocate_exceeds_free() {
         let (mut mm, _mem) = create_manager(1024);
         let handle = mm.ems_allocate_pages(2).unwrap();
-        assert_eq!(mm.ems_reallocate(handle, 100), Err(0x88));
+        // Consume more of the pool so free drops below the growth request.
+        // Total=64, allocated=52, free=12; growing handle from 2 to 60
+        // needs extra=58 which exceeds free but not total.
+        mm.ems_allocate_pages(50).unwrap();
+        assert_eq!(mm.ems_reallocate(handle, 60), Err(0x88));
+    }
+
+    #[test]
+    fn test_ems_reallocate_exceeds_total() {
+        let (mut mm, _mem) = create_manager(1024);
+        let handle = mm.ems_allocate_pages(2).unwrap();
+        // Total pool is 64 pages; asking for 65 exceeds physical capacity.
+        assert_eq!(mm.ems_reallocate(handle, 65), Err(0x87));
     }
 
     #[test]
@@ -1463,7 +2069,7 @@ mod tests {
         let h1 = mm.ems_allocate_pages(1).unwrap();
         let h2 = mm.ems_allocate_pages(1).unwrap();
         mm.ems_set_handle_name(h1, *b"MYNAME\0\0");
-        assert_eq!(mm.ems_set_handle_name(h2, *b"MYNAME\0\0"), 0x92);
+        assert_eq!(mm.ems_set_handle_name(h2, *b"MYNAME\0\0"), 0xA1);
     }
 
     #[test]
@@ -1485,15 +2091,22 @@ mod tests {
     }
 
     #[test]
+    fn test_ems_search_zero_name_returns_not_found() {
+        let (mut mm, _mem) = create_manager(1024);
+        let _handle = mm.ems_allocate_pages(1).unwrap();
+        assert_eq!(mm.ems_search_handle_name(&[0u8; 8]), Err(0xA1));
+    }
+
+    #[test]
     fn test_ems_handle_count() {
         let (mut mm, mut mem) = create_manager(1024);
-        assert_eq!(mm.ems_handle_count(), 0);
+        assert_eq!(mm.ems_handle_count(), 1);
         let h1 = mm.ems_allocate_pages(1).unwrap();
         let h2 = mm.ems_allocate_pages(1).unwrap();
         let h3 = mm.ems_allocate_pages(1).unwrap();
-        assert_eq!(mm.ems_handle_count(), 3);
+        assert_eq!(mm.ems_handle_count(), 4);
         mm.ems_deallocate(h2, &mut mem);
-        assert_eq!(mm.ems_handle_count(), 2);
+        assert_eq!(mm.ems_handle_count(), 3);
         mm.ems_deallocate(h1, &mut mem);
         mm.ems_deallocate(h3, &mut mem);
     }
@@ -1504,7 +2117,8 @@ mod tests {
         let h1 = mm.ems_allocate_pages(2).unwrap();
         let h2 = mm.ems_allocate_pages(5).unwrap();
         let all = mm.ems_all_handle_pages();
-        assert_eq!(all.len(), 2);
+        assert_eq!(all.len(), 3);
+        assert!(all.contains(&(0, 0)));
         assert!(all.contains(&(h1, 2)));
         assert!(all.contains(&(h2, 5)));
     }
@@ -1519,7 +2133,8 @@ mod tests {
         mm.ems_set_handle_name(h2, *b"BETA\0\0\0\0");
         mm.ems_set_handle_name(h3, *b"GAMMA\0\0\0");
         let dir = mm.ems_handle_directory();
-        assert_eq!(dir.len(), 3);
+        assert_eq!(dir.len(), 4);
+        assert!(dir.contains(&(0, [0u8; 8])));
         assert!(dir.contains(&(h1, *b"ALPHA\0\0\0")));
         assert!(dir.contains(&(h2, *b"BETA\0\0\0\0")));
         assert!(dir.contains(&(h3, *b"GAMMA\0\0\0")));
@@ -1548,7 +2163,7 @@ mod tests {
 
         let offset = mm.ems_page_allocation_offset(handle, 0).unwrap();
         let mut buf = [0u8; 4];
-        mem.read_block(EXTENDED_RAM_BASE + offset, &mut buf);
+        mem.read_block(mm.extended_pool_linear_address(offset), &mut buf);
         assert_eq!(buf, pattern);
     }
 
@@ -1559,7 +2174,7 @@ mod tests {
         let offset = mm.ems_page_allocation_offset(handle, 0).unwrap();
 
         let pattern = [0xCA, 0xFE, 0xBA, 0xBE];
-        mem.write_block(EXTENDED_RAM_BASE + offset, &pattern);
+        mem.write_block(mm.extended_pool_linear_address(offset), &pattern);
 
         let params = EmsMoveParams {
             region_length: 4,
@@ -1580,6 +2195,58 @@ mod tests {
     }
 
     #[test]
+    fn test_ems_move_reads_updated_page_frame_contents() {
+        let (mut mm, mut mem) = create_manager(1024);
+        let handle = mm.ems_allocate_pages(1).unwrap();
+
+        assert_eq!(mm.ems_map_page(handle, 0, 0, &mut mem), 0x00);
+        mem.write_byte(EMS_PAGE_FRAME_BASE, 0x11);
+        mem.write_byte(EMS_PAGE_FRAME_BASE + 1, 0x22);
+
+        let params = EmsMoveParams {
+            region_length: 2,
+            src_type: 1,
+            src_handle: handle,
+            src_offset: 0,
+            src_seg_page: 0,
+            dst_type: 0,
+            dst_handle: 0,
+            dst_offset: 0,
+            dst_seg_page: 0x0200,
+        };
+
+        assert_eq!(mm.ems_move_memory(&params, &mut mem), 0x00);
+        assert_eq!(mem.read_byte(0x2000), 0x11);
+        assert_eq!(mem.read_byte(0x2001), 0x22);
+    }
+
+    #[test]
+    fn test_ems_move_updates_mapped_page_frame_after_write() {
+        let (mut mm, mut mem) = create_manager(1024);
+        let handle = mm.ems_allocate_pages(1).unwrap();
+
+        assert_eq!(mm.ems_map_page(handle, 0, 0, &mut mem), 0x00);
+        mem.write_byte(0x2000, 0x44);
+        mem.write_byte(0x2001, 0x55);
+
+        let params = EmsMoveParams {
+            region_length: 2,
+            src_type: 0,
+            src_handle: 0,
+            src_offset: 0,
+            src_seg_page: 0x0200,
+            dst_type: 1,
+            dst_handle: handle,
+            dst_offset: 0,
+            dst_seg_page: 0,
+        };
+
+        assert_eq!(mm.ems_move_memory(&params, &mut mem), 0x00);
+        assert_eq!(mem.read_byte(EMS_PAGE_FRAME_BASE), 0x44);
+        assert_eq!(mem.read_byte(EMS_PAGE_FRAME_BASE + 1), 0x55);
+    }
+
+    #[test]
     fn test_ems_move_ems_to_ems() {
         let (mut mm, mut mem) = create_manager(1024);
         let h1 = mm.ems_allocate_pages(1).unwrap();
@@ -1587,7 +2254,7 @@ mod tests {
         let offset1 = mm.ems_page_allocation_offset(h1, 0).unwrap();
 
         let pattern = [0x01, 0x02, 0x03, 0x04];
-        mem.write_block(EXTENDED_RAM_BASE + offset1, &pattern);
+        mem.write_block(mm.extended_pool_linear_address(offset1), &pattern);
 
         let params = EmsMoveParams {
             region_length: 4,
@@ -1604,8 +2271,42 @@ mod tests {
 
         let offset2 = mm.ems_page_allocation_offset(h2, 0).unwrap();
         let mut buf = [0u8; 4];
-        mem.read_block(EXTENDED_RAM_BASE + offset2, &mut buf);
+        mem.read_block(mm.extended_pool_linear_address(offset2), &mut buf);
         assert_eq!(buf, pattern);
+    }
+
+    #[test]
+    fn test_ems_exchange_ems_to_ems_swaps_contents() {
+        let (mut mm, mut mem) = create_manager(1024);
+        let h1 = mm.ems_allocate_pages(1).unwrap();
+        let h2 = mm.ems_allocate_pages(1).unwrap();
+        let offset1 = mm.ems_page_allocation_offset(h1, 0).unwrap();
+        let offset2 = mm.ems_page_allocation_offset(h2, 0).unwrap();
+
+        let src_pattern = [0x10, 0x11, 0x12, 0x13];
+        let dst_pattern = [0x20, 0x21, 0x22, 0x23];
+        mem.write_block(mm.extended_pool_linear_address(offset1), &src_pattern);
+        mem.write_block(mm.extended_pool_linear_address(offset2), &dst_pattern);
+
+        let params = EmsMoveParams {
+            region_length: 4,
+            src_type: 1,
+            src_handle: h1,
+            src_offset: 0,
+            src_seg_page: 0,
+            dst_type: 1,
+            dst_handle: h2,
+            dst_offset: 0,
+            dst_seg_page: 0,
+        };
+        assert_eq!(mm.ems_exchange_memory(&params, &mut mem), 0x00);
+
+        let mut src_buf = [0u8; 4];
+        let mut dst_buf = [0u8; 4];
+        mem.read_block(mm.extended_pool_linear_address(offset1), &mut src_buf);
+        mem.read_block(mm.extended_pool_linear_address(offset2), &mut dst_buf);
+        assert_eq!(src_buf, dst_pattern);
+        assert_eq!(dst_buf, src_pattern);
     }
 
     #[test]
@@ -1666,7 +2367,114 @@ mod tests {
             dst_offset: 0,
             dst_seg_page: 0,
         };
-        assert_eq!(mm.ems_move_memory(&overflow, &mut mem), 0x96);
+        assert_eq!(mm.ems_move_memory(&overflow, &mut mem), 0xA2);
+    }
+
+    #[test]
+    fn test_ems_move_same_handle_overlap_returns_92() {
+        let (mut mm, mut mem) = create_manager(1024);
+        let handle = mm.ems_allocate_pages(1).unwrap();
+        let offset = mm.ems_page_allocation_offset(handle, 0).unwrap();
+        let pattern = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
+        mem.write_block(mm.extended_pool_linear_address(offset), &pattern);
+
+        let params = EmsMoveParams {
+            region_length: 4,
+            src_type: 1,
+            src_handle: handle,
+            src_offset: 0,
+            src_seg_page: 0,
+            dst_type: 1,
+            dst_handle: handle,
+            dst_offset: 2,
+            dst_seg_page: 0,
+        };
+        assert_eq!(mm.ems_move_memory(&params, &mut mem), 0x92);
+
+        let mut buf = [0u8; 6];
+        mem.read_block(mm.extended_pool_linear_address(offset), &mut buf);
+        assert_eq!(buf, [0x01, 0x02, 0x01, 0x02, 0x03, 0x04]);
+    }
+
+    #[test]
+    fn test_ems_exchange_same_handle_overlap_returns_97() {
+        let (mut mm, mut mem) = create_manager(1024);
+        let handle = mm.ems_allocate_pages(1).unwrap();
+        let offset = mm.ems_page_allocation_offset(handle, 0).unwrap();
+        let pattern = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
+        mem.write_block(mm.extended_pool_linear_address(offset), &pattern);
+
+        let params = EmsMoveParams {
+            region_length: 4,
+            src_type: 1,
+            src_handle: handle,
+            src_offset: 0,
+            src_seg_page: 0,
+            dst_type: 1,
+            dst_handle: handle,
+            dst_offset: 2,
+            dst_seg_page: 0,
+        };
+        assert_eq!(mm.ems_exchange_memory(&params, &mut mem), 0x97);
+
+        let mut buf = [0u8; 6];
+        mem.read_block(mm.extended_pool_linear_address(offset), &mut buf);
+        assert_eq!(buf, pattern);
+    }
+
+    #[test]
+    fn test_ems_move_expanded_offset_above_page_returns_95() {
+        let (mut mm, mut mem) = create_manager(1024);
+        let handle = mm.ems_allocate_pages(1).unwrap();
+
+        let params = EmsMoveParams {
+            region_length: 4,
+            src_type: 1,
+            src_handle: handle,
+            src_offset: 0x4000,
+            src_seg_page: 0,
+            dst_type: 0,
+            dst_handle: 0,
+            dst_offset: 0,
+            dst_seg_page: 0,
+        };
+        assert_eq!(mm.ems_move_memory(&params, &mut mem), 0x95);
+    }
+
+    #[test]
+    fn test_ems_move_expanded_region_exceeding_handle_returns_93() {
+        let (mut mm, mut mem) = create_manager(1024);
+        let handle = mm.ems_allocate_pages(1).unwrap();
+
+        let params = EmsMoveParams {
+            region_length: 4,
+            src_type: 1,
+            src_handle: handle,
+            src_offset: 0x3FFE,
+            src_seg_page: 0,
+            dst_type: 0,
+            dst_handle: 0,
+            dst_offset: 0,
+            dst_seg_page: 0,
+        };
+        assert_eq!(mm.ems_move_memory(&params, &mut mem), 0x93);
+    }
+
+    #[test]
+    fn test_ems_move_conventional_wraps_past_one_megabyte_returns_a2() {
+        let (mm, mut mem) = create_manager(1024);
+        let params = EmsMoveParams {
+            region_length: 0x20,
+            src_type: 0,
+            src_handle: 0,
+            src_offset: 0,
+            src_seg_page: 0xFFFF,
+            dst_type: 0,
+            dst_handle: 0,
+            dst_offset: 0,
+            dst_seg_page: 0,
+        };
+        assert_eq!(mm.ems_move_memory(&params, &mut mem), 0xA2);
     }
 
     #[test]
@@ -1685,8 +2493,8 @@ mod tests {
     #[test]
     fn test_xms_total_and_free_kb() {
         let (mm, _mem) = create_manager(1024);
-        assert_eq!(mm.xms_total_kb(), 1024);
-        assert_eq!(mm.xms_free_kb(), 1024);
+        assert_eq!(mm.xms_total_kb(), 960);
+        assert_eq!(mm.xms_free_kb(), 960);
 
         let (mm_disabled, _mem) = create_manager_selective(1024, true, false);
         assert_eq!(mm_disabled.xms_total_kb(), 0);
@@ -1708,8 +2516,15 @@ mod tests {
     }
 
     #[test]
-    fn test_xms_request_hma_zero_size() {
+    fn test_xms_request_hma_zero_size_allowed_when_hmamin_is_zero() {
         let (mut mm, _mem) = create_manager(1024);
+        assert!(mm.xms_request_hma(0).is_ok());
+    }
+
+    #[test]
+    fn test_xms_request_hma_zero_size_respects_hmamin_threshold() {
+        let (mut mm, _mem) = create_manager(1024);
+        mm.set_hmamin_kb(32);
         assert_eq!(mm.xms_request_hma(0), Err(0x92));
     }
 
@@ -1850,37 +2665,220 @@ mod tests {
 
     #[test]
     fn test_xms_reallocate_grow() {
-        let (mut mm, _mem) = create_manager(1024);
+        let (mut mm, mut mem) = create_manager(1024);
         let handle = mm.xms_allocate(64).unwrap();
-        assert!(mm.xms_reallocate(handle, 128).is_ok());
+        assert!(mm.xms_reallocate(handle, 128, &mut mem).is_ok());
         let (_, _, size) = mm.xms_handle_info(handle).unwrap();
         assert_eq!(size, 128);
     }
 
     #[test]
     fn test_xms_reallocate_shrink() {
-        let (mut mm, _mem) = create_manager(1024);
+        let (mut mm, mut mem) = create_manager(1024);
         let handle = mm.xms_allocate(128).unwrap();
-        assert!(mm.xms_reallocate(handle, 32).is_ok());
+        assert!(mm.xms_reallocate(handle, 32, &mut mem).is_ok());
         let (_, _, size) = mm.xms_handle_info(handle).unwrap();
         assert_eq!(size, 32);
     }
 
     #[test]
     fn test_xms_reallocate_to_zero() {
-        let (mut mm, _mem) = create_manager(1024);
+        let (mut mm, mut mem) = create_manager(1024);
         let handle = mm.xms_allocate(64).unwrap();
-        assert!(mm.xms_reallocate(handle, 0).is_ok());
+        assert!(mm.xms_reallocate(handle, 0, &mut mem).is_ok());
         let (_, _, size) = mm.xms_handle_info(handle).unwrap();
         assert_eq!(size, 0);
     }
 
     #[test]
     fn test_xms_reallocate_locked() {
-        let (mut mm, _mem) = create_manager(1024);
+        let (mut mm, mut mem) = create_manager(1024);
         let handle = mm.xms_allocate(64).unwrap();
         mm.xms_lock(handle).unwrap();
-        assert_eq!(mm.xms_reallocate(handle, 128), Err(0xAB));
+        assert_eq!(mm.xms_reallocate(handle, 128, &mut mem), Err(0xAB));
+    }
+
+    #[test]
+    fn test_xms_reallocate_preserves_data_on_grow() {
+        let (mut mm, mut mem) = create_manager(1024);
+        let handle = mm.xms_allocate(4).unwrap();
+        let addr = mm.xms_lock(handle).unwrap();
+        let pattern = [0x11u8, 0x22, 0x33, 0x44, 0x55];
+        mem.write_block(addr, &pattern);
+        mm.xms_unlock(handle).unwrap();
+
+        assert!(mm.xms_reallocate(handle, 16, &mut mem).is_ok());
+        let new_addr = mm.xms_lock(handle).unwrap();
+        let mut buf = [0u8; 5];
+        mem.read_block(new_addr, &mut buf);
+        assert_eq!(buf, pattern);
+    }
+
+    #[test]
+    fn test_xms_reallocate_doom_loader_growth_keeps_locked_address_stable() {
+        let (mut mm, mut mem) = create_manager(1024);
+
+        // DX386 grows the initial Doom image allocation from 19 KB to 35 KB
+        // after unlocking and then expects a subsequent lock to return the
+        // same linear address again.
+        let handle = mm.xms_allocate(19).unwrap();
+        let addr = mm.xms_lock(handle).unwrap();
+        let pattern = [0xD0u8, 0x0D, 0x38, 0x36];
+        mem.write_block(addr, &pattern);
+        mm.xms_unlock(handle).unwrap();
+
+        assert!(mm.xms_reallocate(handle, 35, &mut mem).is_ok());
+
+        let grown_addr = mm.xms_lock(handle).unwrap();
+        assert_eq!(grown_addr, addr);
+        let mut buf = [0u8; 4];
+        mem.read_block(grown_addr, &mut buf);
+        assert_eq!(buf, pattern);
+    }
+
+    #[test]
+    fn test_xms_reallocate_preserves_data_on_shrink() {
+        let (mut mm, mut mem) = create_manager(1024);
+        let handle = mm.xms_allocate(16).unwrap();
+        let addr = mm.xms_lock(handle).unwrap();
+        let pattern = [0xAAu8, 0xBB, 0xCC, 0xDD];
+        mem.write_block(addr, &pattern);
+        mm.xms_unlock(handle).unwrap();
+
+        assert!(mm.xms_reallocate(handle, 4, &mut mem).is_ok());
+        let new_addr = mm.xms_lock(handle).unwrap();
+        let mut buf = [0u8; 4];
+        mem.read_block(new_addr, &mut buf);
+        assert_eq!(buf, pattern);
+    }
+
+    #[test]
+    fn test_xms_reallocate_failure_leaves_handle_intact() {
+        let (mut mm, mut mem) = create_manager(128);
+        let handle = mm.xms_allocate(32).unwrap();
+        let addr = mm.xms_lock(handle).unwrap();
+        let pattern = [0xDEu8, 0xAD, 0xBE, 0xEF];
+        mem.write_block(addr, &pattern);
+        mm.xms_unlock(handle).unwrap();
+
+        // Request far more than the pool can hold.
+        assert_eq!(mm.xms_reallocate(handle, 4096, &mut mem), Err(0xA0));
+
+        // Handle must still be valid at its original size, with data intact.
+        let (lock_count, _, size) = mm.xms_handle_info(handle).unwrap();
+        assert_eq!(size, 32);
+        assert_eq!(lock_count, 0);
+        let restored_addr = mm.xms_lock(handle).unwrap();
+        let mut buf = [0u8; 4];
+        mem.read_block(restored_addr, &mut buf);
+        assert_eq!(buf, pattern);
+    }
+
+    #[test]
+    fn test_xms_move_rejects_src_offset_plus_length_overflow() {
+        let (mut mm, mut mem) = create_manager(1024);
+        let handle = mm.xms_allocate(64).unwrap();
+
+        let src_offset: u32 = 64 * 1024 - 2;
+        let params_addr = 0x6000u32;
+        mem.write_word(params_addr, 4);
+        mem.write_word(params_addr + 2, 0);
+        mem.write_word(params_addr + 4, handle);
+        mem.write_word(params_addr + 6, src_offset as u16);
+        mem.write_word(params_addr + 8, (src_offset >> 16) as u16);
+        mem.write_word(params_addr + 10, 0);
+        mem.write_word(params_addr + 12, 0);
+        mem.write_word(params_addr + 14, 0);
+
+        assert_eq!(mm.xms_move(&mut mem, params_addr), Err(0xA4));
+    }
+
+    #[test]
+    fn test_xms_move_rejects_dst_offset_plus_length_overflow() {
+        let (mut mm, mut mem) = create_manager(1024);
+        let handle = mm.xms_allocate(64).unwrap();
+
+        let dst_offset: u32 = 64 * 1024 - 2;
+        let params_addr = 0x6000u32;
+        mem.write_word(params_addr, 4);
+        mem.write_word(params_addr + 2, 0);
+        mem.write_word(params_addr + 4, 0);
+        mem.write_word(params_addr + 6, 0x5000);
+        mem.write_word(params_addr + 8, 0);
+        mem.write_word(params_addr + 10, handle);
+        mem.write_word(params_addr + 12, dst_offset as u16);
+        mem.write_word(params_addr + 14, (dst_offset >> 16) as u16);
+
+        assert_eq!(mm.xms_move(&mut mem, params_addr), Err(0xA6));
+    }
+
+    #[test]
+    fn test_xms_move_at_exact_boundary() {
+        let (mut mm, mut mem) = create_manager(1024);
+        let handle = mm.xms_allocate(4).unwrap();
+        let size_bytes = 4 * 1024;
+
+        let pattern = [0x01u8, 0x02, 0x03, 0x04];
+        mem.write_block(0x5000, &pattern);
+
+        let params_addr = 0x6000u32;
+        mem.write_word(params_addr, 4);
+        mem.write_word(params_addr + 2, 0);
+        mem.write_word(params_addr + 4, 0);
+        mem.write_word(params_addr + 6, 0x5000);
+        mem.write_word(params_addr + 8, 0);
+        mem.write_word(params_addr + 10, handle);
+        mem.write_word(params_addr + 12, (size_bytes - 4) as u16);
+        mem.write_word(params_addr + 14, ((size_bytes - 4) >> 16) as u16);
+
+        assert!(mm.xms_move(&mut mem, params_addr).is_ok());
+
+        let addr = mm.xms_lock(handle).unwrap();
+        let mut buf = [0u8; 4];
+        mem.read_block(addr + size_bytes - 4, &mut buf);
+        assert_eq!(buf, pattern);
+    }
+
+    #[test]
+    fn test_ems_page_map_size_is_16() {
+        let (mm, _mem) = create_manager(1024);
+        assert_eq!(mm.ems_page_map_size(), 16);
+    }
+
+    #[test]
+    fn test_ems_reallocate_grow_failure_leaves_handle_intact() {
+        let (mut mm, _mem) = create_manager(1024);
+        let handle = mm.ems_allocate_pages(2).unwrap();
+        // Consume most of the pool so a large grow request exceeds free
+        // without exceeding physical total (which would return 0x87).
+        mm.ems_allocate_pages(50).unwrap();
+        let (free_before, _) = mm.ems_unallocated_pages();
+
+        // Ask for more pages than are currently free but still within the
+        // physical pool (total=64, requesting 60 -> extra=58 > free=12).
+        assert_eq!(mm.ems_reallocate(handle, 60), Err(0x88));
+
+        // Handle unchanged.
+        assert_eq!(mm.ems_handle_pages(handle).unwrap(), 2);
+        let (free_after, _) = mm.ems_unallocated_pages();
+        assert_eq!(free_after, free_before);
+    }
+
+    #[test]
+    fn test_ems_move_addr_overflow() {
+        let (mm, mut mem) = create_manager(1024);
+        let params = EmsMoveParams {
+            region_length: 0xFFFF_FFFF,
+            src_type: 0,
+            src_handle: 0,
+            src_offset: 0xFFFF,
+            src_seg_page: 0xFFFF,
+            dst_type: 0,
+            dst_handle: 0,
+            dst_offset: 0,
+            dst_seg_page: 0,
+        };
+        assert_eq!(mm.ems_move_memory(&params, &mut mem), 0x96);
     }
 
     #[test]
@@ -1991,6 +2989,46 @@ mod tests {
     }
 
     #[test]
+    fn test_umb_reallocate_failure_reports_largest_free_umb_without_resizing() {
+        let (mm, mut mem) = create_manager_selective(1024, false, true);
+        let (segment, _) = mm.umb_allocate(4, &mut mem).unwrap();
+        let (_second_segment, _) = mm.umb_allocate(4, &mut mem).unwrap();
+        let expected_largest = memory::read_mcb_size_pub(&mem, UMB_FIRST_MCB_SEGMENT + 10);
+
+        assert_eq!(
+            mm.umb_reallocate(segment, 0xFFFF, &mut mem),
+            Err((0xB0, expected_largest))
+        );
+        assert_eq!(memory::read_mcb_size_pub(&mem, segment - 1), 4);
+    }
+
+    #[test]
+    fn test_umb_reallocate_returns_b1_when_no_umbs_free() {
+        let (mm, mut mem) = create_manager_selective(1024, false, true);
+        let (first_segment, _) = mm.umb_allocate(4, &mut mem).unwrap();
+        let (_, largest) = mm.umb_allocate(0xFFFF, &mut mem).unwrap_err();
+        let (_, _) = mm.umb_allocate(largest, &mut mem).unwrap();
+
+        assert_eq!(
+            memory::largest_free_block_paragraphs_pub(&mem, UMB_FIRST_MCB_SEGMENT),
+            0
+        );
+
+        assert_eq!(
+            mm.umb_reallocate(first_segment, 0xFFFF, &mut mem),
+            Err((0xB1, 0))
+        );
+    }
+
+    #[test]
+    fn test_umb_reallocate_returns_b2_for_invalid_segment() {
+        let (mm, mut mem) = create_manager_selective(1024, false, true);
+        let _ = mm.umb_allocate(4, &mut mem).unwrap();
+
+        assert_eq!(mm.umb_reallocate(0xEEEE, 8, &mut mem), Err((0xB2, 0)));
+    }
+
+    #[test]
     fn test_ems_and_xms_share_pool() {
         let (mut mm, _mem) = create_manager(1024);
         let (free_pages, _) = mm.ems_unallocated_pages();
@@ -2032,8 +3070,8 @@ mod tests {
     fn test_xms_query_free_32() {
         let (mm, _mem) = create_manager(1024);
         let (largest, total) = mm.xms_query_free_32();
-        assert_eq!(largest, 1024);
-        assert_eq!(total, 1024);
+        assert_eq!(largest, 960);
+        assert_eq!(total, 960);
     }
 
     #[test]
@@ -2058,6 +3096,12 @@ mod tests {
     fn test_xms_allocate_32_exceeds_free() {
         let (mut mm, _mem) = create_manager(1024);
         assert_eq!(mm.xms_allocate_32(2000), Err(0xA0));
+    }
+
+    #[test]
+    fn test_xms_allocate_32_overflow_rejected() {
+        let (mut mm, _mem) = create_manager(1024);
+        assert_eq!(mm.xms_allocate_32(u32::MAX), Err(0xA0));
     }
 
     #[test]
@@ -2087,37 +3131,46 @@ mod tests {
 
     #[test]
     fn test_xms_reallocate_32_grow() {
-        let (mut mm, _mem) = create_manager(1024);
+        let (mut mm, mut mem) = create_manager(1024);
         let handle = mm.xms_allocate_32(64).unwrap();
-        assert!(mm.xms_reallocate_32(handle, 128).is_ok());
+        assert!(mm.xms_reallocate_32(handle, 128, &mut mem).is_ok());
         let (_, _, size) = mm.xms_handle_info_32(handle).unwrap();
         assert_eq!(size, 128);
     }
 
     #[test]
     fn test_xms_reallocate_32_shrink() {
-        let (mut mm, _mem) = create_manager(1024);
+        let (mut mm, mut mem) = create_manager(1024);
         let handle = mm.xms_allocate_32(128).unwrap();
-        assert!(mm.xms_reallocate_32(handle, 32).is_ok());
+        assert!(mm.xms_reallocate_32(handle, 32, &mut mem).is_ok());
         let (_, _, size) = mm.xms_handle_info_32(handle).unwrap();
         assert_eq!(size, 32);
     }
 
     #[test]
     fn test_xms_reallocate_32_to_zero() {
-        let (mut mm, _mem) = create_manager(1024);
+        let (mut mm, mut mem) = create_manager(1024);
         let handle = mm.xms_allocate_32(64).unwrap();
-        assert!(mm.xms_reallocate_32(handle, 0).is_ok());
+        assert!(mm.xms_reallocate_32(handle, 0, &mut mem).is_ok());
         let (_, _, size) = mm.xms_handle_info_32(handle).unwrap();
         assert_eq!(size, 0);
     }
 
     #[test]
     fn test_xms_reallocate_32_locked() {
-        let (mut mm, _mem) = create_manager(1024);
+        let (mut mm, mut mem) = create_manager(1024);
         let handle = mm.xms_allocate_32(64).unwrap();
         mm.xms_lock(handle).unwrap();
-        assert_eq!(mm.xms_reallocate_32(handle, 128), Err(0xAB));
+        assert_eq!(mm.xms_reallocate_32(handle, 128, &mut mem), Err(0xAB));
+    }
+
+    #[test]
+    fn test_xms_reallocate_32_overflow_rejected() {
+        let (mut mm, mut mem) = create_manager(1024);
+        let handle = mm.xms_allocate_32(64).unwrap();
+
+        assert_eq!(mm.xms_reallocate_32(handle, u32::MAX, &mut mem), Err(0xA0));
+        assert_eq!(mm.xms_handle_info_32(handle).unwrap().2, 64);
     }
 
     #[test]
@@ -2188,5 +3241,100 @@ mod tests {
         mm.ems_return_os_access_key(key1).unwrap();
         let key2 = mm.ems_enable_os_functions(0).unwrap().unwrap();
         assert_ne!(key2, 0);
+    }
+
+    fn write_xms_move_params(
+        mem: &mut MockMemory,
+        params_addr: u32,
+        length: u32,
+        src_handle: u16,
+        src_offset: u32,
+        dst_handle: u16,
+        dst_offset: u32,
+    ) {
+        mem.write_word(params_addr, length as u16);
+        mem.write_word(params_addr + 2, (length >> 16) as u16);
+        mem.write_word(params_addr + 4, src_handle);
+        mem.write_word(params_addr + 6, src_offset as u16);
+        mem.write_word(params_addr + 8, (src_offset >> 16) as u16);
+        mem.write_word(params_addr + 10, dst_handle);
+        mem.write_word(params_addr + 12, dst_offset as u16);
+        mem.write_word(params_addr + 14, (dst_offset >> 16) as u16);
+    }
+
+    #[test]
+    fn test_xms_move_backward_overlap_returns_a8() {
+        // Same XMS handle, src > dst, ranges overlap -> invalid per XMS 3.0
+        // (only forward moves are guaranteed to work).
+        let (mut mm, mut mem) = create_manager(1024);
+        let handle = mm.xms_allocate(64).unwrap();
+        let params_addr = 0x6000u32;
+        write_xms_move_params(&mut mem, params_addr, 2048, handle, 1024, handle, 0);
+        assert_eq!(mm.xms_move(&mut mem, params_addr), Err(0xA8));
+    }
+
+    #[test]
+    fn test_xms_move_forward_overlap_succeeds() {
+        // src < dst overlap is the spec's guaranteed-safe direction.
+        let (mut mm, mut mem) = create_manager(1024);
+        let handle = mm.xms_allocate(64).unwrap();
+        let addr = mm.xms_lock(handle).unwrap();
+        let pattern: Vec<u8> = (0..2048).map(|i| (i & 0xFF) as u8).collect();
+        mem.write_block(addr, &pattern);
+
+        let params_addr = 0x6000u32;
+        write_xms_move_params(&mut mem, params_addr, 2048, handle, 0, handle, 1024);
+        assert!(mm.xms_move(&mut mem, params_addr).is_ok());
+
+        let mut buf = vec![0u8; 2048];
+        mem.read_block(addr + 1024, &mut buf);
+        assert_eq!(buf, pattern);
+    }
+
+    #[test]
+    fn test_xms_move_same_handle_non_overlap_succeeds() {
+        let (mut mm, mut mem) = create_manager(1024);
+        let handle = mm.xms_allocate(64).unwrap();
+        let params_addr = 0x6000u32;
+        write_xms_move_params(&mut mem, params_addr, 1024, handle, 0, handle, 8192);
+        assert!(mm.xms_move(&mut mem, params_addr).is_ok());
+    }
+
+    #[test]
+    fn test_xms_move_different_handles_no_overlap_check() {
+        // Two separate EMBs never alias, so the overlap check must not
+        // reject an otherwise-valid move that uses identical offsets on
+        // each side.
+        let (mut mm, mut mem) = create_manager(1024);
+        let h1 = mm.xms_allocate(64).unwrap();
+        let h2 = mm.xms_allocate(64).unwrap();
+        let params_addr = 0x6000u32;
+        write_xms_move_params(&mut mem, params_addr, 2048, h1, 1024, h2, 0);
+        assert!(mm.xms_move(&mut mem, params_addr).is_ok());
+    }
+
+    #[test]
+    fn test_xms_request_hma_app_override_bypasses_hmamin() {
+        let (mut mm, _mem) = create_manager(1024);
+        // Set HMAMIN to a value that would normally reject small requests;
+        // applications signalling DX=0xFFFF must still succeed.
+        mm.set_hmamin_kb(32);
+        assert!(mm.xms_request_hma(0xFFFF).is_ok());
+        assert!(mm.hma_is_allocated());
+    }
+
+    #[test]
+    fn test_xms_request_hma_tsr_below_hmamin_fails() {
+        let (mut mm, _mem) = create_manager(1024);
+        mm.set_hmamin_kb(32);
+        // TSR-style caller passes an actual byte size; below HMAMIN -> 0x92.
+        assert_eq!(mm.xms_request_hma(16 * 1024), Err(0x92));
+    }
+
+    #[test]
+    fn test_xms_request_hma_tsr_above_hmamin_succeeds() {
+        let (mut mm, _mem) = create_manager(1024);
+        mm.set_hmamin_kb(32);
+        assert!(mm.xms_request_hma(32 * 1024).is_ok());
     }
 }

@@ -252,6 +252,123 @@ impl TlsfAllocator {
         })
     }
 
+    /// Resize an allocation without moving it.
+    ///
+    /// Returns `Some(updated_allocation)` if the allocation could be resized
+    /// in place. Returns `None` if growing in place is not possible.
+    pub(crate) fn reallocate_in_place(
+        &mut self,
+        allocation: Allocation,
+        size: u32,
+    ) -> Option<Allocation> {
+        let adjust = cmp::max((size + ALIGN_SIZE - 1) & !(ALIGN_SIZE - 1), BLOCK_SIZE_MIN);
+        let node_index = allocation.node_index;
+        let current_size = self.nodes[node_index as usize].size();
+
+        if adjust == current_size {
+            return Some(allocation);
+        }
+
+        if adjust < current_size {
+            let remainder_size = current_size - adjust;
+            if remainder_size >= BLOCK_SIZE_MIN {
+                let original_phys_next = self.nodes[node_index as usize].phys_next;
+                let remainder_index = self.create_node();
+                self.nodes[node_index as usize].set_size(adjust);
+                self.nodes[node_index as usize].phys_next = remainder_index;
+
+                let mut remainder = BlockNode::new(
+                    self.nodes[node_index as usize].offset + adjust,
+                    remainder_size,
+                    true,
+                );
+                remainder.phys_prev = node_index;
+                remainder.phys_next = original_phys_next;
+                self.nodes[remainder_index as usize] = remainder;
+
+                if original_phys_next != NODE_UNUSED {
+                    self.nodes[original_phys_next as usize].phys_prev = remainder_index;
+                    if self.nodes[original_phys_next as usize].is_free() {
+                        self.remove_free_block(original_phys_next);
+                        let merged_size = self.nodes[remainder_index as usize].size()
+                            + self.nodes[original_phys_next as usize].size();
+                        let merged_next = self.nodes[original_phys_next as usize].phys_next;
+                        self.nodes[remainder_index as usize].set_size(merged_size);
+                        self.nodes[remainder_index as usize].phys_next = merged_next;
+                        if merged_next != NODE_UNUSED {
+                            self.nodes[merged_next as usize].phys_prev = remainder_index;
+                        }
+                        self.delete_node(original_phys_next);
+                    }
+                }
+
+                self.insert_free_block(remainder_index);
+            }
+
+            return Some(allocation);
+        }
+
+        let next_index = self.nodes[node_index as usize].phys_next;
+        if next_index == NODE_UNUSED || !self.nodes[next_index as usize].is_free() {
+            return None;
+        }
+
+        let current_size = self.nodes[node_index as usize].size();
+        let next_size = self.nodes[next_index as usize].size();
+        let combined_size = current_size + next_size;
+        if combined_size < adjust {
+            return None;
+        }
+
+        self.remove_free_block(next_index);
+
+        let remainder_size = combined_size - adjust;
+        if remainder_size >= BLOCK_SIZE_MIN {
+            let next_phys_next = self.nodes[next_index as usize].phys_next;
+            self.nodes[node_index as usize].set_size(adjust);
+            self.nodes[node_index as usize].phys_next = next_index;
+            self.nodes[next_index as usize].offset =
+                self.nodes[node_index as usize].offset + adjust;
+            self.nodes[next_index as usize].set_size(remainder_size);
+            self.nodes[next_index as usize].phys_prev = node_index;
+            self.nodes[next_index as usize].phys_next = next_phys_next;
+            self.nodes[next_index as usize].set_free(true);
+            self.nodes[next_index as usize].list_prev = NODE_UNUSED;
+            self.nodes[next_index as usize].list_next = NODE_UNUSED;
+            if next_phys_next != NODE_UNUSED {
+                self.nodes[next_phys_next as usize].phys_prev = next_index;
+            }
+            self.insert_free_block(next_index);
+        } else {
+            let next_phys_next = self.nodes[next_index as usize].phys_next;
+            self.nodes[node_index as usize].set_size(combined_size);
+            self.nodes[node_index as usize].phys_next = next_phys_next;
+            if next_phys_next != NODE_UNUSED {
+                self.nodes[next_phys_next as usize].phys_prev = node_index;
+            }
+            self.delete_node(next_index);
+        }
+
+        Some(allocation)
+    }
+
+    pub(crate) fn total_free_size(&self) -> u32 {
+        self.nodes
+            .iter()
+            .filter(|node| node.size() != 0 && node.is_free())
+            .map(BlockNode::size)
+            .sum()
+    }
+
+    pub(crate) fn largest_free_block_size(&self) -> u32 {
+        self.nodes
+            .iter()
+            .filter(|node| node.size() != 0 && node.is_free())
+            .map(BlockNode::size)
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Deallocate a previously allocated block.
     ///
     /// This will automatically coalesce with adjacent free regions to reduce
@@ -818,5 +935,34 @@ mod tests {
         node.set_free(true);
         assert_eq!(node.size(), 128);
         assert!(node.is_free());
+    }
+
+    #[test]
+    fn test_reallocate_in_place_grow_uses_adjacent_free_space() {
+        let mut alloc = TlsfAllocator::new(1024);
+        let first = alloc.allocate(100).unwrap();
+        let second = alloc.allocate(100).unwrap();
+
+        alloc.deallocate(second);
+
+        let grown = alloc.reallocate_in_place(first, 180).unwrap();
+        assert_eq!(grown.offset, 0);
+        assert_eq!(alloc.allocation_size(grown).unwrap(), 180);
+
+        let tail = alloc.allocate(16).unwrap();
+        assert_eq!(tail.offset, 180);
+    }
+
+    #[test]
+    fn test_reallocate_in_place_shrink_creates_reusable_tail() {
+        let mut alloc = TlsfAllocator::new(1024);
+        let first = alloc.allocate(200).unwrap();
+        let shrunk = alloc.reallocate_in_place(first, 100).unwrap();
+
+        assert_eq!(shrunk.offset, 0);
+        assert_eq!(alloc.allocation_size(shrunk).unwrap(), 100);
+
+        let tail = alloc.allocate(100).unwrap();
+        assert_eq!(tail.offset, 100);
     }
 }

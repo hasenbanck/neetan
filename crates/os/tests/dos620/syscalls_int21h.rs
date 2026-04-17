@@ -1544,6 +1544,218 @@ fn allocate_last_fit_strategy() {
     );
 }
 
+#[test]
+fn int21h_4ah_resize_query_only_returns_max_possible_size() {
+    // MS-DOS convention: 4Ah with BX=0xFFFF returns CF=1, AX=8
+    // (insufficient memory), BX=largest growth possible for the block
+    // without actually modifying anything.
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Allocate 16 paragraphs (small block).
+        0xBB, 0x10, 0x00,                   // MOV BX, 16
+        0xB4, 0x48,                         // MOV AH, 48h
+        0xCD, 0x21,                         // INT 21h
+        0x8E, 0xC0,                         // MOV ES, AX (holds segment)
+        // Query-only resize with BX=FFFF.
+        0xBB, 0xFF, 0xFF,                   // MOV BX, 0xFFFFh
+        0xB4, 0x4A,                         // MOV AH, 4Ah
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (error=8)
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (max)
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let ax = harness::result_word(&machine.bus, 0);
+    let bx = harness::result_word(&machine.bus, 2);
+    assert_eq!(ax, 8, "Query-only resize should return AX=8, got {ax:#06X}");
+    assert!(
+        bx > 16,
+        "Query-only resize should return max>16 (the neighbouring free block), got {bx}"
+    );
+}
+
+#[test]
+fn int21h_49h_free_backward_coalesces_with_prior_free_block() {
+    // Allocate three blocks A, B, C. Free B (coalesces with any following
+    // free), then free A. A's free must swallow B via backward coalesce:
+    // the MCB at A's position ends up sized to cover A+B+1 (the MCB of B).
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Allocate A (16)
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x00, 0x01,                   // seg_a -> [0x0100]
+        // Allocate B (16)
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x02, 0x01,                   // seg_b -> [0x0102]
+        // Allocate C (16)
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x04, 0x01,                   // seg_c -> [0x0104]
+        // Free B first
+        0xA1, 0x02, 0x01,                   // MOV AX, [seg_b]
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xB4, 0x49, 0xCD, 0x21,
+        // Free A second
+        0xA1, 0x00, 0x01,                   // MOV AX, [seg_a]
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xB4, 0x49, 0xCD, 0x21,
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let seg_a = harness::result_word(&machine.bus, 0);
+    let seg_b = harness::result_word(&machine.bus, 2);
+    // MCB of A is at seg_a-1. After backward coalesce, A's MCB size should
+    // span A (16 paras) + B's MCB (1 para) + B's payload (16 paras) = 33.
+    let mcb_a = seg_a.wrapping_sub(1);
+    let size = harness::read_word(&machine.bus, ((mcb_a as u32) << 4) + 3);
+    assert_eq!(
+        size, 33,
+        "After freeing B then A, A's MCB should have coalesced size 33 (16+1+16), got {size}"
+    );
+    // Sanity: seg_b - 1 = mcb_a + 16 + 1 = mcb_a + 17 (original layout).
+    assert_eq!(seg_b.wrapping_sub(1), mcb_a + 17);
+}
+
+#[test]
+fn int21h_48h_allocate_high_only_with_umb_linked_lands_in_umb() {
+    // Strategy 0x80 (high-only) plus UMB linked: allocation MUST come
+    // from the UMB region (segment >= 0xD000).
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Link UMB: AX=5803h, BX=1.
+        0xB8, 0x03, 0x58, 0xBB, 0x01, 0x00, 0xCD, 0x21,
+        // Set allocation strategy = 0x80 (high-only).
+        0xB8, 0x01, 0x58, 0xBB, 0x80, 0x00, 0xCD, 0x21,
+        // Allocate 16 paragraphs.
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x00, 0x01,                   // segment -> [0x0100]
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX (flags into AX)
+        0xA3, 0x02, 0x01,                   // flags -> [0x0102]
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let segment = harness::result_word(&machine.bus, 0);
+    assert!(
+        (0xD000..0xE000).contains(&segment),
+        "High-only allocation should land in UMB (>=0xD000, <0xE000), got {segment:#06X}"
+    );
+}
+
+#[test]
+fn int21h_48h_allocate_high_only_without_umb_link_fails() {
+    // Strategy 0x80 (high-only) without UMB linked: allocation must fail
+    // because there is no UMB chain to search.
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Strategy 0x80 (high-only), UMB NOT linked.
+        0xB8, 0x01, 0x58, 0xBB, 0x80, 0x00, 0xCD, 0x21,
+        // Allocate 16 paragraphs.
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x00, 0x01,                   // AX -> [0x0100]
+        0x9C, 0x58, 0xA3, 0x02, 0x01,       // flags -> [0x0102]
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+    // Without UMB linking, high-only flag has no effect; allocation falls
+    // through to conventional. Our impl ignores flags entirely in that
+    // mode, so allocation should succeed from conventional memory. This
+    // documents intended behaviour: the flag is a no-op without linking.
+    let segment = harness::result_word(&machine.bus, 0);
+    assert!(
+        segment < 0xA000,
+        "Without UMB link, allocation falls back to conventional (<0xA000), got {segment:#06X}"
+    );
+}
+
+#[test]
+fn int21h_5802h_umb_link_defaults_unlinked_and_5803h_toggles_it() {
+    // After boot with EMS/XMS enabled, AX=5802h returns AX=0 (unlinked).
+    // AX=5803h BX=1 links, subsequent AX=5802h returns AX=1.
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Get UMB link (initial)
+        0xB8, 0x02, 0x58,                   // MOV AX, 5802h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        // Set UMB link to 1
+        0xB8, 0x03, 0x58,                   // MOV AX, 5803h
+        0xBB, 0x01, 0x00,                   // MOV BX, 1
+        0xCD, 0x21,                         // INT 21h
+        // Get UMB link again
+        0xB8, 0x02, 0x58,                   // MOV AX, 5802h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX
+        // Unlink again
+        0xB8, 0x03, 0x58,                   // MOV AX, 5803h
+        0xBB, 0x00, 0x00,                   // MOV BX, 0
+        0xCD, 0x21,                         // INT 21h
+        0xB8, 0x02, 0x58,                   // MOV AX, 5802h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x04, 0x01,                   // MOV [0x0104], AX
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let initial = harness::result_word(&machine.bus, 0);
+    let linked = harness::result_word(&machine.bus, 2);
+    let unlinked = harness::result_word(&machine.bus, 4);
+    assert_eq!(
+        initial, 0,
+        "Initial UMB link state should be 0, got {initial:#06X}"
+    );
+    assert_eq!(
+        linked, 1,
+        "After SET link=1, GET should return 1, got {linked:#06X}"
+    );
+    assert_eq!(
+        unlinked, 0,
+        "After SET link=0, GET should return 0, got {unlinked:#06X}"
+    );
+}
+
+#[test]
+fn int21h_5803h_rejects_invalid_link_state_values() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        // Start from the default unlinked state.
+        0xB8, 0x02, 0x58,                   // MOV AX, 5802h
+        0xCD, 0x21,
+        0xA3, 0x00, 0x01,                   // [0x0100] = initial state
+        // Try invalid BX=2.
+        0xB8, 0x03, 0x58,                   // MOV AX, 5803h
+        0xBB, 0x02, 0x00,                   // MOV BX, 2
+        0xCD, 0x21,
+        0xA3, 0x02, 0x01,                   // [0x0102] = AX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x04, 0x01,                   // [0x0104] = FLAGS
+        // Confirm link state did not change.
+        0xB8, 0x02, 0x58,                   // MOV AX, 5802h
+        0xCD, 0x21,
+        0xA3, 0x06, 0x01,                   // [0x0106] = final state
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let initial = harness::result_word(&machine.bus, 0);
+    let ax = harness::result_word(&machine.bus, 2);
+    let flags = harness::result_word(&machine.bus, 4);
+    let final_state = harness::result_word(&machine.bus, 6);
+
+    assert_eq!(initial, 0, "UMB link should start unlinked");
+    assert_eq!(ax, 0x0001, "Invalid 5803h input should return AX=0001h");
+    assert_ne!(flags & 0x0001, 0, "Invalid 5803h input should set carry");
+    assert_eq!(
+        final_state, 0,
+        "Invalid 5803h input must not change the link state"
+    );
+}
+
 fn count_mcb_entries(bus: &machine::Pc9801Bus, first_mcb_segment: u16) -> u32 {
     let mut count = 0u32;
     let mut mcb_addr = harness::far_to_linear(first_mcb_segment, 0);

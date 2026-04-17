@@ -327,13 +327,20 @@ fn write_environment_program_path(
 fn allocate_child_environment(
     mem: &mut dyn MemoryAccess,
     first_mcb: u16,
+    umb_first_mcb: Option<u16>,
     source_env: u16,
     allocation_strategy: u16,
     program_path: &[u8],
 ) -> Result<u16, u16> {
-    let env_segment =
-        memory::allocate(mem, first_mcb, ENV_BLOCK_PARAGRAPHS, 0, allocation_strategy)
-            .map_err(|(e, _)| e as u16)?;
+    let env_segment = memory::allocate_dos(
+        mem,
+        first_mcb,
+        umb_first_mcb,
+        ENV_BLOCK_PARAGRAPHS,
+        MCB_OWNER_DOS,
+        allocation_strategy,
+    )
+    .map_err(|(e, _)| e as u16)?;
 
     if source_env == 0 {
         write_environment_block(mem, env_segment, ENV_BLOCK_PARAGRAPHS, b"Z:\\COMMAND.COM");
@@ -348,6 +355,23 @@ fn allocate_child_environment(
     write_environment_program_path(mem, env_segment, program_path);
 
     Ok(env_segment)
+}
+
+fn dos_allocation_umb_first(state: &OsState) -> Option<u16> {
+    if state.umb_link
+        && state
+            .memory_manager
+            .as_ref()
+            .is_some_and(|mm| mm.is_umb_enabled())
+    {
+        Some(UMB_FIRST_MCB_SEGMENT)
+    } else {
+        None
+    }
+}
+
+fn child_allocation_owner() -> u16 {
+    MCB_OWNER_DOS
 }
 
 /// Writes the COMMAND.COM code stub at PSP:0100h.
@@ -601,6 +625,7 @@ impl NeetanOs {
     ) -> Result<(u16, u16, u16, u16), u16> {
         let first_mcb = mem.read_word(self.state.sysvars_base - 2);
         let parent_base = (self.state.current_psp as u32) << 4;
+        let umb_first = dos_allocation_umb_first(&self.state);
         let source_env = if params.env_seg == 0 {
             mem.read_word(parent_base + PSP_OFF_ENV_SEG)
         } else {
@@ -609,29 +634,36 @@ impl NeetanOs {
         let env_segment = allocate_child_environment(
             mem,
             first_mcb,
+            umb_first,
             source_env,
             self.state.allocation_strategy,
             program_path,
         )?;
 
-        let largest =
-            match memory::allocate(mem, first_mcb, 0xFFFF, 0, self.state.allocation_strategy) {
-                Ok(_) => unreachable!(),
-                Err((_err, largest)) => largest,
-            };
+        let largest = memory::largest_available_dos(
+            mem,
+            first_mcb,
+            umb_first,
+            self.state.allocation_strategy,
+        );
 
         if largest == 0 {
-            let _ = memory::free(mem, first_mcb, env_segment);
+            let _ = memory::free_dos(mem, first_mcb, umb_first, env_segment);
             return Err(0x0008);
         }
 
-        let child_psp =
-            memory::allocate(mem, first_mcb, largest, 0, self.state.allocation_strategy).map_err(
-                |(e, _)| {
-                    let _ = memory::free(mem, first_mcb, env_segment);
-                    e as u16
-                },
-            )?;
+        let child_psp = memory::allocate_dos(
+            mem,
+            first_mcb,
+            umb_first,
+            largest,
+            child_allocation_owner(),
+            self.state.allocation_strategy,
+        )
+        .map_err(|(e, _)| {
+            let _ = memory::free_dos(mem, first_mcb, umb_first, env_segment);
+            e as u16
+        })?;
 
         let mcb_segment = child_psp - 1;
         mem.write_word(((mcb_segment as u32) << 4) + MCB_OFF_OWNER, child_psp);
@@ -698,6 +730,7 @@ impl NeetanOs {
 
         let first_mcb = mem.read_word(self.state.sysvars_base - 2);
         let parent_base = (self.state.current_psp as u32) << 4;
+        let umb_first = dos_allocation_umb_first(&self.state);
         let source_env = if params.env_seg == 0 {
             mem.read_word(parent_base + PSP_OFF_ENV_SEG)
         } else {
@@ -706,6 +739,7 @@ impl NeetanOs {
         let env_segment = allocate_child_environment(
             mem,
             first_mcb,
+            umb_first,
             source_env,
             self.state.allocation_strategy,
             program_path,
@@ -714,11 +748,12 @@ impl NeetanOs {
         let total_needed = psp_paragraphs
             .saturating_add(image_paragraphs)
             .saturating_add(max_alloc);
-        let child_psp = match memory::allocate(
+        let child_psp = match memory::allocate_dos(
             mem,
             first_mcb,
+            umb_first,
             total_needed,
-            0,
+            child_allocation_owner(),
             self.state.allocation_strategy,
         ) {
             Ok(seg) => seg,
@@ -726,15 +761,16 @@ impl NeetanOs {
                 let min_needed = psp_paragraphs
                     .saturating_add(image_paragraphs)
                     .saturating_add(min_alloc);
-                memory::allocate(
+                memory::allocate_dos(
                     mem,
                     first_mcb,
+                    umb_first,
                     min_needed,
-                    0,
+                    child_allocation_owner(),
                     self.state.allocation_strategy,
                 )
                 .map_err(|(e, _)| {
-                    let _ = memory::free(mem, first_mcb, env_segment);
+                    let _ = memory::free_dos(mem, first_mcb, umb_first, env_segment);
                     e as u16
                 })?
             }
@@ -792,6 +828,7 @@ impl NeetanOs {
     ) -> Result<(), u16> {
         let first_mcb = mem.read_word(self.state.sysvars_base - 2);
         let parent_base = (self.state.current_psp as u32) << 4;
+        let umb_first = dos_allocation_umb_first(&self.state);
         let source_env = if params.env_seg == 0 {
             mem.read_word(parent_base + PSP_OFF_ENV_SEG)
         } else {
@@ -800,30 +837,37 @@ impl NeetanOs {
         let env_segment = allocate_child_environment(
             mem,
             first_mcb,
+            umb_first,
             source_env,
             self.state.allocation_strategy,
             program_path,
         )?;
 
         // Allocate largest available block for the .COM program.
-        let largest =
-            match memory::allocate(mem, first_mcb, 0xFFFF, 0, self.state.allocation_strategy) {
-                Ok(_) => unreachable!(),
-                Err((_err, largest)) => largest,
-            };
+        let largest = memory::largest_available_dos(
+            mem,
+            first_mcb,
+            umb_first,
+            self.state.allocation_strategy,
+        );
 
         if largest == 0 {
-            let _ = memory::free(mem, first_mcb, env_segment);
+            let _ = memory::free_dos(mem, first_mcb, umb_first, env_segment);
             return Err(0x0008);
         }
 
-        let child_psp =
-            memory::allocate(mem, first_mcb, largest, 0, self.state.allocation_strategy).map_err(
-                |(e, _)| {
-                    let _ = memory::free(mem, first_mcb, env_segment);
-                    e as u16
-                },
-            )?;
+        let child_psp = memory::allocate_dos(
+            mem,
+            first_mcb,
+            umb_first,
+            largest,
+            child_allocation_owner(),
+            self.state.allocation_strategy,
+        )
+        .map_err(|(e, _)| {
+            let _ = memory::free_dos(mem, first_mcb, umb_first, env_segment);
+            e as u16
+        })?;
 
         // Set MCB owner to the child PSP segment and name.
         let mcb_segment = child_psp - 1;
@@ -910,6 +954,7 @@ impl NeetanOs {
 
         let first_mcb = mem.read_word(self.state.sysvars_base - 2);
         let parent_base = (self.state.current_psp as u32) << 4;
+        let umb_first = dos_allocation_umb_first(&self.state);
         let source_env = if params.env_seg == 0 {
             mem.read_word(parent_base + PSP_OFF_ENV_SEG)
         } else {
@@ -918,6 +963,7 @@ impl NeetanOs {
         let env_segment = allocate_child_environment(
             mem,
             first_mcb,
+            umb_first,
             source_env,
             self.state.allocation_strategy,
             program_path,
@@ -927,11 +973,12 @@ impl NeetanOs {
         let total_needed = psp_paragraphs
             .saturating_add(image_paragraphs)
             .saturating_add(max_alloc);
-        let child_psp = match memory::allocate(
+        let child_psp = match memory::allocate_dos(
             mem,
             first_mcb,
+            umb_first,
             total_needed,
-            0,
+            child_allocation_owner(),
             self.state.allocation_strategy,
         ) {
             Ok(seg) => seg,
@@ -939,15 +986,16 @@ impl NeetanOs {
                 let min_needed = psp_paragraphs
                     .saturating_add(image_paragraphs)
                     .saturating_add(min_alloc);
-                memory::allocate(
+                memory::allocate_dos(
                     mem,
                     first_mcb,
+                    umb_first,
                     min_needed,
-                    0,
+                    child_allocation_owner(),
                     self.state.allocation_strategy,
                 )
                 .map_err(|(e, _)| {
-                    let _ = memory::free(mem, first_mcb, env_segment);
+                    let _ = memory::free_dos(mem, first_mcb, umb_first, env_segment);
                     e as u16
                 })?
             }
@@ -1085,7 +1133,13 @@ impl NeetanOs {
 
         // Free all MCBs owned by the child.
         let first_mcb = mem.read_word(self.state.sysvars_base - 2);
-        memory::free_process_blocks(mem, first_mcb, self.state.current_psp);
+        let umb_first = self
+            .state
+            .memory_manager
+            .as_ref()
+            .is_some_and(|mm| mm.is_umb_enabled())
+            .then_some(UMB_FIRST_MCB_SEGMENT);
+        memory::free_process_blocks_dos(mem, first_mcb, umb_first, self.state.current_psp);
 
         // Restore IVT INT 22h/23h/24h from child PSP.
         let int22_off = mem.read_word(child_psp_base + PSP_OFF_INT22_VEC);
@@ -1163,7 +1217,19 @@ impl NeetanOs {
 
         // Resize PSP's MCB and free other blocks.
         let first_mcb = mem.read_word(self.state.sysvars_base - 2);
-        memory::free_process_blocks_tsr(mem, first_mcb, self.state.current_psp, keep_paragraphs);
+        let umb_first = self
+            .state
+            .memory_manager
+            .as_ref()
+            .is_some_and(|mm| mm.is_umb_enabled())
+            .then_some(UMB_FIRST_MCB_SEGMENT);
+        memory::free_process_blocks_tsr_dos(
+            mem,
+            first_mcb,
+            umb_first,
+            self.state.current_psp,
+            keep_paragraphs,
+        );
 
         // Restore IVT INT 22h/23h/24h from child PSP.
         let int22_off = mem.read_word(child_psp_base + PSP_OFF_INT22_VEC);

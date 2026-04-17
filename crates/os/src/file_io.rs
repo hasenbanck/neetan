@@ -23,6 +23,34 @@ fn read_dword(mem: &dyn MemoryAccess, addr: u32) -> u32 {
     mem.read_word(addr) as u32 | ((mem.read_word(addr + 2) as u32) << 16)
 }
 
+fn path_is_named_device(path: &[u8], device_name: &[u8; 8]) -> bool {
+    let mut component = path;
+    if component.len() >= 2 && component[1] == b':' {
+        component = &component[2..];
+    }
+    while let Some(byte) = component.first() {
+        if *byte != b'\\' && *byte != b'/' {
+            break;
+        }
+        component = &component[1..];
+    }
+    if component.len() != 8 {
+        return false;
+    }
+    component
+        .iter()
+        .zip(device_name.iter())
+        .all(|(actual, expected)| actual.to_ascii_uppercase() == *expected)
+}
+
+fn path_is_ems_device(path: &[u8]) -> bool {
+    path_is_named_device(path, b"EMMXXXX0")
+}
+
+fn path_is_xms_device(path: &[u8]) -> bool {
+    path_is_named_device(path, b"XMSXXXX0")
+}
+
 fn read_fat_handle_metadata(
     memory: &mut dyn MemoryAccess,
     sft_addr: u32,
@@ -332,8 +360,33 @@ impl NeetanOs {
         let path_addr = ((cpu.ds() as u32) << 4) + cpu.dx() as u32;
         let open_mode = cpu.ax() as u8 & 0x03;
         let path = OsState::read_asciiz(memory, path_addr, 128);
+        let is_ems_probe = self.state.ems_enabled && path_is_ems_device(&path);
+        let is_xms_probe = self.state.xms_enabled && path_is_xms_device(&path);
 
         let result = (|| -> Result<u16, u16> {
+            if is_ems_probe {
+                let (handle, sft_index) = self.state.allocate_handle(memory)?;
+                self.write_sft_for_character_device(
+                    memory,
+                    sft_index,
+                    b"EMMXXXX0   ",
+                    tables::DEV_EMS_OFFSET,
+                    open_mode as u16,
+                );
+                return Ok(handle as u16);
+            }
+            if is_xms_probe {
+                let (handle, sft_index) = self.state.allocate_handle(memory)?;
+                self.write_sft_for_character_device(
+                    memory,
+                    sft_index,
+                    b"XMSXXXX0   ",
+                    tables::DEV_XMS_OFFSET,
+                    open_mode as u16,
+                );
+                return Ok(handle as u16);
+            }
+
             let read_path =
                 filesystem::resolve_read_file_path(&mut self.state, &path, memory, disk)?;
             let drive_index = read_path.drive_index;
@@ -1087,6 +1140,45 @@ impl NeetanOs {
             (entry.dir_offset / fat_dir::DIR_ENTRY_SIZE as u16) as u8,
         );
         mem.write_block(sft_addr + tables::SFT_ENT_NAME, &entry.name);
+        mem.write_word(sft_addr + tables::SFT_ENT_PSP_OWNER, self.state.current_psp);
+    }
+
+    fn write_sft_for_character_device(
+        &self,
+        mem: &mut dyn MemoryAccess,
+        sft_index: u8,
+        name: &[u8; 11],
+        device_offset: u16,
+        open_mode: u16,
+    ) {
+        let sft_addr = match self.state.sft_entry_addr(sft_index) {
+            Some(address) => address,
+            None => return,
+        };
+
+        mem.write_word(sft_addr + tables::SFT_ENT_REF_COUNT, 1);
+        mem.write_word(sft_addr + tables::SFT_ENT_OPEN_MODE, open_mode);
+        mem.write_byte(sft_addr + tables::SFT_ENT_FILE_ATTR, 0x00);
+        mem.write_word(
+            sft_addr + tables::SFT_ENT_DEV_INFO,
+            tables::SFT_DEVINFO_CHAR,
+        );
+        tables::write_far_ptr(
+            mem,
+            sft_addr + tables::SFT_ENT_DEV_PTR,
+            tables::DOS_DATA_SEGMENT,
+            device_offset,
+        );
+        mem.write_word(sft_addr + tables::SFT_ENT_START_CLUSTER, 0);
+        mem.write_word(sft_addr + tables::SFT_ENT_FILE_TIME, 0);
+        mem.write_word(sft_addr + tables::SFT_ENT_FILE_DATE, 0);
+        write_dword(mem, sft_addr + tables::SFT_ENT_FILE_SIZE, 0);
+        write_dword(mem, sft_addr + tables::SFT_ENT_FILE_POS, 0);
+        mem.write_word(sft_addr + tables::SFT_ENT_REL_CLUSTER, 0);
+        mem.write_word(sft_addr + tables::SFT_ENT_CUR_CLUSTER, 0);
+        mem.write_word(sft_addr + tables::SFT_ENT_DIR_SECTOR, 0);
+        mem.write_byte(sft_addr + tables::SFT_ENT_DIR_INDEX, 0);
+        mem.write_block(sft_addr + tables::SFT_ENT_NAME, name);
         mem.write_word(sft_addr + tables::SFT_ENT_PSP_OWNER, self.state.current_psp);
     }
 

@@ -930,11 +930,6 @@ pub trait Machine {
 
     /// Flushes the printer output file, if attached.
     fn flush_printer(&mut self);
-
-    /// Returns a host-formatted overview of current HLE DOS memory usage.
-    ///
-    /// Returns `None` when HLE DOS is not active.
-    fn debug_memory_overview(&mut self) -> Option<Vec<String>>;
 }
 
 /// Kinds of scheduled events.

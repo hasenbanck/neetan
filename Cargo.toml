@@ -6,7 +6,7 @@ members = ["crates/*", "utils/create_font"]
 authors = ["Nils Hasenbanck <nils@hasenbanck.de>"]
 edition = "2024"
 license = "BSD-3-Clause"
-rust-version = "1.94"
+rust-version = "1.95"
 
 [workspace.dependencies]
 # Internal dependencies
