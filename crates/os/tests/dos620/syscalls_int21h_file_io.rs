@@ -1,3 +1,5 @@
+use os::tables;
+
 use crate::harness;
 
 /// Helper: open a file and return the handle.
@@ -5,7 +7,7 @@ fn open_file(machine: &mut machine::Pc9801Ra, filename: &[u8]) -> u16 {
     open_file_with_mode(machine, filename, 0x00)
 }
 
-fn open_file_with_mode(machine: &mut machine::Pc9801Ra, filename: &[u8], open_mode: u8) -> u16 {
+fn open_file_raw(machine: &mut machine::Pc9801Ra, filename: &[u8], open_mode: u8) -> (u16, u16) {
     let path_addr = harness::INJECT_CODE_BASE + 0x200;
     harness::write_bytes(&mut machine.bus, path_addr, filename);
     #[rustfmt::skip]
@@ -14,24 +16,48 @@ fn open_file_with_mode(machine: &mut machine::Pc9801Ra, filename: &[u8], open_mo
         0xB0, 0x00,                         // MOV AL, imm8
         0xBA, 0x00, 0x02,                   // MOV DX, 0200h
         0xCD, 0x21,                         // INT 21h
-        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (handle)
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
         0x9C,                               // PUSHF
         0x58,                               // POP AX
-        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (flags)
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
     code[3] = open_mode;
     harness::inject_and_run_with_budget(machine, &code, harness::INJECT_BUDGET_DISK_IO);
+    (
+        harness::result_word(&machine.bus, 0),
+        harness::result_word(&machine.bus, 2),
+    )
+}
 
-    let flags = harness::result_word(&machine.bus, 2);
+fn open_file_with_mode(machine: &mut machine::Pc9801Ra, filename: &[u8], open_mode: u8) -> u16 {
+    let (handle, flags) = open_file_raw(machine, filename, open_mode);
     assert_eq!(
         flags & 0x0001,
         0,
         "open_file: CF should be 0, flags={:#06X}",
         flags
     );
-    harness::result_word(&machine.bus, 0)
+    handle
+}
+
+fn sft_addr_for_handle(machine: &mut machine::Pc9801Ra, handle: u16) -> u32 {
+    let psp_segment = harness::get_psp_segment(machine);
+    let psp_base = harness::far_to_linear(psp_segment, 0);
+    let sft_index = u16::from(harness::read_byte(
+        &machine.bus,
+        psp_base + tables::PSP_OFF_JFT + u32::from(handle),
+    ));
+
+    if sft_index < tables::SFT_INITIAL_COUNT {
+        tables::SFT_BASE + tables::SFT_HEADER_SIZE + u32::from(sft_index) * tables::SFT_ENTRY_SIZE
+    } else {
+        let (segment, offset) = harness::read_far_ptr(&machine.bus, tables::SFT_BASE);
+        let sft2_base = harness::far_to_linear(segment, offset);
+        let local_index = u32::from(sft_index - tables::SFT_INITIAL_COUNT);
+        sft2_base + tables::SFT_HEADER_SIZE + local_index * tables::SFT_ENTRY_SIZE
+    }
 }
 
 fn open_file_ap(machine: &mut machine::Pc9821Ap, filename: &[u8]) -> u16 {
@@ -170,6 +196,92 @@ fn open_existing_file() {
         handle
     );
     close_file(&mut machine, handle);
+}
+
+#[test]
+fn open_emmxxxx0_as_character_device() {
+    let mut machine = harness::boot_hle_with_floppy();
+
+    let handle = open_file_with_mode(&mut machine, b"EMMXXXX0\0", 0x02);
+    let sft_addr = sft_addr_for_handle(&mut machine, handle);
+
+    assert_eq!(
+        harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_OPEN_MODE),
+        0x0002
+    );
+    assert_eq!(
+        harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_INFO),
+        tables::SFT_DEVINFO_CHAR
+    );
+    assert_eq!(
+        harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_PTR),
+        tables::DEV_EMS_OFFSET
+    );
+    assert_eq!(
+        harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_PTR + 2),
+        tables::DOS_DATA_SEGMENT
+    );
+    assert_eq!(
+        harness::read_bytes(&machine.bus, sft_addr + tables::SFT_ENT_NAME, 11),
+        b"EMMXXXX0   "
+    );
+}
+
+#[test]
+fn open_xmsxxxx0_as_character_device() {
+    let mut machine = harness::boot_hle_with_floppy();
+
+    let handle = open_file_with_mode(&mut machine, b"\\XMSXXXX0\0", 0x00);
+    let sft_addr = sft_addr_for_handle(&mut machine, handle);
+
+    assert_eq!(
+        harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_OPEN_MODE),
+        0x0000
+    );
+    assert_eq!(
+        harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_INFO),
+        tables::SFT_DEVINFO_CHAR
+    );
+    assert_eq!(
+        harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_PTR),
+        tables::DEV_XMS_OFFSET
+    );
+    assert_eq!(
+        harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_PTR + 2),
+        tables::DOS_DATA_SEGMENT
+    );
+    assert_eq!(
+        harness::read_bytes(&machine.bus, sft_addr + tables::SFT_ENT_NAME, 11),
+        b"XMSXXXX0   "
+    );
+}
+
+#[test]
+fn open_emmxxxx0_fails_when_ems_disabled() {
+    let mut machine = harness::boot_hle_without_ems();
+
+    let (ax, flags) = open_file_raw(&mut machine, b"EMMXXXX0\0", 0x00);
+    assert_eq!(
+        flags & 0x0001,
+        0x0001,
+        "CF should be 1, flags={:#06X}",
+        flags
+    );
+    assert_eq!(ax, 0x0002);
+}
+
+#[test]
+fn open_xmsxxxx0_fails_when_xms_disabled() {
+    let mut machine = harness::boot_hle_without_xms();
+
+    let (ax, flags) = open_file_raw(&mut machine, b"XMSXXXX0\0", 0x00);
+    assert_eq!(
+        flags & 0x0001,
+        0x0001,
+        "CF should be 1, flags={:#06X}",
+        flags
+    );
+    assert_eq!(ax, 0x0002);
 }
 
 #[test]

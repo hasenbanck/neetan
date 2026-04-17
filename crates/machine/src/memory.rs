@@ -99,6 +99,10 @@ const EMS_PAGE_FRAME_START: u32 = 0xC0000;
 const EMS_PAGE_FRAME_END: u32 = 0xCFFFF;
 /// EMS page frame size in bytes (64 KB).
 const EMS_PAGE_FRAME_SIZE: usize = 0x10000;
+/// EMS physical page count (4 x 16 KB).
+const EMS_PHYSICAL_PAGE_COUNT: usize = 4;
+/// EMS physical page size in bytes.
+const EMS_PHYSICAL_PAGE_SIZE: u32 = 0x4000;
 
 /// UMB (Upper Memory Block) region start address (D0000h). 64 KB.
 const UMB_START: u32 = 0xD0000;
@@ -148,6 +152,8 @@ pub struct Pc9801MemoryState {
     pub shadow_control: u8,
     /// EMS page frame backing (64 KB at C0000-CFFFF). Enabled by the HLE memory manager.
     pub ems_page_frame: Option<Box<[u8; EMS_PAGE_FRAME_SIZE]>>,
+    /// Live slot mappings for the EMS page frame. Unmapped slots use `ems_page_frame`.
+    pub ems_page_frame_slot_mappings: [Option<u32>; EMS_PHYSICAL_PAGE_COUNT],
     /// UMB region backing (64 KB at D0000-DFFFF). Enabled by the HLE memory manager.
     pub umb_region: Option<Box<[u8; UMB_REGION_SIZE]>>,
 }
@@ -193,6 +199,10 @@ impl fmt::Debug for Pc9801MemoryState {
                 &format_args!("{:#04X}", self.shadow_control),
             )
             .field("ems_page_frame", &self.ems_page_frame.is_some())
+            .field(
+                "ems_page_frame_slot_mappings",
+                &self.ems_page_frame_slot_mappings,
+            )
             .field("umb_region", &self.umb_region.is_some())
             .finish()
     }
@@ -319,6 +329,7 @@ impl Pc9801Memory {
                 shadow_ram,
                 shadow_control: 0x00,
                 ems_page_frame: None,
+                ems_page_frame_slot_mappings: [None; EMS_PHYSICAL_PAGE_COUNT],
                 umb_region: None,
             },
             rom: vec![0u8; BIOS_ROM_SIZE]
@@ -517,6 +528,19 @@ impl Pc9801Memory {
         }
     }
 
+    /// Maps or unmaps one 16 KB EMS page-frame slot.
+    pub(crate) fn map_ems_page_frame_slot(
+        &mut self,
+        physical_page: u8,
+        backing_linear_addr: Option<u32>,
+    ) {
+        let physical_page = usize::from(physical_page);
+        if physical_page >= EMS_PHYSICAL_PAGE_COUNT {
+            return;
+        }
+        self.state.ems_page_frame_slot_mappings[physical_page] = backing_linear_addr;
+    }
+
     /// Enables the UMB region backing at D0000-DFFFF (64 KB).
     pub(crate) fn enable_umb_region(&mut self) {
         if self.state.umb_region.is_none() {
@@ -527,6 +551,15 @@ impl Pc9801Memory {
     /// Returns the size of extended RAM in bytes (0 for V30 machines).
     pub(crate) fn extended_memory_size(&self) -> u32 {
         self.state.extended_ram.len() as u32
+    }
+
+    fn ems_page_frame_linear_address(&self, address: u32) -> Option<u32> {
+        if !(EMS_PAGE_FRAME_START..=EMS_PAGE_FRAME_END).contains(&address) {
+            return None;
+        }
+        let slot = ((address - EMS_PAGE_FRAME_START) / EMS_PHYSICAL_PAGE_SIZE) as usize;
+        let slot_offset = (address - EMS_PAGE_FRAME_START) % EMS_PHYSICAL_PAGE_SIZE;
+        self.state.ems_page_frame_slot_mappings[slot].map(|base| base + slot_offset)
     }
 
     pub(crate) fn read_byte(&self, address: u32) -> u8 {
@@ -547,6 +580,9 @@ impl Pc9801Memory {
                 self.graphics_vram[(address - GRAPHICS_VRAM_START) as usize]
             }
             GRAPHICS_GAP_START..=GRAPHICS_GAP_END => {
+                if let Some(linear_address) = self.ems_page_frame_linear_address(address) {
+                    return self.read_byte(linear_address);
+                }
                 if let Some(ref pf) = self.state.ems_page_frame
                     && address <= EMS_PAGE_FRAME_END
                 {
@@ -617,6 +653,10 @@ impl Pc9801Memory {
                 self.graphics_vram[(address - GRAPHICS_VRAM_START) as usize] = value;
             }
             GRAPHICS_GAP_START..=GRAPHICS_GAP_END => {
+                if let Some(linear_address) = self.ems_page_frame_linear_address(address) {
+                    self.write_byte(linear_address, value);
+                    return;
+                }
                 if let Some(ref mut pf) = self.state.ems_page_frame
                     && address <= EMS_PAGE_FRAME_END
                 {

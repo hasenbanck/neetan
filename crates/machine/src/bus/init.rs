@@ -261,6 +261,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             ems_enabled: true,
             xms_enabled: true,
             xms_32_enabled: false,
+            xms_hmamin_kb: 0,
         };
 
         if machine_model.has_cg_ram() {

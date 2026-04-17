@@ -386,6 +386,8 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     xms_enabled: bool,
     /// Whether 32-bit XMS super functions (0x88-0x8F) are enabled.
     xms_32_enabled: bool,
+    /// /HMAMIN= threshold in KB for XMS Request HMA (XMS.txt priority).
+    xms_hmamin_kb: u16,
 }
 
 impl<T: Tracing> Pc9801Bus<T> {
@@ -407,6 +409,11 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// Enables or disables XMS extended memory for the HLE OS.
     pub fn set_xms_enabled(&mut self, enabled: bool) {
         self.xms_enabled = enabled;
+    }
+
+    /// Sets the XMS /HMAMIN= threshold in KB for the HLE OS.
+    pub fn set_xms_hmamin_kb(&mut self, hmamin_kb: u16) {
+        self.xms_hmamin_kb = hmamin_kb;
     }
 
     /// Enables or disables 32-bit XMS super functions (0x88-0x8F).

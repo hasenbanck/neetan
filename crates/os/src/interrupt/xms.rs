@@ -27,6 +27,7 @@ impl NeetanOs {
                     Ok(()) => cpu.set_ax(1),
                     Err(code) => {
                         cpu.set_ax(0);
+                        cpu.set_dx(0);
                         cpu.set_bx((cpu.bx() & 0xFF00) | code as u16);
                     }
                 }
@@ -38,14 +39,49 @@ impl NeetanOs {
                     cpu.set_bx((cpu.bx() & 0xFF00) | code as u16);
                 }
             },
-            0x03 | 0x05 => {
+            0x03 => {
+                // Global Enable A20. On PC-98 A20 is always physically
+                // enabled; track the XMS-visible state only.
+                mm.xms_global_enable_a20();
                 cpu.set_ax(1);
             }
-            0x04 | 0x06 => {
+            0x04 => {
+                // Global Disable A20. Fails (BL=0x94) if a local enable is
+                // still outstanding.
+                match mm.xms_global_disable_a20() {
+                    Ok(()) => cpu.set_ax(1),
+                    Err(code) => {
+                        cpu.set_ax(0);
+                        cpu.set_bx((cpu.bx() & 0xFF00) | code as u16);
+                    }
+                }
+            }
+            0x05 => {
+                // Local Enable A20 (increment nesting count).
+                mm.xms_local_enable_a20();
                 cpu.set_ax(1);
+            }
+            0x06 => {
+                // Local Disable A20 (decrement nesting count). Fails
+                // (BL=0x94) if the count is already zero.
+                match mm.xms_local_disable_a20() {
+                    Ok(()) => cpu.set_ax(1),
+                    Err(code) => {
+                        cpu.set_ax(0);
+                        cpu.set_bx((cpu.bx() & 0xFF00) | code as u16);
+                    }
+                }
             }
             0x07 => {
-                cpu.set_ax(1);
+                // Query A20 reports the XMS-visible state, not the PC-98
+                // physical line state.
+                if mm.xms_query_a20() {
+                    cpu.set_ax(1);
+                    cpu.set_bx(cpu.bx() & 0xFF00);
+                } else {
+                    cpu.set_ax(0);
+                    cpu.set_bx(cpu.bx() & 0xFF00);
+                }
             }
             0x08 => {
                 let (largest, total) = mm.xms_query_free();
@@ -66,6 +102,7 @@ impl NeetanOs {
                     }
                     Err(code) => {
                         cpu.set_ax(0);
+                        cpu.set_dx(0);
                         cpu.set_bx((cpu.bx() & 0xFF00) | code as u16);
                     }
                 }
@@ -131,7 +168,7 @@ impl NeetanOs {
             0x0F => {
                 let new_size = cpu.bx();
                 let handle = cpu.dx();
-                match mm.xms_reallocate(handle, new_size) {
+                match mm.xms_reallocate(handle, new_size, memory) {
                     Ok(()) => cpu.set_ax(1),
                     Err(code) => {
                         cpu.set_ax(0);
@@ -242,7 +279,7 @@ impl NeetanOs {
                 }
                 let new_size = cpu.ebx();
                 let handle = cpu.dx();
-                match mm.xms_reallocate_32(handle, new_size) {
+                match mm.xms_reallocate_32(handle, new_size, memory) {
                     Ok(()) => cpu.set_ax(1),
                     Err(code) => {
                         cpu.set_ax(0);
@@ -255,5 +292,81 @@ impl NeetanOs {
                 cpu.set_bx((cpu.bx() & 0xFF00) | 0x0080);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        CpuAccess, MemoryAccess, NeetanOs,
+        memory::{self, memory_manager::MemoryManager},
+        tables::UMB_FIRST_MCB_SEGMENT,
+        test_support::{MockCpu, MockMemory},
+    };
+
+    fn prepare_os_with_xms() -> (NeetanOs, MockMemory) {
+        let mut os = NeetanOs::new();
+        let mut memory = MockMemory::with_extended_memory(0x200000, 0x200000);
+        os.state.memory_manager = Some(MemoryManager::new(
+            memory.extended_memory_size(),
+            false,
+            true,
+            true,
+            &mut memory,
+        ));
+        (os, memory)
+    }
+
+    #[test]
+    fn xms_query_a20_clears_bl_on_success() {
+        let (mut os, mut memory) = prepare_os_with_xms();
+        let mut cpu = MockCpu::default();
+
+        cpu.set_ax(0x0700);
+        cpu.set_bx(0x12FF);
+        os.xms_entry(&mut cpu, &mut memory);
+
+        assert_eq!(cpu.ax(), 0);
+        assert_eq!(cpu.bx(), 0x1200);
+    }
+
+    #[test]
+    fn xms_allocate_failure_clears_dx_handle() {
+        let (mut os, mut memory) = prepare_os_with_xms();
+        let mut cpu = MockCpu::default();
+
+        cpu.set_ax(0x0900);
+        cpu.set_dx(0x1234);
+        cpu.set_bx(0);
+        cpu.set_dx(2000);
+        os.xms_entry(&mut cpu, &mut memory);
+
+        assert_eq!(cpu.ax(), 0);
+        assert_eq!(cpu.bx() & 0x00FF, 0x00A0);
+        assert_eq!(cpu.dx(), 0);
+    }
+
+    #[test]
+    fn xms_umb_reallocate_failure_returns_largest_free_umb() {
+        let (mut os, mut memory) = prepare_os_with_xms();
+        let mm = os
+            .state
+            .memory_manager
+            .as_ref()
+            .expect("XMS memory manager should exist");
+        let (segment, _) = mm.umb_allocate(4, &mut memory).unwrap();
+        let (_second_segment, _) = mm.umb_allocate(4, &mut memory).unwrap();
+        let expected_largest = memory::read_mcb_size_pub(&memory, UMB_FIRST_MCB_SEGMENT + 10);
+
+        let mut cpu = MockCpu::default();
+        cpu.set_ax(0x1200);
+        cpu.set_bx(0xFFFF);
+        cpu.set_dx(segment);
+        os.xms_entry(&mut cpu, &mut memory);
+
+        assert_eq!(cpu.ax(), 0);
+        assert_eq!(cpu.bx() & 0x00FF, 0x00B0);
+        assert_eq!(cpu.dx(), expected_largest);
+        assert_eq!(memory::read_mcb_size_pub(&memory, segment - 1), 4);
     }
 }

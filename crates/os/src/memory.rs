@@ -15,6 +15,7 @@ const HMA_TOTAL_BYTES: u32 = 0xFFF0;
 const ERR_MCB_DESTROYED: u8 = 7;
 const ERR_INSUFFICIENT_MEMORY: u8 = 8;
 const ERR_INVALID_BLOCK: u8 = 9;
+const UMB_LINK_MCB_NAME: &[u8; 8] = b"CS\0\0\0\0\0\0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MemoryAmount {
@@ -59,7 +60,11 @@ fn read_mcb_size(mem: &dyn MemoryAccess, segment: u16) -> u16 {
     mem.read_word(mcb_addr(segment) + MCB_OFF_SIZE)
 }
 
-fn walk_mcb_chain_usage(mem: &dyn MemoryAccess, first_segment: u16) -> (u32, u32) {
+fn walk_mcb_chain_usage_until(
+    mem: &dyn MemoryAccess,
+    first_segment: u16,
+    stop_before_segment: Option<u16>,
+) -> (u32, u32) {
     let mut used_paragraphs: u32 = 0;
     let mut free_paragraphs: u32 = 0;
     let mut current = first_segment;
@@ -78,17 +83,26 @@ fn walk_mcb_chain_usage(mem: &dyn MemoryAccess, first_segment: u16) -> (u32, u32
             used_paragraphs += size;
         }
 
-        if block_type == MCB_TYPE_Z {
+        let next = current + size as u16 + 1;
+        if block_type == MCB_TYPE_Z || stop_before_segment.is_some_and(|segment| next == segment) {
             break;
         }
 
-        current = current + size as u16 + 1;
+        current = next;
     }
 
     (used_paragraphs, free_paragraphs)
 }
 
-fn largest_free_block_paragraphs(mem: &dyn MemoryAccess, first_segment: u16) -> u32 {
+fn walk_mcb_chain_usage(mem: &dyn MemoryAccess, first_segment: u16) -> (u32, u32) {
+    walk_mcb_chain_usage_until(mem, first_segment, None)
+}
+
+fn largest_free_block_paragraphs_until(
+    mem: &dyn MemoryAccess,
+    first_segment: u16,
+    stop_before_segment: Option<u16>,
+) -> u32 {
     let mut largest: u32 = 0;
     let mut current = first_segment;
 
@@ -104,14 +118,94 @@ fn largest_free_block_paragraphs(mem: &dyn MemoryAccess, first_segment: u16) -> 
             largest = size;
         }
 
-        if block_type == MCB_TYPE_Z {
+        let next = current + size as u16 + 1;
+        if block_type == MCB_TYPE_Z || stop_before_segment.is_some_and(|segment| next == segment) {
             break;
         }
 
-        current = current + size as u16 + 1;
+        current = next;
     }
 
     largest
+}
+
+fn largest_free_block_paragraphs(mem: &dyn MemoryAccess, first_segment: u16) -> u32 {
+    largest_free_block_paragraphs_until(mem, first_segment, None)
+}
+
+pub(crate) fn largest_free_block_paragraphs_pub(mem: &dyn MemoryAccess, first_segment: u16) -> u16 {
+    largest_free_block_paragraphs(mem, first_segment).min(u16::MAX as u32) as u16
+}
+
+fn conventional_stop_before_segment(umb_first_mcb_segment: Option<u16>) -> Option<u16> {
+    umb_first_mcb_segment.map(|_| MEMORY_TOP_SEGMENT)
+}
+
+fn dos_strategy_view(
+    umb_first_mcb_segment: Option<u16>,
+    strategy: u16,
+) -> (u16, Option<u16>, bool, bool) {
+    let fit_only = strategy & 0x000F;
+    let high_first = strategy & 0x0040 != 0;
+    let high_only = strategy & 0x0080 != 0;
+    let umb = umb_first_mcb_segment.filter(|_| high_first || high_only);
+
+    if umb.is_some() {
+        (fit_only, umb, high_first, high_only)
+    } else {
+        (fit_only, None, false, false)
+    }
+}
+
+fn walk_chain_for_data_segment(
+    mem: &dyn MemoryAccess,
+    first_mcb_segment: u16,
+    data_segment: u16,
+) -> Result<Option<u16>, u8> {
+    let target_mcb = data_segment.wrapping_sub(1);
+    let mut current = first_mcb_segment;
+    let mut prev = None;
+
+    for _ in 0..MAX_CHAIN_WALK {
+        let block_type = read_mcb_type(mem, current);
+        if !is_valid_mcb_type(block_type) {
+            return Err(ERR_MCB_DESTROYED);
+        }
+
+        if current == target_mcb {
+            return Ok(Some(prev.unwrap_or(current)));
+        }
+
+        if block_type == MCB_TYPE_Z {
+            return Ok(None);
+        }
+
+        let block_size = read_mcb_size(mem, current);
+        prev = Some(current);
+        current = current + block_size + 1;
+    }
+
+    Ok(None)
+}
+
+fn find_chain_containing_block(
+    mem: &dyn MemoryAccess,
+    first_mcb_segment: u16,
+    umb_first_mcb_segment: Option<u16>,
+    data_segment: u16,
+) -> Result<Option<(u16, u16)>, u8> {
+    if let Some(prev_or_target) = walk_chain_for_data_segment(mem, first_mcb_segment, data_segment)?
+    {
+        return Ok(Some((first_mcb_segment, prev_or_target)));
+    }
+
+    if let Some(umb_segment) = umb_first_mcb_segment
+        && let Some(prev_or_target) = walk_chain_for_data_segment(mem, umb_segment, data_segment)?
+    {
+        return Ok(Some((umb_segment, prev_or_target)));
+    }
+
+    Ok(None)
 }
 
 fn write_mcb_type(mem: &mut dyn MemoryAccess, segment: u16, block_type: u8) {
@@ -162,7 +256,8 @@ pub(crate) fn initial_mcb_layout(env_paragraphs: u16) -> InitialMcbLayout {
 }
 
 pub(crate) fn collect_memory_overview(state: &OsState, mem: &dyn MemoryAccess) -> MemoryOverview {
-    let (conventional_used_paragraphs, _) = walk_mcb_chain_usage(mem, FIRST_MCB_SEGMENT);
+    let (conventional_used_paragraphs, _) =
+        walk_mcb_chain_usage_until(mem, FIRST_MCB_SEGMENT, Some(MEMORY_TOP_SEGMENT));
     let conventional_used_bytes = conventional_used_paragraphs * 16;
     let conventional = MemoryAmount {
         total_bytes: CONVENTIONAL_MEMORY_TOTAL_BYTES,
@@ -198,7 +293,7 @@ pub(crate) fn collect_memory_overview(state: &OsState, mem: &dyn MemoryAccess) -
         }
     };
 
-    let hma_total_bytes = if memory_manager.is_some_and(|manager| manager.is_xms_enabled()) {
+    let hma_total_bytes = if memory_manager.is_some_and(|manager| manager.hma_exists()) {
         HMA_TOTAL_BYTES
     } else {
         0
@@ -248,7 +343,11 @@ pub(crate) fn collect_memory_overview(state: &OsState, mem: &dyn MemoryAccess) -
         ems,
         xms,
         extended_pool,
-        largest_conventional_free_bytes: largest_free_block_paragraphs(mem, FIRST_MCB_SEGMENT) * 16,
+        largest_conventional_free_bytes: largest_free_block_paragraphs_until(
+            mem,
+            FIRST_MCB_SEGMENT,
+            Some(MEMORY_TOP_SEGMENT),
+        ) * 16,
         largest_umb_free_bytes: if umb.total_bytes > 0 {
             largest_free_block_paragraphs(mem, UMB_FIRST_MCB_SEGMENT) * 16
         } else {
@@ -392,6 +491,91 @@ pub(crate) fn write_initial_mcb_chain(mem: &mut dyn MemoryAccess, layout: Initia
     );
 }
 
+/// DOS INT 21h 48h entry point: allocates from conventional memory and,
+/// when `umb_first_mcb_segment` is `Some` (UMB is linked per DOS 5803h),
+/// honours the high-memory preference flags `+0x40` (high-first) and
+/// `+0x80` (high-only) in `strategy`.
+///
+/// Returns Ok(data_segment) on success, Err((error_code, largest_available))
+/// on failure. `largest_available` is the largest free block across all
+/// searched chains.
+pub(crate) fn allocate_dos(
+    mem: &mut dyn MemoryAccess,
+    first_mcb_segment: u16,
+    umb_first_mcb_segment: Option<u16>,
+    paragraphs: u16,
+    owner: u16,
+    strategy: u16,
+) -> Result<u16, (u8, u16)> {
+    let (fit_only, umb, high_first, high_only) = dos_strategy_view(umb_first_mcb_segment, strategy);
+    let conventional_stop_before = conventional_stop_before_segment(umb_first_mcb_segment);
+
+    let first_result = match (umb, high_only) {
+        (Some(umb_seg), true) => allocate(mem, umb_seg, paragraphs, owner, fit_only),
+        (Some(umb_seg), false) => allocate(mem, umb_seg, paragraphs, owner, fit_only),
+        (None, _) => allocate_with_limit(
+            mem,
+            first_mcb_segment,
+            conventional_stop_before,
+            paragraphs,
+            owner,
+            fit_only,
+        ),
+    };
+
+    match first_result {
+        Ok(segment) => Ok(segment),
+        Err((code, first_largest)) => {
+            // high_only: no fallback allowed.
+            if high_only {
+                return Err((code, first_largest));
+            }
+            // high_first: fall back to conventional.
+            if high_first {
+                match allocate_with_limit(
+                    mem,
+                    first_mcb_segment,
+                    conventional_stop_before,
+                    paragraphs,
+                    owner,
+                    fit_only,
+                ) {
+                    Ok(segment) => Ok(segment),
+                    Err((code2, conv_largest)) => Err((code2, first_largest.max(conv_largest))),
+                }
+            } else {
+                Err((code, first_largest))
+            }
+        }
+    }
+}
+
+pub(crate) fn largest_available_dos(
+    mem: &dyn MemoryAccess,
+    first_mcb_segment: u16,
+    umb_first_mcb_segment: Option<u16>,
+    strategy: u16,
+) -> u16 {
+    let (_fit_only, umb, high_first, high_only) =
+        dos_strategy_view(umb_first_mcb_segment, strategy);
+    let conventional_largest = largest_free_block_paragraphs_until(
+        mem,
+        first_mcb_segment,
+        conventional_stop_before_segment(umb_first_mcb_segment),
+    ) as u16;
+    let umb_largest = umb
+        .map(|segment| largest_free_block_paragraphs(mem, segment) as u16)
+        .unwrap_or(0);
+
+    if high_only {
+        umb_largest
+    } else if high_first {
+        conventional_largest.max(umb_largest)
+    } else {
+        conventional_largest
+    }
+}
+
 /// Allocates a block of `paragraphs` paragraphs from the MCB chain.
 ///
 /// Strategy: 0 = first fit, 1 = best fit, 2 = last fit.
@@ -400,6 +584,17 @@ pub(crate) fn write_initial_mcb_chain(mem: &mut dyn MemoryAccess, layout: Initia
 pub(crate) fn allocate(
     mem: &mut dyn MemoryAccess,
     first_mcb_segment: u16,
+    paragraphs: u16,
+    owner: u16,
+    strategy: u16,
+) -> Result<u16, (u8, u16)> {
+    allocate_with_limit(mem, first_mcb_segment, None, paragraphs, owner, strategy)
+}
+
+fn allocate_with_limit(
+    mem: &mut dyn MemoryAccess,
+    first_mcb_segment: u16,
+    stop_before_segment: Option<u16>,
     paragraphs: u16,
     owner: u16,
     strategy: u16,
@@ -439,24 +634,32 @@ pub(crate) fn allocate(
                     candidate = Some((current, block_size));
                     // For first fit we can stop scanning immediately.
                     if strategy == 0 {
-                        commit_allocation(mem, current, block_size, paragraphs, owner);
+                        commit_allocation(mem, current, block_size, paragraphs, owner, false);
                         return Ok(current + 1);
                     }
                 }
             }
         }
 
-        if block_type == MCB_TYPE_Z {
+        let next = current + block_size + 1;
+        if block_type == MCB_TYPE_Z || stop_before_segment.is_some_and(|segment| next == segment) {
             break;
         }
 
-        current = current + block_size + 1;
+        current = next;
     }
 
     // For best-fit and last-fit, commit the chosen candidate after the full walk.
     if let Some((segment, size)) = candidate {
-        commit_allocation(mem, segment, size, paragraphs, owner);
-        Ok(segment + 1)
+        let allocate_from_high = strategy == 2;
+        Ok(commit_allocation(
+            mem,
+            segment,
+            size,
+            paragraphs,
+            owner,
+            allocate_from_high,
+        ))
     } else {
         Err((ERR_INSUFFICIENT_MEMORY, largest_free))
     }
@@ -469,32 +672,49 @@ fn commit_allocation(
     block_size: u16,
     paragraphs: u16,
     owner: u16,
-) {
+    allocate_from_high: bool,
+) -> u16 {
     let block_type = read_mcb_type(mem, segment);
 
-    if block_size > paragraphs + 1 {
-        // Split: create a new free MCB after the allocated block.
-        let remainder_segment = segment + 1 + paragraphs;
-        let remainder_size = block_size - paragraphs - 1;
+    let allocated_segment = if allocate_from_high && block_size > paragraphs + 1 {
+        let remaining_free_size = block_size - paragraphs - 1;
+        let allocated_segment = segment + remaining_free_size + 1;
 
-        write_mcb_type(mem, remainder_segment, block_type);
-        write_mcb_owner(mem, remainder_segment, MCB_OWNER_FREE);
-        write_mcb_size(mem, remainder_segment, remainder_size);
-        clear_mcb_name(mem, remainder_segment);
-        let addr = mcb_addr(remainder_segment);
-        mem.write_byte(addr + 5, 0);
-        mem.write_byte(addr + 6, 0);
-        mem.write_byte(addr + 7, 0);
-
-        // Current block becomes M type (there's a block after it now).
         write_mcb_type(mem, segment, MCB_TYPE_M);
-        write_mcb_size(mem, segment, paragraphs);
-    }
-    // If block_size == paragraphs: exact fit, no split needed.
-    // If block_size == paragraphs + 1: can't split (0-paragraph remainder), give the extra.
+        write_mcb_owner(mem, segment, MCB_OWNER_FREE);
+        write_mcb_size(mem, segment, remaining_free_size);
+        clear_mcb_name(mem, segment);
 
-    write_mcb_owner(mem, segment, owner);
-    clear_mcb_name(mem, segment);
+        write_mcb_type(mem, allocated_segment, block_type);
+        write_mcb_size(mem, allocated_segment, paragraphs);
+        allocated_segment
+    } else {
+        if block_size > paragraphs + 1 {
+            // Split: create a new free MCB after the allocated block.
+            let remainder_segment = segment + 1 + paragraphs;
+            let remainder_size = block_size - paragraphs - 1;
+
+            write_mcb_type(mem, remainder_segment, block_type);
+            write_mcb_owner(mem, remainder_segment, MCB_OWNER_FREE);
+            write_mcb_size(mem, remainder_segment, remainder_size);
+            clear_mcb_name(mem, remainder_segment);
+            let addr = mcb_addr(remainder_segment);
+            mem.write_byte(addr + 5, 0);
+            mem.write_byte(addr + 6, 0);
+            mem.write_byte(addr + 7, 0);
+
+            // Current block becomes M type (there's a block after it now).
+            write_mcb_type(mem, segment, MCB_TYPE_M);
+            write_mcb_size(mem, segment, paragraphs);
+        }
+
+        segment
+    };
+
+    write_mcb_owner(mem, allocated_segment, owner);
+    clear_mcb_name(mem, allocated_segment);
+
+    allocated_segment + 1
 }
 
 /// Frees the memory block whose data starts at `data_segment`.
@@ -508,8 +728,10 @@ pub(crate) fn free(
 ) -> Result<(), u8> {
     let target_mcb = data_segment.wrapping_sub(1);
 
-    // Walk the chain to verify the target MCB exists.
+    // Walk the chain to verify the target MCB exists and remember the
+    // preceding MCB so we can coalesce backwards.
     let mut current = first_mcb_segment;
+    let mut prev: Option<u16> = None;
     let mut found = false;
 
     for _ in 0..MAX_CHAIN_WALK {
@@ -528,6 +750,7 @@ pub(crate) fn free(
         }
 
         let block_size = read_mcb_size(mem, current);
+        prev = Some(current);
         current = current + block_size + 1;
     }
 
@@ -544,16 +767,40 @@ pub(crate) fn free(
     write_mcb_owner(mem, target_mcb, MCB_OWNER_FREE);
     clear_mcb_name(mem, target_mcb);
 
-    // Coalesce with next block if it's also free
+    // Coalesce forward with next free block.
     coalesce_forward(mem, target_mcb);
 
+    // Coalesce backward: if the predecessor MCB is free, merging forward
+    // from it swallows our now-free block. This prevents fragmentation
+    // that real MS-DOS avoids and avoids needing a separate manual pass.
+    if let Some(prev_segment) = prev
+        && read_mcb_owner(mem, prev_segment) == MCB_OWNER_FREE
+    {
+        coalesce_forward(mem, prev_segment);
+    }
+
     Ok(())
+}
+
+pub(crate) fn free_dos(
+    mem: &mut dyn MemoryAccess,
+    first_mcb_segment: u16,
+    umb_first_mcb_segment: Option<u16>,
+    data_segment: u16,
+) -> Result<(), u8> {
+    match find_chain_containing_block(mem, first_mcb_segment, umb_first_mcb_segment, data_segment)?
+    {
+        Some((chain_start, _)) => free(mem, chain_start, data_segment),
+        None => Err(ERR_INVALID_BLOCK),
+    }
 }
 
 /// Resizes the memory block at `data_segment` to `new_paragraphs`.
 ///
 /// Returns Ok(()) on success.
-/// Returns Err((error_code, max_available)) on failure.
+/// Returns Err((error_code, max_available)) on failure, where max_available
+/// is the largest contiguous free block remaining in the chain (per the
+/// MS-DOS INT 21h 4Ah convention).
 pub(crate) fn resize(
     mem: &mut dyn MemoryAccess,
     first_mcb_segment: u16,
@@ -569,7 +816,8 @@ pub(crate) fn resize(
     for _ in 0..MAX_CHAIN_WALK {
         let block_type = read_mcb_type(mem, current);
         if !is_valid_mcb_type(block_type) {
-            return Err((ERR_MCB_DESTROYED, 0));
+            let largest = largest_free_block_paragraphs(mem, first_mcb_segment);
+            return Err((ERR_MCB_DESTROYED, largest.min(0xFFFF) as u16));
         }
 
         if current == target_mcb {
@@ -586,11 +834,31 @@ pub(crate) fn resize(
     }
 
     if !found {
-        return Err((ERR_INVALID_BLOCK, 0));
+        let largest = largest_free_block_paragraphs(mem, first_mcb_segment);
+        return Err((ERR_INVALID_BLOCK, largest.min(0xFFFF) as u16));
     }
 
     let current_size = read_mcb_size(mem, target_mcb);
     let block_type = read_mcb_type(mem, target_mcb);
+
+    // Compute the maximum size this particular block could grow to (current
+    // plus any immediately-following free block). Used for both the
+    // query-only path (new_paragraphs == 0xFFFF) and as the error-return
+    // "max size" on grow failure.
+    let max_growable = if block_type == MCB_TYPE_Z {
+        current_size
+    } else {
+        let next_segment = target_mcb + current_size + 1;
+        let next_type = read_mcb_type(mem, next_segment);
+        if !is_valid_mcb_type(next_type) {
+            current_size
+        } else if read_mcb_owner(mem, next_segment) == MCB_OWNER_FREE {
+            let next_size = read_mcb_size(mem, next_segment);
+            ((current_size as u32) + 1 + next_size as u32).min(0xFFFF) as u16
+        } else {
+            current_size
+        }
+    };
 
     if new_paragraphs == current_size {
         return Ok(());
@@ -624,13 +892,13 @@ pub(crate) fn resize(
         // Grow: check if next block is free and has enough space
         if block_type == MCB_TYPE_Z {
             // Z block: can't grow (nothing after it)
-            return Err((ERR_INSUFFICIENT_MEMORY, current_size));
+            return Err((ERR_INSUFFICIENT_MEMORY, max_growable));
         }
 
         let next_segment = target_mcb + current_size + 1;
         let next_type = read_mcb_type(mem, next_segment);
         if !is_valid_mcb_type(next_type) {
-            return Err((ERR_MCB_DESTROYED, current_size));
+            return Err((ERR_MCB_DESTROYED, max_growable));
         }
 
         let next_owner = read_mcb_owner(mem, next_segment);
@@ -638,13 +906,20 @@ pub(crate) fn resize(
 
         if next_owner != MCB_OWNER_FREE {
             // Next block is not free; can't grow
-            return Err((ERR_INSUFFICIENT_MEMORY, current_size));
+            return Err((ERR_INSUFFICIENT_MEMORY, max_growable));
         }
 
         // Total available = current size + 1 (MCB of next) + next size
         let total_available = current_size as u32 + 1 + next_size as u32;
         if (new_paragraphs as u32) > total_available {
-            return Err((ERR_INSUFFICIENT_MEMORY, total_available.min(0xFFFF) as u16));
+            let merged_size = total_available.min(0xFFFF) as u16;
+
+            if current_size != merged_size {
+                write_mcb_type(mem, target_mcb, next_type);
+                write_mcb_size(mem, target_mcb, merged_size);
+            }
+
+            return Err((ERR_INSUFFICIENT_MEMORY, merged_size));
         }
 
         // Merge with next block
@@ -680,6 +955,168 @@ pub(crate) fn resize(
     }
 }
 
+pub(crate) fn resize_without_grow_failure(
+    mem: &mut dyn MemoryAccess,
+    first_mcb_segment: u16,
+    data_segment: u16,
+    new_paragraphs: u16,
+) -> Result<(), (u8, u16)> {
+    let target_mcb = data_segment.wrapping_sub(1);
+
+    let mut current = first_mcb_segment;
+    let mut found = false;
+
+    for _ in 0..MAX_CHAIN_WALK {
+        let block_type = read_mcb_type(mem, current);
+        if !is_valid_mcb_type(block_type) {
+            let largest = largest_free_block_paragraphs(mem, first_mcb_segment);
+            return Err((ERR_MCB_DESTROYED, largest.min(0xFFFF) as u16));
+        }
+
+        if current == target_mcb {
+            found = true;
+            break;
+        }
+
+        if block_type == MCB_TYPE_Z {
+            break;
+        }
+
+        current = current + read_mcb_size(mem, current) + 1;
+    }
+
+    if !found {
+        let largest = largest_free_block_paragraphs(mem, first_mcb_segment);
+        return Err((ERR_INVALID_BLOCK, largest.min(0xFFFF) as u16));
+    }
+
+    let current_size = read_mcb_size(mem, target_mcb);
+    let block_type = read_mcb_type(mem, target_mcb);
+    let max_growable = if block_type == MCB_TYPE_Z {
+        current_size
+    } else {
+        let next_segment = target_mcb + current_size + 1;
+        let next_type = read_mcb_type(mem, next_segment);
+        if !is_valid_mcb_type(next_type) {
+            current_size
+        } else if read_mcb_owner(mem, next_segment) == MCB_OWNER_FREE {
+            let next_size = read_mcb_size(mem, next_segment);
+            ((current_size as u32) + 1 + next_size as u32).min(0xFFFF) as u16
+        } else {
+            current_size
+        }
+    };
+
+    if new_paragraphs == current_size {
+        return Ok(());
+    }
+
+    if new_paragraphs < current_size {
+        return resize(mem, first_mcb_segment, data_segment, new_paragraphs);
+    }
+
+    if block_type == MCB_TYPE_Z {
+        return Err((ERR_INSUFFICIENT_MEMORY, max_growable));
+    }
+
+    let next_segment = target_mcb + current_size + 1;
+    let next_type = read_mcb_type(mem, next_segment);
+    if !is_valid_mcb_type(next_type) {
+        return Err((ERR_MCB_DESTROYED, max_growable));
+    }
+
+    if read_mcb_owner(mem, next_segment) != MCB_OWNER_FREE {
+        return Err((ERR_INSUFFICIENT_MEMORY, max_growable));
+    }
+
+    let next_size = read_mcb_size(mem, next_segment);
+    let total_available = current_size as u32 + 1 + next_size as u32;
+    if (new_paragraphs as u32) > total_available {
+        return Err((ERR_INSUFFICIENT_MEMORY, total_available.min(0xFFFF) as u16));
+    }
+
+    resize(mem, first_mcb_segment, data_segment, new_paragraphs)
+}
+
+fn conventional_link_anchor_segment(
+    mem: &dyn MemoryAccess,
+    first_mcb_segment: u16,
+) -> Result<u16, u8> {
+    let mut current = first_mcb_segment;
+
+    for _ in 0..MAX_CHAIN_WALK {
+        let block_type = read_mcb_type(mem, current);
+        if !is_valid_mcb_type(block_type) {
+            return Err(ERR_MCB_DESTROYED);
+        }
+
+        let next_segment = current + read_mcb_size(mem, current) + 1;
+        if next_segment == MEMORY_TOP_SEGMENT {
+            return Ok(current);
+        }
+
+        if block_type == MCB_TYPE_Z {
+            return Err(ERR_MCB_DESTROYED);
+        }
+
+        current = next_segment;
+    }
+
+    Err(ERR_MCB_DESTROYED)
+}
+
+pub(crate) fn set_dos_umb_link_state(
+    mem: &mut dyn MemoryAccess,
+    first_mcb_segment: u16,
+    umb_first_mcb_segment: Option<u16>,
+    linked: bool,
+) -> Result<(), u8> {
+    let Some(umb_segment) = umb_first_mcb_segment else {
+        return Ok(());
+    };
+
+    if !is_valid_mcb_type(read_mcb_type(mem, umb_segment)) {
+        return Err(ERR_MCB_DESTROYED);
+    }
+
+    let anchor_segment = conventional_link_anchor_segment(mem, first_mcb_segment)?;
+    if linked {
+        write_mcb_type(mem, anchor_segment, MCB_TYPE_M);
+        write_mcb(
+            mem,
+            MEMORY_TOP_SEGMENT,
+            MCB_TYPE_M,
+            MCB_OWNER_DOS,
+            umb_segment - MEMORY_TOP_SEGMENT - 1,
+            UMB_LINK_MCB_NAME,
+        );
+    } else {
+        write_mcb_type(mem, anchor_segment, MCB_TYPE_Z);
+    }
+
+    Ok(())
+}
+
+pub(crate) fn resize_dos(
+    mem: &mut dyn MemoryAccess,
+    first_mcb_segment: u16,
+    umb_first_mcb_segment: Option<u16>,
+    data_segment: u16,
+    new_paragraphs: u16,
+) -> Result<(), (u8, u16)> {
+    match find_chain_containing_block(mem, first_mcb_segment, umb_first_mcb_segment, data_segment) {
+        Ok(Some((chain_start, _))) => resize(mem, chain_start, data_segment, new_paragraphs),
+        Ok(None) => {
+            let largest = largest_available_dos(mem, first_mcb_segment, umb_first_mcb_segment, 0);
+            Err((ERR_INVALID_BLOCK, largest))
+        }
+        Err(error_code) => {
+            let largest = largest_available_dos(mem, first_mcb_segment, umb_first_mcb_segment, 0);
+            Err((error_code, largest))
+        }
+    }
+}
+
 /// Frees all MCB blocks owned by `owner_psp`.
 ///
 /// Walks the chain, collects data segments, then frees each one.
@@ -706,6 +1143,18 @@ pub(crate) fn free_process_blocks(
     }
     for data_seg in to_free.into_iter().rev() {
         let _ = free(mem, first_mcb_segment, data_seg);
+    }
+}
+
+pub(crate) fn free_process_blocks_dos(
+    mem: &mut dyn MemoryAccess,
+    first_mcb_segment: u16,
+    umb_first_mcb_segment: Option<u16>,
+    owner_psp: u16,
+) {
+    free_process_blocks(mem, first_mcb_segment, owner_psp);
+    if let Some(umb_segment) = umb_first_mcb_segment {
+        free_process_blocks(mem, umb_segment, owner_psp);
     }
 }
 
@@ -739,6 +1188,19 @@ pub(crate) fn free_process_blocks_tsr(
     }
     for data_seg in to_free.into_iter().rev() {
         let _ = free(mem, first_mcb_segment, data_seg);
+    }
+}
+
+pub(crate) fn free_process_blocks_tsr_dos(
+    mem: &mut dyn MemoryAccess,
+    first_mcb_segment: u16,
+    umb_first_mcb_segment: Option<u16>,
+    owner_psp: u16,
+    keep_paragraphs: u16,
+) {
+    free_process_blocks_tsr(mem, first_mcb_segment, owner_psp, keep_paragraphs);
+    if let Some(umb_segment) = umb_first_mcb_segment {
+        free_process_blocks_tsr(mem, umb_segment, owner_psp, keep_paragraphs);
     }
 }
 
@@ -881,5 +1343,212 @@ mod tests {
             2 + 1 + 3 + 1 + 4,
             "all non-PSP blocks should coalesce into one trailing free Z block"
         );
+    }
+
+    #[test]
+    fn free_dos_releases_umb_block() {
+        let mut mem = MockMemory::new(0x200000);
+        write_mcb(
+            &mut mem,
+            0x1000,
+            MCB_TYPE_Z,
+            MCB_OWNER_FREE,
+            0x20,
+            b"CONVFREE",
+        );
+        write_mcb(
+            &mut mem,
+            UMB_FIRST_MCB_SEGMENT,
+            MCB_TYPE_Z,
+            0x2222,
+            0x10,
+            b"UMBALLOC",
+        );
+
+        free_dos(
+            &mut mem,
+            0x1000,
+            Some(UMB_FIRST_MCB_SEGMENT),
+            UMB_FIRST_MCB_SEGMENT + 1,
+        )
+        .expect("UMB block should be found by DOS-aware free");
+
+        assert_eq!(read_mcb_owner(&mem, UMB_FIRST_MCB_SEGMENT), MCB_OWNER_FREE);
+    }
+
+    #[test]
+    fn allocate_last_fit_uses_high_end_of_selected_block() {
+        let mut mem = MockMemory::new(0x200000);
+        let first_mcb = 0x1000;
+
+        write_mcb(
+            &mut mem,
+            first_mcb,
+            MCB_TYPE_Z,
+            MCB_OWNER_FREE,
+            0x30,
+            b"FREEBLK ",
+        );
+
+        let data_segment =
+            allocate(&mut mem, first_mcb, 0x10, 0x2222, 2).expect("last-fit should allocate");
+
+        assert_eq!(
+            data_segment, 0x1021,
+            "last-fit should allocate from the high end of the free block"
+        );
+        assert_eq!(
+            read_mcb_owner(&mem, first_mcb),
+            MCB_OWNER_FREE,
+            "lower portion should remain free after high-end split"
+        );
+        assert_eq!(
+            read_mcb_type(&mem, first_mcb),
+            MCB_TYPE_M,
+            "lower free block should now be a middle block"
+        );
+        assert_eq!(
+            read_mcb_size(&mem, first_mcb),
+            0x1F,
+            "lower free block size should shrink by the allocation plus its MCB"
+        );
+        assert_eq!(
+            read_mcb_type(&mem, 0x1020),
+            MCB_TYPE_Z,
+            "new high-end allocation should inherit the original block terminator type"
+        );
+        assert_eq!(read_mcb_owner(&mem, 0x1020), 0x2222);
+        assert_eq!(read_mcb_size(&mem, 0x1020), 0x10);
+    }
+
+    #[test]
+    fn resize_dos_resizes_umb_block() {
+        let mut mem = MockMemory::new(0x200000);
+        write_mcb(
+            &mut mem,
+            0x1000,
+            MCB_TYPE_Z,
+            MCB_OWNER_FREE,
+            0x20,
+            b"CONVFREE",
+        );
+        write_mcb(
+            &mut mem,
+            UMB_FIRST_MCB_SEGMENT,
+            MCB_TYPE_Z,
+            0x3333,
+            0x20,
+            b"UMBALLOC",
+        );
+
+        resize_dos(
+            &mut mem,
+            0x1000,
+            Some(UMB_FIRST_MCB_SEGMENT),
+            UMB_FIRST_MCB_SEGMENT + 1,
+            0x10,
+        )
+        .expect("UMB block should be found by DOS-aware resize");
+
+        assert_eq!(read_mcb_size(&mem, UMB_FIRST_MCB_SEGMENT), 0x10);
+        assert_eq!(read_mcb_owner(&mem, UMB_FIRST_MCB_SEGMENT), 0x3333);
+        assert_eq!(
+            read_mcb_owner(&mem, UMB_FIRST_MCB_SEGMENT + 0x11),
+            MCB_OWNER_FREE
+        );
+    }
+
+    #[test]
+    fn free_process_blocks_dos_reclaims_umb_chain() {
+        let mut mem = MockMemory::new(0x200000);
+        let owner = 0x4444;
+
+        write_mcb(
+            &mut mem,
+            0x1000,
+            MCB_TYPE_Z,
+            MCB_OWNER_FREE,
+            0x20,
+            b"CONVFREE",
+        );
+        write_mcb(
+            &mut mem,
+            UMB_FIRST_MCB_SEGMENT,
+            MCB_TYPE_M,
+            owner,
+            0x08,
+            b"UMBPSP  ",
+        );
+        write_mcb(
+            &mut mem,
+            UMB_FIRST_MCB_SEGMENT + 0x09,
+            MCB_TYPE_Z,
+            owner,
+            0x08,
+            b"UMBAUX  ",
+        );
+
+        free_process_blocks_dos(&mut mem, 0x1000, Some(UMB_FIRST_MCB_SEGMENT), owner);
+
+        assert_eq!(read_mcb_owner(&mem, UMB_FIRST_MCB_SEGMENT), MCB_OWNER_FREE);
+        assert_eq!(read_mcb_type(&mem, UMB_FIRST_MCB_SEGMENT), MCB_TYPE_Z);
+        assert_eq!(read_mcb_size(&mem, UMB_FIRST_MCB_SEGMENT), 0x11);
+    }
+
+    #[test]
+    fn resize_grow_failure_resizes_to_maximum_and_returns_error() {
+        let mut mem = MockMemory::new(0x200000);
+        let first_mcb = 0x1000;
+
+        write_mcb(&mut mem, first_mcb, MCB_TYPE_M, 0x2222, 4, b"ALLOC   ");
+        write_mcb(&mut mem, 0x1005, MCB_TYPE_Z, MCB_OWNER_FREE, 3, b"FREE    ");
+
+        assert_eq!(
+            resize(&mut mem, first_mcb, first_mcb + 1, 9),
+            Err((ERR_INSUFFICIENT_MEMORY, 8))
+        );
+        assert_eq!(read_mcb_size(&mem, first_mcb), 8);
+        assert_eq!(read_mcb_type(&mem, first_mcb), MCB_TYPE_Z);
+        assert_eq!(read_mcb_owner(&mem, first_mcb), 0x2222);
+    }
+
+    #[test]
+    fn resize_with_ffff_grows_to_maximum_before_failing() {
+        let mut mem = MockMemory::new(0x200000);
+        let first_mcb = 0x1000;
+
+        write_mcb(&mut mem, first_mcb, MCB_TYPE_M, 0x2222, 4, b"ALLOC   ");
+        write_mcb(&mut mem, 0x1005, MCB_TYPE_Z, MCB_OWNER_FREE, 3, b"FREE    ");
+
+        assert_eq!(
+            resize(&mut mem, first_mcb, first_mcb + 1, 0xFFFF),
+            Err((ERR_INSUFFICIENT_MEMORY, 8))
+        );
+        assert_eq!(read_mcb_size(&mem, first_mcb), 8);
+        assert_eq!(read_mcb_type(&mem, first_mcb), MCB_TYPE_Z);
+    }
+
+    #[test]
+    fn largest_available_dos_ignores_high_only_without_linked_umb() {
+        let mut mem = MockMemory::new(0x200000);
+
+        write_mcb(
+            &mut mem,
+            0x1000,
+            MCB_TYPE_Z,
+            MCB_OWNER_FREE,
+            0x20,
+            b"CONVFREE",
+        );
+        write_mcb(
+            &mut mem,
+            UMB_FIRST_MCB_SEGMENT,
+            MCB_TYPE_Z,
+            MCB_OWNER_FREE,
+            0x40,
+            b"UMBFREE ",
+        );
+
+        assert_eq!(largest_available_dos(&mem, 0x1000, None, 0x0080), 0x20);
     }
 }

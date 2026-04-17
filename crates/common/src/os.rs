@@ -102,6 +102,8 @@ pub trait MemoryAccess {
     }
     /// Enables the EMS page frame backing at C0000-CFFFF.
     fn enable_ems_page_frame(&mut self) {}
+    /// Maps a 16 KB EMS page-frame slot to a backing linear address in extended RAM.
+    fn map_ems_page_frame_slot(&mut self, _physical_page: u8, _backing_linear_addr: Option<u32>) {}
     /// Enables the UMB region backing at D0000-DFFFF.
     fn enable_umb_region(&mut self) {}
 }

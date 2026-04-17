@@ -22,6 +22,8 @@ mod process;
 mod shell;
 mod state;
 pub mod tables;
+#[cfg(test)]
+mod test_support;
 
 use std::collections::BTreeMap;
 
@@ -71,8 +73,12 @@ pub(crate) struct OsState {
     pub(crate) ctrl_break: bool,
     /// Switch character (default 0x2F = '/').
     pub(crate) switch_char: u8,
-    /// Memory allocation strategy (0=first fit, 1=best fit, 2=last fit).
+    /// Memory allocation strategy (0=first fit, 1=best fit, 2=last fit,
+    /// +0x40 high-first-then-low, +0x80 high-only).
     pub(crate) allocation_strategy: u16,
+    /// UMB link state (0 = unlinked, 1 = linked) per INT 21h AX=5802h/5803h.
+    /// When linked, allocation walks across conventional into UMB.
+    pub(crate) umb_link: bool,
     /// Exit code from last terminated child process.
     pub(crate) last_return_code: u8,
     /// Termination type of last child (0=normal, 1=ctrl-C, 2=critical error, 3=TSR).
@@ -117,6 +123,9 @@ pub(crate) struct OsState {
     pub(crate) xms_enabled: bool,
     /// Whether 32-bit XMS super functions (0x88-0x8F) are available (386+ only).
     pub(crate) xms_32_enabled: bool,
+    /// /HMAMIN= threshold in KB: Request HMA (XMS 01h) rejects size values
+    /// below this. Default 0 = first-come-first-served.
+    pub(crate) xms_hmamin_kb: u16,
     /// Unified EMS/XMS/UMB memory manager. `None` if EMS/XMS both disabled or no extended RAM.
     pub(crate) memory_manager: Option<memory::memory_manager::MemoryManager>,
 }
@@ -335,6 +344,7 @@ impl NeetanOs {
                 ctrl_break: false,
                 switch_char: 0x2F,
                 allocation_strategy: 0,
+                umb_link: false,
                 last_return_code: 0,
                 last_termination_type: 0,
                 dbcs_table_addr: 0,
@@ -355,6 +365,7 @@ impl NeetanOs {
                 ems_enabled: true,
                 xms_enabled: true,
                 xms_32_enabled: false,
+                xms_hmamin_kb: 0,
                 memory_manager: None,
             },
             console: console::Console::default(),
@@ -387,6 +398,17 @@ impl NeetanOs {
     /// Enables or disables XMS extended memory.
     pub fn set_xms_enabled(&mut self, enabled: bool) {
         self.state.xms_enabled = enabled;
+    }
+
+    /// Sets the XMS /HMAMIN= threshold in KB. Request HMA (XMS 01h) will
+    /// reject any request whose DX byte count is below this (HMA remains
+    /// available for a later caller that asks for at least this much).
+    /// The default (0) gives HMA to the first caller regardless of size.
+    pub fn set_xms_hmamin_kb(&mut self, hmamin_kb: u16) {
+        self.state.xms_hmamin_kb = hmamin_kb;
+        if let Some(mm) = self.state.memory_manager.as_mut() {
+            mm.set_hmamin_kb(hmamin_kb);
+        }
     }
 
     /// Enables or disables 32-bit XMS super functions (0x88-0x8F). Requires 386+ CPU.
@@ -457,13 +479,73 @@ impl NeetanOs {
             memory.write_byte(stub_addr + 1, 0xFE);
             memory.write_byte(stub_addr + 2, 0xCB);
 
-            self.state.memory_manager = Some(memory::memory_manager::MemoryManager::new(
+            // Shared strategy/interrupt stub for XMSXXXX0 and EMMXXXX0:
+            // set DONE bit in request header, RETF.
+            // Status word is at request_header[3..5]; setting bit 0 of the high byte
+            // is equivalent to OR-ing the word with 0x0100.
+            //   26 80 4F 04 01    or  byte ptr es:[bx+4], 0x01
+            //   CB                retf
+            let dev_stub_addr = tables::XMS_DEV_STUB_ADDR;
+            memory.write_byte(dev_stub_addr, 0x26);
+            memory.write_byte(dev_stub_addr + 1, 0x80);
+            memory.write_byte(dev_stub_addr + 2, 0x4F);
+            memory.write_byte(dev_stub_addr + 3, 0x04);
+            memory.write_byte(dev_stub_addr + 4, 0x01);
+            memory.write_byte(dev_stub_addr + 5, 0xCB);
+
+            // EMS INT 67h trap stub + device name. When an app does
+            // "MOV AX, 3567h; INT 21h" and reads [ES:BX+000Ah], it must
+            // find "EMMXXXX0" (EMS 4.0 "get interrupt vector" technique).
+            // Bytes 0x00..0x09 are code that fires the BIOS HLE trap; a
+            // NOP pads to offset 0x0A where the 8-byte name begins.
+            //   50              push ax
+            //   52              push dx
+            //   B0 67           mov  al, 67h
+            //   BA F0 07        mov  dx, 07F0h
+            //   EE              out  dx, al           ; HLE handler runs
+            //   CF              iret                  ; return to caller
+            //   90              nop                   ; pad to +0Ah
+            //   "EMMXXXX0"      at offset 0x0A
+            if self.state.ems_enabled {
+                let stub = tables::EMS_INT67_STUB_ADDR;
+                memory.write_byte(stub, 0x50);
+                memory.write_byte(stub + 1, 0x52);
+                memory.write_byte(stub + 2, 0xB0);
+                memory.write_byte(stub + 3, 0x67);
+                memory.write_byte(stub + 4, 0xBA);
+                memory.write_byte(stub + 5, 0xF0);
+                memory.write_byte(stub + 6, 0x07);
+                memory.write_byte(stub + 7, 0xEE);
+                memory.write_byte(stub + 8, 0xCF);
+                memory.write_byte(stub + 9, 0x90);
+                memory.write_block(stub + 0x0A, b"EMMXXXX0");
+
+                let pgmapret_stub = tables::EMS_PGMAPRET_STUB_ADDR;
+                memory.write_byte(pgmapret_stub, 0x50);
+                memory.write_byte(pgmapret_stub + 1, 0x52);
+                memory.write_byte(pgmapret_stub + 2, 0xB0);
+                memory.write_byte(pgmapret_stub + 3, tables::EMS_PGMAPRET_VECTOR);
+                memory.write_byte(pgmapret_stub + 4, 0xBA);
+                memory.write_byte(pgmapret_stub + 5, 0xF0);
+                memory.write_byte(pgmapret_stub + 6, 0x07);
+                memory.write_byte(pgmapret_stub + 7, 0xEE);
+                memory.write_byte(pgmapret_stub + 8, 0xCF);
+                memory.write_byte(pgmapret_stub + 9, 0x90);
+
+                let ivt_67h_addr: u32 = 0x67 * 4;
+                memory.write_word(ivt_67h_addr, tables::EMS_INT67_STUB_OFFSET);
+                memory.write_word(ivt_67h_addr + 2, tables::DOS_DATA_SEGMENT);
+            }
+
+            let mut mm = memory::memory_manager::MemoryManager::new(
                 ext_mem_size,
                 self.state.ems_enabled,
                 self.state.xms_enabled,
                 self.state.xms_32_enabled,
                 memory,
-            ));
+            );
+            mm.set_hmamin_kb(self.state.xms_hmamin_kb);
+            self.state.memory_manager = Some(mm);
         }
         tracer.trace_os_boot(OsBootStage::MemoryManagerReady, cpu, memory);
 
@@ -818,6 +900,10 @@ impl NeetanOs {
                 self.int67h(cpu, memory);
                 true
             }
+            tables::EMS_PGMAPRET_VECTOR => {
+                self.int67h_pgmapret(cpu, memory);
+                true
+            }
             0xDC => {
                 tracer.trace_intdch(cpu, memory);
                 self.intdch(cpu, memory);
@@ -826,6 +912,7 @@ impl NeetanOs {
             0xFE => {
                 tracer.trace_xms_entry(cpu, memory);
                 self.xms_entry(cpu, memory);
+                tracer.trace_xms_exit(cpu, memory);
                 true
             }
             _ => false,
@@ -915,12 +1002,16 @@ impl NeetanOs {
         mem.write_word(FCB_SFT_BASE + 4, 0);
     }
 
-    /// Writes the device header chain: NUL -> CON -> $AID#NEC -> CD-ROM.
+    /// Writes the device header chain: NUL -> CON -> $AID#NEC -> CD-ROM
+    /// -> XMSXXXX0 (if enabled) -> EMMXXXX0 (if enabled).
     /// CLOCK is separate (not in chain, only referenced by SYSVARS+0x08).
     fn write_device_chain(&self, mem: &mut dyn MemoryAccess) {
         use tables::*;
 
         let base = DOS_DATA_BASE;
+        let ext_mem_present = mem.extended_memory_size() > 0;
+        let xms_in_chain = self.state.xms_enabled && ext_mem_present;
+        let ems_in_chain = self.state.ems_enabled && ext_mem_present;
 
         // NUL (embedded at SYSVARS+0x22) -> CON
         write_device_header(
@@ -962,7 +1053,17 @@ impl NeetanOs {
             b"$AID#NEC",
         );
 
-        // CD-ROM driver (end of chain)
+        // Determine the tail of the chain (after CD-ROM):
+        //   CD-ROM -> XMSXXXX0 -> EMMXXXX0 (end)
+        // Skipping whichever is not enabled.
+        let (cdrom_next_seg, cdrom_next_off) = if xms_in_chain {
+            (DOS_DATA_SEGMENT, DEV_XMS_OFFSET)
+        } else if ems_in_chain {
+            (DOS_DATA_SEGMENT, DEV_EMS_OFFSET)
+        } else {
+            (0xFFFF, 0xFFFF)
+        };
+
         let mut cdrom_name = [b' '; 8];
         let name = &self.state.mscdex.device_name;
         let len = name.len().min(8);
@@ -970,11 +1071,41 @@ impl NeetanOs {
         write_device_header(
             mem,
             base + DEV_CDROM_OFFSET as u32,
-            0xFFFF,
-            0xFFFF,
+            cdrom_next_seg,
+            cdrom_next_off,
             DEVATTR_CHAR | DEVATTR_IOCTL,
             &cdrom_name,
         );
+
+        // XMSXXXX0 -> EMMXXXX0 (if EMS active) else end of chain
+        if xms_in_chain {
+            let xms_header_addr = base + DEV_XMS_OFFSET as u32;
+            let (xms_next_seg, xms_next_off) = if ems_in_chain {
+                (DOS_DATA_SEGMENT, DEV_EMS_OFFSET)
+            } else {
+                (0xFFFF, 0xFFFF)
+            };
+            write_far_ptr(
+                mem,
+                xms_header_addr + DEVHDR_OFF_NEXT_PTR,
+                xms_next_seg,
+                xms_next_off,
+            );
+            mem.write_word(xms_header_addr + DEVHDR_OFF_ATTRIBUTE, DEVATTR_CHAR);
+            mem.write_word(xms_header_addr + DEVHDR_OFF_STRATEGY, XMS_DEV_STUB_OFFSET);
+            mem.write_word(xms_header_addr + DEVHDR_OFF_INTERRUPT, XMS_DEV_STUB_OFFSET);
+            mem.write_block(xms_header_addr + DEVHDR_OFF_NAME, b"XMSXXXX0");
+        }
+
+        // EMMXXXX0 (end of chain, only when EMS is enabled)
+        if ems_in_chain {
+            let ems_header_addr = base + DEV_EMS_OFFSET as u32;
+            write_far_ptr(mem, ems_header_addr + DEVHDR_OFF_NEXT_PTR, 0xFFFF, 0xFFFF);
+            mem.write_word(ems_header_addr + DEVHDR_OFF_ATTRIBUTE, DEVATTR_CHAR);
+            mem.write_word(ems_header_addr + DEVHDR_OFF_STRATEGY, XMS_DEV_STUB_OFFSET);
+            mem.write_word(ems_header_addr + DEVHDR_OFF_INTERRUPT, XMS_DEV_STUB_OFFSET);
+            mem.write_block(ems_header_addr + DEVHDR_OFF_NAME, b"EMMXXXX0");
+        }
     }
 
     /// Writes the SFT header and 5 standard file entries.

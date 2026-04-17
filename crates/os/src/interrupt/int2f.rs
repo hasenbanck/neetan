@@ -213,7 +213,7 @@ impl NeetanOs {
             .state
             .memory_manager
             .as_ref()
-            .is_some_and(|mm| mm.is_xms_enabled() && !mm.hma_is_allocated());
+            .is_some_and(|mm| mm.hma_exists() && !mm.hma_is_allocated());
         if hma_free {
             cpu.set_bx(0xFFFF);
         } else {

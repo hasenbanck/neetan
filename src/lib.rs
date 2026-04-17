@@ -543,8 +543,6 @@ impl Application {
                         self.open_or_toggle_selector(MediaType::Floppy(1));
                     } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F11) {
                         self.open_or_toggle_selector(MediaType::CdRom);
-                    } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F12) {
-                        self.log_memory_overview();
                     }
                 }
             }
@@ -719,17 +717,6 @@ impl Application {
     fn close_selector(&mut self) {
         self.image_selector = None;
         self.audio_engine.resume();
-    }
-
-    fn log_memory_overview(&mut self) {
-        let Some(lines) = self.machine.debug_memory_overview() else {
-            info!("Memory overview unavailable outside HLE DOS");
-            return;
-        };
-
-        for line in lines {
-            info!("{line}");
-        }
     }
 
     fn toggle_crt(&mut self) {

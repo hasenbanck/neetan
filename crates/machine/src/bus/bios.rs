@@ -134,7 +134,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x1B => self.hle_int1bh(cpu),
             0x1C => self.hle_int1ch(cpu),
             0x1F => self.hle_int1fh(cpu),
-            0x20..=0x2A | 0x2F | 0x33 | 0x67 | 0xDC | 0xFE => {
+            0x20..=0x2A | 0x2F | 0x33 | 0x67 | 0xDC | 0xE7 | 0xFE => {
                 if let Some(mut neetan_os) = self.os.take() {
                     let mut cpu_access = OsCpuAccess(cpu);
                     let mut mem_access = OsMemoryAccess(&mut self.memory);
@@ -2859,6 +2859,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         neetan_os.set_ems_enabled(self.ems_enabled);
         neetan_os.set_xms_enabled(self.xms_enabled);
         neetan_os.set_xms_32_enabled(self.xms_32_enabled);
+        neetan_os.set_xms_hmamin_kb(self.xms_hmamin_kb);
 
         {
             let mut cpu_access = OsCpuAccess(cpu);
