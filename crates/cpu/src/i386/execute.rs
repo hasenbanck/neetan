@@ -2507,6 +2507,27 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     fn enter(&mut self, bus: &mut impl common::Bus) {
         let alloc = self.fetchword(bus);
         let level = self.fetch(bus) & 0x1F;
+        let operand_size: u32 = if self.operand_size_override { 4 } else { 2 };
+        let push_count: u32 = if level == 0 {
+            1
+        } else {
+            level as u32 + 1
+        };
+        let total_bytes = push_count * operand_size + alloc as u32;
+        let final_sp = if self.use_esp() {
+            self.regs.dword(DwordReg::ESP).wrapping_sub(total_bytes)
+        } else {
+            self.regs
+                .word(WordReg::SP)
+                .wrapping_sub(total_bytes as u16) as u32
+        };
+        if !self.check_segment_access(SegReg32::SS, final_sp, operand_size, true, bus) {
+            return;
+        }
+        let probe_linear = self.seg_base(SegReg32::SS).wrapping_add(final_sp);
+        if self.translate_linear(probe_linear, true, bus).is_none() {
+            return;
+        }
         if self.operand_size_override {
             let sp_pen = self.sp_penalty();
             let ebp_val = self.regs.dword(DwordReg::EBP);
