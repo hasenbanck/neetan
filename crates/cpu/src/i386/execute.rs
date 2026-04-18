@@ -1210,7 +1210,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.regs.set_dword(DwordReg::ESI, esi);
             let ebp = self.pop_dword(bus);
             self.regs.set_dword(DwordReg::EBP, ebp);
-            let _discarded_esp = self.pop_dword(bus);
+            let popped_esp = self.pop_dword(bus);
+            if !self.use_esp() {
+                // i386-specific POPAD quirk: with a 16-bit stack address size
+                // the ESP slot is popped into ESP in full, and only then is SP
+                // overwritten with its actual post-pop value. The popped
+                // dword's upper half survives in ESP's upper 16 bits.
+                // The Pentium dropped this and just does SP += 4.
+                let sp_after = self.regs.word(WordReg::SP);
+                let new_esp = (popped_esp & 0xFFFF_0000) | sp_after as u32;
+                self.regs.set_dword(DwordReg::ESP, new_esp);
+            }
             let ebx = self.pop_dword(bus);
             self.regs.set_dword(DwordReg::EBX, ebx);
             let edx = self.pop_dword(bus);
