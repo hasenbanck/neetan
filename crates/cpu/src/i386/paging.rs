@@ -1,13 +1,47 @@
 use super::{CPU_MODEL_486, I386};
 
-const TLB_SIZE: usize = 64;
-const TLB_MASK: u32 = (TLB_SIZE as u32) - 1;
+/// Number of TLB entries (direct-mapped by page number).
+pub const TLB_SIZE: usize = 64;
+/// Mask that selects the TLB slot index from a page number.
+pub const TLB_MASK: u32 = (TLB_SIZE as u32) - 1;
 
 const PTE_PRESENT: u32 = 0x01;
 const PTE_WRITABLE: u32 = 0x02;
 const PTE_USER: u32 = 0x04;
 const PTE_ACCESSED: u32 = 0x20;
 const PTE_DIRTY: u32 = 0x40;
+
+/// Direct-mapped TLB used by [`I386::translate_linear`].
+///
+/// Stored inline on [`I386State`](super::state::I386State) so the dynarec
+/// backend can reach the arrays through stable offsets from the state
+/// pointer it already holds in a host register.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[repr(C)]
+pub struct TlbCache {
+    /// Whether the slot carries a valid translation.
+    pub valid: [bool; TLB_SIZE],
+    /// Page number (linear >> 12) tagging each slot.
+    pub tag: [u32; TLB_SIZE],
+    /// Physical page base (PTE & 0xFFFF_F000) per slot.
+    pub phys: [u32; TLB_SIZE],
+    /// Whether the slot is writable under current CPL/WP rules.
+    pub writable: [bool; TLB_SIZE],
+    /// Whether the slot's PTE.Dirty has already been set.
+    pub dirty: [bool; TLB_SIZE],
+}
+
+impl Default for TlbCache {
+    fn default() -> Self {
+        Self {
+            valid: [false; TLB_SIZE],
+            tag: [0; TLB_SIZE],
+            phys: [0; TLB_SIZE],
+            writable: [false; TLB_SIZE],
+            dirty: [false; TLB_SIZE],
+        }
+    }
+}
 
 impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     #[inline(always)]
@@ -16,13 +50,16 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     pub(super) fn flush_tlb(&mut self) {
-        self.tlb_valid = [false; TLB_SIZE];
-        self.tlb_dirty = [false; TLB_SIZE];
+        self.state.tlb.valid = [false; TLB_SIZE];
+        self.state.tlb.dirty = [false; TLB_SIZE];
         self.fetch_page_valid = false;
     }
 
+    /// Translates a linear address to a physical address, consulting the TLB
+    /// and walking the page tables on miss. Returns `None` on page fault;
+    /// the caller should inspect `fault_pending` to detect the fault.
     #[inline(always)]
-    pub(super) fn translate_linear(
+    pub fn translate_linear(
         &mut self,
         linear: u32,
         write: bool,
@@ -35,11 +72,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let page = linear >> 12;
         let slot = (page & TLB_MASK) as usize;
 
-        if self.tlb_valid[slot] && self.tlb_tag[slot] == page {
-            if write && (!self.tlb_writable[slot] || !self.tlb_dirty[slot]) {
+        if self.state.tlb.valid[slot] && self.state.tlb.tag[slot] == page {
+            if write && (!self.state.tlb.writable[slot] || !self.state.tlb.dirty[slot]) {
                 return self.page_table_walk(linear, write, bus);
             }
-            return Some(self.tlb_phys[slot] | (linear & 0xFFF));
+            return Some(self.state.tlb.phys[slot] | (linear & 0xFFF));
         }
 
         self.page_table_walk(linear, write, bus)
@@ -116,13 +153,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         // Fill TLB.
         let page = linear >> 12;
         let slot = (page & TLB_MASK) as usize;
-        self.tlb_valid[slot] = true;
-        self.tlb_tag[slot] = page;
-        self.tlb_phys[slot] = physical_page;
-        self.tlb_dirty[slot] = write;
+        self.state.tlb.valid[slot] = true;
+        self.state.tlb.tag[slot] = page;
+        self.state.tlb.phys[slot] = physical_page;
+        self.state.tlb.dirty[slot] = write;
         // Writable in TLB if both PDE and PTE allow writes (or supervisor without WP).
         let wp_enforced = CPU_MODEL == CPU_MODEL_486 && self.cr0 & 0x0001_0000 != 0;
-        self.tlb_writable[slot] = if is_user || wp_enforced {
+        self.state.tlb.writable[slot] = if is_user || wp_enforced {
             pde & PTE_WRITABLE != 0 && pte & PTE_WRITABLE != 0
         } else {
             true

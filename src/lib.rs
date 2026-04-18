@@ -1098,6 +1098,21 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
         bus.insert_hdd(1, image, Some(hdd2_path.clone()));
     }
 
+    let use_jit = if config.jit {
+        if model == MachineModel::PC9821AP {
+            info!("JIT recompiler enabled (486 dynarec)");
+            true
+        } else {
+            warn!(
+                "JIT is only supported on PC9821AP; ignoring --jit for {model}. \
+                 Running on the interpreter core."
+            );
+            false
+        }
+    } else {
+        false
+    };
+
     let machine: Box<dyn Machine> = match model.cpu_type() {
         common::CpuType::V30 => Box::new(machine::Machine::new(cpu::V30::new(), bus)),
         common::CpuType::I286 => Box::new(machine::Machine::new(cpu::I286::new(), bus)),
@@ -1105,10 +1120,19 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
             cpu::I386::<{ cpu::CPU_MODEL_386 }>::new(),
             bus,
         )),
-        common::CpuType::I486DX => Box::new(machine::Machine::new(
-            cpu::I386::<{ cpu::CPU_MODEL_486 }>::new(),
-            bus,
-        )),
+        common::CpuType::I486DX => {
+            if use_jit {
+                Box::new(machine::Machine::new(
+                    dynarec::I386Jit::<{ cpu::CPU_MODEL_486 }>::new(),
+                    bus,
+                ))
+            } else {
+                Box::new(machine::Machine::new(
+                    cpu::I386::<{ cpu::CPU_MODEL_486 }>::new(),
+                    bus,
+                ))
+            }
+        }
     };
 
     Ok(machine)

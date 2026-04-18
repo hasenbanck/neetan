@@ -1,5 +1,5 @@
 [package]
-name = "machine"
+name = "dynarec"
 version = "0.1.0"
 publish = false
 authors.workspace = true
@@ -8,15 +8,12 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-mt32 = ["device/mt32"]
-sc55 = ["device/sc55"]
+verification = ["cpu/verification", "dep:flate2"]
 
 [dependencies]
 common = { workspace = true }
 cpu = { workspace = true }
-device = { workspace = true }
-dynarec = { workspace = true }
-os = { workspace = true }
+flate2 = { workspace = true, optional = true }
 
 [dev-dependencies]
-resampler = { workspace = true }
+machine = { workspace = true }

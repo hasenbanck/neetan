@@ -51,6 +51,7 @@ Options:
       --adpcm-ram <on|off>      ADPCM RAM option for PC-9801-86 (default: on)
       --ems <on|off>            Enable EMS expanded memory (default: on)
       --xms <on|off>            Enable XMS extended memory (default: on)
+      --jit <on|off>            Enable JIT recompiler (PC9821AP only, default: off)
       --midi <DEVICE>           MIDI device: none, mt32, sc55 (default: none)
       --mt32-roms <PATH>        Path to MT-32 ROM directory
       --sc55-roms <PATH>        Path to SC55 ROM directory
@@ -431,6 +432,10 @@ fn parse_args_from(
                 let val = value(&flag)?;
                 config.xms = parse_on_off(&val, &flag)?;
             }
+            "--jit" => {
+                let val = value(&flag)?;
+                config.jit = parse_on_off(&val, &flag)?;
+            }
             "--force-gdc-clock" => {
                 let val = value(&flag)?;
                 config.force_gdc_clock = Some(val.parse::<ForceGdcClock>().map_err(StringError)?);
@@ -508,6 +513,7 @@ pub struct EmulatorConfig {
     pub key_map: KeyMap,
     pub ems: bool,
     pub xms: bool,
+    pub jit: bool,
 }
 
 impl Default for EmulatorConfig {
@@ -536,6 +542,7 @@ impl Default for EmulatorConfig {
             key_map: KeyMap::new(),
             ems: true,
             xms: true,
+            jit: false,
         }
     }
 }
@@ -607,6 +614,11 @@ fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<
                 "on" => config.xms = true,
                 "off" => config.xms = false,
                 _ => warn!("Invalid xms in config: {val}, expected on or off"),
+            },
+            "jit" => match val {
+                "on" => config.jit = true,
+                "off" => config.jit = false,
+                _ => warn!("Invalid jit in config: {val}, expected on or off"),
             },
             "force-gdc-clock" => match val.parse::<ForceGdcClock>() {
                 Ok(mode) => config.force_gdc_clock = Some(mode),

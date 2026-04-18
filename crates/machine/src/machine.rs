@@ -133,6 +133,9 @@ pub type Pc9821As = Machine<cpu::I386<{ cpu::CPU_MODEL_486 }>>;
 /// PC-9821AP machine type (486DX2 CPU at 66 MHz, IDE, PEGC).
 pub type Pc9821Ap = Machine<cpu::I386<{ cpu::CPU_MODEL_486 }>>;
 
+/// PC-9821AP machine type (486DX2 CPU at 66 MHz, IDE, PEGC) with JIT enabled.
+pub type Pc9821ApJit = Machine<dynarec::I386Jit<{ cpu::CPU_MODEL_486 }>>;
+
 impl<T: Tracing> Machine<cpu::V30, T> {
     /// Captures the full machine state.
     pub fn save_state(&self) -> MachineState {
@@ -169,6 +172,23 @@ impl<const CPU_MODEL: u8, T: Tracing> Machine<cpu::I386<CPU_MODEL>, T> {
     /// Captures the full machine state.
     pub fn save_state(&self) -> MachineState {
         self.bus.save_state(CpuState::I386(self.cpu.state.clone()))
+    }
+
+    /// Restores the machine from a previously saved state.
+    pub fn load_state(&mut self, state: &MachineState) {
+        assert!(matches!(state.cpu, CpuState::I386(_)));
+        if let CpuState::I386(ref cpu_state) = state.cpu {
+            self.cpu.load_state(cpu_state);
+        }
+        self.bus.load_peripherals(state);
+    }
+}
+
+impl<const CPU_MODEL: u8, T: Tracing> Machine<dynarec::I386Jit<CPU_MODEL>, T> {
+    /// Captures the full machine state.
+    pub fn save_state(&self) -> MachineState {
+        self.bus
+            .save_state(CpuState::I386(self.cpu.state().clone()))
     }
 
     /// Restores the machine from a previously saved state.
@@ -377,6 +397,80 @@ impl<T: Tracing> common::Machine for Machine<cpu::I286, T> {
 }
 
 impl<const CPU_MODEL: u8, T: Tracing> common::Machine for Machine<cpu::I386<CPU_MODEL>, T> {
+    fn cpu_clock_hz(&self) -> f64 {
+        f64::from(self.bus.cpu_clock_hz())
+    }
+
+    fn run_for(&mut self, budget: u64) -> u64 {
+        Machine::run_for(self, budget)
+    }
+
+    fn shutdown_requested(&self) -> bool {
+        self.bus.shutdown_requested()
+    }
+
+    fn snapshot_display(&self) -> &DisplaySnapshotUpload {
+        self.bus.vsync_snapshot()
+    }
+
+    fn pegc_snapshot_display(&self) -> Option<&PegcSnapshotUpload> {
+        self.bus.pegc_vsync_snapshot()
+    }
+
+    fn push_keyboard_scancode(&mut self, code: u8) {
+        self.bus.push_keyboard_scancode(code);
+    }
+
+    fn push_mouse_delta(&mut self, dx: i16, dy: i16) {
+        self.bus.push_mouse_delta(dx, dy);
+    }
+
+    fn set_mouse_buttons(&mut self, left: bool, right: bool, middle: bool) {
+        self.bus.set_mouse_buttons(left, right, middle);
+    }
+
+    fn generate_audio_samples(&mut self, volume: f32, output: &mut [f32]) -> usize {
+        self.bus.generate_audio_samples(volume, output)
+    }
+
+    fn take_font_rom_dirty(&mut self) -> bool {
+        self.bus.take_font_rom_dirty()
+    }
+
+    fn font_rom_data(&self) -> &[u8] {
+        self.bus.font_rom_data()
+    }
+
+    fn insert_floppy(&mut self, drive: usize, path: &std::path::Path) -> Result<String, String> {
+        insert_floppy_impl(&mut self.bus, drive, path)
+    }
+
+    fn eject_floppy(&mut self, drive: usize) {
+        self.bus.eject_floppy(drive);
+    }
+
+    fn insert_cdrom(&mut self, path: &std::path::Path) -> Result<String, String> {
+        insert_cdrom_impl(&mut self.bus, path)
+    }
+
+    fn eject_cdrom(&mut self) {
+        self.bus.eject_cdrom();
+    }
+
+    fn flush_floppies(&mut self) {
+        self.bus.flush_all_floppies();
+    }
+
+    fn flush_hdds(&mut self) {
+        self.bus.flush_all_hdds();
+    }
+
+    fn flush_printer(&mut self) {
+        self.bus.flush_printer();
+    }
+}
+
+impl<const CPU_MODEL: u8, T: Tracing> common::Machine for Machine<dynarec::I386Jit<CPU_MODEL>, T> {
     fn cpu_clock_hz(&self) -> f64 {
         f64::from(self.bus.cpu_clock_hz())
     }

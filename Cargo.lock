@@ -85,6 +85,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dynarec"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "cpu",
+ "flate2",
+ "machine",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -127,6 +137,7 @@ dependencies = [
  "common",
  "cpu",
  "device",
+ "dynarec",
  "os",
  "resampler",
 ]
@@ -164,6 +175,7 @@ dependencies = [
  "common",
  "cpu",
  "device",
+ "dynarec",
  "graphics_engine",
  "jay-ash",
  "machine",

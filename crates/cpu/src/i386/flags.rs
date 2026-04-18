@@ -16,6 +16,7 @@ const PARITY_TABLE: [bool; 256] = {
 
 /// i386 CPU flags register state.
 #[derive(Debug, Clone)]
+#[repr(C)]
 pub struct I386Flags {
     /// Lazily computed sign flag value (negative means SF=1).
     pub sign_val: i32,

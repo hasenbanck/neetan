@@ -388,6 +388,11 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     xms_32_enabled: bool,
     /// /HMAMIN= threshold in KB for XMS Request HMA (XMS.txt priority).
     xms_hmamin_kb: u16,
+    /// Optional dynarec callback notified after writes to RAM regions.
+    /// Registered by [`common::Bus::register_code_invalidator`] at the
+    /// start of a JIT `run_for` slice; taken back via
+    /// [`common::Bus::take_code_invalidator`] on exit.
+    code_invalidator: Option<Box<dyn common::CodeInvalidator>>,
 }
 
 impl<T: Tracing> Pc9801Bus<T> {
@@ -958,6 +963,13 @@ impl<T: Tracing> Pc9801Bus<T> {
                 }
                 self.memory.read_byte(address)
             }
+        }
+    }
+
+    #[inline(always)]
+    fn notify_code_invalidate(&mut self, phys_start: u32, len: u32) {
+        if let Some(invalidator) = self.code_invalidator.as_mut() {
+            invalidator.invalidate_range(phys_start, phys_start.wrapping_add(len));
         }
     }
 
@@ -1914,6 +1926,7 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
         if address < 0x80000 {
             self.memory.state.ram[address as usize] = value;
             self.tracer.trace_mem_write(address, value);
+            self.notify_code_invalidate(address, 1);
             return;
         }
         let address = self.a20_mask(address);
@@ -1922,6 +1935,7 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             if offset < self.memory.extended_ram.len() {
                 self.memory.extended_ram[offset] = value;
                 self.tracer.trace_mem_write(address, value);
+                self.notify_code_invalidate(address, 1);
                 return;
             }
         }
@@ -2042,6 +2056,7 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             self.memory.state.ram[a] = value as u8;
             self.memory.state.ram[a + 1] = (value >> 8) as u8;
             self.tracer.trace_mem_write_word(address, value);
+            self.notify_code_invalidate(address, 2);
             return;
         }
         let address = self.a20_mask(address);
@@ -2051,6 +2066,7 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                 self.memory.extended_ram[base] = value as u8;
                 self.memory.extended_ram[base + 1] = (value >> 8) as u8;
                 self.tracer.trace_mem_write_word(address, value);
+                self.notify_code_invalidate(address, 2);
                 return;
             }
         }
@@ -2148,6 +2164,7 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             self.memory.state.ram[a + 1] = (value >> 8) as u8;
             self.memory.state.ram[a + 2] = (value >> 16) as u8;
             self.memory.state.ram[a + 3] = (value >> 24) as u8;
+            self.notify_code_invalidate(address, 4);
             return;
         }
         let address_masked = self.a20_mask(address);
@@ -2158,11 +2175,20 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
                 self.memory.extended_ram[base + 1] = (value >> 8) as u8;
                 self.memory.extended_ram[base + 2] = (value >> 16) as u8;
                 self.memory.extended_ram[base + 3] = (value >> 24) as u8;
+                self.notify_code_invalidate(address_masked, 4);
                 return;
             }
         }
         self.write_word(address, value as u16);
         self.write_word(address.wrapping_add(2), (value >> 16) as u16);
+    }
+
+    fn register_code_invalidator(&mut self, invalidator: Box<dyn common::CodeInvalidator>) {
+        self.code_invalidator = Some(invalidator);
+    }
+
+    fn take_code_invalidator(&mut self) -> Option<Box<dyn common::CodeInvalidator>> {
+        self.code_invalidator.take()
     }
 
     fn io_read_byte(&mut self, port: u16) -> u8 {

@@ -1140,7 +1140,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.clk(Self::timing(7, 3) + penalty);
     }
 
-    fn pusha(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn pusha(&mut self, bus: &mut impl common::Bus) {
         let penalty = self.sp_penalty();
         if self.operand_size_override {
             let esp = self.regs.dword(DwordReg::ESP);
@@ -1173,7 +1173,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.clk(Self::timing(18, 11) + penalty);
     }
 
-    fn popa(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn popa(&mut self, bus: &mut impl common::Bus) {
         let penalty = self.sp_penalty();
         if self.operand_size_override {
             let edi = self.pop_dword(bus);
@@ -2205,7 +2205,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
     }
 
-    fn pushf(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn pushf(&mut self, bus: &mut impl common::Bus) {
         if self.is_virtual_mode() && self.flags.iopl < 3 {
             self.raise_fault_with_code(13, 0, bus);
             return;
@@ -2234,7 +2234,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.clk(base + penalty);
     }
 
-    fn popf(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn popf(&mut self, bus: &mut impl common::Bus) {
         if self.is_virtual_mode() && self.flags.iopl < 3 {
             self.raise_fault_with_code(13, 0, bus);
             return;

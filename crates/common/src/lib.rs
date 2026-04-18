@@ -533,6 +533,34 @@ pub trait Bus {
     fn cpu_should_yield(&self) -> bool {
         false
     }
+
+    /// Registers a code invalidator to be notified of RAM writes.
+    ///
+    /// The dynarec uses this to track self-modifying code: when guest
+    /// software writes to a physical page that holds translated blocks,
+    /// the invalidator is called so those blocks can be dropped before
+    /// they are re-entered. The default is a no-op; buses that do not
+    /// back RAM (e.g. test harnesses) can ignore it.
+    fn register_code_invalidator(&mut self, _invalidator: Box<dyn CodeInvalidator>) {}
+
+    /// Removes and returns the registered code invalidator, if any.
+    ///
+    /// Called by the JIT dispatcher at the end of a `run_for` slice to
+    /// re-take ownership of the invalidator it handed out at entry.
+    fn take_code_invalidator(&mut self) -> Option<Box<dyn CodeInvalidator>> {
+        None
+    }
+}
+
+/// Callback surface the JIT exposes to the bus for SMC invalidation.
+///
+/// The bus calls [`invalidate_range`](CodeInvalidator::invalidate_range)
+/// after each RAM write. The implementation decides whether to drop any
+/// translated blocks that overlap the written range.
+pub trait CodeInvalidator {
+    /// Notifies that `[phys_start, phys_end)` was written. Called after
+    /// the write lands in RAM.
+    fn invalidate_range(&mut self, phys_start: u32, phys_end: u32);
 }
 
 /// Segment register identifiers for cross-CPU-generation HLE operations.

@@ -1,8 +1,9 @@
-use super::{I386, flags::I386Flags, fpu::X87State};
+use super::{I386, flags::I386Flags, fpu::X87State, paging::TlbCache};
 use crate::{ByteReg, DwordReg, RegisterFile32, SegReg32};
 
 /// Snapshot of all I386 CPU registers and flags.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[repr(C)]
 pub struct I386State {
     /// General-purpose register file (32-bit).
     pub regs: RegisterFile32,
@@ -70,6 +71,11 @@ pub struct I386State {
     pub stored_cpl: u16,
     /// x87 FPU state.
     pub fpu: X87State,
+    /// Translation-lookaside buffer (64 entries, direct mapped by page number).
+    pub tlb: TlbCache,
+    /// Self-modifying-code flag used by the dynarec to abort an executing
+    /// block when a memory write invalidates its own translation.
+    pub smc_self_flag: bool,
 }
 
 impl I386State {

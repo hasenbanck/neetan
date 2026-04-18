@@ -42,7 +42,11 @@ const ESCALATION: [[bool; 4]; 4] = [
 ];
 
 impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
-    pub(super) fn check_interrupts(&mut self, bus: &mut impl common::Bus) {
+    /// Services any pending IRQ/NMI signalled via [`signal_irq`](Self::signal_irq)
+    /// or [`signal_nmi`](Self::signal_nmi) before the next instruction runs.
+    /// NMI is delivered unconditionally (when not inhibited); maskable IRQ
+    /// requires `IF=1` and no post-STI inhibit window.
+    pub fn check_interrupts(&mut self, bus: &mut impl common::Bus) {
         if self.pending_irq & PENDING_NMI != 0 && self.inhibit_all == 0 {
             self.pending_irq &= !PENDING_NMI;
             bus.acknowledge_nmi();

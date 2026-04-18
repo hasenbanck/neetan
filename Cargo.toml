@@ -15,6 +15,7 @@ blake3 = { path = "crates/blake3" }
 common = { path = "crates/common" }
 cpu = { path = "crates/cpu" }
 device = { path = "crates/device" }
+dynarec = { path = "crates/dynarec" }
 graphics_engine = { path = "crates/graphics_engine" }
 machine = { path = "crates/machine" }
 os = { path = "crates/os" }
@@ -55,6 +56,7 @@ audio_engine = { workspace = true }
 cpu = { workspace = true }
 common = { workspace = true }
 device = { workspace = true }
+dynarec = { workspace = true }
 graphics_engine = { workspace = true }
 jay-ash = { workspace = true }
 machine = { workspace = true }

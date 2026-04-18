@@ -8,7 +8,9 @@ mod i386;
 mod v30;
 
 pub use i286::{I286, I286Flags, I286State};
-pub use i386::{CPU_MODEL_386, CPU_MODEL_486, I386, I386Flags, I386State};
+pub use i386::{
+    CPU_MODEL_386, CPU_MODEL_486, I386, I386Flags, I386State, TLB_MASK, TLB_SIZE, TlbCache,
+};
 pub use v30::{V30, V30Flags, V30State};
 
 pub(crate) const PENDING_IRQ: u8 = 0x01;
@@ -244,6 +246,7 @@ impl SegReg16 {
 
 /// 32-bit register file holding eight general-purpose dword registers.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[repr(C)]
 pub struct RegisterFile32 {
     d: [u32; 8],
 }
@@ -272,13 +275,16 @@ impl RegisterFile32 {
         self.d[reg as usize] = value;
     }
 
+    /// Reads a 16-bit register (low word of a dword register).
     #[inline(always)]
-    pub(crate) const fn word(&self, reg: WordReg) -> u16 {
+    pub const fn word(&self, reg: WordReg) -> u16 {
         self.d[reg as usize] as u16
     }
 
+    /// Writes a 16-bit register (low word of a dword register), preserving
+    /// the upper half.
     #[inline(always)]
-    pub(crate) const fn set_word(&mut self, reg: WordReg, value: u16) {
+    pub const fn set_word(&mut self, reg: WordReg, value: u16) {
         let index = reg as usize;
         self.d[index] = (self.d[index] & 0xFFFF_0000) | value as u32;
     }

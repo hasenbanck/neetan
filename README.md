@@ -70,6 +70,7 @@ neetan <COMMAND>
 | `--sc55-roms <PATH>`         | Path to SC-55 ROM directory (requires `sc55` feature)                    | -          |
 | `--boot-device <DEVICE>`     | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2`, `os`                | `auto`     |
 | `--printer <PATH>`           | Output file for printer (must exist)                                     | -          |
+| `--jit <on\|off>`            | Enable JIT recompiler (PC9821AP only; other models run on interpreter)   | `off`      |
 | `-h, --help`                 | Print help                                                               | -          |
 | `-V, --version`              | Print version                                                            | -          |
 

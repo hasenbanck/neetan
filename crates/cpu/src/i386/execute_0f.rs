@@ -1123,8 +1123,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 let linear = self.ea;
                 let page = linear >> 12;
                 let slot = (page & 63) as usize;
-                if self.tlb_valid[slot] && self.tlb_tag[slot] == page {
-                    self.tlb_valid[slot] = false;
+                if self.state.tlb.valid[slot] && self.state.tlb.tag[slot] == page {
+                    self.state.tlb.valid[slot] = false;
                 }
                 self.fetch_page_valid = false;
                 self.clk(Self::timing(0, 12));

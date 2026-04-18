@@ -28,9 +28,10 @@ use std::ops::{Deref, DerefMut};
 
 use common::Cpu as _;
 pub use flags::I386Flags;
+pub use paging::{TLB_MASK, TLB_SIZE, TlbCache};
 pub use state::I386State;
 
-use crate::{SegReg32, WordReg};
+use crate::{ByteReg, DwordReg, SegReg32, WordReg};
 
 /// CPU model constant for Intel 80386DX.
 pub const CPU_MODEL_386: u8 = 0;
@@ -103,12 +104,6 @@ pub struct I386<const CPU_MODEL: u8 = { CPU_MODEL_386 }> {
     prefetch_addr: u32,
     prefetch_byte: u8,
 
-    tlb_valid: [bool; 64],
-    tlb_tag: [u32; 64],
-    tlb_phys: [u32; 64],
-    tlb_writable: [bool; 64],
-    tlb_dirty: [bool; 64],
-
     debug_trap_pending: bool,
     trap_level: u8,
     prev_exception_class: u8,
@@ -174,11 +169,6 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             prefetch_valid: false,
             prefetch_addr: 0,
             prefetch_byte: 0,
-            tlb_valid: [false; 64],
-            tlb_tag: [0; 64],
-            tlb_phys: [0; 64],
-            tlb_writable: [false; 64],
-            tlb_dirty: [false; 64],
             debug_trap_pending: false,
             trap_level: 0,
             prev_exception_class: 0,
@@ -1067,8 +1057,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus.write_byte(a3, (value >> 24) as u8);
     }
 
+    /// Reads a byte from segment:offset, performing the same segment
+    /// limit check and paging translation as the interpreter's normal
+    /// memory path. Returns 0 on fault; the caller should inspect
+    /// `fault_pending` to detect the fault. Exposed for the dynarec
+    /// bytecode backend.
     #[inline(always)]
-    fn read_byte_seg(&mut self, bus: &mut impl common::Bus, seg: SegReg32, offset: u32) -> u8 {
+    pub fn read_byte_seg(&mut self, bus: &mut impl common::Bus, seg: SegReg32, offset: u32) -> u8 {
         if !self.check_segment_access(seg, offset, 1, false, bus) {
             return 0;
         }
@@ -1079,8 +1074,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus.read_byte(addr)
     }
 
+    /// Writes a byte to segment:offset with segment-limit and paging
+    /// checks. Sets `fault_pending` on fault. Exposed for the dynarec
+    /// bytecode backend.
     #[inline(always)]
-    fn write_byte_seg(
+    pub fn write_byte_seg(
         &mut self,
         bus: &mut impl common::Bus,
         seg: SegReg32,
@@ -1097,8 +1095,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus.write_byte(addr, value);
     }
 
+    /// Reads a word from segment:offset, splitting on a page boundary
+    /// to match interpreter byte-level fault semantics. Exposed for the
+    /// dynarec bytecode backend.
     #[inline(always)]
-    fn read_word_seg(&mut self, bus: &mut impl common::Bus, seg: SegReg32, offset: u32) -> u16 {
+    pub fn read_word_seg(&mut self, bus: &mut impl common::Bus, seg: SegReg32, offset: u32) -> u16 {
         if !self.check_segment_access(seg, offset, 2, false, bus) {
             return 0;
         }
@@ -1120,8 +1121,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8)
     }
 
+    /// Reads a dword from segment:offset, splitting on a page boundary.
+    /// Exposed for the dynarec bytecode backend.
     #[inline(always)]
-    fn read_dword_seg(&mut self, bus: &mut impl common::Bus, seg: SegReg32, offset: u32) -> u32 {
+    pub fn read_dword_seg(
+        &mut self,
+        bus: &mut impl common::Bus,
+        seg: SegReg32,
+        offset: u32,
+    ) -> u32 {
         if !self.check_segment_access(seg, offset, 4, false, bus) {
             return 0;
         }
@@ -1154,8 +1162,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             | ((bus.read_byte(a3) as u32) << 24)
     }
 
+    /// Writes a word to segment:offset, splitting on a page boundary.
+    /// Exposed for the dynarec bytecode backend.
     #[inline(always)]
-    fn write_word_seg(
+    pub fn write_word_seg(
         &mut self,
         bus: &mut impl common::Bus,
         seg: SegReg32,
@@ -1185,8 +1195,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus.write_byte(a1, (value >> 8) as u8);
     }
 
+    /// Writes a dword to segment:offset, splitting on a page boundary.
+    /// Exposed for the dynarec bytecode backend.
     #[inline(always)]
-    fn write_dword_seg(
+    pub fn write_dword_seg(
         &mut self,
         bus: &mut impl common::Bus,
         seg: SegReg32,
@@ -2334,6 +2346,448 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     /// Signals a non-maskable interrupt (NMI).
     pub fn signal_nmi(&mut self) {
         self.pending_irq |= crate::PENDING_NMI;
+    }
+
+    /// Returns `true` if an IRQ or NMI is pending delivery.
+    pub fn has_pending_interrupt(&self) -> bool {
+        self.pending_irq != 0
+    }
+
+    /// Ticks the post-STI/POPF interrupt inhibit window by one instruction.
+    ///
+    /// The interpreter decrements `no_interrupt` at the top of every
+    /// `execute_one`; the JIT must call this after each directly-executed
+    /// instruction (e.g. block exits that bypass `execute_one` such as
+    /// `HLT`) so that the inhibit window closes on schedule.
+    pub fn tick_interrupt_window(&mut self) {
+        if self.no_interrupt > 0 {
+            self.no_interrupt -= 1;
+        }
+        if self.inhibit_all > 0 {
+            self.inhibit_all -= 1;
+        }
+    }
+
+    /// Executes exactly one logical instruction against the current guest state
+    /// and cycle budget. Unlike [`step`](Self::step), this does not touch
+    /// `cycles_remaining`, so the caller's budget accounting is preserved.
+    ///
+    /// The JIT fallback path calls this to delegate unsupported opcodes to the
+    /// interpreter without disturbing block-level cycle accounting.
+    pub fn step_instruction(&mut self, bus: &mut impl common::Bus) {
+        self.execute_one(bus);
+    }
+
+    /// Returns the physical linear address of the byte at CS:EIP, or `None`
+    /// if the address faults during translation. On fault, `fault_pending` is
+    /// set as a side effect. The JIT uses this as the block lookup key.
+    pub fn current_eip_phys(&mut self, bus: &mut impl common::Bus) -> Option<u32> {
+        let linear = self
+            .state
+            .seg_bases
+            .get(SegReg32::CS as usize)
+            .copied()
+            .unwrap_or(0)
+            .wrapping_add(self.state.eip());
+        self.translate_linear(linear, false, bus)
+    }
+
+    /// Returns the remaining cycle budget held by the CPU core.
+    pub fn cycles_remaining(&self) -> i64 {
+        self.cycles_remaining
+    }
+
+    /// Sets the remaining cycle budget held by the CPU core.
+    pub fn set_cycles_remaining(&mut self, cycles: i64) {
+        self.cycles_remaining = cycles;
+    }
+
+    /// Returns the cycle count recorded at the start of the current `run_for`
+    /// invocation.
+    pub fn run_start_cycle(&self) -> u64 {
+        self.run_start_cycle
+    }
+
+    /// Sets the cycle count recorded at the start of the current `run_for`
+    /// invocation. The JIT dispatcher uses this to mirror the interpreter's
+    /// accounting semantics.
+    pub fn set_run_start_cycle(&mut self, cycle: u64) {
+        self.run_start_cycle = cycle;
+    }
+
+    /// Returns the budget requested for the current `run_for` invocation.
+    pub fn run_budget(&self) -> u64 {
+        self.run_budget
+    }
+
+    /// Sets the budget requested for the current `run_for` invocation.
+    pub fn set_run_budget(&mut self, budget: u64) {
+        self.run_budget = budget;
+    }
+
+    /// Returns `true` if the CPU is currently halted.
+    pub fn halted_flag(&self) -> bool {
+        self.halted
+    }
+
+    /// Sets the halted flag. Used by the JIT dispatcher when a guest HLT
+    /// instruction is executed as a block exit.
+    pub fn set_halted_flag(&mut self, halted: bool) {
+        self.halted = halted;
+    }
+
+    /// Returns whether `HLT` can be handled directly by the JIT.
+    ///
+    /// Ring-3 `HLT` in protected mode raises #GP, so the JIT keeps those
+    /// cases on the interpreter path for exact exception delivery.
+    pub fn jit_can_halt(&self) -> bool {
+        !self.is_protected_mode() || self.cpl() == 0
+    }
+
+    /// Returns `true` if a fault was raised during the most recent execution
+    /// step. The JIT consults this after memory/IO helper calls and after
+    /// interpreter fallbacks to detect exception delivery.
+    pub fn fault_pending(&self) -> bool {
+        self.fault_pending
+    }
+
+    /// Clears any `fault_pending` residue. The JIT calls this between
+    /// compiled blocks because `translate_linear` leaves the flag set
+    /// after a page fault has been delivered. The interpreter's
+    /// `execute_one` does the same at the top of every step.
+    pub fn clear_fault_pending(&mut self) {
+        self.fault_pending = false;
+    }
+
+    /// Applies the interpreter's segment-access checks for a JIT memory
+    /// operand without performing the subsequent translation or memory access.
+    pub fn jit_check_segment_access(
+        &mut self,
+        bus: &mut impl common::Bus,
+        seg: SegReg32,
+        offset: u32,
+        size: u8,
+        write: bool,
+    ) -> bool {
+        self.check_segment_access(seg, offset, u32::from(size), write, bus)
+    }
+
+    /// Returns `true` when the code segment is currently 32-bit (CS D-bit set
+    /// and running outside virtual-8086 mode). The JIT needs this at block
+    /// decode time to pick the default operand/address size.
+    pub fn is_code_segment_32bit(&self) -> bool {
+        self.code_segment_32bit()
+    }
+
+    /// Returns `true` when the stack segment is currently 32-bit (SS B-bit set).
+    /// Determines whether PUSH/POP use ESP or SP.
+    pub fn is_stack_segment_32bit(&self) -> bool {
+        self.use_esp()
+    }
+
+    /// Captures `ip`/`ip_upper` into `prev_ip`/`prev_ip_upper` so a
+    /// subsequent fault raised by a JIT helper (PUSHF/POPF in V8086
+    /// with IOPL<3, stack faults from PUSHA/POPA, page faults from
+    /// memory ops, etc.) reports the correct faulting EIP. The
+    /// interpreter's `execute_one` does this at the top of every step;
+    /// the JIT must refresh it at block entry so a fault raised by the
+    /// first instruction's ops pushes the block-start EIP rather than
+    /// whatever the last interpreter fallback left behind. Call from
+    /// the JIT block dispatcher once per block.
+    pub fn jit_refresh_prev_ip(&mut self) {
+        self.prev_ip = self.ip;
+        self.prev_ip_upper = self.ip_upper;
+    }
+
+    /// Re-raises `fault_pending` if the interpreter helper delivered a
+    /// fault during a JIT helper call. `raise_fault_with_code` clears
+    /// `fault_pending` after successful delivery, which is correct for
+    /// the interpreter (the handler's EIP is live and the next step
+    /// starts clean) but loses the signal the JIT needs to bail out of
+    /// the current compiled block.
+    ///
+    /// We use the pre-call EIP snapshot to detect delivery: the JIT
+    /// helper's semantic primitive (pushf, popf, pusha, popa) never
+    /// modifies EIP on its own, so a mismatch implies the interpreter
+    /// ran an IDT gate. Callers must capture `pre_eip` before invoking
+    /// the primitive.
+    fn jit_signal_if_faulted(&mut self, pre_eip: u32) {
+        if self.state.eip() != pre_eip {
+            self.fault_pending = true;
+        }
+    }
+
+    /// Executes `PUSHA`/`PUSHAD` via the interpreter's stack primitives.
+    /// Cycles are accounted by the JIT at block-entry.
+    pub fn jit_pusha(&mut self, bus: &mut impl common::Bus, size: u8) {
+        self.jit_refresh_prev_ip();
+        let pre_eip = self.state.eip();
+        let saved = (
+            self.operand_size_override,
+            self.seg_prefix,
+            self.address_size_override,
+        );
+        self.operand_size_override = size == 4;
+        self.seg_prefix = false;
+        self.address_size_override = false;
+        self.pusha(bus);
+        self.operand_size_override = saved.0;
+        self.seg_prefix = saved.1;
+        self.address_size_override = saved.2;
+        self.jit_signal_if_faulted(pre_eip);
+    }
+
+    /// Executes `POPA`/`POPAD` via the interpreter's stack primitives.
+    pub fn jit_popa(&mut self, bus: &mut impl common::Bus, size: u8) {
+        self.jit_refresh_prev_ip();
+        let pre_eip = self.state.eip();
+        let saved = (
+            self.operand_size_override,
+            self.seg_prefix,
+            self.address_size_override,
+        );
+        self.operand_size_override = size == 4;
+        self.seg_prefix = false;
+        self.address_size_override = false;
+        self.popa(bus);
+        self.operand_size_override = saved.0;
+        self.seg_prefix = saved.1;
+        self.address_size_override = saved.2;
+        self.jit_signal_if_faulted(pre_eip);
+    }
+
+    /// Executes `PUSHF`/`PUSHFD` via the interpreter, including the V8086
+    /// IOPL check that can raise `#GP`.
+    pub fn jit_pushf(&mut self, bus: &mut impl common::Bus, size: u8) {
+        self.jit_refresh_prev_ip();
+        let pre_eip = self.state.eip();
+        let saved = self.operand_size_override;
+        self.operand_size_override = size == 4;
+        self.pushf(bus);
+        self.operand_size_override = saved;
+        self.jit_signal_if_faulted(pre_eip);
+    }
+
+    /// Executes `POPF`/`POPFD` via the interpreter, including the V8086
+    /// IOPL check and CPL-based flag masking.
+    pub fn jit_popf(&mut self, bus: &mut impl common::Bus, size: u8) {
+        self.jit_refresh_prev_ip();
+        let pre_eip = self.state.eip();
+        let saved = self.operand_size_override;
+        self.operand_size_override = size == 4;
+        self.popf(bus);
+        self.operand_size_override = saved;
+        self.jit_signal_if_faulted(pre_eip);
+    }
+
+    /// Computes `NEG value` under the given operand size, updating flags
+    /// exactly like the interpreter's `alu_neg_*` helpers.
+    pub fn jit_neg(&mut self, value: u32, size: u8) -> u32 {
+        match size {
+            1 => u32::from(self.alu_neg_byte(value as u8)),
+            2 => u32::from(self.alu_neg_word(value as u16)),
+            4 => self.alu_neg_dword(value),
+            _ => unreachable!("jit_neg: unsupported size {size}"),
+        }
+    }
+
+    /// Executes one-operand `MUL`/`IMUL` on the accumulator pair, using
+    /// `value` as the multiplicand. Updates AH/DX/EDX and CF/OF.
+    pub fn jit_mul(&mut self, value: u32, size: u8, signed: bool) {
+        match (size, signed) {
+            (1, false) => {
+                let al = self.state.regs.byte(ByteReg::AL);
+                let result = u16::from(al) * u16::from(value as u8);
+                self.state.regs.set_word(WordReg::AX, result);
+                self.state.flags.carry_val = if result & 0xFF00 != 0 { 1 } else { 0 };
+                self.state.flags.overflow_val = self.state.flags.carry_val;
+            }
+            (1, true) => {
+                let al = self.state.regs.byte(ByteReg::AL) as i8 as i16;
+                let src = (value as u8) as i8 as i16;
+                let result = al * src;
+                self.state.regs.set_word(WordReg::AX, result as u16);
+                let ah = (result >> 8) as i8;
+                let al_signed = result as i8;
+                self.state.flags.carry_val = if ah != (al_signed >> 7) { 1 } else { 0 };
+                self.state.flags.overflow_val = self.state.flags.carry_val;
+            }
+            (2, false) => {
+                let ax = self.state.regs.word(WordReg::AX);
+                let result = u32::from(ax) * u32::from(value as u16);
+                self.state.regs.set_word(WordReg::AX, result as u16);
+                self.state.regs.set_word(WordReg::DX, (result >> 16) as u16);
+                self.state.flags.carry_val = u32::from((result >> 16) != 0);
+                self.state.flags.overflow_val = self.state.flags.carry_val;
+            }
+            (2, true) => {
+                let ax = self.state.regs.word(WordReg::AX) as i16 as i32;
+                let src = (value as u16) as i16 as i32;
+                let result = ax * src;
+                self.state.regs.set_word(WordReg::AX, result as u16);
+                self.state.regs.set_word(WordReg::DX, (result >> 16) as u16);
+                let lower_signed = (result as i16) as i32;
+                self.state.flags.carry_val = u32::from(result != lower_signed);
+                self.state.flags.overflow_val = self.state.flags.carry_val;
+            }
+            (4, false) => {
+                let eax = self.state.regs.dword(DwordReg::EAX);
+                let result = u64::from(eax) * u64::from(value);
+                self.state.regs.set_dword(DwordReg::EAX, result as u32);
+                self.state
+                    .regs
+                    .set_dword(DwordReg::EDX, (result >> 32) as u32);
+                self.state.flags.carry_val = u32::from((result >> 32) != 0);
+                self.state.flags.overflow_val = self.state.flags.carry_val;
+            }
+            (4, true) => {
+                let eax = self.state.regs.dword(DwordReg::EAX) as i32 as i64;
+                let src = value as i32 as i64;
+                let result = eax * src;
+                self.state.regs.set_dword(DwordReg::EAX, result as u32);
+                self.state
+                    .regs
+                    .set_dword(DwordReg::EDX, (result >> 32) as u32);
+                let lower_signed = (result as i32) as i64;
+                self.state.flags.carry_val = u32::from(result != lower_signed);
+                self.state.flags.overflow_val = self.state.flags.carry_val;
+            }
+            _ => unreachable!("jit_mul: unsupported size {size}"),
+        }
+    }
+
+    /// Executes one-operand `DIV`/`IDIV`. Raises `#DE` via the normal
+    /// interpreter path on divide-by-zero or quotient overflow; callers
+    /// must check [`fault_pending`](Self::fault_pending) after return.
+    pub fn jit_div(&mut self, value: u32, size: u8, signed: bool, bus: &mut impl common::Bus) {
+        match (size, signed) {
+            (1, false) => {
+                let src = value as u8 as u16;
+                if src == 0 {
+                    self.raise_fault(0, bus);
+                    return;
+                }
+                let ax = self.state.regs.word(WordReg::AX);
+                let quotient = ax / src;
+                if quotient > 0xFF {
+                    self.raise_fault(0, bus);
+                    return;
+                }
+                let remainder = ax % src;
+                self.state.regs.set_byte(ByteReg::AL, quotient as u8);
+                self.state.regs.set_byte(ByteReg::AH, remainder as u8);
+                self.state.flags.carry_val = u32::from(!self.state.flags.cf());
+                self.state.flags.aux_val ^= 0x10;
+            }
+            (1, true) => {
+                let src = (value as u8) as i8 as i16;
+                if src == 0 {
+                    self.raise_fault(0, bus);
+                    return;
+                }
+                let ax = self.state.regs.word(WordReg::AX) as i16;
+                let Some(quotient) = ax.checked_div(src) else {
+                    self.raise_fault(0, bus);
+                    return;
+                };
+                if !(-128..=127).contains(&quotient) {
+                    self.raise_fault(0, bus);
+                    return;
+                }
+                let remainder = ax.checked_rem(src).unwrap_or(0);
+                self.state.regs.set_byte(ByteReg::AL, quotient as u8);
+                self.state.regs.set_byte(ByteReg::AH, remainder as u8);
+                self.state.flags.carry_val = u32::from(!self.state.flags.cf());
+                self.state.flags.aux_val ^= 0x10;
+            }
+            (2, false) => {
+                let src = u32::from(value as u16);
+                if src == 0 {
+                    self.raise_fault(0, bus);
+                    return;
+                }
+                let dx = u32::from(self.state.regs.word(WordReg::DX));
+                let ax = u32::from(self.state.regs.word(WordReg::AX));
+                let dividend = (dx << 16) | ax;
+                let quotient = dividend / src;
+                if quotient > 0xFFFF {
+                    self.raise_fault(0, bus);
+                    return;
+                }
+                let remainder = dividend % src;
+                self.state.regs.set_word(WordReg::AX, quotient as u16);
+                self.state.regs.set_word(WordReg::DX, remainder as u16);
+                self.state.flags.carry_val = u32::from(!self.state.flags.cf());
+                self.state.flags.aux_val ^= 0x10;
+            }
+            (2, true) => {
+                let src = (value as u16) as i16 as i32;
+                if src == 0 {
+                    self.raise_fault(0, bus);
+                    return;
+                }
+                let dx = u32::from(self.state.regs.word(WordReg::DX));
+                let ax = u32::from(self.state.regs.word(WordReg::AX));
+                let dividend = ((dx << 16) | ax) as i32;
+                let Some(quotient) = dividend.checked_div(src) else {
+                    self.raise_fault(0, bus);
+                    return;
+                };
+                if !(i16::MIN as i32..=i16::MAX as i32).contains(&quotient) {
+                    self.raise_fault(0, bus);
+                    return;
+                }
+                let remainder = dividend.checked_rem(src).unwrap_or(0);
+                self.state.regs.set_word(WordReg::AX, quotient as u16);
+                self.state.regs.set_word(WordReg::DX, remainder as u16);
+                self.state.flags.carry_val = u32::from(!self.state.flags.cf());
+                self.state.flags.aux_val ^= 0x10;
+            }
+            (4, false) => {
+                let src = u64::from(value);
+                if src == 0 {
+                    self.raise_fault(0, bus);
+                    return;
+                }
+                let edx = u64::from(self.state.regs.dword(DwordReg::EDX));
+                let eax = u64::from(self.state.regs.dword(DwordReg::EAX));
+                let dividend = (edx << 32) | eax;
+                let quotient = dividend / src;
+                if quotient > u32::MAX as u64 {
+                    self.raise_fault(0, bus);
+                    return;
+                }
+                let remainder = dividend % src;
+                self.state.regs.set_dword(DwordReg::EAX, quotient as u32);
+                self.state.regs.set_dword(DwordReg::EDX, remainder as u32);
+                self.state.flags.carry_val = u32::from(!self.state.flags.cf());
+                self.state.flags.aux_val ^= 0x10;
+            }
+            (4, true) => {
+                let src = (value as i32) as i64;
+                if src == 0 {
+                    self.raise_fault(0, bus);
+                    return;
+                }
+                let edx = u64::from(self.state.regs.dword(DwordReg::EDX));
+                let eax = u64::from(self.state.regs.dword(DwordReg::EAX));
+                let dividend = ((edx << 32) | eax) as i64;
+                let Some(quotient) = dividend.checked_div(src) else {
+                    self.raise_fault(0, bus);
+                    return;
+                };
+                if !(i32::MIN as i64..=i32::MAX as i64).contains(&quotient) {
+                    self.raise_fault(0, bus);
+                    return;
+                }
+                let remainder = dividend.checked_rem(src).unwrap_or(0);
+                self.state.regs.set_dword(DwordReg::EAX, quotient as u32);
+                self.state.regs.set_dword(DwordReg::EDX, remainder as u32);
+                self.state.flags.carry_val = u32::from(!self.state.flags.cf());
+                self.state.flags.aux_val ^= 0x10;
+            }
+            _ => unreachable!("jit_div: unsupported size {size}"),
+        }
     }
 }
 
