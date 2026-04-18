@@ -2511,8 +2511,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             let sp_pen = self.sp_penalty();
             let ebp_val = self.regs.dword(DwordReg::EBP);
             self.push_dword(bus, ebp_val);
+            let frame_ptr = self.regs.dword(DwordReg::ESP);
             if self.use_esp() {
-                let frame_ptr = self.regs.dword(DwordReg::ESP);
                 if level > 0 {
                     for _ in 1..level {
                         let ebp = self.regs.dword(DwordReg::EBP).wrapping_sub(4);
@@ -2526,7 +2526,6 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 let esp = self.regs.dword(DwordReg::ESP).wrapping_sub(alloc as u32);
                 self.regs.set_dword(DwordReg::ESP, esp);
             } else {
-                let frame_ptr = self.regs.word(WordReg::SP);
                 if level > 0 {
                     for _ in 1..level {
                         let bp = self.regs.word(WordReg::BP).wrapping_sub(4);
@@ -2534,9 +2533,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                         let val = self.read_dword_seg(bus, SegReg32::SS, bp as u32);
                         self.push_dword(bus, val);
                     }
-                    self.push_dword(bus, frame_ptr as u32);
+                    self.push_dword(bus, frame_ptr);
                 }
-                self.regs.set_dword(DwordReg::EBP, frame_ptr as u32);
+                self.regs.set_dword(DwordReg::EBP, frame_ptr);
                 let sp = self.regs.word(WordReg::SP).wrapping_sub(alloc);
                 self.regs.set_word(WordReg::SP, sp);
             }
