@@ -2508,18 +2508,12 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let alloc = self.fetchword(bus);
         let level = self.fetch(bus) & 0x1F;
         let operand_size: u32 = if self.operand_size_override { 4 } else { 2 };
-        let push_count: u32 = if level == 0 {
-            1
-        } else {
-            level as u32 + 1
-        };
+        let push_count: u32 = if level == 0 { 1 } else { level as u32 + 1 };
         let total_bytes = push_count * operand_size + alloc as u32;
         let final_sp = if self.use_esp() {
             self.regs.dword(DwordReg::ESP).wrapping_sub(total_bytes)
         } else {
-            self.regs
-                .word(WordReg::SP)
-                .wrapping_sub(total_bytes as u16) as u32
+            self.regs.word(WordReg::SP).wrapping_sub(total_bytes as u16) as u32
         };
         if !self.check_segment_access(SegReg32::SS, final_sp, operand_size, true, bus) {
             return;
@@ -2597,26 +2591,22 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     fn leave(&mut self, bus: &mut impl common::Bus) {
-        if self.operand_size_override {
-            if self.use_esp() {
-                let ebp = self.regs.dword(DwordReg::EBP);
-                self.regs.set_dword(DwordReg::ESP, ebp);
-            } else {
-                let bp = self.regs.word(WordReg::BP);
-                self.regs.set_word(WordReg::SP, bp);
-            }
-            let penalty = self.sp_penalty();
-            let val = self.pop_dword(bus);
-            self.regs.set_dword(DwordReg::EBP, val);
-            self.clk(Self::timing(4, 5) + penalty);
+        if self.use_esp() {
+            let ebp = self.regs.dword(DwordReg::EBP);
+            self.regs.set_dword(DwordReg::ESP, ebp);
         } else {
             let bp = self.regs.word(WordReg::BP);
             self.regs.set_word(WordReg::SP, bp);
-            let penalty = self.sp_penalty();
+        }
+        let penalty = self.sp_penalty();
+        if self.operand_size_override {
+            let val = self.pop_dword(bus);
+            self.regs.set_dword(DwordReg::EBP, val);
+        } else {
             let val = self.pop(bus);
             self.regs.set_word(WordReg::BP, val);
-            self.clk(Self::timing(4, 5) + penalty);
         }
+        self.clk(Self::timing(4, 5) + penalty);
     }
 
     fn int3(&mut self, bus: &mut impl common::Bus) {
