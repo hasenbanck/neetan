@@ -149,7 +149,10 @@ fn test386_ee_output_matches_reference() {
     let produced = std::str::from_utf8(&bus.ascii_output)
         .expect("EE output must be valid UTF-8 (ROM emits ASCII only)");
 
-    if produced == EE_REFERENCE {
+    // Compare line-by-line so CRLF-on-checkout on Windows (where git can
+    // convert the committed LF-terminated reference to CRLF) does not cause
+    // a byte-level mismatch here. `str::lines` strips both `\n` and `\r\n`.
+    if produced.lines().eq(EE_REFERENCE.lines()) {
         return;
     }
 
