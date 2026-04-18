@@ -2303,138 +2303,87 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     fn mov_al_moffs(&mut self, bus: &mut impl common::Bus) {
         let seg = self.default_seg(SegReg32::DS);
-        if self.address_size_override {
-            let offset = self.fetchdword(bus);
-            let linear = self.seg_bases[seg as usize].wrapping_add(offset);
-            let addr = self.translate_linear(linear, false, bus).unwrap_or(0);
-            let val = bus.read_byte(addr);
-            self.regs.set_byte(ByteReg::AL, val);
+        let offset = if self.address_size_override {
+            self.fetchdword(bus)
         } else {
-            let offset = self.fetchword(bus) as u32;
-            let val = self.read_byte_seg(bus, seg, offset);
-            self.regs.set_byte(ByteReg::AL, val);
-        }
+            self.fetchword(bus) as u32
+        };
+        let val = self.read_byte_seg(bus, seg, offset);
+        self.regs.set_byte(ByteReg::AL, val);
         self.clk(Self::timing(4, 1));
     }
 
     fn mov_aw_moffs(&mut self, bus: &mut impl common::Bus) {
-        if self.address_size_override {
-            let offset = self.fetchdword(bus);
-            let linear = self.default_base(SegReg32::DS).wrapping_add(offset);
-            if self.operand_size_override {
-                let val = self.read_dword_linear(bus, linear);
-                self.regs.set_dword(DwordReg::EAX, val);
-                let penalty = if linear & 3 != 0 {
-                    Self::timing(4, 3)
-                } else {
-                    0
-                };
-                self.clk(Self::timing(4, 1) + penalty);
-            } else {
-                let val = self.read_word_linear(bus, linear);
-                self.regs.set_word(WordReg::AX, val);
-                let penalty = if linear & 1 != 0 {
-                    Self::timing(4, 3)
-                } else {
-                    0
-                };
-                self.clk(Self::timing(4, 1) + penalty);
-            }
+        let seg = self.default_seg(SegReg32::DS);
+        let offset = if self.address_size_override {
+            self.fetchdword(bus)
         } else {
-            let offset = self.fetchword(bus);
-            let seg = self.default_seg(SegReg32::DS);
-            let base = self.seg_base(seg);
-            self.ea_seg = seg;
-            self.eo = offset;
-            self.eo32 = offset as u32;
-            self.ea = base.wrapping_add(offset as u32);
-            if self.operand_size_override {
-                let val = self.seg_read_dword(bus);
-                self.regs.set_dword(DwordReg::EAX, val);
-                let penalty = if self.ea & 3 != 0 {
-                    Self::timing(4, 3)
-                } else {
-                    0
-                };
-                self.clk(Self::timing(4, 1) + penalty);
+            self.fetchword(bus) as u32
+        };
+        self.ea_seg = seg;
+        self.eo = offset as u16;
+        self.eo32 = offset;
+        self.ea = self.seg_base(seg).wrapping_add(offset);
+        if self.operand_size_override {
+            let val = self.seg_read_dword(bus);
+            self.regs.set_dword(DwordReg::EAX, val);
+            let penalty = if self.ea & 3 != 0 {
+                Self::timing(4, 3)
             } else {
-                let val = self.seg_read_word(bus);
-                self.regs.set_word(WordReg::AX, val);
-                let penalty = if self.ea & 1 != 0 {
-                    Self::timing(4, 3)
-                } else {
-                    0
-                };
-                self.clk(Self::timing(4, 1) + penalty);
-            }
+                0
+            };
+            self.clk(Self::timing(4, 1) + penalty);
+        } else {
+            let val = self.seg_read_word(bus);
+            self.regs.set_word(WordReg::AX, val);
+            let penalty = if self.ea & 1 != 0 {
+                Self::timing(4, 3)
+            } else {
+                0
+            };
+            self.clk(Self::timing(4, 1) + penalty);
         }
     }
 
     fn mov_moffs_al(&mut self, bus: &mut impl common::Bus) {
         let seg = self.default_seg(SegReg32::DS);
         let al = self.regs.byte(ByteReg::AL);
-        if self.address_size_override {
-            let offset = self.fetchdword(bus);
-            let linear = self.seg_bases[seg as usize].wrapping_add(offset);
-            let Some(addr) = self.translate_linear(linear, true, bus) else {
-                return;
-            };
-            bus.write_byte(addr, al);
+        let offset = if self.address_size_override {
+            self.fetchdword(bus)
         } else {
-            let offset = self.fetchword(bus) as u32;
-            self.write_byte_seg(bus, seg, offset, al);
-        }
+            self.fetchword(bus) as u32
+        };
+        self.write_byte_seg(bus, seg, offset, al);
         self.clk(Self::timing(2, 1));
     }
 
     fn mov_moffs_aw(&mut self, bus: &mut impl common::Bus) {
-        if self.address_size_override {
-            let offset = self.fetchdword(bus);
-            let linear = self.default_base(SegReg32::DS).wrapping_add(offset);
-            if self.operand_size_override {
-                let val = self.regs.dword(DwordReg::EAX);
-                self.write_dword_linear(bus, linear, val);
-                let penalty = if linear & 3 != 0 {
-                    Self::timing(4, 3)
-                } else {
-                    0
-                };
-                self.clk(Self::timing(2, 1) + penalty);
-            } else {
-                let val = self.regs.word(WordReg::AX);
-                self.write_word_linear(bus, linear, val);
-                let penalty = if linear & 1 != 0 {
-                    Self::timing(4, 3)
-                } else {
-                    0
-                };
-                self.clk(Self::timing(2, 1) + penalty);
-            }
+        let seg = self.default_seg(SegReg32::DS);
+        let offset = if self.address_size_override {
+            self.fetchdword(bus)
         } else {
-            let offset = self.fetchword(bus);
-            let seg = self.default_seg(SegReg32::DS);
-            let base = self.seg_base(seg);
-            self.ea_seg = seg;
-            self.eo = offset;
-            self.eo32 = offset as u32;
-            self.ea = base.wrapping_add(offset as u32);
-            if self.operand_size_override {
-                self.seg_write_dword(bus, self.regs.dword(DwordReg::EAX));
-                let penalty = if self.ea & 3 != 0 {
-                    Self::timing(4, 3)
-                } else {
-                    0
-                };
-                self.clk(Self::timing(2, 1) + penalty);
+            self.fetchword(bus) as u32
+        };
+        self.ea_seg = seg;
+        self.eo = offset as u16;
+        self.eo32 = offset;
+        self.ea = self.seg_base(seg).wrapping_add(offset);
+        if self.operand_size_override {
+            self.seg_write_dword(bus, self.regs.dword(DwordReg::EAX));
+            let penalty = if self.ea & 3 != 0 {
+                Self::timing(4, 3)
             } else {
-                self.seg_write_word(bus, self.regs.word(WordReg::AX));
-                let penalty = if self.ea & 1 != 0 {
-                    Self::timing(4, 3)
-                } else {
-                    0
-                };
-                self.clk(Self::timing(2, 1) + penalty);
-            }
+                0
+            };
+            self.clk(Self::timing(2, 1) + penalty);
+        } else {
+            self.seg_write_word(bus, self.regs.word(WordReg::AX));
+            let penalty = if self.ea & 1 != 0 {
+                Self::timing(4, 3)
+            } else {
+                0
+            };
+            self.clk(Self::timing(2, 1) + penalty);
         }
     }
 
