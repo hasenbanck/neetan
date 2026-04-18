@@ -16,6 +16,7 @@ common = { path = "crates/common" }
 cpu = { path = "crates/cpu" }
 device = { path = "crates/device" }
 graphics_engine = { path = "crates/graphics_engine" }
+kvm = { path = "crates/kvm" }
 machine = { path = "crates/machine" }
 os = { path = "crates/os" }
 resampler = { path = "crates/resampler" }
@@ -27,6 +28,11 @@ ymfm_oxide = { path = "crates/ymfm_oxide" }
 # External dependencies
 jay-ash = { version = "0.5", default-features = false }
 sdl3-sys = "0.6"
+# KVM backend (Linux x86_64 only, gated by the workspace `kvm` feature)
+kvm-bindings = { version = "0.14" }
+kvm-ioctls = "0.24"
+libc = "0.2"
+memmap2 = "0.9"
 # Dependencies only used for the verification tests of the V30
 flate2 = "1"
 serde = { version = "1", features = ["derive"] }
@@ -42,9 +48,11 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["mt32", "sc55"]
+default = ["mt32", "sc55", "kvm"]
 mt32 = ["machine/mt32"]
 sc55 = ["machine/sc55"]
+# Enables the KVM-backed PC-9821Ra40 machine variant. Linux x86_64 host only.
+kvm = ["machine/kvm"]
 tracing = []
 sdl3-build-from-source = ["sdl3/build-from-source"]
 sdl3-use-pkg-config = ["sdl3/use-pkg-config"]

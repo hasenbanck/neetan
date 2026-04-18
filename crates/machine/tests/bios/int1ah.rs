@@ -43,7 +43,7 @@ fn make_int1ah_print_buffer(count: u16) -> Vec<u8> {
     ]
 }
 
-fn assert_result_ah(ram: &[u8; 0xA0000], expected_ah: u8, label: &str) {
+fn assert_result_ah(ram: &[u8], expected_ah: u8, label: &str) {
     let ax = read_ram_u16(ram, RESULT as usize);
     assert_eq!(
         ax >> 8,
@@ -356,7 +356,7 @@ fn int1ah_printer_status_ra() {
 // ============================================================================
 // No printer attached: returns AH=0x00 (not ready).
 
-fn assert_printer_buffer(ram: &[u8; 0xA0000], expected_ah: u8, expected_cx: u16) {
+fn assert_printer_buffer(ram: &[u8], expected_ah: u8, expected_cx: u16) {
     let ax = read_ram_u16(ram, RESULT as usize);
     let cx = read_ram_u16(ram, RESULT as usize + 2);
     assert_eq!(
@@ -489,7 +489,7 @@ fn boot_and_run_printer_ra(code: &[u8], budget: u64) -> (machine::Pc9801Ra, std:
 // AH=10h Printer Initialize - Printer Attached
 // ============================================================================
 
-fn assert_printer_init_attached(ram: &[u8; 0xA0000]) {
+fn assert_printer_init_attached(ram: &[u8]) {
     let ax = read_ram_u16(ram, RESULT as usize);
     let ah = (ax >> 8) as u8;
     assert_eq!(ah, 0x01, "AH should be 0x01 (ready) (got {ah:#04X})");
@@ -523,7 +523,7 @@ fn int1ah_printer_init_attached_ra() {
 // AH=11h Printer Print Char - Printer Attached
 // ============================================================================
 
-fn assert_printer_print_char_attached(ram: &[u8; 0xA0000]) {
+fn assert_printer_print_char_attached(ram: &[u8]) {
     let ax = read_ram_u16(ram, RESULT as usize);
     let ah = (ax >> 8) as u8;
     assert_eq!(ah, 0x01, "AH should be 0x01 (ok) (got {ah:#04X})");
@@ -557,7 +557,7 @@ fn int1ah_printer_print_char_attached_ra() {
 // AH=12h Printer Status - Printer Attached
 // ============================================================================
 
-fn assert_printer_status_attached(ram: &[u8; 0xA0000]) {
+fn assert_printer_status_attached(ram: &[u8]) {
     let ax = read_ram_u16(ram, RESULT as usize);
     let ah = (ax >> 8) as u8;
     assert_eq!(ah, 0x01, "AH should be 0x01 (ready) (got {ah:#04X})");

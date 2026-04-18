@@ -672,6 +672,11 @@ impl<T: Tracing> Pc9801Bus<T> {
             // 0xFF = not an Epson machine.
             0x0C00 | 0x0C01 | 0x0C02 | 0x0C05 => 0xFF,
 
+            // PCI Configuration Mechanism #1 (late PC-9821 only). Empty bus
+            // on non-PCI machines returns open-bus (0xFF) like unclaimed
+            // ports elsewhere; the internal PciBus short-circuits that case.
+            0x0CF8..=0x0CFF if !self.pci.is_empty() => self.pci.io_read_byte(port),
+
             // Undocumented ports (probed by Windows 95 during hardware detection).
             0x0D00 | 0x0D01 | 0x0D02 | 0x0D05 | 0x0D0A => 0xFF,
 

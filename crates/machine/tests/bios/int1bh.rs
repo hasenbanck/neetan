@@ -358,7 +358,7 @@ fn boot_and_run_sasi_ra(
     machine
 }
 
-fn assert_result_ah(ram: &[u8; 0xA0000], expected: u8, label: &str) {
+fn assert_result_ah(ram: &[u8], expected: u8, label: &str) {
     let ax = read_ram_u16(ram, RESULT as usize);
     let ah = (ax >> 8) as u8;
     assert_eq!(
@@ -729,7 +729,7 @@ fn int1bh_fdd_diagnostic_read_vm() {
 // §12.2 FDD Read Single Sector (AH=0x56 - MF+SEEK+Read)
 // ============================================================================
 
-fn assert_fdd_read_single_sector(ram: &[u8; 0xA0000]) {
+fn assert_fdd_read_single_sector(ram: &[u8]) {
     assert_result_ah(ram, 0x00, "FDD read single sector");
     let buf_start = DATA_BUFFER as usize;
     assert_eq!(
@@ -816,7 +816,7 @@ fn int1bh_fdd_read_single_sector_ra() {
 // §12.2 FDD Read Multiple Sectors (AH=0x56, 2048 bytes)
 // ============================================================================
 
-fn assert_fdd_read_multiple_sectors(ram: &[u8; 0xA0000]) {
+fn assert_fdd_read_multiple_sectors(ram: &[u8]) {
     assert_result_ah(ram, 0x00, "FDD read multiple sectors");
     let buf_start = DATA_BUFFER as usize;
     assert_eq!(
@@ -1339,7 +1339,7 @@ fn make_int1bh_read_id(al: u8, cylinder: u8, head: u8) -> Vec<u8> {
     ]
 }
 
-fn assert_fdd_read_id(ram: &[u8; 0xA0000]) {
+fn assert_fdd_read_id(ram: &[u8]) {
     assert_result_ah(ram, 0x00, "FDD read ID");
 }
 
@@ -1703,7 +1703,7 @@ fn int1bh_sasi_sense_ra() {
 // §12.3 SASI Sense New (AH=0x84) - Returns Geometry
 // ============================================================================
 
-fn assert_sasi_sense_new(ram: &[u8; 0xA0000]) {
+fn assert_sasi_sense_new(ram: &[u8]) {
     assert_result_ah(ram, 0x00, "SASI sense new");
     let bx = read_ram_u16(ram, RESULT as usize + 2);
     let cx = read_ram_u16(ram, RESULT as usize + 4);
@@ -1776,7 +1776,7 @@ fn int1bh_sasi_sense_no_drive_ra() {
 // §12.3 SASI Read - CHS Mode (AH=0x06, AL=0x80)
 // ============================================================================
 
-fn assert_sasi_read_chs(ram: &[u8; 0xA0000]) {
+fn assert_sasi_read_chs(ram: &[u8]) {
     assert_result_ah(ram, 0x00, "SASI read CHS");
     let buf_start = DATA_BUFFER as usize;
     // LBA 0 bytes 0-1 are CLI+HLT (boot sector stub).
@@ -1846,7 +1846,7 @@ fn int1bh_sasi_read_chs_ra() {
 // §12.3 SASI Read - LBA Mode (AH=0x06, AL=0x00)
 // ============================================================================
 
-fn assert_sasi_read_lba(ram: &[u8; 0xA0000]) {
+fn assert_sasi_read_lba(ram: &[u8]) {
     assert_result_ah(ram, 0x00, "SASI read LBA");
     let buf_start = DATA_BUFFER as usize;
     // LBA 42 marker: first two bytes are (0x00, 0x2A).
@@ -1996,7 +1996,7 @@ fn make_sasi_write_and_readback_code() -> Vec<u8> {
     ]
 }
 
-fn assert_sasi_write_and_readback(ram: &[u8; 0xA0000]) {
+fn assert_sasi_write_and_readback(ram: &[u8]) {
     // Check write result
     let write_ax = read_ram_u16(ram, RESULT as usize);
     let write_ah = (write_ax >> 8) as u8;
@@ -2286,7 +2286,7 @@ fn make_seek_then_read_code(seek_cyl: u8, read_cyl: u8, da: u8) -> Vec<u8> {
     ]
 }
 
-fn assert_seek_then_read(ram: &[u8; 0xA0000]) {
+fn assert_seek_then_read(ram: &[u8]) {
     assert_result_ah(ram, 0x00, "SEEK then READ");
     assert_eq!(
         ram[DATA_BUFFER as usize], 0xBB,

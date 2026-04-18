@@ -1,0 +1,17 @@
+[package]
+name = "kvm"
+version = "0.1.0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# Thin Linux-only wrapper around /dev/kvm for the PC-9821Ra40 machine variant.
+# This crate is the only place in the workspace that uses `unsafe`.
+
+[target.'cfg(target_os = "linux")'.dependencies]
+kvm-bindings = { workspace = true, features = ["fam-wrappers"] }
+kvm-ioctls = { workspace = true }
+libc = { workspace = true }
+memmap2 = { workspace = true }

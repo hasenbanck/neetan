@@ -306,7 +306,7 @@ fn int19h_init_returns_ok_ra() {
 // AH=00h Initialize - Buffer Control Block Fields
 // ============================================================================
 
-fn assert_init_buffer_fields(ram: &[u8; 0xA0000]) {
+fn assert_init_buffer_fields(ram: &[u8]) {
     let flag = ram[RS_BUF + R_FLAG];
     assert_eq!(
         flag & 0x80,
@@ -399,7 +399,7 @@ fn int19h_init_buffer_fields_ra() {
 // AH=00h Initialize - R_INT and R_BFLG Cleared
 // ============================================================================
 
-fn assert_init_clears_header(ram: &[u8; 0xA0000]) {
+fn assert_init_clears_header(ram: &[u8]) {
     let r_int = ram[RS_BUF + R_INT];
     assert_eq!(
         r_int, 0x00,
@@ -440,7 +440,7 @@ fn int19h_init_clears_header_ra() {
 // AH=00h Initialize - BDA Pointer
 // ============================================================================
 
-fn assert_bda_pointer(ram: &[u8; 0xA0000]) {
+fn assert_bda_pointer(ram: &[u8]) {
     let ofst = read_ram_u16(ram, RS_CH0_OFST);
     let seg = read_ram_u16(ram, RS_CH0_SEG);
     assert_eq!(

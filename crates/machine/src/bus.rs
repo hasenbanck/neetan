@@ -11,6 +11,8 @@ mod init;
 mod io_read;
 mod io_write;
 mod os_adapter;
+pub mod pci;
+mod pci_bios;
 
 use std::path::PathBuf;
 
@@ -48,7 +50,7 @@ use device::{
     upd52611_crtc::Upd52611Crtc,
 };
 
-use crate::{NoTracing, Tracing, config::ClockConfig, memory::Pc9801Memory};
+use crate::{NoTracing, Tracing, bus::pci::PciBus, config::ClockConfig, memory::Pc9801Memory};
 
 /// Text RAM (0xA0000-0xA3FFF) access wait penalty in CPU cycles.
 const TRAM_WAIT_CYCLES: i64 = 1;
@@ -287,6 +289,8 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     ide: device::ide::IdeController,
     /// Software DIP Switch (SDIP) - NVRAM configuration on PC-9821.
     sdip: Sdip,
+    /// PCI bus (empty on non-Ra40 machines).
+    pub(crate) pci: PciBus,
     /// BIOS HLE trap controller.
     bios: device::bios::BiosController,
     /// Whether the BIOS interval timer single-shot service is currently armed.
@@ -509,7 +513,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801VM | MachineModel::PC9801VX | MachineModel::PC9801RA => {
                 self.sasi.insert_drive(drive, image, path);
             }
-            MachineModel::PC9821AS | MachineModel::PC9821AP => {
+            MachineModel::PC9821AS | MachineModel::PC9821AP | MachineModel::PC9821RA40 => {
                 self.ide.insert_drive(drive, image, path);
                 if self
                     .ide
@@ -532,7 +536,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801VM | MachineModel::PC9801VX | MachineModel::PC9801RA => {
                 self.sasi.flush_drive(drive);
             }
-            MachineModel::PC9821AS | MachineModel::PC9821AP => {
+            MachineModel::PC9821AS | MachineModel::PC9821AP | MachineModel::PC9821RA40 => {
                 self.ide.flush_drive(drive);
             }
         }
@@ -544,7 +548,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801VM | MachineModel::PC9801VX | MachineModel::PC9801RA => {
                 self.sasi.flush_all_drives();
             }
-            MachineModel::PC9821AS | MachineModel::PC9821AP => {
+            MachineModel::PC9821AS | MachineModel::PC9821AP | MachineModel::PC9821RA40 => {
                 self.ide.flush_all_drives();
             }
         }
@@ -675,6 +679,27 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// Selects the ITF ROM bank for the F8000-FFFFF window.
     pub fn select_rom_bank_itf(&mut self) {
         self.memory.select_banked_rom_window(false);
+    }
+
+    /// Returns the currently-selected BIOS ROM image (96 KiB).
+    ///
+    /// Used by the KVM-backed [`Pc9821Ra40`](crate::Pc9821Ra40) to sync ROM
+    /// bank changes into the KVM-mapped system-space slice.
+    #[cfg_attr(not(feature = "kvm"), allow(dead_code))]
+    pub(crate) fn current_rom_image(&self) -> &[u8] {
+        self.memory.current_rom_image()
+    }
+
+    /// Swaps the main-RAM and extended-RAM backends for KVM-leaked slices.
+    ///
+    /// See [`Pc9801Memory::swap_ram_to_borrowed`] for invariants.
+    #[cfg(feature = "kvm")]
+    pub(crate) fn swap_ram_to_borrowed(
+        &mut self,
+        main_ram: kvm::LeakedSlice,
+        extended_ram: kvm::LeakedSlice,
+    ) {
+        self.memory.swap_ram_to_borrowed(main_ram, extended_ram);
     }
 
     /// Returns the CPU type configured for this bus.

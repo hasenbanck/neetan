@@ -31,9 +31,29 @@ use crate::{
     bus::{
         BootDevice, DMA_ACCESS_CTRL_20BIT, GRCG_WAIT_CYCLES, MOUSE_TIMER_DEFAULT_SETTING,
         MOUSE_TIMER_IRQ_LINE, TRAM_WAIT_CYCLES, VRAM_WAIT_CYCLES, default_local_time,
+        pci::{I440fxHostBridge, NecCbusBridge, PciBus},
     },
     memory::Pc9801Memory,
 };
+
+/// PCI slot number for the NEC PCI-Cbus bridge on PC-9821Ra-class machines.
+///
+/// Mirrors NP21W's `io/pci/cbusbridge.c`, which attaches the bridge at
+/// bus 0 / slot 6.
+const NEC_CBUS_BRIDGE_SLOT: u8 = 6;
+
+/// Populates the PCI bus for the given machine model.
+///
+/// Non-PCI machines return an empty bus; Ra40 attaches the 82441FX host
+/// bridge at slot 0 and the NEC PCI-Cbus bridge at slot 6.
+fn populate_pci_bus(machine_model: MachineModel) -> PciBus {
+    let mut bus = PciBus::new();
+    if machine_model.has_pci() {
+        bus.attach(0, 0, Box::new(I440fxHostBridge::new()));
+        bus.attach(NEC_CBUS_BRIDGE_SLOT, 0, Box::new(NecCbusBridge::new()));
+    }
+    bus
+}
 
 const KEYBOARD_ROM_OFFSET: usize = 0x0B28;
 
@@ -167,6 +187,24 @@ impl<T: Tracing> Pc9801Bus<T> {
     where
         T: Default,
     {
+        let memory = Pc9801Memory::new(machine_model, machine_model.extended_ram_default_size());
+        Self::new_with_memory(machine_model, sample_rate, memory)
+    }
+
+    /// Creates a new bus whose memory subsystem was pre-constructed by the
+    /// caller.
+    ///
+    /// Used by the KVM-backed [`Pc9821Ra40`](crate::Pc9821Ra40), which builds
+    /// `Pc9801Memory` with borrowed RAM backings pointing at KVM-mapped
+    /// host allocations before handing it to the bus.
+    pub(crate) fn new_with_memory(
+        machine_model: MachineModel,
+        sample_rate: u32,
+        memory: Pc9801Memory,
+    ) -> Self
+    where
+        T: Default,
+    {
         let clocks = ClockConfig {
             cpu_clock_hz: machine_model.cpu_clock_hz(),
             pit_clock_hz: machine_model.pit_clock_hz(),
@@ -179,7 +217,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             next_event_cycle: u64::MAX,
             nmi_enabled: false,
             clocks,
-            memory: Pc9801Memory::new(machine_model, machine_model.extended_ram_default_size()),
+            memory,
             pic: I8259aPic::new(),
             scheduler: Scheduler::new(),
             pit: I8253Pit::new(is_8mhz_lineage),
@@ -214,6 +252,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             sasi: SasiController::new(),
             ide: device::ide::IdeController::new(sample_rate),
             sdip: Sdip::new(),
+            pci: populate_pci_bus(machine_model),
             bios: device::bios::BiosController::new(),
             bios_interval_timer_active: false,
             current_cpu_protected_mode: false,
@@ -228,7 +267,10 @@ impl<T: Tracing> Pc9801Bus<T> {
             pegc_mode_active: false,
             dma_access_ctrl: match machine_model {
                 MachineModel::PC9801VM | MachineModel::PC9801VX => DMA_ACCESS_CTRL_20BIT,
-                MachineModel::PC9801RA | MachineModel::PC9821AS | MachineModel::PC9821AP => 0x00,
+                MachineModel::PC9801RA
+                | MachineModel::PC9821AS
+                | MachineModel::PC9821AP
+                | MachineModel::PC9821RA40 => 0x00,
             },
             vram_ems_bank: 0x00,
             ram_window: 0x08,
@@ -366,7 +408,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         let sys_type = match cpu_type {
             CpuType::V30 => 0x00,
             CpuType::I286 => 0x01,
-            CpuType::I386 | CpuType::I486DX => 0x4B,
+            CpuType::I386 | CpuType::I486DX | CpuType::Pentium2 => 0x4B,
         };
         let sys_type = sys_type
             | if self.machine_model.has_ide() {
@@ -392,7 +434,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         // BIOS_FLAG3 (0x0481): 386 machines have bit 5 set.
         self.memory.state.ram[0x0481] = match cpu_type {
             CpuType::I286 | CpuType::V30 => 0x00,
-            CpuType::I386 | CpuType::I486DX => 0x20,
+            CpuType::I386 | CpuType::I486DX | CpuType::Pentium2 => 0x20,
         };
 
         // F2HD_MODE (0x0493): all drives 2HD.
@@ -404,9 +446,10 @@ impl<T: Tracing> Pc9801Bus<T> {
         // F2DD_POINTER (0x05CC) / F2HD_POINTER (0x05F8): far pointers to format
         // tables in ROM. The offsets differ between BIOS generations (RA vs others).
         let (f2hd_off, f2dd_off): (u16, u16) = match self.machine_model {
-            MachineModel::PC9801RA | MachineModel::PC9821AS | MachineModel::PC9821AP => {
-                (0x1AAF, 0x1AD7)
-            }
+            MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP
+            | MachineModel::PC9821RA40 => (0x1AAF, 0x1AD7),
             MachineModel::PC9801VM | MachineModel::PC9801VX => (0x1AB4, 0x1ADC),
         };
         self.memory.state.ram[0x05CC..0x05D0].copy_from_slice(&[
@@ -494,7 +537,10 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.pic.state.chips[1].write_icw = 0;
         match self.machine_model {
             MachineModel::PC9801VM => self.pic.state.chips[1].ocw3 = 0x0B,
-            MachineModel::PC9801RA | MachineModel::PC9821AS | MachineModel::PC9821AP => {
+            MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP
+            | MachineModel::PC9821RA40 => {
                 self.pic.state.chips[0].ocw3 = 0x0B;
             }
             MachineModel::PC9801VX => {}
@@ -539,7 +585,8 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801VX
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
-            | MachineModel::PC9821AP => 0xB8,
+            | MachineModel::PC9821AP
+            | MachineModel::PC9821RA40 => 0xB8,
         };
 
         // NMI gate enabled.
@@ -620,7 +667,8 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801VX
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
-            | MachineModel::PC9821AP => (0x07u8, [4u8, 4, 4]),
+            | MachineModel::PC9821AP
+            | MachineModel::PC9821RA40 => (0x07u8, [4u8, 4, 4]),
         };
         self.palette.state.analog[0] = [0, 0, 0];
         for i in 1u8..8 {
@@ -642,7 +690,8 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801VX
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
-            | MachineModel::PC9821AP => 0x0F,
+            | MachineModel::PC9821AP
+            | MachineModel::PC9821RA40 => 0x0F,
         };
         self.palette.state.digital = [0x37, 0x15, 0x26, 0x04];
 
@@ -668,7 +717,8 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801VX
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
-            | MachineModel::PC9821AP => {}
+            | MachineModel::PC9821AP
+            | MachineModel::PC9821RA40 => {}
         }
 
         // Sound ROM: install stub if no full ROM was loaded.
@@ -690,7 +740,8 @@ impl<T: Tracing> Pc9801Bus<T> {
             MachineModel::PC9801VX
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
-            | MachineModel::PC9821AP => 0x00,
+            | MachineModel::PC9821AP
+            | MachineModel::PC9821RA40 => 0x00,
         };
         self.mouse_ppi.state.accumulator_x = 0;
         self.mouse_ppi.state.accumulator_y = 0;

@@ -744,6 +744,9 @@ impl<T: Tracing> Pc9801Bus<T> {
             // Epson PC-98 compatible system control ports (ignored, not an Epson machine).
             0x0C05 => {}
 
+            // PCI Configuration Mechanism #1 (late PC-9821 only).
+            0x0CF8..=0x0CFF if !self.pci.is_empty() => self.pci.io_write_byte(port, value),
+
             // Undocumented ports (probed by Windows 95 during hardware detection).
             0x0D00..=0x0D03 => {}
 

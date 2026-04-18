@@ -10,11 +10,14 @@ rust-version.workspace = true
 [features]
 mt32 = ["device/mt32"]
 sc55 = ["device/sc55"]
+# Enables the KVM-backed PC-9821Ra40 machine variant. Linux x86_64 host only.
+kvm = ["dep:kvm"]
 
 [dependencies]
 common = { workspace = true }
 cpu = { workspace = true }
 device = { workspace = true }
+kvm = { workspace = true, optional = true }
 os = { workspace = true }
 
 [dev-dependencies]

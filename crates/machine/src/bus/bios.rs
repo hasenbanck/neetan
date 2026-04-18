@@ -1818,6 +1818,15 @@ impl<T: Tracing> Pc9801Bus<T> {
     }
 
     fn hle_int1ah(&mut self, cpu: &mut impl Cpu) {
+        // PCI BIOS 2.10 services (AH=0xB1). Handled entirely inside
+        // `pci_bios.rs`, which sets AH/AL/BH/BL/CX/EDX and the IRET-frame CF
+        // directly. On non-Ra40 machines `self.pci.is_empty()` is true, so
+        // the handler returns FUNC_NOT_SUPPORTED with CF=1 and no behavior
+        // changes for existing machines.
+        if cpu.ah() == 0xB1 {
+            self.hle_pci_bios(cpu);
+            return;
+        }
         let result_ah = match cpu.ah() {
             // CMT functions (0x00–0x05): stubs.
             // VM/VX have no CMT hardware - AH=04h returns 0x00, AH=05h returns 0x27.

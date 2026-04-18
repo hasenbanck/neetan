@@ -1109,6 +1109,20 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
             cpu::I386::<{ cpu::CPU_MODEL_486 }>::new(),
             bus,
         )),
+        #[cfg(all(feature = "kvm", target_os = "linux"))]
+        common::CpuType::Pentium2 => {
+            let ra40 = machine::Pc9821Ra40::new(bus).map_err(|error| {
+                StringError(format!("Failed to construct PC-9821Ra40: {error}"))
+            })?;
+            Box::new(ra40)
+        }
+        #[cfg(not(all(feature = "kvm", target_os = "linux")))]
+        common::CpuType::Pentium2 => {
+            return Err(StringError(format!(
+                "{model} requires the `kvm` cargo feature on Linux x86_64"
+            ))
+            .into());
+        }
     };
 
     Ok(machine)
@@ -1132,7 +1146,7 @@ fn validate_hdd_for_machine(
                 geometry.sector_size,
             );
         }
-        MachineModel::PC9821AS | MachineModel::PC9821AP => {
+        MachineModel::PC9821AS | MachineModel::PC9821AP | MachineModel::PC9821RA40 => {
             ensure!(
                 geometry.sector_size == 512 || geometry.sasi_media_type().is_some(),
                 "{label} is not compatible with {model} (IDE): \

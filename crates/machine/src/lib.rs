@@ -10,6 +10,8 @@ mod bus;
 mod config;
 mod machine;
 mod memory;
+#[cfg(all(feature = "kvm", target_os = "linux"))]
+mod ra40;
 
 use common::MachineModel;
 pub use common::{NoTracing, OsBootStage, SchedulerState, Tracing};
@@ -23,6 +25,8 @@ use device::{
     upd765a_fdc::Upd765aFdcState, upd7220_gdc::GdcState, upd52611_crtc::Upd52611CrtcState,
 };
 pub use machine::{Machine, Pc9801Ra, Pc9801Vm, Pc9801Vx, Pc9821Ap, Pc9821As};
+#[cfg(all(feature = "kvm", target_os = "linux"))]
+pub use ra40::Pc9821Ra40;
 
 pub use crate::{
     bus::{BootDevice, Pc9801Bus},

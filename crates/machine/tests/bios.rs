@@ -389,14 +389,14 @@ const KB_COUNT: usize = 0x0528;
 const KB_STATUS_START: usize = 0x052A;
 const KB_SHIFT_STATE: usize = 0x053A;
 
-fn read_ivt_vector(ram: &[u8; 0xA0000], vector: u8) -> (u16, u16) {
+fn read_ivt_vector(ram: &[u8], vector: u8) -> (u16, u16) {
     let base = (vector as usize) * 4;
     let offset = u16::from_le_bytes([ram[base], ram[base + 1]]);
     let segment = u16::from_le_bytes([ram[base + 2], ram[base + 3]]);
     (segment, offset)
 }
 
-fn read_ram_u16(ram: &[u8; 0xA0000], addr: usize) -> u16 {
+fn read_ram_u16(ram: &[u8], addr: usize) -> u16 {
     u16::from_le_bytes([ram[addr], ram[addr + 1]])
 }
 

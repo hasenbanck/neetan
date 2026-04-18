@@ -181,7 +181,7 @@ impl<const CPU_MODEL: u8, T: Tracing> Machine<cpu::I386<CPU_MODEL>, T> {
     }
 }
 
-fn insert_floppy_impl<T: Tracing>(
+pub(crate) fn insert_floppy_impl<T: Tracing>(
     bus: &mut Pc9801Bus<T>,
     drive: usize,
     path: &std::path::Path,
@@ -200,7 +200,7 @@ fn insert_floppy_impl<T: Tracing>(
     Ok(description)
 }
 
-fn insert_cdrom_impl<T: Tracing>(
+pub(crate) fn insert_cdrom_impl<T: Tracing>(
     bus: &mut Pc9801Bus<T>,
     path: &std::path::Path,
 ) -> Result<String, String> {

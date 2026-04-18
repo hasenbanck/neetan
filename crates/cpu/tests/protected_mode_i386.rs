@@ -711,6 +711,48 @@ fn i386_popf_pushf_iopl_nt_roundtrip() {
     assert_ne!(flags & 0x4000, 0, "NT should be set");
 }
 
+/// 32-bit PUSH of a 16-bit segment register allocates a 4-byte stack slot
+/// but writes only the low 2 bytes; the upper 2 bytes of the slot are left
+/// untouched. Documented i386/i486 behavior (Pentium and later zero-extend).
+#[test]
+fn i386_push_sreg_o32_leaves_upper_stack_slot_untouched() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_protected_mode(&mut bus, 0xFFFF);
+    cpu.load_state(&state);
+
+    let sentinel_hi: u16 = 0xDEAD;
+    let sentinel_lo: u16 = 0xBEEF;
+    let initial_sp = cpu.esp();
+    let slot_addr = PM_STACK_BASE + (initial_sp - 4);
+    write_dword_at(
+        &mut bus,
+        slot_addr,
+        ((sentinel_hi as u32) << 16) | sentinel_lo as u32,
+    );
+
+    place_at(&mut bus, PM_CODE_BASE, &[0x66, 0x1E]);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(
+        cpu.esp(),
+        initial_sp - 4,
+        "o32 PUSH DS must allocate a 4-byte stack slot",
+    );
+    assert_eq!(
+        read_word_at(&bus, slot_addr),
+        PM_DS_SEL,
+        "low 2 bytes of slot must hold the DS selector",
+    );
+    assert_eq!(
+        read_word_at(&bus, slot_addr + 2),
+        sentinel_hi,
+        "upper 2 bytes of slot must be left untouched (i386/i486 semantics)",
+    );
+}
+
 #[test]
 fn i386_gp_escalates_to_double_fault() {
     let mut cpu: I386 = I386::new();

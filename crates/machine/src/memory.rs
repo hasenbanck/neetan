@@ -5,6 +5,142 @@ use std::{
 
 use common::MachineModel;
 
+/// Backing store for the 640 KiB main RAM window (`0x00000-0x9FFFF`).
+///
+/// Normally the main RAM is an owned heap allocation. When the machine is
+/// KVM-backed (Ra40-class), RAM must instead be a slice into the mmap that
+/// KVM has registered as a guest memory slot, so that host-side accessors
+/// and the KVM guest both see the same bytes. The `Borrowed` variant holds
+/// a [`kvm::LeakedSlice`] that was allocated by the KVM crate and leaked
+/// for the lifetime of the machine.
+pub enum MainRamBackend {
+    /// Standard heap-allocated RAM (non-KVM machines).
+    Owned(Box<[u8]>),
+    /// Borrowed slice into a KVM-backed mmap.
+    #[cfg(feature = "kvm")]
+    Borrowed(kvm::LeakedSlice),
+}
+
+impl MainRamBackend {
+    /// Allocates a new zero-filled owned backing store.
+    pub(crate) fn new_owned(size: usize) -> Self {
+        Self::Owned(vec![0u8; size].into_boxed_slice())
+    }
+}
+
+impl Deref for MainRamBackend {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Owned(backing) => backing,
+            #[cfg(feature = "kvm")]
+            Self::Borrowed(backing) => backing.as_slice(),
+        }
+    }
+}
+
+impl DerefMut for MainRamBackend {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        match self {
+            Self::Owned(backing) => backing,
+            #[cfg(feature = "kvm")]
+            Self::Borrowed(backing) => backing.as_mut_slice(),
+        }
+    }
+}
+
+impl Clone for MainRamBackend {
+    fn clone(&self) -> Self {
+        // Cloning always produces an owned copy. Save states of KVM-backed
+        // machines therefore flatten to the Owned variant; reloading against
+        // a Borrowed backend is handled by the machine's load_state path.
+        Self::Owned(self.deref().to_vec().into_boxed_slice())
+    }
+}
+
+impl PartialEq for MainRamBackend {
+    fn eq(&self, other: &Self) -> bool {
+        self.deref() == other.deref()
+    }
+}
+
+impl Eq for MainRamBackend {}
+
+impl fmt::Debug for MainRamBackend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Owned(_) => write!(f, "Owned([u8; {:#X}])", self.len()),
+            #[cfg(feature = "kvm")]
+            Self::Borrowed(_) => write!(f, "Borrowed([u8; {:#X}])", self.len()),
+        }
+    }
+}
+
+/// Backing store for extended RAM (`0x100000+`).
+///
+/// Mirrors [`MainRamBackend`] but allows zero length (PC-9801VM ships with
+/// no extended RAM).
+pub enum ExtendedRamBackend {
+    /// Standard heap-allocated extended RAM.
+    Owned(Box<[u8]>),
+    /// Borrowed slice into a KVM-backed mmap.
+    #[cfg(feature = "kvm")]
+    Borrowed(kvm::LeakedSlice),
+}
+
+impl ExtendedRamBackend {
+    /// Allocates a new zero-filled owned backing of the given size
+    /// (accepts zero length).
+    pub(crate) fn new_owned(size: usize) -> Self {
+        Self::Owned(vec![0u8; size].into_boxed_slice())
+    }
+}
+
+impl Deref for ExtendedRamBackend {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Owned(backing) => backing,
+            #[cfg(feature = "kvm")]
+            Self::Borrowed(backing) => backing.as_slice(),
+        }
+    }
+}
+
+impl DerefMut for ExtendedRamBackend {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        match self {
+            Self::Owned(backing) => backing,
+            #[cfg(feature = "kvm")]
+            Self::Borrowed(backing) => backing.as_mut_slice(),
+        }
+    }
+}
+
+impl Clone for ExtendedRamBackend {
+    fn clone(&self) -> Self {
+        Self::Owned(self.deref().to_vec().into_boxed_slice())
+    }
+}
+
+impl PartialEq for ExtendedRamBackend {
+    fn eq(&self, other: &Self) -> bool {
+        self.deref() == other.deref()
+    }
+}
+
+impl Eq for ExtendedRamBackend {}
+
+impl fmt::Debug for ExtendedRamBackend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Owned(_) => write!(f, "Owned([u8; {:#X}])", self.len()),
+            #[cfg(feature = "kvm")]
+            Self::Borrowed(_) => write!(f, "Borrowed([u8; {:#X}])", self.len()),
+        }
+    }
+}
+
 /// Main RAM start address (00000h). 640 KB on the PC-9801VM.
 const RAM_START: u32 = 0x00000;
 /// Main RAM end address, inclusive (9FFFFh).
@@ -130,10 +266,11 @@ const V98_FONT_ROM_SIZE: usize = 0x46800;
 /// Snapshot of the mutable memory state (RAM + VRAM). ROM is excluded.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Pc9801MemoryState {
-    /// Main RAM (640 KB).
-    pub ram: Box<[u8; RAM_SIZE]>,
+    /// Main RAM (640 KB). Backed by either an owned heap allocation or a
+    /// borrowed slice into a KVM guest-memory mmap.
+    pub ram: MainRamBackend,
     /// Extended RAM above 1 MB.
-    pub extended_ram: Box<[u8]>,
+    pub extended_ram: ExtendedRamBackend,
     /// Text VRAM (16 KB).
     pub text_vram: Box<[u8; TEXT_VRAM_SIZE]>,
     /// Base graphics VRAM (B/R/G planes, 96 KB per page, two pages total).
@@ -306,8 +443,88 @@ impl Pc9801Memory {
         };
         Self {
             state: Pc9801MemoryState {
-                ram: vec![0u8; RAM_SIZE].into_boxed_slice().try_into().unwrap(),
-                extended_ram: vec![0u8; extended_ram_size].into_boxed_slice(),
+                ram: MainRamBackend::new_owned(RAM_SIZE),
+                extended_ram: ExtendedRamBackend::new_owned(extended_ram_size),
+                text_vram: Box::new([0u8; TEXT_VRAM_SIZE]),
+                graphics_vram: vec![0u8; GRAPHICS_VRAM_SIZE]
+                    .into_boxed_slice()
+                    .try_into()
+                    .unwrap(),
+                e_plane_vram: Box::new([0u8; E_PLANE_VRAM_SIZE]),
+                pegc_vram: if machine_model.has_pegc() {
+                    Some(
+                        vec![0u8; PEGC_VRAM_SIZE]
+                            .into_boxed_slice()
+                            .try_into()
+                            .unwrap(),
+                    )
+                } else {
+                    None
+                },
+                e_plane_enabled: false,
+                address_mask: machine_model.address_mask(),
+                shadow_ram,
+                shadow_control: 0x00,
+                ems_page_frame: None,
+                ems_page_frame_slot_mappings: [None; EMS_PHYSICAL_PAGE_COUNT],
+                umb_region: None,
+            },
+            rom: vec![0u8; BIOS_ROM_SIZE]
+                .into_boxed_slice()
+                .try_into()
+                .unwrap(),
+            bios_bank1: None,
+            bios_bank_is_bank1: false,
+            font_rom: vec![0u8; FONT_ROM_SIZE]
+                .into_boxed_slice()
+                .try_into()
+                .unwrap(),
+            sound_rom: None,
+            font_rom_dirty: false,
+        }
+    }
+
+    /// Creates a new memory subsystem whose main and extended RAM are
+    /// *borrowed* from pre-allocated host-memory slices.
+    ///
+    /// Used by the KVM-backed PC-9821Ra40 variant: the caller allocates a
+    /// single leaked mmap covering the full guest physical address space,
+    /// then hands slices into that mmap in as `main_ram` and `extended_ram`.
+    /// The guest executes natively against the same pages via
+    /// `KVM_SET_USER_MEMORY_REGION`, and the host-side HLE/IDE/SASI paths
+    /// keep using the `Pc9801Memory` API unchanged.
+    ///
+    /// `main_ram.len()` must equal [`RAM_SIZE`]; `extended_ram.len()` may be
+    /// any value consistent with `machine_model.extended_ram_default_size()`.
+    //
+    // Wired up to `Pc9821Ra40::new` in Phase 4; silence the unused warning
+    // until that call site lands.
+    #[cfg(feature = "kvm")]
+    #[allow(dead_code)]
+    pub(crate) fn new_borrowed(
+        machine_model: MachineModel,
+        main_ram: kvm::LeakedSlice,
+        extended_ram: kvm::LeakedSlice,
+    ) -> Self {
+        assert_eq!(
+            main_ram.len(),
+            RAM_SIZE,
+            "borrowed main-ram slice must be exactly {RAM_SIZE:#X} bytes"
+        );
+        let shadow_ram = if machine_model.has_shadow_ram() {
+            Some(
+                vec![0u8; BIOS_ROM_SIZE]
+                    .into_boxed_slice()
+                    .try_into()
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
+        Self {
+            state: Pc9801MemoryState {
+                ram: MainRamBackend::Borrowed(main_ram),
+                extended_ram: ExtendedRamBackend::Borrowed(extended_ram),
                 text_vram: Box::new([0u8; TEXT_VRAM_SIZE]),
                 graphics_vram: vec![0u8; GRAPHICS_VRAM_SIZE]
                     .into_boxed_slice()
@@ -413,9 +630,10 @@ impl Pc9801Memory {
         // Format table offsets differ between BIOS generations (RA vs others).
         let (f2hd_ind, f2hd_data, f2dd_ind, f2dd_data): (usize, usize, usize, usize) =
             match machine_model {
-                MachineModel::PC9801RA | MachineModel::PC9821AS | MachineModel::PC9821AP => {
-                    (0x1AAF, 0x1AB7, 0x1AD7, 0x1ADF)
-                }
+                MachineModel::PC9801RA
+                | MachineModel::PC9821AS
+                | MachineModel::PC9821AP
+                | MachineModel::PC9821RA40 => (0x1AAF, 0x1AB7, 0x1AD7, 0x1ADF),
                 MachineModel::PC9801VM | MachineModel::PC9801VX => (0x1AB4, 0x1ABC, 0x1ADC, 0x1AE4),
             };
 
@@ -459,6 +677,56 @@ impl Pc9801Memory {
         } else {
             self.bios_bank_is_bank1 = false;
         }
+    }
+
+    /// Returns the currently-selected 96 KiB BIOS ROM image.
+    ///
+    /// On dual-bank machines the active bank depends on the state set by
+    /// [`select_banked_rom_window`](Self::select_banked_rom_window).
+    // Used by the KVM-backed Ra40 to sync ROM-bank changes into the KVM
+    // memory slot; allowed-dead on interpreter-only builds.
+    #[cfg_attr(not(feature = "kvm"), allow(dead_code))]
+    pub(crate) fn current_rom_image(&self) -> &[u8] {
+        match (self.bios_bank_is_bank1, self.bios_bank1.as_ref()) {
+            (true, Some(bank1)) => bank1.as_slice(),
+            _ => self.rom.as_slice(),
+        }
+    }
+
+    /// Replaces the main-RAM and extended-RAM backends with the given
+    /// KVM-leaked host slices, copying existing contents forward.
+    ///
+    /// Used by the KVM-backed [`Pc9821Ra40`](crate::Pc9821Ra40) to swap a
+    /// fully-configured bus's owned RAM for KVM-backed borrowed slices
+    /// without re-running post-boot state initialization.
+    ///
+    /// `main_ram` must be exactly [`RAM_SIZE`] bytes. `extended_ram.len()`
+    /// must equal the existing `extended_ram.len()` so buffer offsets stay
+    /// valid.
+    #[cfg(feature = "kvm")]
+    pub(crate) fn swap_ram_to_borrowed(
+        &mut self,
+        mut main_ram: kvm::LeakedSlice,
+        mut extended_ram: kvm::LeakedSlice,
+    ) {
+        assert_eq!(
+            main_ram.len(),
+            RAM_SIZE,
+            "swap_ram_to_borrowed: main_ram must be {RAM_SIZE:#X} bytes"
+        );
+        assert_eq!(
+            extended_ram.len(),
+            self.state.extended_ram.len(),
+            "swap_ram_to_borrowed: extended_ram length mismatch"
+        );
+        main_ram
+            .as_mut_slice()
+            .copy_from_slice(&self.state.ram[..RAM_SIZE]);
+        extended_ram
+            .as_mut_slice()
+            .copy_from_slice(&self.state.extended_ram[..]);
+        self.state.ram = MainRamBackend::Borrowed(main_ram);
+        self.state.extended_ram = ExtendedRamBackend::Borrowed(extended_ram);
     }
 
     /// Enables or disables E-plane VRAM mapping at E0000-E7FFF.
@@ -1035,5 +1303,64 @@ mod tests {
         // Set bit 7 => sound ROM visible.
         memory.set_shadow_control(0x80);
         assert_ne!(memory.read_byte(0xCC000 + 0x2E00), 0xFF);
+    }
+
+    #[test]
+    fn main_ram_backend_owned_write_roundtrip() {
+        use std::ops::{Deref, DerefMut};
+
+        use super::{MainRamBackend, RAM_SIZE};
+        let mut backend = MainRamBackend::new_owned(RAM_SIZE);
+        backend.deref_mut()[0x100] = 0xAB;
+        assert_eq!(backend.deref()[0x100], 0xAB);
+        assert_eq!(backend.len(), RAM_SIZE);
+    }
+
+    #[test]
+    fn main_ram_backend_clone_produces_owned_copy() {
+        use std::ops::{Deref, DerefMut};
+
+        use super::{MainRamBackend, RAM_SIZE};
+        let mut backend = MainRamBackend::new_owned(RAM_SIZE);
+        backend.deref_mut()[0] = 0x42;
+        let cloned = backend.clone();
+        assert!(matches!(cloned, MainRamBackend::Owned(_)));
+        assert_eq!(cloned.deref()[0], 0x42);
+        assert_eq!(cloned.len(), RAM_SIZE);
+    }
+
+    #[cfg(feature = "kvm")]
+    #[test]
+    fn main_ram_backend_borrowed_mirrors_leaked_slice() {
+        use std::ops::{Deref, DerefMut};
+
+        use super::{MainRamBackend, RAM_SIZE};
+        let leaked = kvm::LeakedSlice::new_zeroed(RAM_SIZE);
+        let mut backend = MainRamBackend::Borrowed(leaked);
+        backend.deref_mut()[0x200] = 0x7E;
+        assert_eq!(backend.deref()[0x200], 0x7E);
+        assert_eq!(backend.len(), RAM_SIZE);
+    }
+
+    #[cfg(feature = "kvm")]
+    #[test]
+    fn new_borrowed_constructs_memory_subsystem_with_leaked_ram() {
+        let main_ram = kvm::LeakedSlice::new_zeroed(super::RAM_SIZE);
+        let extended_ram = kvm::LeakedSlice::new_zeroed(0x1E00000);
+        let mut memory =
+            Pc9801Memory::new_borrowed(MachineModel::PC9821RA40, main_ram, extended_ram);
+        // Borrowed backends deref to usable byte slices.
+        assert_eq!(memory.state.ram.len(), super::RAM_SIZE);
+        assert_eq!(memory.state.extended_ram.len(), 0x1E00000);
+
+        // HLE-style writes land in the borrowed storage.
+        memory.state.ram[0x400] = 0x55;
+        assert_eq!(memory.state.ram[0x400], 0x55);
+        memory.state.extended_ram[0x1000] = 0xAA;
+        assert_eq!(memory.state.extended_ram[0x1000], 0xAA);
+
+        // Ra40 still allocates shadow RAM, PEGC, and the default extras.
+        assert!(memory.state.shadow_ram.is_some());
+        assert!(memory.state.pegc_vram.is_some());
     }
 }
