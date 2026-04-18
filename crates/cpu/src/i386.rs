@@ -881,7 +881,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
 
         let rights = self.seg_rights[seg as usize];
-        let end = offset + size.saturating_sub(1);
+        let end = offset.saturating_add(size.saturating_sub(1));
+        let wrapped = offset.checked_add(size.saturating_sub(1)).is_none();
         let limit = self.seg_limits[seg as usize];
         if Self::descriptor_is_expand_down(rights) {
             let upper = if self.seg_granularity[seg as usize] & 0x40 != 0 {
@@ -889,11 +890,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             } else {
                 0xFFFF
             };
-            if offset <= limit || end > upper {
+            if offset <= limit || end > upper || wrapped {
                 self.raise_fault_with_code(if seg == SegReg32::SS { 12 } else { 13 }, 0, bus);
                 return false;
             }
-        } else if end > limit {
+        } else if end > limit || wrapped {
             self.raise_fault_with_code(if seg == SegReg32::SS { 12 } else { 13 }, 0, bus);
             return false;
         }
