@@ -733,7 +733,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
 
         let Some(descriptor) = self.decode_descriptor(selector, bus) else {
-            self.raise_segment_protection(seg, selector, bus);
+            self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
             return false;
         };
         let rights = descriptor.rights;
