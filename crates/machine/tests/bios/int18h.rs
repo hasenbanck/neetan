@@ -1355,6 +1355,59 @@ fn crt_mode_set_25_ra() {
 }
 
 // ============================================================================
+// §9.2 AH=0Ah - CRT Mode Set hides cursor (CSRFORM bit 7 side effect)
+// ============================================================================
+//
+// The real BIOS rewrites CSRFORM byte 0 without bit 7 during AH=0Ah, which on
+// the real GDC clears the cursor-enable flag. Games like Edge rely on this to
+// drop the text cursor when switching into graphics mode without issuing an
+// explicit AH=12h. Call AH=11h to show the cursor, then AH=0Ah, and assert the
+// cursor has been disabled.
+#[rustfmt::skip]
+fn make_show_cursor_then_crt_mode_set(al: u8) -> Vec<u8> {
+    vec![
+        0xB4, 0x11,             // MOV AH, 11h  (show cursor)
+        0xCD, 0x18,             // INT 18h
+        0xB4, 0x0A, 0xB0, al,   // MOV AH, 0Ah; MOV AL, al
+        0xCD, 0x18,             // INT 18h
+        0xF4,                   // HLT
+    ]
+}
+
+#[test]
+fn crt_mode_set_hides_cursor_vm() {
+    let code = make_show_cursor_then_crt_mode_set(0x00);
+    let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
+    let state = machine.save_state();
+    assert!(
+        !state.gdc_master.cursor_display,
+        "AH=0Ah should hide cursor via CSRFORM byte 0 rewrite without bit 7"
+    );
+}
+
+#[test]
+fn crt_mode_set_hides_cursor_vx() {
+    let code = make_show_cursor_then_crt_mode_set(0x00);
+    let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
+    let state = machine.save_state();
+    assert!(
+        !state.gdc_master.cursor_display,
+        "AH=0Ah should hide cursor via CSRFORM byte 0 rewrite without bit 7"
+    );
+}
+
+#[test]
+fn crt_mode_set_hides_cursor_ra() {
+    let code = make_show_cursor_then_crt_mode_set(0x00);
+    let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
+    let state = machine.save_state();
+    assert!(
+        !state.gdc_master.cursor_display,
+        "AH=0Ah should hide cursor via CSRFORM byte 0 rewrite without bit 7"
+    );
+}
+
+// ============================================================================
 // §9.2 AH=0Eh - Single Display Area
 // ============================================================================
 

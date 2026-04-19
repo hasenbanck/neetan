@@ -919,6 +919,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         let cursor_bottom = [0x07u8, 0x09, 0x0F, 0x13][pos as usize];
         self.gdc_master.state.cursor_top = 0;
         self.gdc_master.state.cursor_bottom = cursor_bottom;
+        self.gdc_master.state.cursor_display = false;
     }
 
     fn int18h_cursor_display_start(&mut self) {
