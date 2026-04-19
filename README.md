@@ -27,6 +27,7 @@ Currently, we aim to support all 16-bit era DOS games and emulate them accuratel
 We also support the following sound cards:
 
 * PC beeper
+* PC-9801-14 Music Generator (TMS3631 8-channel synth)
 * PC-9801-26k
 * PC-9801-86
 * PC-9801-86 + PC-9801-26k combo
@@ -66,7 +67,7 @@ neetan <COMMAND>
 | `--force-gdc-clock <2.5\|5>` | Force GDC clock to 2.5 or 5 MHz. VX and later only                       | auto       |
 | `--bios-rom <PATH>`          | Path to BIOS ROM file                                                    | HLE BIOS   |
 | `--font-rom <PATH>`          | Path to font ROM file                                                    | Built-in   |
-| `--soundboard <TYPE>`        | Sound board: `none`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`           | `86+26k`   |
+| `--soundboard <TYPE>`        | Sound board: `none`, `14`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`     | `86+26k`   |
 | `--midi <DEVICE>`            | MIDI device: `none`, `mt32`, `sc55`                                      | `none`     |
 | `--mt32-roms <PATH>`         | Path to MT-32 ROM directory (requires `mt32` feature)                    | -          |
 | `--sc55-roms <PATH>`         | Path to SC-55 ROM directory (requires `sc55` feature)                    | -          |

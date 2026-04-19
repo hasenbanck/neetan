@@ -989,6 +989,10 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
 
     match config.soundboard {
         config::SoundboardType::None => {}
+        config::SoundboardType::Sb14 => {
+            bus.install_soundboard_14();
+            info!("Installed PC-9801-14 sound board (TMS3631 8ch synth)");
+        }
         config::SoundboardType::Sb26k => {
             bus.install_soundboard_26k(false);
             info!("Installed PC-9801-26K sound board (YM2203 OPN)");

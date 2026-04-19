@@ -291,10 +291,12 @@ impl<T: Tracing> Pc9801Bus<T> {
             // after hardware density detection override.
             0xBE => (self.floppy.effective_fdc_media() & 3) | FDC_MEDIA_READ_FIXED_BITS,
 
-            // 26K alternate base status (dual-board mode: 26K at 0x0088).
+            // PC-9801-14 PPI port A / dual-board 26K alternate status.
             0x0088 => {
                 self.pending_wait_cycles += self.cbus_wait_cycles();
-                if self.soundboard_86.is_some()
+                if let Some(ref sb14) = self.soundboard_14 {
+                    sb14.read_port_a()
+                } else if self.soundboard_86.is_some()
                     && let Some(soundboard_26k) = self.soundboard_26k.as_mut()
                 {
                     let value = soundboard_26k.read_status(self.current_cycle);
@@ -304,10 +306,12 @@ impl<T: Tracing> Pc9801Bus<T> {
                     0xFF
                 }
             }
-            // 26K alternate base data read (dual-board mode: 26K at 0x008A).
+            // PC-9801-14 PPI port B / dual-board 26K alternate data.
             0x008A => {
                 self.pending_wait_cycles += self.cbus_wait_cycles();
-                if self.soundboard_26k.is_some() && self.soundboard_86.is_some() {
+                if let Some(ref sb14) = self.soundboard_14 {
+                    sb14.read_port_b()
+                } else if self.soundboard_26k.is_some() && self.soundboard_86.is_some() {
                     let sb26k = self.soundboard_26k.as_mut().unwrap();
                     if sb26k.address() == 0x0E {
                         let irq_bits = match sb26k.irq_line() {
@@ -327,11 +331,32 @@ impl<T: Tracing> Pc9801Bus<T> {
                     0xFF
                 }
             }
+            // PC-9801-14 PPI port C (TMS3631 key data latch).
+            0x008C => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                if let Some(ref sb14) = self.soundboard_14 {
+                    sb14.read_port_c()
+                } else {
+                    0xFF
+                }
+            }
+            // PC-9801-14 PPI DIP switch (I/O-address selector).
+            0x008E => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                if let Some(ref sb14) = self.soundboard_14 {
+                    sb14.read_dip_switch()
+                } else {
+                    0xFF
+                }
+            }
 
-            // FM sound board status (OPN / OPNA low bank).
+            // FM sound board status (OPN / OPNA low bank), or 14-board
+            // channel-enable mask readback.
             0x0188 => {
                 self.pending_wait_cycles += self.cbus_wait_cycles();
-                if let Some(ref mut sb86) = self.soundboard_86 {
+                if let Some(ref sb14) = self.soundboard_14 {
+                    sb14.read_enable_mask()
+                } else if let Some(ref mut sb86) = self.soundboard_86 {
                     let value = sb86.read_status(self.current_cycle);
                     self.process_soundboard_86_actions();
                     value
@@ -343,10 +368,13 @@ impl<T: Tracing> Pc9801Bus<T> {
                     0xFF
                 }
             }
-            // FM sound board data read (OPN / OPNA low bank).
+            // FM sound board data read (OPN / OPNA low bank), or 14-board
+            // mirror of 0x0188 (enable mask).
             0x018A => {
                 self.pending_wait_cycles += self.cbus_wait_cycles();
-                if let Some(ref mut sb86) = self.soundboard_86 {
+                if let Some(ref sb14) = self.soundboard_14 {
+                    sb14.read_enable_mask()
+                } else if let Some(ref mut sb86) = self.soundboard_86 {
                     let value = sb86.read_data(self.current_cycle);
                     self.process_soundboard_86_actions();
                     value
@@ -369,10 +397,13 @@ impl<T: Tracing> Pc9801Bus<T> {
                     0xFF
                 }
             }
-            // OPNA extended status (high bank).
+            // OPNA extended status (high bank), or 14-board 8253 counter #2
+            // readback.
             0x018C => {
                 self.pending_wait_cycles += self.cbus_wait_cycles();
-                if let Some(ref mut sb86) = self.soundboard_86 {
+                if let Some(ref sb14) = self.soundboard_14 {
+                    sb14.read_pit_counter()
+                } else if let Some(ref mut sb86) = self.soundboard_86 {
                     let value = sb86.read_status_hi(self.current_cycle);
                     self.process_soundboard_86_actions();
                     value
@@ -380,10 +411,13 @@ impl<T: Tracing> Pc9801Bus<T> {
                     0xFF
                 }
             }
-            // OPNA extended data read (high bank).
+            // OPNA extended data read (high bank), or 14-board strap
+            // switch (INT5 = 0x80).
             0x018E => {
                 self.pending_wait_cycles += self.cbus_wait_cycles();
-                if let Some(ref mut sb86) = self.soundboard_86 {
+                if let Some(ref sb14) = self.soundboard_14 {
+                    sb14.read_strap_switch()
+                } else if let Some(ref mut sb86) = self.soundboard_86 {
                     sb86.read_data_hi(self.current_cycle)
                 } else {
                     0xFF

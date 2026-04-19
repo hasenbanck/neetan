@@ -317,7 +317,7 @@ impl std::str::FromStr for MachineModel {
 }
 
 /// Number of [`EventKind`] variants.
-const EVENT_KIND_COUNT: usize = 20;
+const EVENT_KIND_COUNT: usize = 21;
 
 /// Trait representing the system bus of an emulated machine.
 ///
@@ -1090,6 +1090,8 @@ pub enum EventKind {
     Sb16DspDma,
     /// MPU-PC98II intelligent-mode timing tick.
     MpuTimer,
+    /// PC-9801-14 Music Generator board 8253 counter #2 terminal count.
+    MusicGen14Timer,
 }
 
 impl EventKind {
@@ -1114,6 +1116,7 @@ impl EventKind {
         EventKind::Sb16OplTimerB,
         EventKind::Sb16DspDma,
         EventKind::MpuTimer,
+        EventKind::MusicGen14Timer,
     ];
 
     const fn from_index(index: usize) -> Self {

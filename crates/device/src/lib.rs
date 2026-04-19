@@ -33,6 +33,7 @@ pub mod sasi;
 pub mod sc55;
 pub mod sdip;
 pub mod sound_blaster_16;
+pub mod soundboard_14;
 pub mod soundboard_26k;
 pub mod soundboard_86;
 pub mod upd4990a_rtc;
