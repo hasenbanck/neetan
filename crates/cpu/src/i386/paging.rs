@@ -9,6 +9,15 @@ const PTE_USER: u32 = 0x04;
 const PTE_ACCESSED: u32 = 0x20;
 const PTE_DIRTY: u32 = 0x40;
 
+/// PC-9801/9821 physical bus address mask (24 bits).
+///
+/// The 386DX/486DX dies expose a 32-bit physical address bus, but the PC-9801RA
+/// and early PC-9821 boards only decode 24 address lines. Accesses above 16 MB
+/// wrap into the 16 MB system space (F00000-FFFFFF) on real hardware. The board
+/// mask is applied here because `Pc9801Bus` only handles A20 gating and relies
+/// on the CPU side to clamp to the board's physical width.
+const PC98_PHYSICAL_ADDRESS_MASK: u32 = 0x00FF_FFFF;
+
 impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     #[inline(always)]
     pub(super) fn is_paging_enabled(&self) -> bool {
@@ -29,7 +38,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus: &mut impl common::Bus,
     ) -> Option<u32> {
         if !self.is_paging_enabled() {
-            return Some(linear);
+            return Some(linear & PC98_PHYSICAL_ADDRESS_MASK);
         }
 
         let page = linear >> 12;
@@ -128,7 +137,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             true
         };
 
-        Some(physical)
+        Some(physical & PC98_PHYSICAL_ADDRESS_MASK)
     }
 
     fn raise_page_fault(
@@ -155,24 +164,35 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     #[inline(always)]
     pub(super) fn read_dword_phys_raw(&self, bus: &mut impl common::Bus, addr: u32) -> u32 {
-        if addr & 0xFFF <= 0xFFC {
-            return bus.read_dword(addr);
+        let a = addr & PC98_PHYSICAL_ADDRESS_MASK;
+        if a & 0xFFF <= 0xFFC {
+            return bus.read_dword(a);
         }
-        bus.read_byte(addr) as u32
-            | ((bus.read_byte(addr.wrapping_add(1)) as u32) << 8)
-            | ((bus.read_byte(addr.wrapping_add(2)) as u32) << 16)
-            | ((bus.read_byte(addr.wrapping_add(3)) as u32) << 24)
+        bus.read_byte(a) as u32
+            | ((bus.read_byte(a.wrapping_add(1) & PC98_PHYSICAL_ADDRESS_MASK) as u32) << 8)
+            | ((bus.read_byte(a.wrapping_add(2) & PC98_PHYSICAL_ADDRESS_MASK) as u32) << 16)
+            | ((bus.read_byte(a.wrapping_add(3) & PC98_PHYSICAL_ADDRESS_MASK) as u32) << 24)
     }
 
     #[inline(always)]
     pub(super) fn write_dword_phys_raw(&self, bus: &mut impl common::Bus, addr: u32, value: u32) {
-        if addr & 0xFFF <= 0xFFC {
-            bus.write_dword(addr, value);
+        let a = addr & PC98_PHYSICAL_ADDRESS_MASK;
+        if a & 0xFFF <= 0xFFC {
+            bus.write_dword(a, value);
             return;
         }
-        bus.write_byte(addr, value as u8);
-        bus.write_byte(addr.wrapping_add(1), (value >> 8) as u8);
-        bus.write_byte(addr.wrapping_add(2), (value >> 16) as u8);
-        bus.write_byte(addr.wrapping_add(3), (value >> 24) as u8);
+        bus.write_byte(a, value as u8);
+        bus.write_byte(
+            a.wrapping_add(1) & PC98_PHYSICAL_ADDRESS_MASK,
+            (value >> 8) as u8,
+        );
+        bus.write_byte(
+            a.wrapping_add(2) & PC98_PHYSICAL_ADDRESS_MASK,
+            (value >> 16) as u8,
+        );
+        bus.write_byte(
+            a.wrapping_add(3) & PC98_PHYSICAL_ADDRESS_MASK,
+            (value >> 24) as u8,
+        );
     }
 }
