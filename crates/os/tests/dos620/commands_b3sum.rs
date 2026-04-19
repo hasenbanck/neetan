@@ -130,8 +130,8 @@ fn b3sum_rejects_directories() {
     run_until_prompt(&mut machine);
 
     assert!(
-        find_row_containing(&machine.bus, "Access denied").is_some(),
-        "B3SUM should reject directory arguments"
+        find_row_containing(&machine.bus, "File not found").is_some(),
+        "B3SUM should not hash a directory passed as an explicit argument"
     );
 }
 
@@ -149,5 +149,52 @@ fn b3sum_reports_broken_cluster_chains() {
     assert!(
         find_row_containing(&machine.bus, "Read error").is_some(),
         "B3SUM should fail on truncated cluster chains"
+    );
+}
+
+#[test]
+fn b3sum_hashes_cdrom_file() {
+    let mut machine = boot_hle_with_cdrom_image(create_test_cdimage());
+    type_string(&mut machine.bus, b"Q:\r");
+    run_until_prompt_ap(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt_ap(&mut machine);
+    type_string_long_ap(&mut machine, b"B3SUM README.TXT\r");
+    run_until_prompt_ap(&mut machine);
+
+    let expected_line = format!("{}  README.TXT", digest_hex(TEST_CDROM_README));
+    assert!(
+        find_row_containing(&machine.bus, &expected_line).is_some(),
+        "B3SUM should hash README.TXT on the CD-ROM with the expected digest"
+    );
+}
+
+#[test]
+fn b3sum_wildcard_skips_cdrom_subdirectories() {
+    let mut machine = boot_hle_with_cdrom_image(create_test_cdimage_with_xcopy_tree());
+    type_string(&mut machine.bus, b"Q:\r");
+    run_until_prompt_ap(&mut machine);
+    type_string_long_ap(&mut machine, b"CD YOURFOLD\r");
+    run_until_prompt_ap(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt_ap(&mut machine);
+    type_string_long_ap(&mut machine, b"B3SUM *.*\r");
+    run_until_prompt_ap(&mut machine);
+
+    let root1_line = format!("{}  ROOT1.TXT", digest_hex(b"ROOT1\r\n"));
+    let root2_line = format!("{}  ROOT2.TXT", digest_hex(b"ROOT2\r\n"));
+    assert!(
+        find_string_in_text_vram(&machine.bus, &text_codes(&root1_line)),
+        "B3SUM *.* should hash ROOT1.TXT on a CD-ROM directory that also contains subdirectories"
+    );
+    assert!(
+        find_string_in_text_vram(&machine.bus, &text_codes(&root2_line)),
+        "B3SUM *.* should hash ROOT2.TXT on a CD-ROM directory that also contains subdirectories"
+    );
+    assert!(
+        find_row_containing(&machine.bus, "Access denied").is_none(),
+        "B3SUM *.* should skip CD-ROM subdirectories silently instead of erroring"
     );
 }

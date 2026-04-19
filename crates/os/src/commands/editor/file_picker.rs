@@ -120,10 +120,10 @@ pub(crate) fn load_entries(
     picker: &mut FilePickerState,
     state: &mut OsState,
     memory: &dyn MemoryAccess,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
 ) -> Result<(), u16> {
     let normalized_directory = dos::normalize_path(&picker.directory_path);
-    let read_dir = filesystem::resolve_read_dir_path(state, &normalized_directory, memory, disk)?;
+    let read_dir = filesystem::resolve_read_dir_path(state, &normalized_directory, memory, drive)?;
     let mut entries = Vec::new();
 
     entries.push(FilePickerEntry {
@@ -143,9 +143,9 @@ pub(crate) fn load_entries(
             read_dir.drive_index,
             &read_dir.directory,
             &pattern,
-            0,
+            fat_dir::ATTR_DIRECTORY,
             start_index,
-            disk,
+            drive,
         )?;
 
         let Some((entry, next_index)) = result else {
@@ -206,17 +206,17 @@ pub(crate) fn current_directory_path(memory: &dyn MemoryAccess, drive_index: u8)
 pub(crate) fn directory_from_path(
     state: &mut OsState,
     memory: &dyn MemoryAccess,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
     path: &[u8],
 ) -> Option<Vec<u8>> {
     let normalized_path = dos::normalize_path(path);
-    if filesystem::resolve_read_dir_path(state, &normalized_path, memory, disk).is_ok() {
+    if filesystem::resolve_read_dir_path(state, &normalized_path, memory, drive).is_ok() {
         return Some(normalized_path);
     }
 
     let read_file =
-        filesystem::resolve_read_file_path(state, &normalized_path, memory, disk).ok()?;
-    let entry = filesystem::find_read_entry(state, &read_file, disk).ok()??;
+        filesystem::resolve_read_file_path(state, &normalized_path, memory, drive).ok()?;
+    let entry = filesystem::find_read_entry(state, &read_file, drive).ok()??;
     if entry.attribute & fat_dir::ATTR_DIRECTORY != 0 {
         return Some(normalized_path);
     }

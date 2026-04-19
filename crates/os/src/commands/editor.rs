@@ -108,11 +108,11 @@ impl RunningCommand for RunningEditor {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, EditorPhase::Init);
         match phase {
-            EditorPhase::Init => self.step_init(state, io, disk),
+            EditorPhase::Init => self.step_init(state, io, drive),
             EditorPhase::Active(mut app) => {
                 if let Some(code) = app.pending_exit {
                     clear_editor_console(io);
@@ -146,7 +146,7 @@ impl RunningCommand for RunningEditor {
                     let mut console = io.console_io();
                     console.read_key()
                 };
-                handle_key(&mut app, scan, ch, state, io, disk);
+                handle_key(&mut app, scan, ch, state, io, drive);
                 self.phase = EditorPhase::Active(app);
                 StepResult::Continue
             }
@@ -166,14 +166,14 @@ impl RunningEditor {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         if is_help_request(&self.args) {
             print_help(io);
             return StepResult::Done(0);
         }
 
-        match initialize_app(state, io, disk, &self.args) {
+        match initialize_app(state, io, drive, &self.args) {
             Ok(app) => {
                 self.phase = EditorPhase::Active(Box::new(app));
                 StepResult::Continue
@@ -195,27 +195,27 @@ fn print_help(io: &mut IoAccess) {
 fn initialize_app(
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
     args: &[u8],
 ) -> Result<AppState, String> {
     let path = args.trim_ascii();
     if path.is_empty() {
         let current_directory = file_picker::current_directory_path(io.memory, state.current_drive);
         let mut picker = FilePickerState::new(current_directory, PickerFocus::List);
-        file_picker::load_entries(&mut picker, state, io.memory, disk)
+        file_picker::load_entries(&mut picker, state, io.memory, drive)
             .map_err(|_| String::from("Cannot open current directory"))?;
         return Ok(AppState::new(AppMode::FilePicker(picker)));
     }
 
     let normalized_path = absolute_path(state, io.memory, path);
-    if filesystem::resolve_read_dir_path(state, &normalized_path, io.memory, disk).is_ok() {
+    if filesystem::resolve_read_dir_path(state, &normalized_path, io.memory, drive).is_ok() {
         let mut picker = FilePickerState::new(normalized_path, PickerFocus::Path);
-        file_picker::load_entries(&mut picker, state, io.memory, disk)
+        file_picker::load_entries(&mut picker, state, io.memory, drive)
             .map_err(|_| String::from("Cannot open directory"))?;
         return Ok(AppState::new(AppMode::FilePicker(picker)));
     }
 
-    if let Some(editor) = open_existing_editor(state, io, disk, &normalized_path)? {
+    if let Some(editor) = open_existing_editor(state, io, drive, &normalized_path)? {
         return Ok(AppState::new(AppMode::Editor(editor)));
     }
 
@@ -231,16 +231,16 @@ fn handle_key(
     ch: u8,
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
 ) {
     if app.overlay.is_some() {
-        handle_overlay_key(app, scan, ch, state, io, disk);
+        handle_overlay_key(app, scan, ch, state, io, drive);
         return;
     }
 
     match &app.mode {
-        AppMode::FilePicker(_) => handle_picker_key(app, scan, ch, state, io, disk),
-        AppMode::Editor(_) => handle_editor_key(app, scan, ch, state, io, disk),
+        AppMode::FilePicker(_) => handle_picker_key(app, scan, ch, state, io, drive),
+        AppMode::Editor(_) => handle_editor_key(app, scan, ch, state, io, drive),
     }
 }
 
@@ -250,7 +250,7 @@ fn handle_overlay_key(
     ch: u8,
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
 ) {
     let Some(overlay) = app.overlay.clone() else {
         return;
@@ -269,15 +269,15 @@ fn handle_overlay_key(
             }
             (_, 0x0D) => {
                 let mut load_failed = false;
-                if let Some(&drive) = drives.get(dialog.selected)
+                if let Some(&selected_drive) = drives.get(dialog.selected)
                     && let AppMode::FilePicker(picker) = &mut app.mode
                 {
-                    picker.directory_path = vec![b'A' + drive, b':', b'\\'];
+                    picker.directory_path = vec![b'A' + selected_drive, b':', b'\\'];
                     picker.path_field.set_bytes(picker.directory_path.clone());
                     picker.selected = 0;
                     picker.scroll = 0;
                     load_failed =
-                        file_picker::load_entries(picker, state, io.memory, disk).is_err();
+                        file_picker::load_entries(picker, state, io.memory, drive).is_err();
                 }
                 if load_failed {
                     app.set_message(MessageStyle::Error, "Cannot read drive");
@@ -296,11 +296,11 @@ fn handle_overlay_key(
                 0x1B => app.overlay = None,
                 0x0D => {
                     let created =
-                        filesystem::create_directory(state, io.memory, disk, prompt.field.bytes())
+                        filesystem::create_directory(state, io.memory, drive, prompt.field.bytes())
                             .is_ok();
                     if created {
                         if let AppMode::FilePicker(picker) = &mut app.mode {
-                            let _ = file_picker::load_entries(picker, state, io.memory, disk);
+                            let _ = file_picker::load_entries(picker, state, io.memory, drive);
                         }
                         app.overlay = None;
                         app.set_message(MessageStyle::Success, "Directory created");
@@ -316,7 +316,7 @@ fn handle_overlay_key(
             0x1B => app.overlay = None,
             0x0D => {
                 app.overlay = None;
-                if let Err(message) = delete_picker_entry(app, state, io, disk, &confirm) {
+                if let Err(message) = delete_picker_entry(app, state, io, drive, &confirm) {
                     app.set_message(MessageStyle::Error, message);
                 }
             }
@@ -332,7 +332,7 @@ fn handle_overlay_key(
                 0x1B => app.overlay = None,
                 0x0D => {
                     let path = absolute_path(state, io.memory, prompt.field.bytes());
-                    match open_new_editor(app, state, io, disk, &path) {
+                    match open_new_editor(app, state, io, drive, &path) {
                         Ok(()) => app.overlay = None,
                         Err(message) => {
                             app.overlay = Some(Overlay::NewFile(prompt));
@@ -353,7 +353,7 @@ fn handle_overlay_key(
                 0x1B => app.overlay = None,
                 0x0D => {
                     let path = absolute_path(state, io.memory, prompt.field.bytes());
-                    match save_editor_to_path(app, state, io, disk, &path, true) {
+                    match save_editor_to_path(app, state, io, drive, &path, true) {
                         Ok(()) => app.overlay = None,
                         Err(message) => {
                             app.overlay = Some(Overlay::SaveAs(prompt));
@@ -382,12 +382,12 @@ fn handle_overlay_key(
                         if let Some(action) =
                             request_editor_leave(app, PendingAction::OpenFilePicker)
                         {
-                            execute_pending_action(app, state, io, disk, action);
+                            execute_pending_action(app, state, io, drive, action);
                         }
                     }
                     FileMenuItem::Save => {
                         app.overlay = None;
-                        if let Err(message) = save_current_editor(app, state, io, disk) {
+                        if let Err(message) = save_current_editor(app, state, io, drive) {
                             app.set_message(MessageStyle::Error, message);
                         }
                     }
@@ -402,14 +402,14 @@ fn handle_overlay_key(
         Overlay::UnsavedChanges(action) => match (scan, ch) {
             (_, 0x1B) => app.overlay = None,
             (SCAN_F2, 0x00) => {
-                if save_current_editor(app, state, io, disk).is_ok() {
+                if save_current_editor(app, state, io, drive).is_ok() {
                     app.overlay = None;
-                    execute_pending_action(app, state, io, disk, action);
+                    execute_pending_action(app, state, io, drive, action);
                 }
             }
             (SCAN_F3, 0x00) => {
                 app.overlay = None;
-                execute_pending_action(app, state, io, disk, action);
+                execute_pending_action(app, state, io, drive, action);
             }
             _ => app.overlay = Some(Overlay::UnsavedChanges(action)),
         },
@@ -423,7 +423,7 @@ fn handle_picker_key(
     ch: u8,
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
 ) {
     let AppMode::FilePicker(_) = &app.mode else {
         return;
@@ -455,10 +455,10 @@ fn handle_picker_key(
             });
         }
         (SCAN_F2, 0x00) | (_, 0x0D) if focus == PickerFocus::Path => {
-            open_picker_path(app, state, io, disk);
+            open_picker_path(app, state, io, drive);
         }
         (SCAN_F2, 0x00) | (_, 0x0D) if focus == PickerFocus::List => {
-            open_picker_selection(app, state, io, disk);
+            open_picker_selection(app, state, io, drive);
         }
         (SCAN_F3, 0x00) => {
             let path = match &app.mode {
@@ -469,7 +469,7 @@ fn handle_picker_key(
         }
         (SCAN_F4, 0x00) => {
             let failed = if let AppMode::FilePicker(picker) = &mut app.mode {
-                file_picker::load_entries(picker, state, io.memory, disk).is_err()
+                file_picker::load_entries(picker, state, io.memory, drive).is_err()
             } else {
                 false
             };
@@ -494,7 +494,7 @@ fn handle_picker_key(
         (SCAN_F7, 0x00) | (SCAN_LEFT, 0x00) if focus == PickerFocus::List => {
             if let AppMode::FilePicker(picker) = &mut app.mode {
                 picker.directory_path = file_picker::parent_directory(&picker.directory_path);
-                let _ = file_picker::load_entries(picker, state, io.memory, disk);
+                let _ = file_picker::load_entries(picker, state, io.memory, drive);
             }
         }
         (SCAN_UP, 0x00) if focus == PickerFocus::List => {
@@ -528,7 +528,7 @@ fn handle_picker_key(
             }
         }
         (SCAN_RIGHT, 0x00) if focus == PickerFocus::List => {
-            open_picker_selection(app, state, io, disk);
+            open_picker_selection(app, state, io, drive);
         }
         (SCAN_DELETE, 0x00) if focus == PickerFocus::Path => {
             if let AppMode::FilePicker(picker) = &mut app.mode {
@@ -581,7 +581,7 @@ fn handle_editor_key(
     ch: u8,
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
 ) {
     let AppMode::Editor(_) = &app.mode else {
         return;
@@ -591,12 +591,12 @@ fn handle_editor_key(
     match (scan, ch) {
         (_, 0x1B) => {
             if let Some(action) = request_editor_leave(app, PendingAction::OpenFilePicker) {
-                execute_pending_action(app, state, io, disk, action);
+                execute_pending_action(app, state, io, drive, action);
             }
         }
         (SCAN_F1, 0x00) => app.overlay = Some(Overlay::FileMenu(ListDialog::new())),
         (SCAN_F2, 0x00) => {
-            if let Err(message) = save_current_editor(app, state, io, disk) {
+            if let Err(message) = save_current_editor(app, state, io, drive) {
                 app.set_message(MessageStyle::Error, message);
             }
         }
@@ -729,19 +729,19 @@ fn delete_picker_entry(
     app: &mut AppState,
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
     confirm: &DeleteConfirm,
 ) -> Result<(), String> {
     let delete_result = if confirm.is_directory {
-        filesystem::remove_directory(state, io.memory, disk, &confirm.full_path)
+        filesystem::remove_directory(state, io.memory, drive, &confirm.full_path)
     } else {
-        filesystem::delete_file(state, io.memory, disk, &confirm.full_path)
+        filesystem::delete_file(state, io.memory, drive, &confirm.full_path)
     };
 
     match delete_result {
         Ok(()) => {
             if let AppMode::FilePicker(picker) = &mut app.mode {
-                file_picker::load_entries(picker, state, io.memory, disk)
+                file_picker::load_entries(picker, state, io.memory, drive)
                     .map_err(|_| String::from("Cannot refresh directory"))?;
             }
             app.set_message(
@@ -765,7 +765,7 @@ fn open_picker_path(
     app: &mut AppState,
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
 ) {
     let path = match &app.mode {
         AppMode::FilePicker(picker) => {
@@ -778,16 +778,16 @@ fn open_picker_path(
         return;
     }
 
-    if filesystem::resolve_read_dir_path(state, &path, io.memory, disk).is_ok() {
+    if filesystem::resolve_read_dir_path(state, &path, io.memory, drive).is_ok() {
         if let AppMode::FilePicker(picker) = &mut app.mode {
             picker.directory_path = path;
-            let _ = file_picker::load_entries(picker, state, io.memory, disk);
+            let _ = file_picker::load_entries(picker, state, io.memory, drive);
         }
         app.set_message(MessageStyle::Neutral, "Directory opened");
         return;
     }
 
-    match open_existing_editor(state, io, disk, &path) {
+    match open_existing_editor(state, io, drive, &path) {
         Ok(Some(editor)) => {
             app.mode = AppMode::Editor(editor);
             app.set_message(MessageStyle::Neutral, "File opened");
@@ -801,7 +801,7 @@ fn open_picker_selection(
     app: &mut AppState,
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
 ) {
     let entry = match &app.mode {
         AppMode::FilePicker(picker) => picker.selected_entry().cloned(),
@@ -814,11 +814,11 @@ fn open_picker_selection(
         FilePickerEntryKind::Parent | FilePickerEntryKind::Directory => {
             if let AppMode::FilePicker(picker) = &mut app.mode {
                 picker.directory_path = entry.full_path;
-                let _ = file_picker::load_entries(picker, state, io.memory, disk);
+                let _ = file_picker::load_entries(picker, state, io.memory, drive);
             }
         }
         FilePickerEntryKind::File => {
-            match open_existing_editor(state, io, disk, &entry.full_path) {
+            match open_existing_editor(state, io, drive, &entry.full_path) {
                 Ok(Some(editor)) => {
                     app.mode = AppMode::Editor(editor);
                     app.set_message(MessageStyle::Neutral, "File opened");
@@ -847,18 +847,18 @@ fn execute_pending_action(
     app: &mut AppState,
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
     action: PendingAction,
 ) {
     match action {
         PendingAction::OpenFilePicker => {
-            let directory = if let Some(path) = current_editor_directory(app, state, io, disk) {
+            let directory = if let Some(path) = current_editor_directory(app, state, io, drive) {
                 path
             } else {
                 file_picker::current_directory_path(io.memory, state.current_drive)
             };
             let mut picker = FilePickerState::new(directory, PickerFocus::List);
-            if file_picker::load_entries(&mut picker, state, io.memory, disk).is_ok() {
+            if file_picker::load_entries(&mut picker, state, io.memory, drive).is_ok() {
                 app.mode = AppMode::FilePicker(picker);
             } else {
                 app.set_message(MessageStyle::Error, "Cannot open file list");
@@ -872,17 +872,17 @@ fn save_current_editor(
     app: &mut AppState,
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
 ) -> Result<(), String> {
     let path = current_editor_path(app);
-    save_editor_to_path(app, state, io, disk, &path, false)
+    save_editor_to_path(app, state, io, drive, &path, false)
 }
 
 fn save_editor_to_path(
     app: &mut AppState,
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
     path: &[u8],
     save_as: bool,
 ) -> Result<(), String> {
@@ -906,14 +906,14 @@ fn save_editor_to_path(
     };
     let normalized_path = absolute_path(state, io.memory, path);
     let (drive_index, dir_cluster, fcb_name) =
-        filesystem::resolve_file_path(state, &normalized_path, io.memory, disk)
+        filesystem::resolve_file_path(state, &normalized_path, io.memory, drive)
             .map_err(|_| String::from("Invalid path"))?;
     if drive_index == 25 {
         return Err(String::from("Access denied"));
     }
 
     state
-        .ensure_volume_mounted(drive_index, io.memory, disk)
+        .ensure_volume_mounted(drive_index, io.memory, drive)
         .map_err(|_| String::from("Drive not ready"))?;
 
     let (time, date) = state.dos_timestamp_now();
@@ -921,7 +921,7 @@ fn save_editor_to_path(
         .as_mut()
         .ok_or_else(|| String::from("Drive not ready"))?;
     if create_only
-        && fat_dir::find_entry(volume, dir_cluster, &fcb_name, disk)
+        && fat_dir::find_entry(volume, dir_cluster, &fcb_name, drive)
             .map_err(|_| String::from("Cannot check file"))?
             .is_some()
     {
@@ -937,11 +937,11 @@ fn save_editor_to_path(
             time,
             date,
         },
-        disk,
+        drive,
     )
     .map_err(|_| String::from("Save failed"))?;
     volume
-        .flush_fat(disk)
+        .flush_fat(drive)
         .map_err(|_| String::from("Save failed"))?;
 
     if let AppMode::Editor(editor) = &mut app.mode {
@@ -957,14 +957,14 @@ fn save_editor_to_path(
 fn open_existing_editor(
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
     path: &[u8],
 ) -> Result<Option<EditorState>, String> {
-    let read_path = match filesystem::resolve_read_file_path(state, path, io.memory, disk) {
+    let read_path = match filesystem::resolve_read_file_path(state, path, io.memory, drive) {
         Ok(path) => path,
         Err(_) => return Ok(None),
     };
-    let entry = match filesystem::find_read_entry(state, &read_path, disk) {
+    let entry = match filesystem::find_read_entry(state, &read_path, drive) {
         Ok(Some(entry)) => entry,
         Ok(None) => return Ok(None),
         Err(_) => return Err(String::from("Cannot read file")),
@@ -973,7 +973,7 @@ fn open_existing_editor(
         return Ok(None);
     }
 
-    let bytes = filesystem::read_entry_all(state, read_path.drive_index, &entry, disk)
+    let bytes = filesystem::read_entry_all(state, read_path.drive_index, &entry, drive)
         .map_err(|_| String::from("Cannot read file"))?;
     let read_only = entry.attribute & fat_dir::ATTR_READ_ONLY != 0
         || matches!(entry.source, ReadDirEntrySource::Iso(_));
@@ -987,10 +987,10 @@ fn open_new_editor(
     app: &mut AppState,
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
     path: &[u8],
 ) -> Result<(), String> {
-    let normalized_path = validate_new_file_target(state, io, disk, path)?;
+    let normalized_path = validate_new_file_target(state, io, drive, path)?;
     app.mode = AppMode::Editor(EditorState {
         buffer: TextBuffer::new(normalized_path, false),
         require_create_on_first_save: true,
@@ -1002,29 +1002,29 @@ fn open_new_editor(
 fn validate_new_file_target(
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
     path: &[u8],
 ) -> Result<Vec<u8>, String> {
     let normalized_path = absolute_path(state, io.memory, path);
-    if filesystem::resolve_read_dir_path(state, &normalized_path, io.memory, disk).is_ok() {
+    if filesystem::resolve_read_dir_path(state, &normalized_path, io.memory, drive).is_ok() {
         return Err(String::from("Already exists"));
     }
 
     let (drive_index, dir_cluster, fcb_name) =
-        filesystem::resolve_file_path(state, &normalized_path, io.memory, disk)
+        filesystem::resolve_file_path(state, &normalized_path, io.memory, drive)
             .map_err(|_| String::from("Invalid path"))?;
     if drive_index == 25 {
         return Err(String::from("Access denied"));
     }
 
     state
-        .ensure_volume_mounted(drive_index, io.memory, disk)
+        .ensure_volume_mounted(drive_index, io.memory, drive)
         .map_err(|_| String::from("Drive not ready"))?;
 
     let volume = state.fat_volumes[drive_index as usize]
         .as_ref()
         .ok_or_else(|| String::from("Drive not ready"))?;
-    if fat_dir::find_entry(volume, dir_cluster, &fcb_name, disk)
+    if fat_dir::find_entry(volume, dir_cluster, &fcb_name, drive)
         .map_err(|_| String::from("Cannot check file"))?
         .is_some()
     {
@@ -1045,11 +1045,11 @@ fn current_editor_directory(
     app: &AppState,
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
 ) -> Option<Vec<u8>> {
     match &app.mode {
         AppMode::Editor(editor) => {
-            file_picker::directory_from_path(state, io.memory, disk, &editor.buffer.path)
+            file_picker::directory_from_path(state, io.memory, drive, &editor.buffer.path)
         }
         AppMode::FilePicker(_) => None,
     }

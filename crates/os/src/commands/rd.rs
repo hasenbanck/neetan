@@ -33,7 +33,7 @@ impl RunningCommand for RunningRd {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let args = self.args.trim_ascii();
         if is_help_request(&self.args) || args.is_empty() {
@@ -41,7 +41,7 @@ impl RunningCommand for RunningRd {
             return StepResult::Done(0);
         }
 
-        match filesystem::remove_directory(state, io.memory, disk, args) {
+        match filesystem::remove_directory(state, io.memory, drive, args) {
             Ok(()) => StepResult::Done(0),
             Err(error) => {
                 io.print(error_message(error));

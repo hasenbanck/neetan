@@ -311,3 +311,65 @@ fn del_with_prompt_no() {
         "TESTFILE.TXT should still exist after DEL /P + N"
     );
 }
+
+#[test]
+fn type_reads_from_cdrom() {
+    let mut machine = boot_hle_with_cdrom_image(create_test_cdimage());
+    type_string(&mut machine.bus, b"Q:\r");
+    run_until_prompt_ap(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt_ap(&mut machine);
+    type_string_long_ap(&mut machine, b"TYPE README.TXT\r");
+    run_until_prompt_ap(&mut machine);
+
+    let neetan = [
+        0x004E, 0x0045, 0x0045, 0x0054, 0x0041, 0x004E, 0x0020, 0x0043, 0x0044, 0x0020, 0x0052,
+        0x0045, 0x0041, 0x0044, 0x004D, 0x0045,
+    ]; // "NEETAN CD README"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &neetan),
+        "TYPE should display README.TXT contents from the CD-ROM"
+    );
+}
+
+#[test]
+fn more_reads_from_floppy() {
+    let mut machine = boot_hle_with_floppy();
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+    type_string_long(&mut machine, b"MORE TESTFILE.TXT\r");
+    run_until_prompt(&mut machine);
+
+    let hello = [
+        0x0048, 0x0045, 0x004C, 0x004C, 0x004F, 0x0020, 0x0057, 0x004F, 0x0052, 0x004C, 0x0044,
+    ]; // "HELLO WORLD"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &hello),
+        "MORE should display 'HELLO WORLD' from a FAT floppy"
+    );
+}
+
+#[test]
+fn more_reads_from_cdrom() {
+    let mut machine = boot_hle_with_cdrom_image(create_test_cdimage());
+    type_string(&mut machine.bus, b"Q:\r");
+    run_until_prompt_ap(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt_ap(&mut machine);
+    type_string_long_ap(&mut machine, b"MORE README.TXT\r");
+    run_until_prompt_ap(&mut machine);
+
+    let neetan = [
+        0x004E, 0x0045, 0x0045, 0x0054, 0x0041, 0x004E, 0x0020, 0x0043, 0x0044, 0x0020, 0x0052,
+        0x0045, 0x0041, 0x0044, 0x004D, 0x0045,
+    ]; // "NEETAN CD README"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &neetan),
+        "MORE should display README.TXT contents from the CD-ROM"
+    );
+}

@@ -58,6 +58,28 @@ fn dir_lists_cdrom_root() {
 }
 
 #[test]
+fn dir_on_cdrom_subdirectory_suppresses_self_and_parent_entries() {
+    let mut machine = boot_hle_with_cdrom_image(create_test_cdimage_with_xcopy_tree());
+    type_string(&mut machine.bus, b"Q:\r");
+    run_until_prompt_ap(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt_ap(&mut machine);
+    type_string_long_ap(&mut machine, b"DIR Q:\\YOURFOLD\r");
+    run_until_prompt_ap(&mut machine);
+
+    assert!(
+        find_row_containing(&machine.bus, "5 file(s)").is_some(),
+        "DIR on a CD-ROM subdirectory should count only real entries (3 dirs + 2 files), \
+         ISO9660 . and .. records must be suppressed"
+    );
+    assert!(
+        find_row_containing(&machine.bus, "7 file(s)").is_none(),
+        "DIR on a CD-ROM subdirectory must not include ISO9660 self/parent records in the count"
+    );
+}
+
+#[test]
 fn dir_wildcard_txt() {
     let mut machine = boot_hle_with_floppy();
     type_string(&mut machine.bus, b"A:\r");

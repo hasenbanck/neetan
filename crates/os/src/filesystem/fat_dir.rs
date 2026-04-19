@@ -203,11 +203,14 @@ pub(crate) fn find_matching(
             return IterAction::Continue;
         }
 
-        // Hidden/system files only shown if attr_mask includes them
+        // Hidden/system/directory entries only shown if attr_mask includes them
         if entry.attribute & ATTR_HIDDEN != 0 && attr_mask & ATTR_HIDDEN == 0 {
             return IterAction::Continue;
         }
         if entry.attribute & ATTR_SYSTEM != 0 && attr_mask & ATTR_SYSTEM == 0 {
+            return IterAction::Continue;
+        }
+        if entry.attribute & ATTR_DIRECTORY != 0 && attr_mask & ATTR_DIRECTORY == 0 {
             return IterAction::Continue;
         }
 

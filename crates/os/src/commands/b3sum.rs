@@ -3,10 +3,12 @@
 use blake3::Hasher;
 
 use crate::{
-    DiskIo, DriveIo, IoAccess, OsState,
+    DriveIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
-    dos, filesystem,
-    filesystem::{fat_dir, fat_file::FatFileCursor},
+    dos,
+    filesystem::{
+        self, ReadDirEntrySource, ReadDirectory, fat_dir, fat_file::FatFileCursor, iso9660,
+    },
 };
 
 pub(crate) struct B3sum;
@@ -24,6 +26,8 @@ impl Command for B3sum {
     }
 }
 
+const ISO_CHUNK_SIZE: usize = 2048;
+
 struct B3sumState {
     arguments: Vec<ArgumentState>,
     current_argument: usize,
@@ -33,16 +37,24 @@ struct ArgumentState {
     display_path: Vec<u8>,
     wildcard_prefix: Vec<u8>,
     drive_index: u8,
-    dir_cluster: u16,
+    directory: ReadDirectory,
     pattern: [u8; 11],
     has_wildcard: bool,
     search_index: u16,
     matched_any: bool,
 }
 
+enum HashSourceCursor {
+    Fat(FatFileCursor),
+    Iso {
+        entry: iso9660::IsoDirEntry,
+        position: u32,
+    },
+}
+
 struct FileHashState {
     drive_index: u8,
-    cursor: FatFileCursor,
+    cursor: HashSourceCursor,
     display_path: Vec<u8>,
     hasher: Hasher,
 }
@@ -63,7 +75,7 @@ impl RunningB3sum {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let args = self.args.trim_ascii();
         if args.is_empty() || is_help_request(args) {
@@ -71,7 +83,7 @@ impl RunningB3sum {
             return StepResult::Done(0);
         }
 
-        match init_b3sum_state(state, io, disk, args) {
+        match init_b3sum_state(state, io, drive, args) {
             Ok(b3sum_state) => {
                 self.phase = B3sumPhase::FindNext(b3sum_state);
                 StepResult::Continue
@@ -88,7 +100,7 @@ impl RunningB3sum {
         mut b3sum_state: B3sumState,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         if b3sum_state.current_argument >= b3sum_state.arguments.len() {
             return StepResult::Done(0);
@@ -100,29 +112,19 @@ impl RunningB3sum {
             return StepResult::Done(1);
         }
 
-        let volume = match state.fat_volumes[argument.drive_index as usize].as_ref() {
-            Some(volume) => volume,
-            None => {
-                io.println(b"Invalid drive");
-                return StepResult::Done(1);
-            }
-        };
-
-        match fat_dir::find_matching(
-            volume,
-            argument.dir_cluster,
+        let result = filesystem::find_matching_read_entry(
+            state,
+            argument.drive_index,
+            &argument.directory,
             &argument.pattern,
             0,
             argument.search_index,
-            disk,
-        ) {
+            drive,
+        );
+
+        match result {
             Ok(Some((entry, next_index))) => {
                 argument.search_index = next_index;
-
-                if entry.attribute & fat_dir::ATTR_DIRECTORY != 0 {
-                    io.println(b"Access denied");
-                    return StepResult::Done(1);
-                }
 
                 let display_path = if argument.has_wildcard {
                     let mut display_path = argument.wildcard_prefix.clone();
@@ -146,16 +148,25 @@ impl RunningB3sum {
                     return StepResult::Continue;
                 }
 
-                if entry.start_cluster < 2 {
-                    io.println(b"Read error");
-                    return StepResult::Done(1);
-                }
+                let cursor = match entry.source {
+                    ReadDirEntrySource::Fat(fat_entry) => {
+                        if fat_entry.start_cluster < 2 {
+                            io.println(b"Read error");
+                            return StepResult::Done(1);
+                        }
+                        HashSourceCursor::Fat(FatFileCursor::new(&fat_entry))
+                    }
+                    ReadDirEntrySource::Iso(iso_entry) => HashSourceCursor::Iso {
+                        entry: iso_entry,
+                        position: 0,
+                    },
+                };
 
                 self.phase = B3sumPhase::Hashing(
                     b3sum_state,
                     Box::new(FileHashState {
                         drive_index,
-                        cursor: FatFileCursor::new(&entry),
+                        cursor,
                         display_path,
                         hasher,
                     }),
@@ -185,29 +196,46 @@ impl RunningB3sum {
         mut file_hash_state: Box<FileHashState>,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
-        let volume = match state.fat_volumes[file_hash_state.drive_index as usize].as_ref() {
-            Some(volume) => volume,
-            None => {
-                io.println(b"Invalid drive");
-                return StepResult::Done(1);
+        let chunk_data = match &mut file_hash_state.cursor {
+            HashSourceCursor::Fat(cursor) => {
+                let volume = match state.fat_volumes[file_hash_state.drive_index as usize].as_ref()
+                {
+                    Some(volume) => volume,
+                    None => {
+                        io.println(b"Invalid drive");
+                        return StepResult::Done(1);
+                    }
+                };
+
+                match cursor.read_chunk(volume, drive, volume.bpb.cluster_size() as usize) {
+                    Ok(chunk_data) => chunk_data,
+                    Err(_) => {
+                        io.println(b"Read error");
+                        return StepResult::Done(1);
+                    }
+                }
+            }
+            HashSourceCursor::Iso { entry, position } => {
+                if *position >= entry.file_size {
+                    Vec::new()
+                } else {
+                    match iso9660::read_file_chunk(entry, *position, ISO_CHUNK_SIZE, drive) {
+                        Ok(data) => {
+                            *position += data.len() as u32;
+                            data
+                        }
+                        Err(_) => {
+                            io.println(b"Read error");
+                            return StepResult::Done(1);
+                        }
+                    }
+                }
             }
         };
 
-        let cluster_data = match file_hash_state.cursor.read_chunk(
-            volume,
-            disk,
-            volume.bpb.cluster_size() as usize,
-        ) {
-            Ok(cluster_data) => cluster_data,
-            Err(_) => {
-                io.println(b"Read error");
-                return StepResult::Done(1);
-            }
-        };
-
-        if cluster_data.is_empty() {
+        if chunk_data.is_empty() {
             let current_argument = &mut b3sum_state.arguments[b3sum_state.current_argument];
             current_argument.matched_any = true;
             print_digest(io, &file_hash_state.hasher, &file_hash_state.display_path);
@@ -218,7 +246,7 @@ impl RunningB3sum {
             return StepResult::Continue;
         }
 
-        file_hash_state.hasher.update(&cluster_data);
+        file_hash_state.hasher.update(&chunk_data);
         self.phase = B3sumPhase::Hashing(b3sum_state, file_hash_state);
         StepResult::Continue
     }
@@ -229,14 +257,14 @@ impl RunningCommand for RunningB3sum {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, B3sumPhase::Init);
         match phase {
-            B3sumPhase::Init => self.step_init(state, io, disk),
-            B3sumPhase::FindNext(b3sum_state) => self.step_find_next(b3sum_state, state, io, disk),
+            B3sumPhase::Init => self.step_init(state, io, drive),
+            B3sumPhase::FindNext(b3sum_state) => self.step_find_next(b3sum_state, state, io, drive),
             B3sumPhase::Hashing(b3sum_state, file_hash_state) => {
-                self.step_hashing(b3sum_state, file_hash_state, state, io, disk)
+                self.step_hashing(b3sum_state, file_hash_state, state, io, drive)
             }
         }
     }
@@ -253,7 +281,7 @@ fn print_help(io: &mut IoAccess) {
 fn init_b3sum_state(
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DiskIo,
+    drive: &mut dyn DriveIo,
     args: &[u8],
 ) -> Result<B3sumState, &'static [u8]> {
     let mut arguments = Vec::new();
@@ -265,16 +293,16 @@ fn init_b3sum_state(
 
         let normalized_path = dos::normalize_path(part);
         let has_wildcard = normalized_path.contains(&b'*') || normalized_path.contains(&b'?');
-        let (drive_index, dir_cluster, pattern) =
-            filesystem::resolve_file_path(state, &normalized_path, io.memory, disk)
+        let read_path =
+            filesystem::resolve_read_file_path(state, &normalized_path, io.memory, drive)
                 .map_err(|_| &b"File not found\r\n"[..])?;
 
         arguments.push(ArgumentState {
             display_path: normalized_path.clone(),
             wildcard_prefix: wildcard_display_prefix(&normalized_path),
-            drive_index,
-            dir_cluster,
-            pattern,
+            drive_index: read_path.drive_index,
+            directory: read_path.directory,
+            pattern: read_path.name,
             has_wildcard,
             search_index: 0,
             matched_any: false,

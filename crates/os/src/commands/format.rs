@@ -198,13 +198,13 @@ impl RunningFormat {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         if is_help_request(&self.args) || self.args.trim_ascii().is_empty() {
             print_help(io);
             return StepResult::Done(0);
         }
-        match init_format(state, io, disk, &self.args) {
+        match init_format(state, io, drive, &self.args) {
             Ok(format_state) => {
                 let drive_letter = (b'A' + format_state.drive_index) as char;
                 let msg = format!(
@@ -252,7 +252,7 @@ impl RunningFormat {
         &mut self,
         mut format_state: FormatState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         if format_state.current_track >= format_state.total_tracks {
             self.phase = FormatPhase::WriteBootSector(format_state);
@@ -264,7 +264,7 @@ impl RunningFormat {
         let fill_data = vec![0xF6u8; track_size];
         let lba = format_state.current_track * format_state.sectors_per_track as u32;
 
-        if disk
+        if drive
             .write_sectors(format_state.da_ua, lba, &fill_data)
             .is_err()
         {
@@ -281,13 +281,13 @@ impl RunningFormat {
         &mut self,
         format_state: FormatState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let ss = format_state.sector_size as usize;
 
         // Sector 0: IPL (clear to zeros)
         let ipl = vec![0u8; ss];
-        if disk.write_sectors(format_state.da_ua, 0, &ipl).is_err() {
+        if drive.write_sectors(format_state.da_ua, 0, &ipl).is_err() {
             io.println(b"Write error");
             return StepResult::Done(1);
         }
@@ -325,7 +325,7 @@ impl RunningFormat {
         // Partition name (16 bytes, space-padded)
         part_sector[16..32].copy_from_slice(b"NEETAN          ");
 
-        if disk
+        if drive
             .write_sectors(format_state.da_ua, 1, &part_sector)
             .is_err()
         {
@@ -577,18 +577,18 @@ impl RunningCommand for RunningFormat {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, FormatPhase::Init);
         match phase {
-            FormatPhase::Init => self.step_init(state, io, disk),
+            FormatPhase::Init => self.step_init(state, io, drive),
             FormatPhase::Confirm(fs) => self.step_confirm(fs, io),
-            FormatPhase::FormatTrack(fs) => self.step_format_track(fs, io, disk),
-            FormatPhase::WritePartitionTable(fs) => self.step_write_partition_table(fs, io, disk),
-            FormatPhase::WriteBootSector(fs) => self.step_write_boot_sector(fs, io, disk),
-            FormatPhase::WriteFat(fs) => self.step_write_fat(fs, io, disk),
-            FormatPhase::WriteRootDir(fs) => self.step_write_root_dir(fs, io, disk),
-            FormatPhase::VerifyTrack(fs) => self.step_verify_track(fs, io, disk),
+            FormatPhase::FormatTrack(fs) => self.step_format_track(fs, io, drive),
+            FormatPhase::WritePartitionTable(fs) => self.step_write_partition_table(fs, io, drive),
+            FormatPhase::WriteBootSector(fs) => self.step_write_boot_sector(fs, io, drive),
+            FormatPhase::WriteFat(fs) => self.step_write_fat(fs, io, drive),
+            FormatPhase::WriteRootDir(fs) => self.step_write_root_dir(fs, io, drive),
+            FormatPhase::VerifyTrack(fs) => self.step_verify_track(fs, io, drive),
             FormatPhase::Summary(fs) => self.step_summary(fs, state, io),
         }
     }

@@ -53,7 +53,7 @@ impl RunningDel {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let args = self.args.trim_ascii().to_vec();
         if is_help_request(&args) || args.is_empty() {
@@ -65,7 +65,7 @@ impl RunningDel {
         let path = path.to_vec();
 
         let (drive_index, dir_cluster, fcb_pattern) =
-            match filesystem::resolve_file_path(state, &path, io.memory, disk) {
+            match filesystem::resolve_file_path(state, &path, io.memory, drive) {
                 Ok(r) => r,
                 Err(_) => {
                     io.println(b"File not found");
@@ -125,7 +125,7 @@ impl RunningDel {
         mut del_state: DelState,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let vol = match state.fat_volumes[del_state.drive_index as usize].as_ref() {
             Some(v) => v,
@@ -138,7 +138,7 @@ impl RunningDel {
             &del_state.fcb_pattern,
             0,
             del_state.start_index,
-            disk,
+            drive,
         );
 
         match result {
@@ -166,7 +166,7 @@ impl RunningDel {
                     // No prompt: delete immediately
                     if filesystem::delete_file_by_components(
                         state,
-                        disk,
+                        drive,
                         del_state.drive_index,
                         del_state.dir_cluster,
                         entry.name,
@@ -200,7 +200,7 @@ impl RunningDel {
         entry: fat_dir::DirEntry,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         if io.memory.read_byte(KB_BUF_COUNT) == 0 {
             self.phase = DelPhase::PromptFile(del_state, entry);
@@ -213,7 +213,7 @@ impl RunningDel {
         if (key == b'Y' || key == b'y')
             && filesystem::delete_file_by_components(
                 state,
-                disk,
+                drive,
                 del_state.drive_index,
                 del_state.dir_cluster,
                 entry.name,
@@ -234,14 +234,14 @@ impl RunningCommand for RunningDel {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, DelPhase::Init);
         match phase {
-            DelPhase::Init => self.step_init(state, io, disk),
+            DelPhase::Init => self.step_init(state, io, drive),
             DelPhase::ConfirmAll(ds) => self.step_confirm_all(ds, io),
-            DelPhase::DeleteNext(ds) => self.step_delete_next(ds, state, io, disk),
-            DelPhase::PromptFile(ds, entry) => self.step_prompt_file(ds, entry, state, io, disk),
+            DelPhase::DeleteNext(ds) => self.step_delete_next(ds, state, io, drive),
+            DelPhase::PromptFile(ds, entry) => self.step_prompt_file(ds, entry, state, io, drive),
         }
     }
 }

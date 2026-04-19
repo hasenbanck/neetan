@@ -73,7 +73,7 @@ impl RunningCommand for RunningMem {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        _disk: &mut dyn DriveIo,
+        _drive: &mut dyn DriveIo,
     ) -> StepResult {
         if is_help_request(&self.args) {
             io.println(b"Displays the amount of used and free memory in your system.");

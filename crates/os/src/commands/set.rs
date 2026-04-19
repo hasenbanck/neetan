@@ -29,7 +29,7 @@ impl RunningCommand for RunningSet {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        _disk: &mut dyn DriveIo,
+        _drive: &mut dyn DriveIo,
     ) -> StepResult {
         let args = self.args.trim_ascii();
 

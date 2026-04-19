@@ -29,7 +29,7 @@ impl RunningCommand for RunningDosmock {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let args = self.args.trim_ascii();
         if is_help_request(&self.args) {
@@ -42,7 +42,7 @@ impl RunningCommand for RunningDosmock {
             return StepResult::Done(1);
         };
 
-        match filesystem::create_dos_mock_files(state, io.memory, disk, drive_index) {
+        match filesystem::create_dos_mock_files(state, io.memory, drive, drive_index) {
             Ok(()) => {
                 io.print(b"DOS mock files created\r\n");
                 StepResult::Done(0)

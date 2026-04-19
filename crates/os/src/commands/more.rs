@@ -1,10 +1,9 @@
 //! MORE command.
 
 use crate::{
-    DiskIo, DriveIo, IoAccess, OsState,
+    DriveIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
-    filesystem,
-    filesystem::{fat_dir, fat_file},
+    filesystem::{self, fat_dir},
 };
 
 pub(crate) struct More;
@@ -46,7 +45,7 @@ impl RunningMore {
         &mut self,
         _state: &mut OsState,
         io: &mut IoAccess,
-        _disk: &mut dyn DriveIo,
+        _drive: &mut dyn DriveIo,
         mut read: ReadState,
         mut lines_shown: u16,
     ) -> StepResult {
@@ -74,7 +73,7 @@ impl RunningMore {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let args = self.args.trim_ascii();
         if is_help_request(&self.args) || args.is_empty() {
@@ -82,7 +81,7 @@ impl RunningMore {
             return StepResult::Done(0);
         }
 
-        match init_more(state, io, disk, args) {
+        match init_more(state, io, drive, args) {
             Ok(new_phase) => {
                 self.phase = new_phase;
                 StepResult::Continue
@@ -119,13 +118,13 @@ impl RunningCommand for RunningMore {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, MorePhase::Init);
         match phase {
-            MorePhase::Init => self.step_init(state, io, disk),
+            MorePhase::Init => self.step_init(state, io, drive),
             MorePhase::Outputting { read, lines_shown } => {
-                self.do_output(state, io, disk, read, lines_shown)
+                self.do_output(state, io, drive, read, lines_shown)
             }
             MorePhase::WaitKey(read) => self.step_wait_key(read, io),
         }
@@ -143,22 +142,17 @@ fn print_help(io: &mut IoAccess) {
 fn init_more(
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DiskIo,
+    drive: &mut dyn DriveIo,
     path: &[u8],
 ) -> Result<MorePhase, &'static [u8]> {
-    let (drive_index, dir_cluster, fcb_name) =
-        filesystem::resolve_file_path(state, path, io.memory, disk)
-            .map_err(|_| &b"File not found\r\n"[..])?;
+    let read_path = filesystem::resolve_read_file_path(state, path, io.memory, drive)
+        .map_err(|_| &b"File not found\r\n"[..])?;
 
-    if drive_index == 25 {
+    if read_path.drive_index == 25 {
         return Err(b"Access denied\r\n");
     }
 
-    let vol = state.fat_volumes[drive_index as usize]
-        .as_ref()
-        .ok_or(&b"Invalid drive\r\n"[..])?;
-
-    let entry = fat_dir::find_entry(vol, dir_cluster, &fcb_name, disk)
+    let entry = filesystem::find_read_entry(state, &read_path, drive)
         .map_err(|_| &b"File not found\r\n"[..])?
         .ok_or(&b"File not found\r\n"[..])?;
 
@@ -170,7 +164,8 @@ fn init_more(
         return Ok(MorePhase::Init);
     }
 
-    let data = fat_file::read_all(vol, &entry, disk).map_err(|_| &b"Read error\r\n"[..])?;
+    let data = filesystem::read_entry_all(state, read_path.drive_index, &entry, drive)
+        .map_err(|_| &b"Read error\r\n"[..])?;
 
     Ok(MorePhase::Outputting {
         read: ReadState { data, offset: 0 },

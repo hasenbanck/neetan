@@ -322,3 +322,59 @@ fn copy_broken_source_chain_reports_read_error() {
         "COPY should not create a destination file after a read error"
     );
 }
+
+#[test]
+fn copy_from_cdrom_to_floppy() {
+    let mut machine = boot_hle_with_cdrom_image(create_test_cdimage());
+    machine.bus.insert_floppy(0, create_blank_floppy(), None);
+
+    type_string_long_ap(&mut machine, b"FORMAT A:\r");
+    machine.run_for(10_000_000);
+    type_string(&mut machine.bus, b"Y");
+    run_until_prompt_ap(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt_ap(&mut machine);
+    type_string_long_ap(&mut machine, b"COPY Q:\\README.TXT A:\\README.TXT\r");
+    run_until_prompt_ap(&mut machine);
+
+    let copied = [0x0063, 0x006F, 0x0070, 0x0069, 0x0065, 0x0064]; // "copied"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &copied),
+        "COPY from CD-ROM should report 'copied'"
+    );
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt_ap(&mut machine);
+    type_string_long_ap(&mut machine, b"TYPE A:\\README.TXT\r");
+    run_until_prompt_ap(&mut machine);
+
+    let neetan = [
+        0x004E, 0x0045, 0x0045, 0x0054, 0x0041, 0x004E, 0x0020, 0x0043, 0x0044, 0x0020, 0x0052,
+        0x0045, 0x0041, 0x0044, 0x004D, 0x0045,
+    ]; // "NEETAN CD README"
+    assert!(
+        find_string_in_text_vram(&machine.bus, &neetan),
+        "COPY should write the CD-ROM file bytes exactly to the FAT destination"
+    );
+}
+
+#[test]
+fn copy_rejects_cdrom_destination() {
+    let mut machine = boot_hle_with_cdrom_image(create_test_cdimage());
+    machine.bus.insert_floppy(0, create_blank_floppy(), None);
+
+    type_string_long_ap(&mut machine, b"FORMAT A:\r");
+    machine.run_for(10_000_000);
+    type_string(&mut machine.bus, b"Y");
+    run_until_prompt_ap(&mut machine);
+
+    type_string_long_ap(&mut machine, b"COPY Q:\\README.TXT Q:\\WRITE.TXT\r");
+    run_until_prompt_ap(&mut machine);
+
+    let copied = [0x0063, 0x006F, 0x0070, 0x0069, 0x0065, 0x0064]; // "copied"
+    assert!(
+        !find_string_in_text_vram(&machine.bus, &copied),
+        "COPY must not report success when the destination is a read-only CD-ROM"
+    );
+}

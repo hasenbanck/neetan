@@ -33,7 +33,7 @@ impl RunningCommand for RunningRen {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let args = self.args.trim_ascii();
         if is_help_request(&self.args) || args.is_empty() {
@@ -50,7 +50,7 @@ impl RunningCommand for RunningRen {
             }
         };
 
-        match rename_files(state, io, disk, source, dest) {
+        match rename_files(state, io, drive, source, dest) {
             Ok(()) => StepResult::Done(0),
             Err(msg) => {
                 io.print(msg);
@@ -89,12 +89,12 @@ fn split_two_args(args: &[u8]) -> Option<(&[u8], &[u8])> {
 fn rename_files(
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
     source: &[u8],
     dest: &[u8],
 ) -> Result<(), &'static [u8]> {
     let (drive_index, dir_cluster, src_fcb_pattern) =
-        filesystem::resolve_file_path(state, source, io.memory, disk)
+        filesystem::resolve_file_path(state, source, io.memory, drive)
             .map_err(|_| &b"File not found\r\n"[..])?;
 
     if drive_index == 25 {
@@ -113,7 +113,7 @@ fn rename_files(
             .ok_or(&b"Invalid drive\r\n"[..])?;
 
         let result =
-            fat_dir::find_matching(vol, dir_cluster, &src_fcb_pattern, 0, start_index, disk)
+            fat_dir::find_matching(vol, dir_cluster, &src_fcb_pattern, 0, start_index, drive)
                 .map_err(|_| &b"File not found\r\n"[..])?;
 
         match result {
@@ -125,7 +125,7 @@ fn rename_files(
                 if new_name != entry.name {
                     match filesystem::rename_entry_by_components(
                         state,
-                        disk,
+                        drive,
                         (drive_index, dir_cluster, entry.name),
                         (drive_index, dir_cluster, new_name),
                     ) {
