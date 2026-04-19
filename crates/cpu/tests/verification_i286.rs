@@ -1,18 +1,20 @@
 #![cfg(feature = "verification")]
 
+#[path = "common/metadata_json.rs"]
+mod metadata_json;
+#[path = "common/verification_common.rs"]
+mod verification_common;
+
 use std::{
-    collections::HashMap,
-    fmt::Write,
-    fs,
-    io::{BufReader, Read},
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::LazyLock,
 };
 
 use common::Cpu as _;
 use cpu::{I286, I286State};
-use flate2::read::GzDecoder;
-use serde::Deserialize;
+use metadata_json::{Metadata, load_metadata};
+use verification_common::{load_moo_tests, load_revocation_list};
 
 const RAM_SIZE: usize = 16 * 1024 * 1024;
 const ADDRESS_MASK: u32 = 0x00FF_FFFF;
@@ -90,46 +92,6 @@ impl common::Bus for TestBus {
     fn set_current_cycle(&mut self, _cycle: u64) {}
 }
 
-#[derive(Deserialize)]
-struct Metadata {
-    opcodes: HashMap<String, OpcodeEntry>,
-}
-
-#[derive(Deserialize)]
-struct OpcodeEntry {
-    status: Option<String>,
-    #[serde(rename = "flags-mask")]
-    flags_mask: Option<u16>,
-    reg: Option<HashMap<String, OpcodeInfo>>,
-}
-
-#[derive(Deserialize)]
-struct OpcodeInfo {
-    status: String,
-    #[serde(rename = "flags-mask")]
-    flags_mask: Option<u16>,
-}
-
-#[derive(Debug, Clone)]
-struct MooState {
-    regs: HashMap<String, u16>,
-    ram: Vec<(u32, u8)>,
-}
-
-#[derive(Debug, Clone)]
-struct MooException;
-
-#[derive(Debug, Clone)]
-struct MooTest {
-    idx: u32,
-    name: String,
-    bytes: Vec<u8>,
-    initial: MooState,
-    final_state: MooState,
-    exception: Option<MooException>,
-    hash: Option<String>,
-}
-
 fn test_dir() -> &'static Path {
     static DIR: LazyLock<PathBuf> = LazyLock::new(|| {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/SingleStepTests/80286/v1_real_mode")
@@ -138,32 +100,17 @@ fn test_dir() -> &'static Path {
 }
 
 fn metadata() -> &'static Metadata {
-    static META: LazyLock<Metadata> = LazyLock::new(|| {
-        serde_json::from_reader(BufReader::new(
-            fs::File::open(test_dir().join("metadata.json")).unwrap(),
-        ))
-        .unwrap()
-    });
+    static META: LazyLock<Metadata> =
+        LazyLock::new(|| load_metadata(&test_dir().join("metadata.json")));
     &META
 }
 
-fn revocation_list() -> &'static std::collections::HashSet<String> {
-    static REVOKED: LazyLock<std::collections::HashSet<String>> = LazyLock::new(|| {
-        let text = fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
+fn revocation_list() -> &'static HashSet<String> {
+    static REVOKED: LazyLock<HashSet<String>> = LazyLock::new(|| {
+        load_revocation_list(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/SingleStepTests/80286/revocation_list.txt"),
         )
-        .unwrap();
-        text.lines()
-            .filter_map(|line| {
-                let trimmed = line.trim();
-                if trimmed.is_empty() || trimmed.starts_with('#') {
-                    None
-                } else {
-                    Some(trimmed.to_ascii_lowercase())
-                }
-            })
-            .collect()
     });
     &REVOKED
 }
@@ -175,195 +122,22 @@ fn should_test(status: &str) -> bool {
     )
 }
 
-fn read_u16(bytes: &[u8], offset: &mut usize) -> u16 {
-    let end = *offset + 2;
-    let value = u16::from_le_bytes(bytes[*offset..end].try_into().unwrap());
-    *offset = end;
-    value
-}
-
-fn read_u32(bytes: &[u8], offset: &mut usize) -> u32 {
-    let end = *offset + 4;
-    let value = u32::from_le_bytes(bytes[*offset..end].try_into().unwrap());
-    *offset = end;
-    value
-}
-
-fn read_tag(bytes: &[u8], offset: &mut usize) -> [u8; 4] {
-    let end = *offset + 4;
-    let value = bytes[*offset..end].try_into().unwrap();
-    *offset = end;
-    value
-}
-
-fn parse_regs(payload: &[u8]) -> HashMap<String, u16> {
-    let mut offset = 0;
-    let mask = read_u16(payload, &mut offset);
-    let mut regs = HashMap::new();
-
-    for (index, name) in REG_ORDER.iter().enumerate() {
-        if mask & (1 << index) != 0 {
-            let value = read_u16(payload, &mut offset);
-            regs.insert((*name).to_string(), value);
-        }
-    }
-
-    regs
-}
-
-fn parse_ram(payload: &[u8]) -> Vec<(u32, u8)> {
-    let mut offset = 0;
-    let count = read_u32(payload, &mut offset) as usize;
-    let mut entries = Vec::with_capacity(count);
-
-    for _ in 0..count {
-        let address = read_u32(payload, &mut offset);
-        let value = payload[offset];
-        offset += 1;
-        entries.push((address, value));
-    }
-
-    entries
-}
-
-fn parse_cpu_state(payload: &[u8]) -> MooState {
-    let mut offset = 0;
-    let mut regs = HashMap::new();
-    let mut ram = Vec::new();
-
-    while offset < payload.len() {
-        let tag = read_tag(payload, &mut offset);
-        let length = read_u32(payload, &mut offset) as usize;
-        let end = offset + length;
-        let sub_payload = &payload[offset..end];
-
-        match &tag {
-            b"REGS" => regs = parse_regs(sub_payload),
-            b"RAM " => ram = parse_ram(sub_payload),
-            b"QUEU" => {}
-            _ => {}
-        }
-
-        offset = end;
-    }
-
-    MooState { regs, ram }
-}
-
-fn bytes_to_hex(bytes: &[u8]) -> String {
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        let _ = write!(&mut output, "{byte:02x}");
-    }
-    output
-}
-
-fn parse_test_chunk(payload: &[u8]) -> MooTest {
-    let mut offset = 0;
-    let idx = read_u32(payload, &mut offset);
-    let mut name = String::new();
-    let mut bytes = Vec::new();
-    let mut initial = MooState {
-        regs: HashMap::new(),
-        ram: Vec::new(),
-    };
-    let mut final_state = MooState {
-        regs: HashMap::new(),
-        ram: Vec::new(),
-    };
-    let mut exception = None;
-    let mut hash = None;
-
-    while offset < payload.len() {
-        let tag = read_tag(payload, &mut offset);
-        let length = read_u32(payload, &mut offset) as usize;
-        let end = offset + length;
-        let sub_payload = &payload[offset..end];
-
-        match &tag {
-            b"NAME" => {
-                let mut name_offset = 0;
-                let name_len = read_u32(sub_payload, &mut name_offset) as usize;
-                name = String::from_utf8(sub_payload[name_offset..name_offset + name_len].to_vec())
-                    .unwrap();
-            }
-            b"BYTS" => {
-                let mut bytes_offset = 0;
-                let byte_count = read_u32(sub_payload, &mut bytes_offset) as usize;
-                bytes = sub_payload[bytes_offset..bytes_offset + byte_count].to_vec();
-            }
-            b"INIT" => initial = parse_cpu_state(sub_payload),
-            b"FINA" => final_state = parse_cpu_state(sub_payload),
-            b"EXCP" => {
-                if sub_payload.len() >= 5 {
-                    exception = Some(MooException);
-                }
-            }
-            b"HASH" => {
-                hash = Some(bytes_to_hex(sub_payload));
-            }
-            b"CYCL" => {}
-            _ => {}
-        }
-
-        offset = end;
-    }
-
-    MooTest {
-        idx,
-        name,
-        bytes,
-        initial,
-        final_state,
-        exception,
-        hash,
-    }
-}
-
-fn load_moo_tests(path: &Path) -> Vec<MooTest> {
-    let file = fs::File::open(path).unwrap();
-    let mut decoder = GzDecoder::new(BufReader::new(file));
-    let mut data = Vec::new();
-    decoder.read_to_end(&mut data).unwrap();
-
-    let mut offset = 0;
-    assert_eq!(&data[0..4], b"MOO ");
-    offset += 4;
-
-    let header_len = read_u32(&data, &mut offset) as usize;
-    offset += header_len;
-
-    let mut tests = Vec::new();
-    while offset < data.len() {
-        let tag = read_tag(&data, &mut offset);
-        let chunk_len = read_u32(&data, &mut offset) as usize;
-        let end = offset + chunk_len;
-
-        if &tag == b"TEST" {
-            tests.push(parse_test_chunk(&data[offset..end]));
-        }
-
-        offset = end;
-    }
-
-    tests
-}
-
-fn initial_reg_value(initial_regs: &HashMap<String, u16>, name: &str) -> u16 {
+fn initial_reg_value(initial_regs: &HashMap<String, u32>, name: &str) -> u16 {
     initial_regs
         .get(name)
         .copied()
-        .unwrap_or_else(|| panic!("missing register in initial state: {name}"))
+        .unwrap_or_else(|| panic!("missing register in initial state: {name}")) as u16
 }
 
 fn build_expected_state(
-    initial_regs: &HashMap<String, u16>,
-    final_regs: &HashMap<String, u16>,
+    initial_regs: &HashMap<String, u32>,
+    final_regs: &HashMap<String, u32>,
 ) -> I286State {
     let get = |name: &str| -> u16 {
         final_regs
             .get(name)
             .copied()
+            .map(|value| value as u16)
             .unwrap_or_else(|| initial_reg_value(initial_regs, name))
     };
 
@@ -446,7 +220,7 @@ fn format_flags_diff(expected: u16, actual: u16, mask: u16) -> String {
 
 fn run_test_file(stem: &str, local_revoked_hashes: &[&str]) {
     let revoked = revocation_list();
-    let local_revoked: std::collections::HashSet<String> = local_revoked_hashes
+    let local_revoked: HashSet<String> = local_revoked_hashes
         .iter()
         .map(|hash| hash.to_ascii_lowercase())
         .collect();
@@ -461,7 +235,7 @@ fn run_test_file(stem: &str, local_revoked_hashes: &[&str]) {
 
     let filename = format!("{stem}.MOO.gz");
     let path = test_dir().join(&filename);
-    let test_cases = load_moo_tests(&path);
+    let test_cases = load_moo_tests(&path, &REG_ORDER, &[]);
     let mut failures: Vec<String> = Vec::new();
 
     for test in &test_cases {

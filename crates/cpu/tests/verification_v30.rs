@@ -1,10 +1,19 @@
 #![cfg(feature = "verification")]
 
-use std::{collections::HashMap, fs, io::BufReader, path::Path, sync::LazyLock};
+#[path = "common/metadata_json.rs"]
+mod metadata_json;
+#[path = "common/verification_common.rs"]
+mod verification_common;
+
+use std::{collections::HashMap, path::Path, sync::LazyLock};
 
 use cpu::{V30, V30State};
-use flate2::read::GzDecoder;
-use serde::Deserialize;
+use metadata_json::{Metadata, load_metadata};
+use verification_common::{MooState, load_moo_tests};
+
+const REG_ORDER_V30: [&str; 14] = [
+    "ax", "bx", "cx", "dx", "cs", "ss", "ds", "es", "sp", "bp", "si", "di", "ip", "flags",
+];
 
 struct TestBus {
     ram: Box<[u8; 1_048_576]>,
@@ -54,65 +63,6 @@ impl common::Bus for TestBus {
     fn set_current_cycle(&mut self, _cycle: u64) {}
 }
 
-#[derive(Deserialize)]
-struct TestCase {
-    name: String,
-    bytes: Vec<u8>,
-    initial: InitialState,
-    #[serde(rename = "final")]
-    final_state: FinalState,
-}
-
-#[derive(Deserialize)]
-struct InitialState {
-    regs: Registers,
-    ram: Vec<(u32, u8)>,
-}
-
-#[derive(Deserialize)]
-struct FinalState {
-    regs: HashMap<String, u16>,
-    ram: Vec<(u32, u8)>,
-}
-
-#[derive(Deserialize)]
-struct Registers {
-    ax: u16,
-    bx: u16,
-    cx: u16,
-    dx: u16,
-    sp: u16,
-    bp: u16,
-    si: u16,
-    di: u16,
-    cs: u16,
-    ss: u16,
-    ds: u16,
-    es: u16,
-    ip: u16,
-    flags: u16,
-}
-
-#[derive(Deserialize)]
-struct Metadata {
-    opcodes: HashMap<String, OpcodeEntry>,
-}
-
-#[derive(Deserialize)]
-struct OpcodeEntry {
-    status: Option<String>,
-    #[serde(rename = "flags-mask")]
-    flags_mask: Option<u16>,
-    reg: Option<HashMap<String, OpcodeInfo>>,
-}
-
-#[derive(Deserialize)]
-struct OpcodeInfo {
-    status: String,
-    #[serde(rename = "flags-mask")]
-    flags_mask: Option<u16>,
-}
-
 fn test_dir() -> &'static Path {
     static DIR: LazyLock<std::path::PathBuf> = LazyLock::new(|| {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/SingleStepTests/v20/v1_native")
@@ -121,12 +71,8 @@ fn test_dir() -> &'static Path {
 }
 
 fn metadata() -> &'static Metadata {
-    static META: LazyLock<Metadata> = LazyLock::new(|| {
-        serde_json::from_reader(BufReader::new(
-            fs::File::open(test_dir().join("metadata.json")).unwrap(),
-        ))
-        .unwrap()
-    });
+    static META: LazyLock<Metadata> =
+        LazyLock::new(|| load_metadata(&test_dir().join("metadata.json")));
     &META
 }
 
@@ -170,34 +116,18 @@ fn format_flags_diff(expected: u16, actual: u16, mask: u16) -> String {
     )
 }
 
-fn initial_reg_value(regs: &Registers, name: &str) -> u16 {
-    match name {
-        "ax" => regs.ax,
-        "bx" => regs.bx,
-        "cx" => regs.cx,
-        "dx" => regs.dx,
-        "sp" => regs.sp,
-        "bp" => regs.bp,
-        "si" => regs.si,
-        "di" => regs.di,
-        "cs" => regs.cs,
-        "ss" => regs.ss,
-        "ds" => regs.ds,
-        "es" => regs.es,
-        "ip" => regs.ip,
-        "flags" => regs.flags,
-        _ => panic!("unknown register: {name}"),
-    }
+fn initial_reg_value(regs: &HashMap<String, u32>, name: &str) -> u16 {
+    regs.get(name)
+        .copied()
+        .unwrap_or_else(|| panic!("missing register in initial state: {name}")) as u16
 }
 
-fn build_expected_state(initial: &Registers, final_regs: &HashMap<String, u16>) -> V30State {
+fn build_state(regs: &HashMap<String, u16>) -> V30State {
     let get = |name: &str| -> u16 {
-        final_regs
-            .get(name)
+        regs.get(name)
             .copied()
-            .unwrap_or_else(|| initial_reg_value(initial, name))
+            .unwrap_or_else(|| panic!("missing register: {name}"))
     };
-
     let mut s = V30State::default();
     s.set_ax(get("ax"));
     s.set_cx(get("cx"));
@@ -216,11 +146,34 @@ fn build_expected_state(initial: &Registers, final_regs: &HashMap<String, u16>) 
     s
 }
 
+fn resolve_final_regs(
+    initial: &HashMap<String, u32>,
+    final_state: &HashMap<String, u32>,
+) -> HashMap<String, u16> {
+    REG_ORDER_V30
+        .iter()
+        .map(|name| {
+            let value = final_state
+                .get(*name)
+                .copied()
+                .unwrap_or_else(|| initial_reg_value(initial, name) as u32);
+            ((*name).to_string(), value as u16)
+        })
+        .collect()
+}
+
+fn resolve_initial_regs(initial: &HashMap<String, u32>) -> HashMap<String, u16> {
+    REG_ORDER_V30
+        .iter()
+        .map(|name| ((*name).to_string(), initial_reg_value(initial, name)))
+        .collect()
+}
+
 fn is_division_exception(
     opcode: &str,
     reg_ext: Option<&str>,
-    initial: &InitialState,
-    final_state: &FinalState,
+    initial: &MooState,
+    expected: &V30State,
 ) -> bool {
     let is_div = matches!(
         (opcode, reg_ext),
@@ -230,148 +183,186 @@ fn is_division_exception(
         return false;
     }
 
-    let handler_ip = initial
-        .ram
-        .iter()
-        .find(|(addr, _)| *addr == 0)
-        .map(|(_, v)| *v as u16)
-        .unwrap_or(0)
-        | initial
+    let byte_at = |address: u32| -> u16 {
+        initial
             .ram
             .iter()
-            .find(|(addr, _)| *addr == 1)
-            .map(|(_, v)| (*v as u16) << 8)
-            .unwrap_or(0);
-    let handler_cs = initial
-        .ram
-        .iter()
-        .find(|(addr, _)| *addr == 2)
-        .map(|(_, v)| *v as u16)
-        .unwrap_or(0)
-        | initial
-            .ram
-            .iter()
-            .find(|(addr, _)| *addr == 3)
-            .map(|(_, v)| (*v as u16) << 8)
-            .unwrap_or(0);
+            .find(|(candidate, _)| *candidate == address)
+            .map(|(_, value)| *value as u16)
+            .unwrap_or(0)
+    };
+    let handler_ip = byte_at(0) | (byte_at(1) << 8);
+    let handler_cs = byte_at(2) | (byte_at(3) << 8);
 
-    let expected = build_expected_state(&initial.regs, &final_state.regs);
     expected.cs() == handler_cs && expected.ip == handler_ip
 }
 
-fn run_test_file(stem: &str) {
-    let metadata = metadata();
-    let filename = format!("{stem}.json.gz");
-
-    let (opcode, reg_ext) = if let Some(dot_pos) = stem.find('.') {
+fn parse_stem(stem: &str) -> (&str, Option<&str>) {
+    if let Some(dot_pos) = stem.find('.') {
         (&stem[..dot_pos], Some(&stem[dot_pos + 1..]))
     } else {
         (stem, None)
-    };
+    }
+}
 
-    let (status, flags_mask) = match metadata.opcodes.get(opcode) {
-        Some(entry) => {
-            if let Some(reg_ext) = reg_ext {
-                match &entry.reg {
-                    Some(reg_map) => match reg_map.get(reg_ext) {
-                        Some(info) => (info.status.as_str(), info.flags_mask.unwrap_or(0xFFFF)),
-                        None => return,
-                    },
-                    None => return,
+fn status_and_mask(stem: &str) -> Option<(&'static str, u16)> {
+    let metadata = metadata();
+    let (opcode, reg_ext) = parse_stem(stem);
+    let entry = metadata.opcodes.get(opcode)?;
+    match (reg_ext, &entry.reg) {
+        (Some(reg_ext), Some(reg_map)) => {
+            let info = reg_map.get(reg_ext)?;
+            Some((info.status.as_str(), info.flags_mask.unwrap_or(0xFFFF)))
+        }
+        (Some(_), None) => None,
+        (None, _) => {
+            if let Some(status) = &entry.status {
+                Some((status.as_str(), entry.flags_mask.unwrap_or(0xFFFF)))
+            } else if let Some(reg_map) = &entry.reg {
+                let any_testable = reg_map.values().any(|info| should_test(&info.status));
+                if !any_testable {
+                    return None;
                 }
+                let mask = reg_map
+                    .values()
+                    .map(|info| info.flags_mask.unwrap_or(0xFFFF))
+                    .fold(0xFFFFu16, |acc, m| acc & m);
+                Some(("normal", mask))
             } else {
-                match &entry.status {
-                    Some(s) => (s.as_str(), entry.flags_mask.unwrap_or(0xFFFF)),
-                    None => match &entry.reg {
-                        Some(reg_map) => {
-                            let any_testable =
-                                reg_map.values().any(|info| should_test(&info.status));
-                            if !any_testable {
-                                return;
-                            }
-                            let mask = reg_map
-                                .values()
-                                .map(|info| info.flags_mask.unwrap_or(0xFFFF))
-                                .fold(0xFFFF, |acc, m| acc & m);
-                            ("normal", mask)
-                        }
-                        None => return,
-                    },
-                }
+                None
             }
         }
-        None => return,
-    };
+    }
+}
 
+fn run_test_file(stem: &str) {
+    let Some((status, flags_mask)) = status_and_mask(stem) else {
+        return;
+    };
     if !should_test(status) {
         return;
     }
 
-    let file = fs::File::open(test_dir().join(&filename)).unwrap();
-    let decoder = GzDecoder::new(BufReader::new(file));
-    let test_cases: Vec<TestCase> = serde_json::from_reader(decoder).unwrap();
+    let (opcode, reg_ext) = parse_stem(stem);
+    let filename = format!("{stem}.MOO.gz");
+    let path = test_dir().join(&filename);
+    let test_cases = load_moo_tests(&path, &REG_ORDER_V30, &[]);
 
     let mut failures: Vec<String> = Vec::new();
 
     for (index, test) in test_cases.iter().enumerate() {
         let mut bus = TestBus::new();
-        for &(addr, val) in &test.initial.ram {
-            bus.ram[(addr & 0xFFFFF) as usize] = val;
+        for &(address, value) in &test.initial.ram {
+            bus.ram[(address & 0xFFFFF) as usize] = value;
         }
 
-        let initial_state = {
-            let mut s = V30State::default();
-            s.set_ax(test.initial.regs.ax);
-            s.set_cx(test.initial.regs.cx);
-            s.set_dx(test.initial.regs.dx);
-            s.set_bx(test.initial.regs.bx);
-            s.set_sp(test.initial.regs.sp);
-            s.set_bp(test.initial.regs.bp);
-            s.set_si(test.initial.regs.si);
-            s.set_di(test.initial.regs.di);
-            s.set_es(test.initial.regs.es);
-            s.set_cs(test.initial.regs.cs);
-            s.set_ss(test.initial.regs.ss);
-            s.set_ds(test.initial.regs.ds);
-            s.ip = test.initial.regs.ip;
-            s.set_compressed_flags(test.initial.regs.flags);
-            s
-        };
+        let initial_regs16 = resolve_initial_regs(&test.initial.regs);
+        let final_regs16 = resolve_final_regs(&test.initial.regs, &test.final_state.regs);
+        let initial_state = build_state(&initial_regs16);
+        let expected = build_state(&final_regs16);
 
         let mut cpu = V30::new();
         cpu.load_state(&initial_state);
         cpu.step(&mut bus);
 
-        let expected = build_expected_state(&test.initial.regs, &test.final_state.regs);
-
         let mut diffs: Vec<String> = Vec::new();
-
         let check_reg = |name: &str,
-                         initial_val: u16,
-                         cpu_val: u16,
-                         expected_val: u16,
+                         initial_value: u16,
+                         actual_value: u16,
+                         expected_value: u16,
                          diffs: &mut Vec<String>| {
-            if cpu_val != expected_val {
+            if actual_value != expected_value {
                 diffs.push(format!(
-                    "  {name}: expected 0x{expected_val:04X}, got 0x{cpu_val:04X} (was 0x{initial_val:04X})"
+                    "  {name}: expected 0x{expected_value:04X}, got 0x{actual_value:04X} (was 0x{initial_value:04X})"
                 ));
             }
         };
 
-        let ini = &test.initial.regs;
-        check_reg("ax", ini.ax, cpu.ax(), expected.ax(), &mut diffs);
-        check_reg("bx", ini.bx, cpu.bx(), expected.bx(), &mut diffs);
-        check_reg("cx", ini.cx, cpu.cx(), expected.cx(), &mut diffs);
-        check_reg("dx", ini.dx, cpu.dx(), expected.dx(), &mut diffs);
-        check_reg("sp", ini.sp, cpu.sp(), expected.sp(), &mut diffs);
-        check_reg("bp", ini.bp, cpu.bp(), expected.bp(), &mut diffs);
-        check_reg("si", ini.si, cpu.si(), expected.si(), &mut diffs);
-        check_reg("di", ini.di, cpu.di(), expected.di(), &mut diffs);
-        check_reg("cs", ini.cs, cpu.cs(), expected.cs(), &mut diffs);
-        check_reg("ss", ini.ss, cpu.ss(), expected.ss(), &mut diffs);
-        check_reg("ds", ini.ds, cpu.ds(), expected.ds(), &mut diffs);
-        check_reg("es", ini.es, cpu.es(), expected.es(), &mut diffs);
-        check_reg("ip", ini.ip, cpu.ip, expected.ip, &mut diffs);
+        check_reg(
+            "ax",
+            initial_state.ax(),
+            cpu.ax(),
+            expected.ax(),
+            &mut diffs,
+        );
+        check_reg(
+            "bx",
+            initial_state.bx(),
+            cpu.bx(),
+            expected.bx(),
+            &mut diffs,
+        );
+        check_reg(
+            "cx",
+            initial_state.cx(),
+            cpu.cx(),
+            expected.cx(),
+            &mut diffs,
+        );
+        check_reg(
+            "dx",
+            initial_state.dx(),
+            cpu.dx(),
+            expected.dx(),
+            &mut diffs,
+        );
+        check_reg(
+            "sp",
+            initial_state.sp(),
+            cpu.sp(),
+            expected.sp(),
+            &mut diffs,
+        );
+        check_reg(
+            "bp",
+            initial_state.bp(),
+            cpu.bp(),
+            expected.bp(),
+            &mut diffs,
+        );
+        check_reg(
+            "si",
+            initial_state.si(),
+            cpu.si(),
+            expected.si(),
+            &mut diffs,
+        );
+        check_reg(
+            "di",
+            initial_state.di(),
+            cpu.di(),
+            expected.di(),
+            &mut diffs,
+        );
+        check_reg(
+            "cs",
+            initial_state.cs(),
+            cpu.cs(),
+            expected.cs(),
+            &mut diffs,
+        );
+        check_reg(
+            "ss",
+            initial_state.ss(),
+            cpu.ss(),
+            expected.ss(),
+            &mut diffs,
+        );
+        check_reg(
+            "ds",
+            initial_state.ds(),
+            cpu.ds(),
+            expected.ds(),
+            &mut diffs,
+        );
+        check_reg(
+            "es",
+            initial_state.es(),
+            cpu.es(),
+            expected.es(),
+            &mut diffs,
+        );
+        check_reg("ip", initial_state.ip, cpu.ip, expected.ip, &mut diffs);
 
         let cpu_flags_masked = cpu.compressed_flags() & flags_mask;
         let expected_flags_masked = expected.compressed_flags() & flags_mask;
@@ -383,29 +374,28 @@ fn run_test_file(stem: &str) {
                     cpu.compressed_flags(),
                     flags_mask
                 ),
-                ini.flags
+                initial_state.compressed_flags()
             ));
         }
 
-        let div_exception =
-            is_division_exception(opcode, reg_ext, &test.initial, &test.final_state);
+        let div_exception = is_division_exception(opcode, reg_ext, &test.initial, &expected);
 
         if !div_exception {
-            for &(addr, expected_val) in &test.final_state.ram {
-                let actual_val = bus.ram[(addr & 0xFFFFF) as usize];
-                if actual_val != expected_val {
-                    let initial_val = test
+            for &(address, expected_value) in &test.final_state.ram {
+                let actual_value = bus.ram[(address & 0xFFFFF) as usize];
+                if actual_value != expected_value {
+                    let initial_value = test
                         .initial
                         .ram
                         .iter()
-                        .find(|(a, _)| *a == addr)
-                        .map(|(_, v)| *v);
-                    match initial_val {
-                        Some(init) => diffs.push(format!(
-                            "  ram[0x{addr:05X}]: expected 0x{expected_val:02X}, got 0x{actual_val:02X} (was 0x{init:02X})"
+                        .find(|(candidate, _)| *candidate == address)
+                        .map(|(_, value)| *value);
+                    match initial_value {
+                        Some(before) => diffs.push(format!(
+                            "  ram[0x{address:05X}]: expected 0x{expected_value:02X}, got 0x{actual_value:02X} (was 0x{before:02X})"
                         )),
                         None => diffs.push(format!(
-                            "  ram[0x{addr:05X}]: expected 0x{expected_val:02X}, got 0x{actual_val:02X} (not in initial RAM)"
+                            "  ram[0x{address:05X}]: expected 0x{expected_value:02X}, got 0x{actual_value:02X} (not in initial RAM)"
                         )),
                     }
                 }
@@ -413,7 +403,11 @@ fn run_test_file(stem: &str) {
         }
 
         if !diffs.is_empty() {
-            let bytes_hex: Vec<String> = test.bytes.iter().map(|b| format!("{b:02X}")).collect();
+            let bytes_hex: Vec<String> = test
+                .bytes
+                .iter()
+                .map(|byte| format!("{byte:02X}"))
+                .collect();
             failures.push(format!(
                 "[{filename} #{index}] {} ({})\n{}",
                 test.name,
@@ -426,16 +420,16 @@ fn run_test_file(stem: &str) {
     if !failures.is_empty() {
         let fail_count = failures.len();
         let test_count = test_cases.len();
-        let mut msg = format!("{filename}: {fail_count}/{test_count} tests failed\n");
+        let mut message = format!("{filename}: {fail_count}/{test_count} tests failed\n");
         let display_count = failures.len().min(5);
-        for f in &failures[..display_count] {
-            msg.push_str(f);
-            msg.push('\n');
+        for failure in &failures[..display_count] {
+            message.push_str(failure);
+            message.push('\n');
         }
         if failures.len() > 5 {
-            msg.push_str(&format!("  ... and {} more failures\n", failures.len() - 5));
+            message.push_str(&format!("  ... and {} more failures\n", failures.len() - 5));
         }
-        panic!("{msg}");
+        panic!("{message}");
     }
 }
 

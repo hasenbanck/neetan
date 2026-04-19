@@ -1,14 +1,9 @@
 #![cfg(feature = "verification")]
+#![allow(dead_code)]
 
-use std::{
-    collections::HashMap,
-    fmt::Write,
-    fs,
-    io::{BufReader, Read},
-    path::Path,
-};
+use std::{collections::HashMap, fmt::Write, fs, path::Path};
 
-use flate2::read::GzDecoder;
+use zlib_rs::{InflateConfig, ReturnCode, decompress_slice};
 
 #[derive(Debug, Clone)]
 pub struct MooState {
@@ -192,11 +187,29 @@ fn parse_test_chunk(payload: &[u8], reg_order16: &[&str], reg_order32: &[&str]) 
     }
 }
 
+fn read_gzip_to_vec(path: &Path) -> Vec<u8> {
+    let compressed = fs::read(path).unwrap();
+    assert!(
+        compressed.len() >= 18,
+        "{path:?}: file too short to be a valid gzip stream"
+    );
+    let isize_le: [u8; 4] = compressed[compressed.len() - 4..].try_into().unwrap();
+    let output_len = u32::from_le_bytes(isize_le) as usize;
+
+    let mut output = vec![0u8; output_len];
+    let (decompressed, code) =
+        decompress_slice(&mut output, &compressed, InflateConfig { window_bits: 31 });
+    assert_eq!(code, ReturnCode::Ok, "{path:?}: inflate failed ({code:?})");
+    assert_eq!(
+        decompressed.len(),
+        output_len,
+        "{path:?}: decoded size does not match gzip ISIZE"
+    );
+    output
+}
+
 pub fn load_moo_tests(path: &Path, reg_order16: &[&str], reg_order32: &[&str]) -> Vec<MooTest> {
-    let file = fs::File::open(path).unwrap();
-    let mut decoder = GzDecoder::new(BufReader::new(file));
-    let mut data = Vec::new();
-    decoder.read_to_end(&mut data).unwrap();
+    let data = read_gzip_to_vec(path);
 
     let mut offset = 0;
     assert_eq!(&data[0..4], b"MOO ");
