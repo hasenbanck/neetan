@@ -10,7 +10,7 @@ use device::{floppy::D88MediaType, i8253_pit::PIT_FLAG_I, upd7220_gdc::GdcScroll
 
 use super::{
     BootDevice, Pc9801Bus,
-    os_adapter::{OsCpuAccess, OsDiskIo, OsMemoryAccess},
+    os_adapter::{OsCpuAccess, OsCursorAccess, OsDiskIo, OsMemoryAccess},
 };
 use crate::{Tracing, memory::Pc9801Memory};
 
@@ -143,15 +143,16 @@ impl<T: Tracing> Pc9801Bus<T> {
                         sasi: &mut self.sasi,
                         ide: &mut self.ide,
                     };
+                    let mut cursor_access = OsCursorAccess(&mut self.gdc_master.state);
                     neetan_os.dispatch(
                         vector,
                         &mut cpu_access,
                         &mut mem_access,
                         &mut disk_io,
+                        &mut cursor_access,
                         &mut self.tracer,
                     );
                     self.os = Some(neetan_os);
-                    self.sync_cursor();
                 }
             }
             0xD2 => {}
@@ -164,17 +165,6 @@ impl<T: Tracing> Pc9801Bus<T> {
             0xF1 | 0xF2 => self.hle_bootstrap(cpu),
             _ => {}
         }
-    }
-
-    /// Sync HLE OS software cursor to GDC hardware cursor.
-    fn sync_cursor(&mut self) {
-        let iosys = os::tables::IOSYS_BASE as usize;
-        let cursor_y = self.memory.state.ram[iosys + os::tables::IOSYS_OFF_CURSOR_Y as usize];
-        let cursor_x = self.memory.state.ram[iosys + os::tables::IOSYS_OFF_CURSOR_X as usize];
-        self.gdc_master.state.ead = cursor_y as u32 * 80 + cursor_x as u32;
-        let cursor_visible =
-            self.memory.state.ram[iosys + os::tables::IOSYS_OFF_CURSOR_VISIBLE as usize];
-        self.gdc_master.state.cursor_display = cursor_visible != 0;
     }
 
     pub(super) fn set_iret_cf(&mut self, cpu: &impl Cpu, error: bool) {

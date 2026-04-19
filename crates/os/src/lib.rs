@@ -29,7 +29,8 @@ use std::collections::BTreeMap;
 
 pub use common::{
     AudioChannelInfo, CdAudioState, CdAudioStatus, CdromIo, CdromTrackInfo, CdromTrackType,
-    ConsoleIo, CpuAccess, DiskIo, DriveIo, MemoryAccess, OsBootStage, Tracing,
+    ConsoleIo, CpuAccess, CursorAccess, DiskIo, DriveIo, HardwareCursorState, MemoryAccess,
+    OsBootStage, Tracing,
 };
 
 /// Information about a discovered drive for CDS/DPB/DAUA population.
@@ -326,6 +327,23 @@ impl Default for NeetanOs {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn sync_hardware_cursor_to_iosys(cursor: &impl CursorAccess, memory: &mut dyn MemoryAccess) {
+    let state = cursor.read();
+    memory.write_byte(
+        tables::IOSYS_BASE + tables::IOSYS_OFF_CURSOR_VISIBLE,
+        u8::from(state.visible),
+    );
+    memory.write_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_CURSOR_Y, state.row);
+    memory.write_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_CURSOR_X, state.col);
+}
+
+fn sync_iosys_to_hardware_cursor(cursor: &mut impl CursorAccess, memory: &dyn MemoryAccess) {
+    let visible = memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_CURSOR_VISIBLE) != 0;
+    let row = memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_CURSOR_Y);
+    let col = memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_CURSOR_X);
+    cursor.write(HardwareCursorState { visible, row, col });
 }
 
 impl NeetanOs {
@@ -836,7 +854,28 @@ impl NeetanOs {
     /// `vector`: interrupt number (0x20-0x2F, 0x33, 0xDC).
     /// Returns `true` if the interrupt was handled, `false` if the vector
     /// should fall through to the default IRET behavior.
+    ///
+    /// Reconciles the BIOS-owned hardware cursor with the HLE OS IOSYS cursor
+    /// tracking at entry and exit: the OS overwrites its IOSYS copy from the
+    /// hardware first (so it does not act on stale state), runs the syscall,
+    /// then writes any OS-side cursor changes back to the hardware.
     pub fn dispatch(
+        &mut self,
+        vector: u8,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        device: &mut (impl DiskIo + CdromIo),
+        cursor: &mut impl CursorAccess,
+        tracer: &mut impl Tracing,
+    ) -> bool {
+        sync_hardware_cursor_to_iosys(cursor, memory);
+        tracer.trace_os_dispatch(vector, cpu, memory);
+        let result = self.dispatch_inner(vector, cpu, memory, device, tracer);
+        sync_iosys_to_hardware_cursor(cursor, memory);
+        result
+    }
+
+    fn dispatch_inner(
         &mut self,
         vector: u8,
         cpu: &mut dyn CpuAccess,
@@ -844,7 +883,6 @@ impl NeetanOs {
         device: &mut (impl DiskIo + CdromIo),
         tracer: &mut impl Tracing,
     ) -> bool {
-        tracer.trace_os_dispatch(vector, cpu, memory);
         match vector {
             0x20 => {
                 tracer.trace_int20h(cpu, memory);

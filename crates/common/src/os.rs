@@ -209,6 +209,32 @@ pub struct AudioChannelInfo {
     pub volume: [u8; 4],
 }
 
+/// Snapshot of the master GDC text cursor the HLE BIOS manages.
+///
+/// Shared between the BIOS (authoritative owner of the GDC) and the HLE OS
+/// (owner of its IOSYS cursor bookkeeping) so the two can be reconciled at
+/// each syscall boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HardwareCursorState {
+    /// Whether the cursor is displayed on screen.
+    pub visible: bool,
+    /// Row (0-based character row; ead / 80).
+    pub row: u8,
+    /// Column (0-based character column; ead % 80).
+    pub col: u8,
+}
+
+/// Read/write access to the BIOS-owned hardware text cursor state.
+///
+/// Used by the HLE OS to reconcile its IOSYS cursor tracking with whatever
+/// the BIOS has done since the previous DOS syscall.
+pub trait CursorAccess {
+    /// Returns the current hardware cursor state.
+    fn read(&self) -> HardwareCursorState;
+    /// Writes the hardware cursor state.
+    fn write(&mut self, state: HardwareCursorState);
+}
+
 /// Console I/O for commands and the shell.
 pub trait ConsoleIo {
     /// Write a character to the console at the current cursor position.

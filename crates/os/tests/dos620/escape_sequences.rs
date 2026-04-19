@@ -15,8 +15,7 @@ fn write_ascii_text(machine: &mut machine::Pc9801Ra, row: u32, col: u32, text: &
 }
 
 fn set_cursor(machine: &mut machine::Pc9801Ra, row: u8, col: u8) {
-    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_Y, &[row]);
-    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_X, &[col]);
+    harness::set_cursor_position(&mut machine.bus, row, col);
 }
 
 fn cursor(machine: &machine::Pc9801Ra) -> (u8, u8) {

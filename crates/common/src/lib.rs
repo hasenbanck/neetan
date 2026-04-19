@@ -27,7 +27,7 @@ pub use jis::{
 };
 pub use os::{
     AudioChannelInfo, CdAudioState, CdAudioStatus, CdromIo, CdromTrackInfo, CdromTrackType,
-    ConsoleIo, CpuAccess, DiskIo, DriveIo, MemoryAccess,
+    ConsoleIo, CpuAccess, CursorAccess, DiskIo, DriveIo, HardwareCursorState, MemoryAccess,
 };
 pub use stack_vec::StackVec;
 pub use trace::{NoTracing, OsBootStage, Tracing};

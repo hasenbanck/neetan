@@ -5,11 +5,11 @@
 
 use common::{
     AudioChannelInfo, CdAudioState, CdAudioStatus, CdromIo, CdromTrackInfo, CdromTrackType, Cpu,
-    CpuAccess, DiskIo, MemoryAccess,
+    CpuAccess, CursorAccess, DiskIo, HardwareCursorState, MemoryAccess,
 };
 use device::{
     cd_audio::CdAudioState as DeviceCdAudioState, cdrom::TrackType, ide::IdeController,
-    sasi::SasiController, upd765a_fdc::FloppyController,
+    sasi::SasiController, upd765a_fdc::FloppyController, upd7220_gdc::GdcState,
 };
 
 use crate::memory::Pc9801Memory;
@@ -196,6 +196,24 @@ impl MemoryAccess for OsMemoryAccess<'_> {
 
     fn enable_umb_region(&mut self) {
         self.0.enable_umb_region();
+    }
+}
+
+pub(super) struct OsCursorAccess<'a>(pub &'a mut GdcState);
+
+impl CursorAccess for OsCursorAccess<'_> {
+    fn read(&self) -> HardwareCursorState {
+        let ead = self.0.ead;
+        HardwareCursorState {
+            visible: self.0.cursor_display,
+            row: (ead / 80) as u8,
+            col: (ead % 80) as u8,
+        }
+    }
+
+    fn write(&mut self, state: HardwareCursorState) {
+        self.0.cursor_display = state.visible;
+        self.0.ead = u32::from(state.row) * 80 + u32::from(state.col);
     }
 }
 

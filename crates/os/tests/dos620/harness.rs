@@ -3,7 +3,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use common::{Bus, JisChar, Machine as _, MachineModel};
+use common::{Bus, JisChar, Machine as _, MachineModel, Tracing};
 use device::{
     disk::{HddFormat, HddGeometry, HddImage},
     floppy::d88::{D88Disk, D88MediaType, D88Sector},
@@ -835,6 +835,16 @@ pub fn write_bytes(bus: &mut impl Bus, addr: u32, data: &[u8]) {
     for (i, &byte) in data.iter().enumerate() {
         bus.write_byte(addr + i as u32, byte);
     }
+}
+
+/// Sets both IOSYS and GDC text cursor position so the HLE OS dispatch
+/// pre-sync does not clobber the test setup with stale GDC state.
+pub fn set_cursor_position<T: Tracing>(bus: &mut machine::Pc9801Bus<T>, row: u8, col: u8) {
+    const IOSYS_CURSOR_Y: u32 = 0x0600 + 0x0110;
+    const IOSYS_CURSOR_X: u32 = 0x0600 + 0x011C;
+    bus.set_text_cursor_position(row, col);
+    bus.write_byte(IOSYS_CURSOR_Y, row);
+    bus.write_byte(IOSYS_CURSOR_X, col);
 }
 
 pub fn inject_and_run(machine: &mut machine::Pc9801Ra, code: &[u8]) {
