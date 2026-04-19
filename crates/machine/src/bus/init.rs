@@ -198,6 +198,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             egc: Egc::new(),
             pegc: Pegc::new(),
             palette: Palette::new(),
+            soundboard_14: None,
             soundboard_26k: None,
             soundboard_86: None,
             sound_blaster_16: None,

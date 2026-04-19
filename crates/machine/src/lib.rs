@@ -18,7 +18,7 @@ use device::{
     grcg::GrcgState, i8251_keyboard::I8251KeyboardState, i8251_serial::I8251SerialState,
     i8253_pit::I8253PitState, i8255_mouse_ppi::I8255MousePpiState,
     i8255_system_ppi::I8255SystemPpiState, i8259a_pic::I8259aPicState, palette::PaletteState,
-    printer::PrinterState, sound_blaster_16::SoundBlaster16State,
+    printer::PrinterState, sound_blaster_16::SoundBlaster16State, soundboard_14::Soundboard14State,
     soundboard_26k::Soundboard26kState, soundboard_86::Soundboard86State,
     upd765a_fdc::Upd765aFdcState, upd7220_gdc::GdcState, upd52611_crtc::Upd52611CrtcState,
 };
@@ -101,6 +101,8 @@ pub struct MachineState {
     pub crtc: Upd52611CrtcState,
     /// Palette snapshot.
     pub palette: PaletteState,
+    /// PC-9801-14 Music Generator (TMS3631) snapshot, if installed.
+    pub soundboard_14: Option<Soundboard14State>,
     /// PC-9801-26K sound board (YM2203 OPN) snapshot, if installed.
     pub soundboard_26k: Option<Soundboard26kState>,
     /// PC-9801-86 sound board (YM2608 OPNA + PCM86) snapshot, if installed.

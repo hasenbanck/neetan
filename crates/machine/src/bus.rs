@@ -40,6 +40,7 @@ use device::{
     sasi::SasiController,
     sdip::Sdip,
     sound_blaster_16::{SoundBlaster16, SoundboardSb16Action},
+    soundboard_14::{Soundboard14, Soundboard14Action},
     soundboard_26k::{Soundboard26k, Soundboard26kAction},
     soundboard_86::{Soundboard86, Soundboard86Action},
     upd765a_fdc::FloppyController,
@@ -262,6 +263,7 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     egc: Egc,
     pegc: Pegc,
     palette: Palette,
+    soundboard_14: Option<Soundboard14>,
     soundboard_26k: Option<Soundboard26k>,
     soundboard_86: Option<Soundboard86>,
     sound_blaster_16: Option<SoundBlaster16>,
@@ -717,6 +719,17 @@ impl<T: Tracing> Pc9801Bus<T> {
             alternate_timers,
         ));
         self.resolve_dual_soundboard_irq_conflict();
+    }
+
+    /// Installs the PC-9801-14 Music Generator board (TMS3631).
+    pub fn install_soundboard_14(&mut self) {
+        let sample_rate = self.clocks.sample_rate;
+        self.soundboard_14 = Some(Soundboard14::new(self.clocks.cpu_clock_hz, sample_rate));
+    }
+
+    /// Returns `true` if the PC-9801-14 sound board is installed.
+    pub fn has_soundboard_14(&self) -> bool {
+        self.soundboard_14.is_some()
     }
 
     /// Installs the PC-9801-86 sound board (YM2608 OPNA + PCM86).
@@ -1286,6 +1299,9 @@ impl<T: Tracing> Pc9801Bus<T> {
         if let Some(ref mut sb26k) = self.soundboard_26k {
             sb26k.generate_samples(self.current_cycle, self.clocks.cpu_clock_hz, volume, output);
         }
+        if let Some(ref mut sb14) = self.soundboard_14 {
+            sb14.generate_samples(volume, output);
+        }
         if let Some(ref mut sb16) = self.sound_blaster_16 {
             sb16.generate_samples(self.current_cycle, self.clocks.cpu_clock_hz, volume, output);
         }
@@ -1384,6 +1400,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             display_control: self.display_control.state.clone(),
             crtc: self.crtc.state.clone(),
             palette: self.palette.state.clone(),
+            soundboard_14: self.soundboard_14.as_ref().map(|sb| sb.save_state()),
             soundboard_26k: self.soundboard_26k.as_ref().map(|sb| sb.save_state()),
             soundboard_86: self.soundboard_86.as_ref().map(|sb| sb.save_state()),
             sound_blaster_16: self.sound_blaster_16.as_ref().map(|sb| sb.save_state()),
@@ -1429,6 +1446,14 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.display_control.state = state.display_control.clone();
         self.crtc.state = state.crtc.clone();
         self.palette.state = state.palette.clone();
+        if let (Some(sb14), Some(saved)) = (&mut self.soundboard_14, &state.soundboard_14) {
+            sb14.load_state(
+                saved,
+                self.clocks.cpu_clock_hz,
+                state.clocks.sample_rate,
+                state.current_cycle,
+            );
+        }
         if let (Some(sb26k), Some(saved)) = (&mut self.soundboard_26k, &state.soundboard_26k) {
             sb26k.load_state(
                 saved,
@@ -1487,6 +1512,30 @@ impl<T: Tracing> Pc9801Bus<T> {
                     }
                     Soundboard86Action::DeassertIrq { irq } => {
                         self.pic.clear_irq(irq);
+                    }
+                }
+            }
+        }
+        self.update_next_event_cycle();
+    }
+
+    fn process_soundboard_14_actions(&mut self) {
+        if let Some(ref mut sb14) = self.soundboard_14 {
+            for action in sb14.drain_actions() {
+                match *action {
+                    Soundboard14Action::ScheduleTimer { kind, fire_cycle } => {
+                        self.scheduler.schedule(kind, fire_cycle);
+                    }
+                    Soundboard14Action::CancelTimer { kind } => {
+                        self.scheduler.cancel(kind);
+                    }
+                    Soundboard14Action::AssertIrq { irq } => {
+                        self.pic.set_irq(irq);
+                        self.tracer.trace_irq_raise(irq);
+                    }
+                    Soundboard14Action::DeassertIrq { irq } => {
+                        self.pic.clear_irq(irq);
+                        self.tracer.trace_irq_clear(irq);
                     }
                 }
             }
@@ -1860,6 +1909,12 @@ impl<T: Tracing> Pc9801Bus<T> {
                 }
                 EventKind::MpuTimer => {
                     self.handle_mpu_timer();
+                }
+                EventKind::MusicGen14Timer => {
+                    if let Some(ref mut sb14) = self.soundboard_14 {
+                        sb14.timer_expired(self.current_cycle);
+                        self.process_soundboard_14_actions();
+                    }
                 }
             }
         }

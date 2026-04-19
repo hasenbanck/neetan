@@ -47,7 +47,7 @@ Options:
       --force-gdc-clock <2.5|5> Force GDC clock to 2.5 or 5 MHz (default: auto)
       --bios-rom <PATH>         Path to BIOS ROM file
       --font-rom <PATH>         Path to font ROM file
-      --soundboard <TYPE>       Sound board type: none, 26k, 86, 86+26k, sb16, sb16+26k
+      --soundboard <TYPE>       Sound board type: none, 14, 26k, 86, 86+26k, sb16, sb16+26k
       --adpcm-ram <on|off>      ADPCM RAM option for PC-9801-86 (default: on)
       --ems <on|off>            Enable EMS expanded memory (default: on)
       --xms <on|off>            Enable XMS extended memory (default: on)
@@ -692,6 +692,8 @@ impl std::fmt::Display for AspectMode {
 pub enum SoundboardType {
     /// No sound board installed.
     None,
+    /// PC-9801-14 Music Generator (TMS3631 8-channel synth).
+    Sb14,
     /// PC-9801-26K only (YM2203 OPN).
     Sb26k,
     /// PC-9801-86 only (YM2608 OPNA + PCM86).
@@ -708,6 +710,7 @@ impl std::fmt::Display for SoundboardType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::None => f.write_str("none"),
+            Self::Sb14 => f.write_str("14"),
             Self::Sb26k => f.write_str("26k"),
             Self::Sb86 => f.write_str("86"),
             Self::Sb86And26k => f.write_str("86+26k"),
@@ -723,13 +726,14 @@ impl std::str::FromStr for SoundboardType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
             "none" => Ok(Self::None),
+            "14" => Ok(Self::Sb14),
             "26k" => Ok(Self::Sb26k),
             "86" => Ok(Self::Sb86),
             "86+26k" => Ok(Self::Sb86And26k),
             "sb16" => Ok(Self::Sb16),
             "sb16+26k" => Ok(Self::Sb16And26k),
             _ => Err(format!(
-                "unknown soundboard type '{s}', expected none, 26k, 86, 86+26k, sb16 or sb16+26k"
+                "unknown soundboard type '{s}', expected none, 14, 26k, 86, 86+26k, sb16 or sb16+26k"
             )),
         }
     }

@@ -339,10 +339,12 @@ impl<T: Tracing> Pc9801Bus<T> {
                 }
             }
 
-            // 26K alternate base register select (dual-board mode: 26K at 0x0088).
+            // PC-9801-14 PPI port A write / dual-board 26K alternate address.
             0x0088 => {
                 self.pending_wait_cycles += self.cbus_wait_cycles();
-                if self.soundboard_26k.is_some() && self.soundboard_86.is_some() {
+                if let Some(ref mut sb14) = self.soundboard_14 {
+                    sb14.write_port_a(value);
+                } else if self.soundboard_26k.is_some() && self.soundboard_86.is_some() {
                     self.soundboard_26k
                         .as_mut()
                         .unwrap()
@@ -350,10 +352,12 @@ impl<T: Tracing> Pc9801Bus<T> {
                     self.process_soundboard_actions();
                 }
             }
-            // 26K alternate base data write (dual-board mode: 26K at 0x008A).
+            // PC-9801-14 PPI port B write / dual-board 26K alternate data.
             0x008A => {
                 self.pending_wait_cycles += self.cbus_wait_cycles();
-                if self.soundboard_26k.is_some() && self.soundboard_86.is_some() {
+                if let Some(ref mut sb14) = self.soundboard_14 {
+                    sb14.write_port_b(value);
+                } else if self.soundboard_26k.is_some() && self.soundboard_86.is_some() {
                     self.soundboard_26k
                         .as_mut()
                         .unwrap()
@@ -361,11 +365,28 @@ impl<T: Tracing> Pc9801Bus<T> {
                     self.process_soundboard_actions();
                 }
             }
+            // PC-9801-14 PPI port C write (TMS3631 key-data handshake).
+            0x008C => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                if let Some(ref mut sb14) = self.soundboard_14 {
+                    sb14.write_port_c(value);
+                }
+            }
+            // PC-9801-14 PPI mode register write.
+            0x008E => {
+                self.pending_wait_cycles += self.cbus_wait_cycles();
+                if let Some(ref mut sb14) = self.soundboard_14 {
+                    sb14.write_ppi_mode(value);
+                }
+            }
 
-            // FM sound board register select (OPN / OPNA low bank).
+            // FM sound board register select (OPN / OPNA low bank) or
+            // PC-9801-14 channel-enable mask.
             0x0188 => {
                 self.pending_wait_cycles += self.cbus_wait_cycles();
-                if let Some(ref mut sb86) = self.soundboard_86 {
+                if let Some(ref mut sb14) = self.soundboard_14 {
+                    sb14.write_enable_mask(value);
+                } else if let Some(ref mut sb86) = self.soundboard_86 {
                     sb86.write_address(value, self.current_cycle);
                     self.process_soundboard_86_actions();
                 } else if let Some(ref mut sb26k) = self.soundboard_26k {
@@ -373,10 +394,13 @@ impl<T: Tracing> Pc9801Bus<T> {
                     self.process_soundboard_actions();
                 }
             }
-            // FM sound board data write (OPN / OPNA low bank).
+            // FM sound board data write (OPN / OPNA low bank) or mirror
+            // of 0x0188 on PC-9801-14.
             0x018A => {
                 self.pending_wait_cycles += self.cbus_wait_cycles();
-                if let Some(ref mut sb86) = self.soundboard_86 {
+                if let Some(ref mut sb14) = self.soundboard_14 {
+                    sb14.write_enable_mask(value);
+                } else if let Some(ref mut sb86) = self.soundboard_86 {
                     sb86.write_data(value, self.current_cycle);
                     self.process_soundboard_86_actions();
                 } else if let Some(ref mut sb26k) = self.soundboard_26k {
@@ -384,18 +408,26 @@ impl<T: Tracing> Pc9801Bus<T> {
                     self.process_soundboard_actions();
                 }
             }
-            // OPNA extended register select (high bank).
+            // OPNA extended register select (high bank) or PC-9801-14
+            // 8253 counter #2 reload.
             0x018C => {
                 self.pending_wait_cycles += self.cbus_wait_cycles();
-                if let Some(ref mut sb86) = self.soundboard_86 {
+                if let Some(ref mut sb14) = self.soundboard_14 {
+                    sb14.write_pit_counter(value, self.current_cycle);
+                    self.process_soundboard_14_actions();
+                } else if let Some(ref mut sb86) = self.soundboard_86 {
                     sb86.write_address_hi(value, self.current_cycle);
                     self.process_soundboard_86_actions();
                 }
             }
-            // OPNA extended data write (high bank).
+            // OPNA extended data write (high bank) or PC-9801-14 8253
+            // control-word register.
             0x018E => {
                 self.pending_wait_cycles += self.cbus_wait_cycles();
-                if let Some(ref mut sb86) = self.soundboard_86 {
+                if let Some(ref mut sb14) = self.soundboard_14 {
+                    sb14.write_pit_control(value, self.current_cycle);
+                    self.process_soundboard_14_actions();
+                } else if let Some(ref mut sb86) = self.soundboard_86 {
                     sb86.write_data_hi(value, self.current_cycle);
                     self.process_soundboard_86_actions();
                 }
