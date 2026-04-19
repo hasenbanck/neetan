@@ -2,6 +2,8 @@
 
 An emulator for the PC-98 written in Rust and using a Vulkan graphics engine.
 
+[Game Compatibility](https://github.com/hasenbanck/neetan/wiki/Game-Compatibility)
+
 ## Design rationale
 
 neetan's main goal is to be able to run PC-98 exclusive games and software on modern hardware.
