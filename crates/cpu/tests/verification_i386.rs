@@ -243,7 +243,7 @@ fn flags_compare_mask(stem: &str) -> u32 {
     let low16_mask = masks
         .get(&(opcode_upper.clone(), reg_ext))
         .copied()
-        .or_else(|| match (opcode_upper.as_str(), reg_ext) {
+        .or(match (opcode_upper.as_str(), reg_ext) {
             // BT/BTS/BTR/BTC define only CF; OF/SF/ZF/AF/PF are undefined.
             ("0FA3", None)
             | ("0FAB", None)
@@ -279,9 +279,13 @@ fn build_expected_state(
             .unwrap_or_else(|| initial_reg_value(initial_regs, name))
     };
 
-    let mut s = I386State::default();
-    s.cr0 = get("cr0");
-    s.cr3 = get("cr3");
+    let mut s = I386State {
+        cr0: get("cr0"),
+        cr3: get("cr3"),
+        dr6: get("dr6"),
+        dr7: get("dr7"),
+        ..I386State::default()
+    };
     s.set_eax(get("eax"));
     s.set_ebx(get("ebx"));
     s.set_ecx(get("ecx"));
@@ -298,8 +302,6 @@ fn build_expected_state(
     s.set_ss(get("ss") as u16);
     s.set_eip(get("eip"));
     s.set_eflags(get("eflags"));
-    s.dr6 = get("dr6");
-    s.dr7 = get("dr7");
     s
 }
 
@@ -333,9 +335,13 @@ fn run_test_file(stem: &str, local_revoked_hashes: &[&str]) {
             bus.set_memory(address, value);
         }
         let initial = {
-            let mut s = I386State::default();
-            s.cr0 = initial_reg_value(&test.initial.regs, "cr0");
-            s.cr3 = initial_reg_value(&test.initial.regs, "cr3");
+            let mut s = I386State {
+                cr0: initial_reg_value(&test.initial.regs, "cr0"),
+                cr3: initial_reg_value(&test.initial.regs, "cr3"),
+                dr6: initial_reg_value(&test.initial.regs, "dr6"),
+                dr7: initial_reg_value(&test.initial.regs, "dr7"),
+                ..I386State::default()
+            };
             s.set_eax(initial_reg_value(&test.initial.regs, "eax"));
             s.set_ebx(initial_reg_value(&test.initial.regs, "ebx"));
             s.set_ecx(initial_reg_value(&test.initial.regs, "ecx"));
@@ -352,8 +358,6 @@ fn run_test_file(stem: &str, local_revoked_hashes: &[&str]) {
             s.set_ss(initial_reg_value(&test.initial.regs, "ss") as u16);
             s.set_eip(initial_reg_value(&test.initial.regs, "eip"));
             s.set_eflags(initial_reg_value(&test.initial.regs, "eflags"));
-            s.dr6 = initial_reg_value(&test.initial.regs, "dr6");
-            s.dr7 = initial_reg_value(&test.initial.regs, "dr7");
             s
         };
 
