@@ -93,6 +93,27 @@ fn conventional_memory_below_a0000() {
 }
 
 #[test]
+fn ivt_int24h_vector_valid() {
+    let machine = harness::boot_hle();
+    // INT 24h vector at IVT offset 0x24 * 4 = 0x0090.
+    let (segment, offset) = harness::read_far_ptr(&machine.bus, 0x0090);
+    let linear = harness::far_to_linear(segment, offset);
+    assert_ne!(
+        linear, 0,
+        "INT 24h vector should be non-zero (critical-error handler)"
+    );
+    assert!(
+        linear < 0x100000,
+        "INT 24h vector should be within 1MB address space, got {:#010X}",
+        linear
+    );
+    // Handler must be MOV AL,3 / IRET (return Fail).
+    assert_eq!(harness::read_byte(&machine.bus, linear), 0xB0);
+    assert_eq!(harness::read_byte(&machine.bus, linear + 1), 0x03);
+    assert_eq!(harness::read_byte(&machine.bus, linear + 2), 0xCF);
+}
+
+#[test]
 fn ivt_int29h_vector_valid() {
     let machine = harness::boot_hle();
     // INT 29h vector at IVT offset 0x29 * 4 = 0x00A4.
