@@ -33,7 +33,7 @@ impl RunningCommand for RunningMd {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let args = self.args.trim_ascii();
         if is_help_request(&self.args) || args.is_empty() {
@@ -41,7 +41,7 @@ impl RunningCommand for RunningMd {
             return StepResult::Done(0);
         }
 
-        match filesystem::create_directory(state, io.memory, disk, args) {
+        match filesystem::create_directory(state, io.memory, drive, args) {
             Ok(()) => StepResult::Done(0),
             Err(error) => {
                 io.print(error_message(error));

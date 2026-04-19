@@ -76,13 +76,13 @@ impl RunningXcopy {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         if is_help_request(&self.args) || self.args.trim_ascii().is_empty() {
             print_help(io);
             return StepResult::Done(0);
         }
-        match init_xcopy(state, io, disk, &self.args) {
+        match init_xcopy(state, io, drive, &self.args) {
             Ok(xcopy_state) => {
                 self.phase = XcopyPhase::FindNext(xcopy_state);
                 StepResult::Continue
@@ -99,7 +99,7 @@ impl RunningXcopy {
         mut xcopy_state: XcopyState,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let result = filesystem::find_matching_read_entry(
             state,
@@ -108,7 +108,7 @@ impl RunningXcopy {
             &xcopy_state.src_pattern,
             0,
             xcopy_state.src_search_index,
-            disk,
+            drive,
         );
 
         match result {
@@ -182,7 +182,7 @@ impl RunningXcopy {
         mut file_state: FileCopyState,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let dst_cluster_size =
             match state.fat_volumes[file_state.dst_file.drive_index as usize].as_ref() {
@@ -200,7 +200,7 @@ impl RunningXcopy {
                     Some(v) => v,
                     None => return StepResult::Done(1),
                 };
-                match src_cursor.read_chunk(src_vol, disk, dst_cluster_size) {
+                match src_cursor.read_chunk(src_vol, drive, dst_cluster_size) {
                     Ok(data) => data,
                     Err(_) => {
                         io.println(b"Read error");
@@ -214,7 +214,7 @@ impl RunningXcopy {
                     return StepResult::Continue;
                 }
 
-                match iso9660::read_file_chunk(entry, *position, dst_cluster_size, disk) {
+                match iso9660::read_file_chunk(entry, *position, dst_cluster_size, drive) {
                     Ok(data) => {
                         *position += data.len() as u32;
                         data
@@ -286,7 +286,7 @@ impl RunningXcopy {
         &mut self,
         mut xcopy_state: XcopyState,
         state: &mut OsState,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let all_pattern = [b'?'; 11];
         let attr_mask = fat_dir::ATTR_HIDDEN | fat_dir::ATTR_SYSTEM | fat_dir::ATTR_DIRECTORY;
@@ -301,7 +301,7 @@ impl RunningXcopy {
                 &all_pattern,
                 attr_mask,
                 si,
-                disk,
+                drive,
             );
             match result {
                 Ok(Some((entry, next_index))) => {
@@ -323,7 +323,7 @@ impl RunningXcopy {
             };
             let dst_subdir_cluster = match filesystem::ensure_directory(
                 state,
-                disk,
+                drive,
                 xcopy_state.dst_drive,
                 xcopy_state.dst_dir_cluster,
                 subdir.name,
@@ -334,8 +334,13 @@ impl RunningXcopy {
             };
 
             if !xcopy_state.copy_empty_dirs
-                && !directory_has_entries(state, xcopy_state.src_drive, &src_subdir_directory, disk)
-                    .unwrap_or(false)
+                && !directory_has_entries(
+                    state,
+                    xcopy_state.src_drive,
+                    &src_subdir_directory,
+                    drive,
+                )
+                .unwrap_or(false)
             {
                 continue;
             }
@@ -362,19 +367,19 @@ impl RunningCommand for RunningXcopy {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, XcopyPhase::Init);
         match phase {
-            XcopyPhase::Init => self.step_init(state, io, disk),
-            XcopyPhase::FindNext(xs) => self.step_find_next(xs, state, io, disk),
+            XcopyPhase::Init => self.step_init(state, io, drive),
+            XcopyPhase::FindNext(xs) => self.step_find_next(xs, state, io, drive),
             XcopyPhase::PromptFile(xs, entry) => self.step_prompt_file(xs, entry, io),
-            XcopyPhase::ReadChunk(xs, fs) => self.step_read_chunk(xs, fs, state, io, disk),
+            XcopyPhase::ReadChunk(xs, fs) => self.step_read_chunk(xs, fs, state, io, drive),
             XcopyPhase::WriteChunk(xs, fs, data) => {
-                self.step_write_chunk(xs, fs, data, state, io, disk)
+                self.step_write_chunk(xs, fs, data, state, io, drive)
             }
-            XcopyPhase::FinishFile(xs, fs) => self.step_finish_file(xs, fs, state, io, disk),
-            XcopyPhase::ScanSubdirs(xs) => self.step_scan_subdirs(xs, state, disk),
+            XcopyPhase::FinishFile(xs, fs) => self.step_finish_file(xs, fs, state, io, drive),
+            XcopyPhase::ScanSubdirs(xs) => self.step_scan_subdirs(xs, state, drive),
             XcopyPhase::Summary(count) => {
                 let msg = format!("{} File(s) copied\r\n", count);
                 io.print(msg.as_bytes());
@@ -461,7 +466,7 @@ fn directory_has_entries(
     state: &OsState,
     drive_index: u8,
     directory: &ReadDirectory,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
 ) -> Result<bool, u16> {
     let all_pattern = [b'?'; 11];
     let attr_mask = fat_dir::ATTR_HIDDEN | fat_dir::ATTR_SYSTEM | fat_dir::ATTR_DIRECTORY;
@@ -475,7 +480,7 @@ fn directory_has_entries(
             &all_pattern,
             attr_mask,
             search_index,
-            disk,
+            drive,
         )? {
             Some((entry, next_index)) => {
                 search_index = next_index;
@@ -505,7 +510,7 @@ fn print_help(io: &mut IoAccess) {
 fn init_xcopy(
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
     args: &[u8],
 ) -> Result<XcopyState, &'static [u8]> {
     let args = args.trim_ascii();
@@ -546,15 +551,15 @@ fn init_xcopy(
 
     let has_wildcard = source.contains(&b'*') || source.contains(&b'?');
     let (src_drive, src_directory, src_pattern) = if has_wildcard {
-        let path = crate::filesystem::resolve_read_file_path(state, source, io.memory, disk)
+        let path = crate::filesystem::resolve_read_file_path(state, source, io.memory, drive)
             .map_err(|_| &b"File not found\r\n"[..])?;
         (path.drive_index, path.directory, path.name)
     } else {
-        match crate::filesystem::resolve_read_dir_path(state, source, io.memory, disk) {
+        match crate::filesystem::resolve_read_dir_path(state, source, io.memory, drive) {
             Ok(path) => (path.drive_index, path.directory, [b'?'; 11]),
             Err(_) => {
                 let path =
-                    crate::filesystem::resolve_read_file_path(state, source, io.memory, disk)
+                    crate::filesystem::resolve_read_file_path(state, source, io.memory, drive)
                         .map_err(|_| &b"File not found\r\n"[..])?;
                 (path.drive_index, path.directory, path.name)
             }
@@ -562,7 +567,7 @@ fn init_xcopy(
     };
 
     let (dst_drive, dst_dir_cluster) =
-        crate::filesystem::resolve_dir_path(state, dest, io.memory, disk)
+        crate::filesystem::resolve_dir_path(state, dest, io.memory, drive)
             .map_err(|_| &b"Invalid destination\r\n"[..])?;
 
     if dst_drive == 25 {

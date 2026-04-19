@@ -104,7 +104,7 @@ impl RunningDiskcopy {
         &mut self,
         mut diskcopy_state: DiskcopyState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         if diskcopy_state.current_track >= diskcopy_state.total_tracks {
             if diskcopy_state.same_drive {
@@ -126,7 +126,7 @@ impl RunningDiskcopy {
         }
 
         let lba = diskcopy_state.current_track * diskcopy_state.sectors_per_track as u32;
-        match disk.read_sectors(
+        match drive.read_sectors(
             diskcopy_state.src_da_ua,
             lba,
             diskcopy_state.sectors_per_track as u32,
@@ -165,7 +165,7 @@ impl RunningDiskcopy {
         &mut self,
         mut diskcopy_state: DiskcopyState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         if diskcopy_state.current_track >= diskcopy_state.total_tracks {
             if diskcopy_state.verify {
@@ -185,7 +185,7 @@ impl RunningDiskcopy {
         let track_data = &diskcopy_state.disk_buffer[buffer_offset..buffer_offset + track_size];
         let lba = diskcopy_state.current_track * diskcopy_state.sectors_per_track as u32;
 
-        if disk
+        if drive
             .write_sectors(diskcopy_state.dst_da_ua, lba, track_data)
             .is_err()
         {
@@ -202,7 +202,7 @@ impl RunningDiskcopy {
         &mut self,
         mut diskcopy_state: DiskcopyState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         if diskcopy_state.current_track >= diskcopy_state.total_tracks {
             self.phase = DiskcopyPhase::Summary(diskcopy_state);
@@ -215,7 +215,7 @@ impl RunningDiskcopy {
         let expected = &diskcopy_state.disk_buffer[buffer_offset..buffer_offset + track_size];
         let lba = diskcopy_state.current_track * diskcopy_state.sectors_per_track as u32;
 
-        match disk.read_sectors(
+        match drive.read_sectors(
             diskcopy_state.dst_da_ua,
             lba,
             diskcopy_state.sectors_per_track as u32,
@@ -295,16 +295,16 @@ impl RunningCommand for RunningDiskcopy {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, DiskcopyPhase::Init);
         match phase {
-            DiskcopyPhase::Init => self.step_init(io, disk),
+            DiskcopyPhase::Init => self.step_init(io, drive),
             DiskcopyPhase::PromptInsertSource(ds) => self.step_prompt_insert_source(ds, io),
-            DiskcopyPhase::ReadTracks(ds) => self.step_read_tracks(ds, io, disk),
+            DiskcopyPhase::ReadTracks(ds) => self.step_read_tracks(ds, io, drive),
             DiskcopyPhase::PromptInsertDest(ds) => self.step_prompt_insert_dest(ds, io),
-            DiskcopyPhase::WriteTracks(ds) => self.step_write_tracks(ds, io, disk),
-            DiskcopyPhase::VerifyTracks(ds) => self.step_verify_tracks(ds, io, disk),
+            DiskcopyPhase::WriteTracks(ds) => self.step_write_tracks(ds, io, drive),
+            DiskcopyPhase::VerifyTracks(ds) => self.step_verify_tracks(ds, io, drive),
             DiskcopyPhase::Summary(ds) => self.step_summary(ds, state, io),
             DiskcopyPhase::PromptAnother(ds) => self.step_prompt_another(ds, io),
         }

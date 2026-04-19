@@ -98,13 +98,13 @@ impl RunningDir {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         if is_help_request(&self.args) {
             print_help(io);
             return StepResult::Done(0);
         }
-        match init_dir(state, io, disk, &self.args) {
+        match init_dir(state, io, drive, &self.args) {
             Ok(dir_state) => {
                 self.phase = DirPhase::CollectEntries(dir_state);
                 StepResult::Continue
@@ -120,7 +120,7 @@ impl RunningDir {
         &mut self,
         mut dir_state: DirState,
         state: &mut OsState,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         dir_state.entries.clear();
         dir_state.entry_index = 0;
@@ -173,7 +173,7 @@ impl RunningDir {
                     &dir_state.pattern,
                     attr_mask,
                     start_index,
-                    disk,
+                    drive,
                 );
                 match result {
                     Ok(Some((entry, next_index))) => {
@@ -198,11 +198,11 @@ impl RunningDir {
         dir_state: DirState,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         if !dir_state.bare {
             let drive_letter = (b'A' + dir_state.drive_index) as char;
-            let label = get_volume_label(state, dir_state.drive_index, &dir_state.directory, disk);
+            let label = get_volume_label(state, dir_state.drive_index, &dir_state.directory, drive);
             if let Some(label) = label {
                 let msg = format!(" Volume in drive {} is {}\r\n", drive_letter, label);
                 io.print(msg.as_bytes());
@@ -310,7 +310,7 @@ impl RunningDir {
         mut dir_state: DirState,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         // /S: find subdirectories in the entries we just listed and push them
         // We need to scan current entries for directories, excluding "." and ".."
@@ -335,7 +335,7 @@ impl RunningDir {
                     &all_pattern,
                     attr_mask,
                     si,
-                    disk,
+                    drive,
                 );
                 match result {
                     Ok(Some((entry, next_index))) => {
@@ -401,17 +401,17 @@ impl RunningCommand for RunningDir {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, DirPhase::Init);
         match phase {
-            DirPhase::Init => self.step_init(state, io, disk),
-            DirPhase::CollectEntries(ds) => self.step_collect_entries(ds, state, disk),
-            DirPhase::Header(ds) => self.step_header(ds, state, io, disk),
+            DirPhase::Init => self.step_init(state, io, drive),
+            DirPhase::CollectEntries(ds) => self.step_collect_entries(ds, state, drive),
+            DirPhase::Header(ds) => self.step_header(ds, state, io, drive),
             DirPhase::Listing(ds) => self.step_listing(ds, io),
             DirPhase::WaitKey(ds) => self.step_wait_key(ds, io),
             DirPhase::Footer(ds) => self.step_footer(ds, state, io),
-            DirPhase::NextSubdir(ds) => self.step_next_subdir(ds, state, io, disk),
+            DirPhase::NextSubdir(ds) => self.step_next_subdir(ds, state, io, drive),
         }
     }
 }
@@ -515,7 +515,7 @@ fn entry_timestamp(entry: &ReadDirEntry) -> u32 {
 fn init_dir(
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
     args: &[u8],
 ) -> Result<DirState, &'static [u8]> {
     let args = args.trim_ascii();
@@ -574,7 +574,7 @@ fn init_dir(
     let has_wildcard = path.contains(&b'*') || path.contains(&b'?');
 
     if has_wildcard {
-        let read_path = crate::filesystem::resolve_read_file_path(state, path, io.memory, disk)
+        let read_path = crate::filesystem::resolve_read_file_path(state, path, io.memory, drive)
             .map_err(|_| &b"File Not Found\r\n"[..])?;
         Ok(DirState {
             drive_index: read_path.drive_index,
@@ -596,7 +596,7 @@ fn init_dir(
             current_path: Vec::new(),
         })
     } else {
-        match crate::filesystem::resolve_read_dir_path(state, path, io.memory, disk) {
+        match crate::filesystem::resolve_read_dir_path(state, path, io.memory, drive) {
             Ok(read_path) => Ok(DirState {
                 drive_index: read_path.drive_index,
                 directory: read_path.directory,
@@ -618,7 +618,7 @@ fn init_dir(
             }),
             Err(_) => {
                 let read_path =
-                    crate::filesystem::resolve_read_file_path(state, path, io.memory, disk)
+                    crate::filesystem::resolve_read_file_path(state, path, io.memory, drive)
                         .map_err(|_| &b"File Not Found\r\n"[..])?;
                 Ok(DirState {
                     drive_index: read_path.drive_index,
@@ -833,13 +833,13 @@ fn get_volume_label(
     state: &OsState,
     drive_index: u8,
     directory: &ReadDirectory,
-    disk: &mut dyn DriveIo,
+    drive: &mut dyn DriveIo,
 ) -> Option<String> {
     if drive_index == 25 {
         return None;
     }
     if matches!(directory, ReadDirectory::Iso(_)) {
-        let volume = filesystem::iso9660::IsoVolume::mount(disk).ok()?;
+        let volume = filesystem::iso9660::IsoVolume::mount(drive).ok()?;
         if volume.volume_label.is_empty() {
             return None;
         }
@@ -851,9 +851,15 @@ fn get_volume_label(
     let mut start_index = 0u16;
 
     loop {
-        let result =
-            fat_dir::find_matching(vol, 0, &pattern, fat_dir::ATTR_VOLUME_ID, start_index, disk)
-                .ok()?;
+        let result = fat_dir::find_matching(
+            vol,
+            0,
+            &pattern,
+            fat_dir::ATTR_VOLUME_ID,
+            start_index,
+            drive,
+        )
+        .ok()?;
 
         match result {
             Some((entry, next_index)) => {

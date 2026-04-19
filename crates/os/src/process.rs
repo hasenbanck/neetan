@@ -1174,8 +1174,8 @@ impl NeetanOs {
         self.state.pending_key_bytes.clear();
 
         if !is_shell_process {
-            // TODO: Only reset the texture attributes to return the color fonts to the original state.
-            //       Hard clear would remove error messages.
+            // TODO: Only reset the text attributes to return the color fonts to the original state.
+            //       Hard clear would remove error messages. (but we need to clear, or else doom's return is broken)
             // Programs may leave arbitrary content in VRAM; the HLE shell
             // re-renders the prompt after this, so a full clear is safe.
             // self.console.hard_clear_screen(mem);

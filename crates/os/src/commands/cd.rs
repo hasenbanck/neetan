@@ -33,7 +33,7 @@ impl RunningCommand for RunningCd {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let args = self.args.trim_ascii();
 
@@ -47,7 +47,7 @@ impl RunningCommand for RunningCd {
             return StepResult::Done(0);
         }
 
-        match crate::filesystem::change_directory(state, io.memory, disk, args) {
+        match crate::filesystem::change_directory(state, io.memory, drive, args) {
             Ok(()) => StepResult::Done(0),
             Err(_) => {
                 io.println(b"Invalid directory");

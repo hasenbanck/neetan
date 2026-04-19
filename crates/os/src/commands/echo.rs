@@ -38,7 +38,7 @@ impl RunningCommand for RunningEcho {
         &mut self,
         _state: &mut OsState,
         io: &mut IoAccess,
-        _disk: &mut dyn DriveIo,
+        _drive: &mut dyn DriveIo,
     ) -> StepResult {
         if self.text.trim_ascii() == b"/?" {
             print_help(io);

@@ -3,7 +3,10 @@
 use crate::{
     DiskIo, DriveIo, IoAccess, OsState,
     commands::{Command, RunningCommand, StepResult, is_help_request},
-    filesystem::{self, PendingFatFile, fat_dir, fat_file::FatFileCursor},
+    filesystem::{
+        self, PendingFatFile, ReadDirEntry, ReadDirEntrySource, ReadDirectory, fat_dir,
+        fat_file::FatFileCursor, iso9660,
+    },
 };
 
 pub(crate) struct Copy;
@@ -38,18 +41,80 @@ struct CopyState {
 
 struct SourceSpec {
     drive: u8,
-    dir_cluster: u16,
+    directory: ReadDirectory,
     pattern: [u8; 11],
+}
+
+enum SourceFileCursor {
+    Fat(FatFileCursor),
+    Iso {
+        entry: iso9660::IsoDirEntry,
+        position: u32,
+    },
 }
 
 struct FileCopyState {
     src_drive: u8,
-    src_cursor: FatFileCursor,
-    src_entry: fat_dir::DirEntry,
+    src_cursor: SourceFileCursor,
+    src_entry: ReadDirEntry,
     dst_file: PendingFatFile,
 }
 
 const KB_BUF_COUNT: u32 = 0x0528;
+const ISO_CHUNK_SIZE: usize = 2048;
+
+fn destination_file_attributes(entry: &ReadDirEntry) -> u8 {
+    match &entry.source {
+        ReadDirEntrySource::Fat(_) => entry.attribute & 0x27,
+        ReadDirEntrySource::Iso(_) => fat_dir::ATTR_ARCHIVE,
+    }
+}
+
+fn source_cursor_from_entry(entry: &ReadDirEntry) -> SourceFileCursor {
+    match &entry.source {
+        ReadDirEntrySource::Fat(fat_entry) => SourceFileCursor::Fat(FatFileCursor::new(fat_entry)),
+        ReadDirEntrySource::Iso(iso_entry) => SourceFileCursor::Iso {
+            entry: iso_entry.clone(),
+            position: 0,
+        },
+    }
+}
+
+enum ReadError {
+    Drain,
+    Failed,
+}
+
+fn read_source_chunk(
+    state: &OsState,
+    drive: &mut dyn DriveIo,
+    src_drive: u8,
+    cursor: &mut SourceFileCursor,
+    dst_cluster_size: usize,
+) -> Result<Vec<u8>, ReadError> {
+    match cursor {
+        SourceFileCursor::Fat(fat_cursor) => {
+            if fat_cursor.remaining() == 0 {
+                return Err(ReadError::Drain);
+            }
+            let volume = state.fat_volumes[src_drive as usize]
+                .as_ref()
+                .ok_or(ReadError::Failed)?;
+            fat_cursor
+                .read_chunk(volume, drive, dst_cluster_size)
+                .map_err(|_| ReadError::Failed)
+        }
+        SourceFileCursor::Iso { entry, position } => {
+            if *position >= entry.file_size {
+                return Err(ReadError::Drain);
+            }
+            let chunk = iso9660::read_file_chunk(entry, *position, ISO_CHUNK_SIZE, drive)
+                .map_err(|_| ReadError::Failed)?;
+            *position += chunk.len() as u32;
+            Ok(chunk)
+        }
+    }
+}
 
 enum CopyPhase {
     Init,
@@ -82,13 +147,13 @@ impl RunningCopy {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         if is_help_request(&self.args) || self.args.trim_ascii().is_empty() {
             print_help(io);
             return StepResult::Done(0);
         }
-        match init_copy(state, io, disk, &self.args) {
+        match init_copy(state, io, drive, &self.args) {
             Ok(copy_state) => {
                 self.phase = CopyPhase::FindNext(copy_state);
                 StepResult::Continue
@@ -105,7 +170,7 @@ impl RunningCopy {
         mut copy_state: CopyState,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         if copy_state.current_source >= copy_state.sources.len() {
             if copy_state.files_copied == 0 {
@@ -117,28 +182,22 @@ impl RunningCopy {
         }
 
         let src = &copy_state.sources[copy_state.current_source];
-        let vol = match state.fat_volumes[src.drive as usize].as_ref() {
-            Some(v) => v,
-            None => return StepResult::Done(1),
-        };
+        let src_drive = src.drive;
+        let src_directory = src.directory.clone();
+        let src_pattern = src.pattern;
 
-        let result = fat_dir::find_matching(
-            vol,
-            src.dir_cluster,
-            &src.pattern,
+        let result = filesystem::find_matching_read_entry(
+            state,
+            src_drive,
+            &src_directory,
+            &src_pattern,
             0,
             copy_state.src_search_index,
-            disk,
+            drive,
         );
 
         match result {
             Ok(Some((entry, next_index))) => {
-                if entry.attribute & fat_dir::ATTR_DIRECTORY != 0 {
-                    copy_state.src_search_index = next_index;
-                    self.phase = CopyPhase::FindNext(copy_state);
-                    return StepResult::Continue;
-                }
-
                 copy_state.src_search_index = next_index;
 
                 let dst_fcb_name = if copy_state.dst_is_dir {
@@ -154,13 +213,13 @@ impl RunningCopy {
                 io.println(b"");
 
                 let file_state = FileCopyState {
-                    src_drive: copy_state.sources[copy_state.current_source].drive,
-                    src_cursor: FatFileCursor::new(&entry),
+                    src_drive,
+                    src_cursor: source_cursor_from_entry(&entry),
                     dst_file: PendingFatFile {
                         drive_index: copy_state.dst_drive,
                         dir_cluster: copy_state.dst_dir_cluster,
                         name: dst_fcb_name,
-                        attribute: entry.attribute & 0x27,
+                        attribute: destination_file_attributes(&entry),
                         time: entry.time,
                         date: entry.date,
                         start_cluster: 0,
@@ -182,7 +241,7 @@ impl RunningCopy {
                         dst_vol,
                         file_state.dst_file.dir_cluster,
                         &file_state.dst_file.name,
-                        disk,
+                        drive,
                     )
                     .ok()
                     .flatten()
@@ -267,32 +326,30 @@ impl RunningCopy {
         mut file_state: FileCopyState,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
-        if file_state.src_cursor.remaining() == 0 {
-            if copy_state.concatenating {
-                self.phase = CopyPhase::ConcatNextSource(copy_state, file_state);
-            } else {
-                self.phase = CopyPhase::FinishFile(copy_state, file_state);
-            }
-            return StepResult::Continue;
-        }
-
         let dst_cluster_size =
             match state.fat_volumes[file_state.dst_file.drive_index as usize].as_ref() {
                 Some(v) => v.bpb.cluster_size() as usize,
                 None => return StepResult::Done(1),
             };
-        let src_vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
-            Some(v) => v,
-            None => return StepResult::Done(1),
-        };
-        let write_data = match file_state
-            .src_cursor
-            .read_chunk(src_vol, disk, dst_cluster_size)
-        {
+        let write_data = match read_source_chunk(
+            state,
+            drive,
+            file_state.src_drive,
+            &mut file_state.src_cursor,
+            dst_cluster_size,
+        ) {
             Ok(data) => data,
-            Err(_) => {
+            Err(ReadError::Drain) => {
+                if copy_state.concatenating {
+                    self.phase = CopyPhase::ConcatNextSource(copy_state, file_state);
+                } else {
+                    self.phase = CopyPhase::FinishFile(copy_state, file_state);
+                }
+                return StepResult::Continue;
+            }
+            Err(ReadError::Failed) => {
                 io.println(b"Read error");
                 return StepResult::Done(1);
             }
@@ -402,7 +459,7 @@ impl RunningCopy {
         mut file_state: FileCopyState,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         // Move to next source in the concatenation list
         copy_state.current_source += 1;
@@ -413,13 +470,20 @@ impl RunningCopy {
         }
 
         let src = &copy_state.sources[copy_state.current_source];
-        let vol = match state.fat_volumes[src.drive as usize].as_ref() {
-            Some(v) => v,
-            None => return StepResult::Done(1),
-        };
+        let src_drive = src.drive;
+        let src_directory = src.directory.clone();
+        let src_pattern = src.pattern;
 
         // Find the file for this source (exact match, no wildcard iteration)
-        let entry = match fat_dir::find_matching(vol, src.dir_cluster, &src.pattern, 0, 0, disk) {
+        let entry = match filesystem::find_matching_read_entry(
+            state,
+            src_drive,
+            &src_directory,
+            &src_pattern,
+            0,
+            0,
+            drive,
+        ) {
             Ok(Some((e, _))) => e,
             _ => {
                 // Skip missing concat sources
@@ -434,10 +498,12 @@ impl RunningCopy {
         }
         io.println(b"");
 
-        file_state.src_drive = src.drive;
-        file_state.src_cursor = FatFileCursor::new(&entry);
+        file_state.src_drive = src_drive;
+        file_state.src_cursor = source_cursor_from_entry(&entry);
+        let file_size = entry.file_size;
+        file_state.src_entry = entry;
 
-        if entry.file_size == 0 {
+        if file_size == 0 {
             self.phase = CopyPhase::ConcatNextSource(copy_state, file_state);
         } else {
             self.phase = CopyPhase::ConcatRead(copy_state, file_state);
@@ -451,28 +517,26 @@ impl RunningCopy {
         mut file_state: FileCopyState,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DiskIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
-        if file_state.src_cursor.remaining() == 0 {
-            self.phase = CopyPhase::ConcatNextSource(copy_state, file_state);
-            return StepResult::Continue;
-        }
-
         let dst_cluster_size =
             match state.fat_volumes[file_state.dst_file.drive_index as usize].as_ref() {
                 Some(v) => v.bpb.cluster_size() as usize,
                 None => return StepResult::Done(1),
             };
-        let src_vol = match state.fat_volumes[file_state.src_drive as usize].as_ref() {
-            Some(v) => v,
-            None => return StepResult::Done(1),
-        };
-        let write_data = match file_state
-            .src_cursor
-            .read_chunk(src_vol, disk, dst_cluster_size)
-        {
+        let write_data = match read_source_chunk(
+            state,
+            drive,
+            file_state.src_drive,
+            &mut file_state.src_cursor,
+            dst_cluster_size,
+        ) {
             Ok(data) => data,
-            Err(_) => {
+            Err(ReadError::Drain) => {
+                self.phase = CopyPhase::ConcatNextSource(copy_state, file_state);
+                return StepResult::Continue;
+            }
+            Err(ReadError::Failed) => {
                 io.println(b"Read error");
                 return StepResult::Done(1);
             }
@@ -520,27 +584,27 @@ impl RunningCommand for RunningCopy {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        disk: &mut dyn DriveIo,
+        drive: &mut dyn DriveIo,
     ) -> StepResult {
         let phase = std::mem::replace(&mut self.phase, CopyPhase::Init);
         match phase {
-            CopyPhase::Init => self.step_init(state, io, disk),
-            CopyPhase::FindNext(cs) => self.step_find_next(cs, state, io, disk),
+            CopyPhase::Init => self.step_init(state, io, drive),
+            CopyPhase::FindNext(cs) => self.step_find_next(cs, state, io, drive),
             CopyPhase::ConfirmOverwrite(cs, fs) => self.step_confirm_overwrite(cs, fs, io),
-            CopyPhase::ReadChunk(cs, fs) => self.step_read_chunk(cs, fs, state, io, disk),
+            CopyPhase::ReadChunk(cs, fs) => self.step_read_chunk(cs, fs, state, io, drive),
             CopyPhase::WriteChunk(cs, fs, data) => {
-                self.step_write_chunk(cs, fs, data, state, io, disk)
+                self.step_write_chunk(cs, fs, data, state, io, drive)
             }
             CopyPhase::VerifyChunk(cs, fs, cluster, data) => {
-                self.step_verify_chunk(cs, fs, cluster, data, state, io, disk)
+                self.step_verify_chunk(cs, fs, cluster, data, state, io, drive)
             }
-            CopyPhase::FinishFile(cs, fs) => self.step_finish_file(cs, fs, state, io, disk),
+            CopyPhase::FinishFile(cs, fs) => self.step_finish_file(cs, fs, state, io, drive),
             CopyPhase::ConcatNextSource(cs, fs) => {
-                self.step_concat_next_source(cs, fs, state, io, disk)
+                self.step_concat_next_source(cs, fs, state, io, drive)
             }
-            CopyPhase::ConcatRead(cs, fs) => self.step_concat_read(cs, fs, state, io, disk),
+            CopyPhase::ConcatRead(cs, fs) => self.step_concat_read(cs, fs, state, io, drive),
             CopyPhase::ConcatWrite(cs, fs, data) => {
-                self.step_concat_write(cs, fs, data, state, io, disk)
+                self.step_concat_write(cs, fs, data, state, io, drive)
             }
             CopyPhase::Summary(count) => {
                 let msg = format!("     {:>4} file(s) copied\r\n", count);
@@ -564,7 +628,7 @@ fn print_help(io: &mut IoAccess) {
 fn init_copy(
     state: &mut OsState,
     io: &mut IoAccess,
-    disk: &mut dyn DiskIo,
+    drive: &mut dyn DriveIo,
     args: &[u8],
 ) -> Result<CopyState, &'static [u8]> {
     let args = args.trim_ascii();
@@ -611,13 +675,12 @@ fn init_copy(
             if src_name.is_empty() {
                 continue;
             }
-            let (drive, dir_cluster, pattern) =
-                filesystem::resolve_file_path(state, src_name, io.memory, disk)
-                    .map_err(|_| &b"File not found\r\n"[..])?;
+            let read_path = filesystem::resolve_read_file_path(state, src_name, io.memory, drive)
+                .map_err(|_| &b"File not found\r\n"[..])?;
             sources.push(SourceSpec {
-                drive,
-                dir_cluster,
-                pattern,
+                drive: read_path.drive_index,
+                directory: read_path.directory,
+                pattern: read_path.name,
             });
         }
 
@@ -626,11 +689,11 @@ fn init_copy(
         }
 
         let (dst_drive, dst_dir_cluster, dst_is_dir) =
-            match crate::filesystem::resolve_dir_path(state, dest, io.memory, disk) {
+            match crate::filesystem::resolve_dir_path(state, dest, io.memory, drive) {
                 Ok((drive, cluster)) => (drive, cluster, true),
                 Err(_) => {
                     let (drive, dir_cluster, _fcb) =
-                        crate::filesystem::resolve_file_path(state, dest, io.memory, disk)
+                        crate::filesystem::resolve_file_path(state, dest, io.memory, drive)
                             .map_err(|_| &b"Invalid destination\r\n"[..])?;
                     (drive, dir_cluster, false)
                 }
@@ -662,20 +725,20 @@ fn init_copy(
         let source = tokens[0];
         let dest = tokens[1];
 
-        let (src_drive, src_dir_cluster, src_pattern) =
-            crate::filesystem::resolve_file_path(state, source, io.memory, disk)
+        let src_read_path =
+            crate::filesystem::resolve_read_file_path(state, source, io.memory, drive)
                 .map_err(|_| &b"File not found\r\n"[..])?;
 
-        if src_drive == 25 {
+        if src_read_path.drive_index == 25 {
             return Err(b"Access denied\r\n");
         }
 
         let (dst_drive, dst_dir_cluster, dst_is_dir) =
-            match crate::filesystem::resolve_dir_path(state, dest, io.memory, disk) {
+            match crate::filesystem::resolve_dir_path(state, dest, io.memory, drive) {
                 Ok((drive, cluster)) => (drive, cluster, true),
                 Err(_) => {
                     let (drive, dir_cluster, _fcb) =
-                        crate::filesystem::resolve_file_path(state, dest, io.memory, disk)
+                        crate::filesystem::resolve_file_path(state, dest, io.memory, drive)
                             .map_err(|_| &b"Invalid destination\r\n"[..])?;
                     (drive, dir_cluster, false)
                 }
@@ -687,9 +750,9 @@ fn init_copy(
 
         Ok(CopyState {
             sources: vec![SourceSpec {
-                drive: src_drive,
-                dir_cluster: src_dir_cluster,
-                pattern: src_pattern,
+                drive: src_read_path.drive_index,
+                directory: src_read_path.directory,
+                pattern: src_read_path.name,
             }],
             current_source: 0,
             src_search_index: 0,

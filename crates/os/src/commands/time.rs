@@ -28,7 +28,7 @@ impl RunningCommand for RunningTime {
         &mut self,
         state: &mut OsState,
         io: &mut IoAccess,
-        _disk: &mut dyn DriveIo,
+        _drive: &mut dyn DriveIo,
     ) -> StepResult {
         if is_help_request(&self.args) {
             print_help(io);

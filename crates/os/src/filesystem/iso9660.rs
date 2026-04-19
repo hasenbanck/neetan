@@ -91,6 +91,11 @@ pub(crate) fn find_matching(
         if entry.attribute & fat_dir::ATTR_SYSTEM != 0 && attr_mask & fat_dir::ATTR_SYSTEM == 0 {
             return IterAction::Continue;
         }
+        if entry.attribute & fat_dir::ATTR_DIRECTORY != 0
+            && attr_mask & fat_dir::ATTR_DIRECTORY == 0
+        {
+            return IterAction::Continue;
+        }
 
         if fat_dir::matches_pattern(&entry.name, pattern) {
             return IterAction::Return(entry);
@@ -199,7 +204,14 @@ fn parse_directory_record(record: &[u8]) -> Option<IsoDirEntry> {
     let flags = record[25];
     let is_directory = flags & 0x02 != 0;
     let identifier = &record[33..33 + name_length];
-    let display_name = iso_identifier_to_name(identifier, is_directory)?;
+    let name = match identifier {
+        [0] => *b".          ",
+        [1] => *b"..         ",
+        _ => {
+            let display_name = iso_identifier_to_name(identifier, is_directory)?;
+            fat_dir::name_to_fcb(&display_name)
+        }
+    };
     let attribute = if is_directory {
         fat_dir::ATTR_DIRECTORY
     } else {
@@ -208,7 +220,7 @@ fn parse_directory_record(record: &[u8]) -> Option<IsoDirEntry> {
     let (time, date) = iso_datetime_to_dos(&record[18..25]);
 
     Some(IsoDirEntry {
-        name: fat_dir::name_to_fcb(&display_name),
+        name,
         attribute,
         time,
         date,
