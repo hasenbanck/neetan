@@ -1311,6 +1311,16 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.read_byte_with_access_page(physical_address)
     }
 
+    /// Sets the master-GDC text cursor position to (row, col).
+    ///
+    /// Intended for test harnesses that need to position the text cursor
+    /// without going through INT 18H AH=13h. Writes only the GDC execute
+    /// address (ead) - callers that also need the HLE OS IOSYS fields
+    /// updated must do that separately.
+    pub fn set_text_cursor_position(&mut self, row: u8, col: u8) {
+        self.gdc_master.state.ead = u32::from(row) * 80 + u32::from(col);
+    }
+
     /// Returns a reference to the raw text VRAM contents (16 KB).
     pub fn text_vram(&self) -> &[u8] {
         self.memory.state.text_vram.as_slice()

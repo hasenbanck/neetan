@@ -31,6 +31,9 @@ mod compatibility;
 #[path = "dos620/escape_sequences.rs"]
 mod escape_sequences;
 
+#[path = "dos620/cursor_sync.rs"]
+mod cursor_sync;
+
 #[path = "dos620/syscalls_int21h.rs"]
 mod syscalls_int21h;
 

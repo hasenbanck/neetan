@@ -206,8 +206,7 @@ fn fnkey_write_then_read_roundtrip() {
 #[test]
 fn intdch_10h_04h_cursor_down_one_line() {
     let mut machine = harness::boot_hle();
-    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_Y, &[5]);
-    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_X, &[10]);
+    harness::set_cursor_position(&mut machine.bus, 5, 10);
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB9, 0x10, 0x00,       // MOV CX, 0010h (CL=10h)
@@ -225,8 +224,7 @@ fn intdch_10h_04h_cursor_down_one_line() {
 #[test]
 fn intdch_10h_05h_cursor_up_one_line() {
     let mut machine = harness::boot_hle();
-    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_Y, &[5]);
-    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_X, &[10]);
+    harness::set_cursor_position(&mut machine.bus, 5, 10);
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB9, 0x10, 0x00,       // MOV CX, 0010h (CL=10h)
@@ -244,8 +242,7 @@ fn intdch_10h_05h_cursor_up_one_line() {
 #[test]
 fn intdch_10h_06h_cursor_up_n_lines() {
     let mut machine = harness::boot_hle();
-    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_Y, &[10]);
-    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_X, &[5]);
+    harness::set_cursor_position(&mut machine.bus, 10, 5);
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB9, 0x10, 0x00,       // MOV CX, 0010h (CL=10h)
@@ -264,8 +261,7 @@ fn intdch_10h_06h_cursor_up_n_lines() {
 #[test]
 fn intdch_10h_07h_cursor_down_n_lines() {
     let mut machine = harness::boot_hle();
-    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_Y, &[5]);
-    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_X, &[10]);
+    harness::set_cursor_position(&mut machine.bus, 5, 10);
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB9, 0x10, 0x00,       // MOV CX, 0010h (CL=10h)
@@ -284,8 +280,7 @@ fn intdch_10h_07h_cursor_down_n_lines() {
 #[test]
 fn intdch_10h_08h_cursor_right_n_cols() {
     let mut machine = harness::boot_hle();
-    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_Y, &[5]);
-    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_X, &[10]);
+    harness::set_cursor_position(&mut machine.bus, 5, 10);
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB9, 0x10, 0x00,       // MOV CX, 0010h (CL=10h)
@@ -304,8 +299,7 @@ fn intdch_10h_08h_cursor_right_n_cols() {
 #[test]
 fn intdch_10h_09h_cursor_left_n_cols() {
     let mut machine = harness::boot_hle();
-    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_Y, &[5]);
-    harness::write_bytes(&mut machine.bus, IOSYS_CURSOR_X, &[10]);
+    harness::set_cursor_position(&mut machine.bus, 5, 10);
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB9, 0x10, 0x00,       // MOV CX, 0010h (CL=10h)
