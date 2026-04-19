@@ -11,6 +11,20 @@ pub struct MooState {
     pub ram: Vec<(u32, u8)>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MooCycle {
+    pub address: Option<u16>,
+    pub data: Option<u8>,
+    pub status: [u8; 4],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MooPort {
+    pub address: u16,
+    pub value: u8,
+    pub direction: u8,
+}
+
 #[cfg(feature = "verification")]
 #[derive(Debug, Clone)]
 pub struct MooException {}
@@ -22,6 +36,8 @@ pub struct MooTest {
     pub bytes: Vec<u8>,
     pub initial: MooState,
     pub final_state: MooState,
+    pub cycles: Vec<MooCycle>,
+    pub ports: Vec<MooPort>,
     pub exception: Option<MooException>,
     pub hash: Option<String>,
 }
@@ -92,6 +108,54 @@ fn parse_ram(payload: &[u8]) -> Vec<(u32, u8)> {
     entries
 }
 
+fn parse_cycles(payload: &[u8]) -> Vec<MooCycle> {
+    let mut offset = 0;
+    let count = read_u32(payload, &mut offset) as usize;
+    let mut cycles = Vec::with_capacity(count);
+
+    for _ in 0..count {
+        let flags = payload[offset];
+        offset += 1;
+        let address = read_u16(payload, &mut offset);
+        let data = payload[offset];
+        offset += 1;
+        let status = read_tag(payload, &mut offset);
+
+        cycles.push(MooCycle {
+            address: if flags & 0x01 != 0 {
+                Some(address)
+            } else {
+                None
+            },
+            data: if flags & 0x02 != 0 { Some(data) } else { None },
+            status,
+        });
+    }
+
+    cycles
+}
+
+fn parse_ports(payload: &[u8]) -> Vec<MooPort> {
+    let mut offset = 0;
+    let count = read_u32(payload, &mut offset) as usize;
+    let mut ports = Vec::with_capacity(count);
+
+    for _ in 0..count {
+        let address = read_u16(payload, &mut offset);
+        let value = payload[offset];
+        offset += 1;
+        let direction = payload[offset];
+        offset += 1;
+        ports.push(MooPort {
+            address,
+            value,
+            direction,
+        });
+    }
+
+    ports
+}
+
 fn parse_cpu_state(payload: &[u8], reg_order16: &[&str], reg_order32: &[&str]) -> MooState {
     let mut offset = 0;
     let mut regs = HashMap::new();
@@ -138,6 +202,8 @@ fn parse_test_chunk(payload: &[u8], reg_order16: &[&str], reg_order32: &[&str]) 
         regs: HashMap::new(),
         ram: Vec::new(),
     };
+    let mut cycles = Vec::new();
+    let mut ports = Vec::new();
     let mut exception = None;
     let mut hash = None;
 
@@ -161,15 +227,16 @@ fn parse_test_chunk(payload: &[u8], reg_order16: &[&str], reg_order32: &[&str]) 
             }
             b"INIT" => initial = parse_cpu_state(sub_payload, reg_order16, reg_order32),
             b"FINA" => final_state = parse_cpu_state(sub_payload, reg_order16, reg_order32),
-            b"EXCP" => {
-                if !sub_payload.is_empty() {
-                    exception = Some(MooException {});
-                }
+            b"CYCL" => cycles = parse_cycles(sub_payload),
+            b"PORT" => ports = parse_ports(sub_payload),
+            b"EXCP" if !sub_payload.is_empty() => {
+                exception = Some(MooException {});
             }
+            b"EXCP" => {}
             b"HASH" => {
                 hash = Some(bytes_to_hex(sub_payload));
             }
-            b"CYCL" | b"GMET" => {}
+            b"GMET" => {}
             _ => {}
         }
 
@@ -182,6 +249,8 @@ fn parse_test_chunk(payload: &[u8], reg_order16: &[&str], reg_order32: &[&str]) 
         bytes,
         initial,
         final_state,
+        cycles,
+        ports,
         exception,
         hash,
     }

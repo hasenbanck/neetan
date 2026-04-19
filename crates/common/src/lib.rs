@@ -332,7 +332,8 @@ const EVENT_KIND_COUNT: usize = 20;
 /// Memory addresses are 32 bits wide. Concrete implementations apply the
 /// appropriate mask for the emulated CPU generation:
 ///
-/// - V30 / 8086: 20-bit (1 MB address space)
+/// - Z80: 16-bit (64 Kib address space)
+/// - V30: 20-bit (1 MB address space)
 /// - i286: 24-bit (16 MB address space)
 /// - i386+: full 32-bit (4 GB address space)
 ///
@@ -857,6 +858,109 @@ pub trait Cpu {
     fn set_edx(&mut self, v: u32) {
         self.set_dx(v as u16);
     }
+}
+
+/// Trait representing a Z80-compatible CPU core.
+///
+/// This is intentionally separate from [`Cpu`], which models the x86 CPUs
+/// used by the existing PC-98 machines and exposes segment-oriented state for
+/// the BIOS and HLE layers. Z80-family machines need a different surface area
+/// while still sharing the same [`Bus`] abstraction for memory, I/O, interrupt
+/// polling, and cycle accounting.
+pub trait CpuZ80 {
+    /// Executes instructions until approximately `cycles_to_run` T-states have
+    /// been consumed, then returns the actual number of consumed T-states.
+    fn run_for(&mut self, cycles_to_run: u64, bus: &mut impl Bus) -> u64;
+
+    /// Resets the CPU to its power-on state.
+    fn reset(&mut self);
+
+    /// Returns `true` if the CPU is in the HALT state.
+    fn halted(&self) -> bool;
+
+    /// Returns the configured input clock frequency in Hz.
+    fn clock_hz(&self) -> u32;
+
+    /// Updates the configured input clock frequency in Hz.
+    fn set_clock_hz(&mut self, clock_hz: u32);
+
+    /// Returns the program counter.
+    fn pc(&self) -> u16;
+
+    /// Sets the program counter.
+    fn set_pc(&mut self, value: u16);
+
+    /// Returns the stack pointer.
+    fn sp(&self) -> u16;
+
+    /// Sets the stack pointer.
+    fn set_sp(&mut self, value: u16);
+
+    /// Returns the AF register pair.
+    fn af(&self) -> u16;
+
+    /// Sets the AF register pair.
+    fn set_af(&mut self, value: u16);
+
+    /// Returns the BC register pair.
+    fn bc(&self) -> u16;
+
+    /// Sets the BC register pair.
+    fn set_bc(&mut self, value: u16);
+
+    /// Returns the DE register pair.
+    fn de(&self) -> u16;
+
+    /// Sets the DE register pair.
+    fn set_de(&mut self, value: u16);
+
+    /// Returns the HL register pair.
+    fn hl(&self) -> u16;
+
+    /// Sets the HL register pair.
+    fn set_hl(&mut self, value: u16);
+
+    /// Returns the IX register.
+    fn ix(&self) -> u16;
+
+    /// Sets the IX register.
+    fn set_ix(&mut self, value: u16);
+
+    /// Returns the IY register.
+    fn iy(&self) -> u16;
+
+    /// Sets the IY register.
+    fn set_iy(&mut self, value: u16);
+
+    /// Returns the interrupt vector register.
+    fn i(&self) -> u8;
+
+    /// Sets the interrupt vector register.
+    fn set_i(&mut self, value: u8);
+
+    /// Returns the refresh register as software observes it.
+    fn r(&self) -> u8;
+
+    /// Sets the refresh register as software observes it.
+    fn set_r(&mut self, value: u8);
+
+    /// Returns IFF1.
+    fn iff1(&self) -> bool;
+
+    /// Sets IFF1.
+    fn set_iff1(&mut self, value: bool);
+
+    /// Returns IFF2.
+    fn iff2(&self) -> bool;
+
+    /// Sets IFF2.
+    fn set_iff2(&mut self, value: bool);
+
+    /// Returns the interrupt mode.
+    fn im(&self) -> u8;
+
+    /// Sets the interrupt mode.
+    fn set_im(&mut self, value: u8);
 }
 
 /// Abstract machine that can be stepped by a host loop.
