@@ -1,6 +1,6 @@
 [submodule "crates/cpu/tests/SingleStepTests/v20"]
 	path = crates/cpu/tests/SingleStepTests/v20
-	url = https://github.com/SingleStepTests/v20
+	url = https://github.com/hasenbanck/v20
 [submodule "crates/cpu/tests/SingleStepTests/80286"]
 	path = crates/cpu/tests/SingleStepTests/80286
 	url = https://github.com/SingleStepTests/80286
