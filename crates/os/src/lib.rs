@@ -33,6 +33,8 @@ pub use common::{
     OsBootStage, Tracing,
 };
 
+use crate::memory::memory_manager::MemoryManager;
+
 /// Information about a discovered drive for CDS/DPB/DAUA population.
 struct DriveInfo {
     /// 0-based drive index (0=A, 1=B, ..., 25=Z).
@@ -128,7 +130,7 @@ pub(crate) struct OsState {
     /// below this. Default 0 = first-come-first-served.
     pub(crate) xms_hmamin_kb: u16,
     /// Unified EMS/XMS/UMB memory manager. `None` if EMS/XMS both disabled or no extended RAM.
-    pub(crate) memory_manager: Option<memory::memory_manager::MemoryManager>,
+    pub(crate) memory_manager: Option<MemoryManager>,
 }
 
 pub(crate) struct BufferedInputState {
@@ -457,6 +459,9 @@ impl NeetanOs {
         tracer.trace_os_boot(OsBootStage::Start, cpu, memory);
         self.write_dos_data_structures(memory);
         self.write_iosys_work_area(memory);
+
+        Self::install_int24h_stub(memory);
+
         tracer.trace_os_boot(OsBootStage::DosDataStructuresReady, cpu, memory);
         let drives = Self::discover_drives(memory, device);
         self.write_drive_structures(memory, &drives);
@@ -492,70 +497,13 @@ impl NeetanOs {
         // Initialize EMS/XMS memory manager if extended RAM is available.
         let ext_mem_size = memory.extended_memory_size();
         if ext_mem_size > 0 && (self.state.ems_enabled || self.state.xms_enabled) {
-            let stub_addr = tables::XMS_ENTRY_STUB_ADDR;
-            memory.write_byte(stub_addr, 0xCD);
-            memory.write_byte(stub_addr + 1, 0xFE);
-            memory.write_byte(stub_addr + 2, 0xCB);
-
-            // Shared strategy/interrupt stub for XMSXXXX0 and EMMXXXX0:
-            // set DONE bit in request header, RETF.
-            // Status word is at request_header[3..5]; setting bit 0 of the high byte
-            // is equivalent to OR-ing the word with 0x0100.
-            //   26 80 4F 04 01    or  byte ptr es:[bx+4], 0x01
-            //   CB                retf
-            let dev_stub_addr = tables::XMS_DEV_STUB_ADDR;
-            memory.write_byte(dev_stub_addr, 0x26);
-            memory.write_byte(dev_stub_addr + 1, 0x80);
-            memory.write_byte(dev_stub_addr + 2, 0x4F);
-            memory.write_byte(dev_stub_addr + 3, 0x04);
-            memory.write_byte(dev_stub_addr + 4, 0x01);
-            memory.write_byte(dev_stub_addr + 5, 0xCB);
-
-            // EMS INT 67h trap stub + device name. When an app does
-            // "MOV AX, 3567h; INT 21h" and reads [ES:BX+000Ah], it must
-            // find "EMMXXXX0" (EMS 4.0 "get interrupt vector" technique).
-            // Bytes 0x00..0x09 are code that fires the BIOS HLE trap; a
-            // NOP pads to offset 0x0A where the 8-byte name begins.
-            //   50              push ax
-            //   52              push dx
-            //   B0 67           mov  al, 67h
-            //   BA F0 07        mov  dx, 07F0h
-            //   EE              out  dx, al           ; HLE handler runs
-            //   CF              iret                  ; return to caller
-            //   90              nop                   ; pad to +0Ah
-            //   "EMMXXXX0"      at offset 0x0A
             if self.state.ems_enabled {
-                let stub = tables::EMS_INT67_STUB_ADDR;
-                memory.write_byte(stub, 0x50);
-                memory.write_byte(stub + 1, 0x52);
-                memory.write_byte(stub + 2, 0xB0);
-                memory.write_byte(stub + 3, 0x67);
-                memory.write_byte(stub + 4, 0xBA);
-                memory.write_byte(stub + 5, 0xF0);
-                memory.write_byte(stub + 6, 0x07);
-                memory.write_byte(stub + 7, 0xEE);
-                memory.write_byte(stub + 8, 0xCF);
-                memory.write_byte(stub + 9, 0x90);
-                memory.write_block(stub + 0x0A, b"EMMXXXX0");
-
-                let pgmapret_stub = tables::EMS_PGMAPRET_STUB_ADDR;
-                memory.write_byte(pgmapret_stub, 0x50);
-                memory.write_byte(pgmapret_stub + 1, 0x52);
-                memory.write_byte(pgmapret_stub + 2, 0xB0);
-                memory.write_byte(pgmapret_stub + 3, tables::EMS_PGMAPRET_VECTOR);
-                memory.write_byte(pgmapret_stub + 4, 0xBA);
-                memory.write_byte(pgmapret_stub + 5, 0xF0);
-                memory.write_byte(pgmapret_stub + 6, 0x07);
-                memory.write_byte(pgmapret_stub + 7, 0xEE);
-                memory.write_byte(pgmapret_stub + 8, 0xCF);
-                memory.write_byte(pgmapret_stub + 9, 0x90);
-
-                let ivt_67h_addr: u32 = 0x67 * 4;
-                memory.write_word(ivt_67h_addr, tables::EMS_INT67_STUB_OFFSET);
-                memory.write_word(ivt_67h_addr + 2, tables::DOS_DATA_SEGMENT);
+                Self::install_ems_stub(memory);
             }
 
-            let mut mm = memory::memory_manager::MemoryManager::new(
+            Self::install_xms_stubs(memory);
+
+            let mut mm = MemoryManager::new(
                 ext_mem_size,
                 self.state.ems_enabled,
                 self.state.xms_enabled,
@@ -581,6 +529,93 @@ impl NeetanOs {
         }
         tracer.trace_os_boot(OsBootStage::ShellReady, cpu, memory);
         tracer.trace_os_boot(OsBootStage::End, cpu, memory);
+    }
+
+    /// Install default INT 24h critical-error stub (MOV AL,3 / IRET).
+    /// Returns AL=3 (Fail) to any caller. The HLE OS never raises critical
+    /// errors itself; this exists purely so apps that read IVT[24h] or
+    /// save it into PSP+12h see a valid, well-behaved handler.
+    fn install_int24h_stub(memory: &mut dyn MemoryAccess) {
+        let int24_stub = tables::INT24_STUB_ADDR;
+        memory.write_byte(int24_stub, 0xB0);
+        memory.write_byte(int24_stub + 1, 0x03);
+        memory.write_byte(int24_stub + 2, 0xCF);
+        let ivt_24h_addr: u32 = 0x24 * 4;
+        memory.write_word(ivt_24h_addr, tables::INT24_STUB_OFFSET);
+        memory.write_word(ivt_24h_addr + 2, tables::DOS_DATA_SEGMENT);
+    }
+
+    /// EMS INT 67h trap stub + device name. When an app does
+    /// "MOV AX, 3567h; INT 21h" and reads [ES:BX+000Ah], it must
+    /// find "EMMXXXX0" (EMS 4.0 "get interrupt vector" technique).
+    /// Bytes 0x00..0x09 are code that fires the BIOS HLE trap; a
+    /// NOP pads to offset 0x0A where the 8-byte name begins.
+    ///   50              push ax
+    ///   52              push dx
+    ///   B0 67           mov  al, 67h
+    ///   BA F0 07        mov  dx, 07F0h
+    ///   EE              out  dx, al           ; HLE handler runs
+    ///   CF              iret                  ; return to caller
+    ///   90              nop                   ; pad to +0Ah
+    ///   "EMMXXXX0"      at offset 0x0A
+    fn install_ems_stub(memory: &mut dyn MemoryAccess) {
+        let stub = tables::EMS_INT67_STUB_ADDR;
+        memory.write_byte(stub, 0x50);
+        memory.write_byte(stub + 1, 0x52);
+        memory.write_byte(stub + 2, 0xB0);
+        memory.write_byte(stub + 3, 0x67);
+        memory.write_byte(stub + 4, 0xBA);
+        memory.write_byte(stub + 5, 0xF0);
+        memory.write_byte(stub + 6, 0x07);
+        memory.write_byte(stub + 7, 0xEE);
+        memory.write_byte(stub + 8, 0xCF);
+        memory.write_byte(stub + 9, 0x90);
+        memory.write_block(stub + 0x0A, b"EMMXXXX0");
+
+        let pgmapret_stub = tables::EMS_PGMAPRET_STUB_ADDR;
+        memory.write_byte(pgmapret_stub, 0x50);
+        memory.write_byte(pgmapret_stub + 1, 0x52);
+        memory.write_byte(pgmapret_stub + 2, 0xB0);
+        memory.write_byte(pgmapret_stub + 3, tables::EMS_PGMAPRET_VECTOR);
+        memory.write_byte(pgmapret_stub + 4, 0xBA);
+        memory.write_byte(pgmapret_stub + 5, 0xF0);
+        memory.write_byte(pgmapret_stub + 6, 0x07);
+        memory.write_byte(pgmapret_stub + 7, 0xEE);
+        memory.write_byte(pgmapret_stub + 8, 0xCF);
+        memory.write_byte(pgmapret_stub + 9, 0x90);
+
+        let ivt_67h_addr: u32 = 0x67 * 4;
+        memory.write_word(ivt_67h_addr, tables::EMS_INT67_STUB_OFFSET);
+        memory.write_word(ivt_67h_addr + 2, tables::DOS_DATA_SEGMENT);
+    }
+
+    /// Installs the two extended-memory plumbing stubs in the DOS data segment.
+    ///
+    /// 1. XMS driver entry point (3 bytes). Programs obtain its far address
+    ///    via INT 2Fh AX=4310h and call it to invoke XMS functions; INT FEh
+    ///    traps to our HLE XMS handler.
+    ///    CD FE             int  0FEh
+    ///    CB                retf
+    ///
+    /// 2. Shared strategy/interrupt routine for the XMSXXXX0 and EMMXXXX0 DOS
+    ///    device headers. Sets the DONE bit in the request header and returns.
+    ///    The status word lives at request_header[3..5]; setting bit 0 of the
+    ///    high byte is equivalent to OR-ing the word with 0x0100.
+    ///    26 80 4F 04 01    or   byte ptr es:[bx+4], 0x01
+    ///    CB                retf
+    fn install_xms_stubs(memory: &mut dyn MemoryAccess) {
+        let stub_addr = tables::XMS_ENTRY_STUB_ADDR;
+        memory.write_byte(stub_addr, 0xCD);
+        memory.write_byte(stub_addr + 1, 0xFE);
+        memory.write_byte(stub_addr + 2, 0xCB);
+
+        let dev_stub_addr = tables::XMS_DEV_STUB_ADDR;
+        memory.write_byte(dev_stub_addr, 0x26);
+        memory.write_byte(dev_stub_addr + 1, 0x80);
+        memory.write_byte(dev_stub_addr + 2, 0x4F);
+        memory.write_byte(dev_stub_addr + 3, 0x04);
+        memory.write_byte(dev_stub_addr + 4, 0x01);
+        memory.write_byte(dev_stub_addr + 5, 0xCB);
     }
 
     /// Searches mounted drives for CONFIG.SYS and parses it.
@@ -1605,14 +1640,14 @@ impl NeetanOs {
         // Write SFT2 header + entries
         let sft2_base = (sft2_data_segment as u32) << 4;
         self.state.sft2_base = sft2_base;
-        tables::write_far_ptr(mem, sft2_base, 0xFFFF, 0xFFFF);
+        write_far_ptr(mem, sft2_base, 0xFFFF, 0xFFFF);
         mem.write_word(sft2_base + 4, sft2_entry_count);
         // Zero all entries
         let zero_data = vec![0u8; (sft2_entry_count as usize) * (SFT_ENTRY_SIZE as usize)];
         mem.write_block(sft2_base + SFT_HEADER_SIZE, &zero_data);
 
         // Update first SFT's next-ptr to point to SFT2
-        tables::write_far_ptr(mem, SFT_BASE, sft2_data_segment, 0x0000);
+        write_far_ptr(mem, SFT_BASE, sft2_data_segment, 0x0000);
 
         // Rewrite COMMAND.COM MCB at new location
         let cmd_mcb_addr = (new_command_mcb_segment as u32) << 4;
@@ -1706,7 +1741,7 @@ impl NeetanOs {
         mem.write_word(base + IOSYS_OFF_TEXT_MODE, 0x0000); // 25-line gapped
 
         // DA/UA pointer -> points to the DA/UA table itself
-        tables::write_far_ptr(
+        write_far_ptr(
             mem,
             base + IOSYS_OFF_DAUA_PTR,
             IOSYS_SEGMENT,

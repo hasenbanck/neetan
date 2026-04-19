@@ -179,6 +179,10 @@ pub const EMS_PGMAPRET_STUB_OFFSET: u16 = 0x0D84;
 pub const EMS_PGMAPRET_STUB_ADDR: u32 = DOS_DATA_BASE + EMS_PGMAPRET_STUB_OFFSET as u32;
 pub const EMS_PGMAPRET_STUB_SEGMENT: u16 = DOS_DATA_SEGMENT;
 
+// INT 24h default critical-error handler (3 bytes: MOV AL,3 / IRET).
+pub const INT24_STUB_OFFSET: u16 = 0x0D8E;
+pub const INT24_STUB_ADDR: u32 = DOS_DATA_BASE + INT24_STUB_OFFSET as u32;
+
 // UMB region: MCB chain at segment D000h (64 KB at D0000-DFFFF)
 pub const UMB_FIRST_MCB_SEGMENT: u16 = 0xD000;
 pub const UMB_TOTAL_PARAGRAPHS: u16 = 0x0FFF;
