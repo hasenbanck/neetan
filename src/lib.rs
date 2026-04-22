@@ -1103,6 +1103,7 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
     }
 
     let machine: Box<dyn Machine> = match model.cpu_type() {
+        common::CpuType::I8086 => unreachable!("PC-9801F is not wired as a machine model yet"),
         common::CpuType::V30 => Box::new(machine::Machine::new(cpu::V30::new(), bus)),
         common::CpuType::I286 => Box::new(machine::Machine::new(cpu::I286::new(), bus)),
         common::CpuType::I386 => Box::new(machine::Machine::new(

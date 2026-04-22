@@ -344,11 +344,10 @@ impl<T: Tracing> Pc9801Bus<T> {
                 self.pending_wait_cycles += self.cbus_wait_cycles();
                 if let Some(ref mut sb14) = self.soundboard_14 {
                     sb14.write_port_a(value);
-                } else if self.soundboard_26k.is_some() && self.soundboard_86.is_some() {
-                    self.soundboard_26k
-                        .as_mut()
-                        .unwrap()
-                        .write_address(value, self.current_cycle);
+                } else if let Some(sb26k) = self.soundboard_26k.as_mut()
+                    && self.soundboard_86.is_some()
+                {
+                    sb26k.write_address(value, self.current_cycle);
                     self.process_soundboard_actions();
                 }
             }
@@ -357,11 +356,10 @@ impl<T: Tracing> Pc9801Bus<T> {
                 self.pending_wait_cycles += self.cbus_wait_cycles();
                 if let Some(ref mut sb14) = self.soundboard_14 {
                     sb14.write_port_b(value);
-                } else if self.soundboard_26k.is_some() && self.soundboard_86.is_some() {
-                    self.soundboard_26k
-                        .as_mut()
-                        .unwrap()
-                        .write_data(value, self.current_cycle);
+                } else if let Some(sb26k) = self.soundboard_26k.as_mut()
+                    && self.soundboard_86.is_some()
+                {
+                    sb26k.write_data(value, self.current_cycle);
                     self.process_soundboard_actions();
                 }
             }

@@ -239,7 +239,7 @@ impl Z80 {
     }
 }
 
-impl common::CpuZ80 for Z80 {
+impl CpuZ80 for Z80 {
     fn run_for(&mut self, cycles_to_run: u64, bus: &mut impl common::Bus) -> u64 {
         let start_cycle = bus.current_cycle();
         self.run_start_cycle = start_cycle;

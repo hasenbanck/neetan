@@ -1,15 +1,49 @@
-//! Implements the CPU emulation.
+//! # CPU emulation
+//!
+//! Each CPU core should be it's own unit with only limited core sharing.
+//! This is a deliberate decision, so that CPUs can evolve independently.
+//!
+//! All CPUs are verified with the help of [the SingleStepTests](https://github.com/SingleStepTests/),
+//! when available. The 386/486 also are verified against [test386.asm](https://github.com/barotto/test386.asm).
+//!
+//! ## Timing Scope
+//!
+//! The goal of these cores is to be cycle-count accuract (if possible) at the instruction and
+//! machine-model level so that software runs at the correct overall speed on the emulated PC-98
+//! configuration.
+//!
+//! We intentionally do not optimize for sub-cycle or bus-phase accurate wait state placement
+//! inside an instruction. PC-98 software could not reliably depend on such behavior because
+//! the platform existed across many machine generations, CPU models, clock speeds, and wait-state
+//! configurations (as oposed to console developers on the NES, Sega Master System and maybe the
+//! C64).
+//!
+//! Preserving correct total cycle cost is the priority; modeling exactly where a wait lands
+//! between internal clock counts is not.
+//!
+//! ## Supported CPUs
+//!
+//! | CPU   | Functionality verified | Cycle-count accurate | Uses datasheet timings |
+//! |-------|------------------------|----------------------|------------------------|
+//! | 8086  | Yes                    | Yes                  | No                     |
+//! | V30   | Yes                    | No                   | Yes                    |
+//! | 80286 | Yes                    | No                   | Yes                    |
+//! | 80386 | Yes                    | No                   | Yes                    |
+//! | 80486 | Yes                    | No                   | Yes                    |
+//! | Z80   | Yes                    | Yes                  | No                     |
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod i286;
 mod i386;
+mod i8086;
 mod v30;
 mod z80;
 
 pub use i286::{I286, I286Flags, I286State};
 pub use i386::{CPU_MODEL_386, CPU_MODEL_486, I386, I386Flags, I386State};
+pub use i8086::{I8086, I8086Flags, I8086State, PC9801F_CPU_CLOCK_5MHZ, PC9801F_CPU_CLOCK_8MHZ};
 pub use v30::{V30, V30Flags, V30State};
 pub use z80::{Z80, Z80Flags, Z80State};
 
