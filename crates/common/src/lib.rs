@@ -35,6 +35,8 @@ pub use trace::{NoTracing, OsBootStage, Tracing};
 /// CPU generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CpuType {
+    /// Intel 8086.
+    I8086,
     /// NEC V30 (µPD70116).
     V30,
     /// Intel 80286.
@@ -333,6 +335,7 @@ const EVENT_KIND_COUNT: usize = 21;
 /// appropriate mask for the emulated CPU generation:
 ///
 /// - Z80: 16-bit (64 Kib address space)
+/// - i8086: 20-bit (1 MB address space)
 /// - V30: 20-bit (1 MB address space)
 /// - i286: 24-bit (16 MB address space)
 /// - i386+: full 32-bit (4 GB address space)

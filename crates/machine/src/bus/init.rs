@@ -327,7 +327,8 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// Populates BDA fields based on machine model and clock lineage.
     fn populate_bda(&mut self) {
         let cpu_type = self.machine_model.cpu_type();
-        let is_v30 = cpu_type == CpuType::V30;
+        // TODO: Most likely wrong for the 8086.
+        let is_v30 = matches!(cpu_type, CpuType::I8086 | CpuType::V30);
 
         // MSW3 from text VRAM memory switch area (stride 4, at offset 0x3FEA).
         let msw3 = self.memory.state.text_vram[0x3FEA];
@@ -365,7 +366,8 @@ impl<T: Tracing> Pc9801Bus<T> {
         //   bit 6: EGC / protected mode test passed
         //   bit 7: IDE hard disk controller present
         let sys_type = match cpu_type {
-            CpuType::V30 => 0x00,
+            // TODO: Most likely wrong for the 8086.
+            CpuType::I8086 | CpuType::V30 => 0x00,
             CpuType::I286 => 0x01,
             CpuType::I386 | CpuType::I486DX => 0x4B,
         };
@@ -392,7 +394,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         // BIOS_FLAG3 (0x0481): 386 machines have bit 5 set.
         self.memory.state.ram[0x0481] = match cpu_type {
-            CpuType::I286 | CpuType::V30 => 0x00,
+            CpuType::I8086 | CpuType::I286 | CpuType::V30 => 0x00,
             CpuType::I386 | CpuType::I486DX => 0x20,
         };
 

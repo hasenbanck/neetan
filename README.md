@@ -352,7 +352,9 @@ Following projects provided references for our implementation and test vectors. 
 neetan:
 
 - [MAME](https://www.mamedev.org/) 
+- [MartyPC](https://github.com/dbalsom/martypc)
 - [NP21W](https://simk98.github.io/np21w/)
+- [SingleStepTests](https://github.com/SingleStepTests)
 - [undoc98](https://www.webtech.co.jp/company/doc/undocumented_mem/index.html)
 
 We ported the Yamaha OPN and OPL emulation from the amazing YMFM project to our own Rust port:

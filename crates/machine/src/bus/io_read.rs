@@ -311,8 +311,9 @@ impl<T: Tracing> Pc9801Bus<T> {
                 self.pending_wait_cycles += self.cbus_wait_cycles();
                 if let Some(ref sb14) = self.soundboard_14 {
                     sb14.read_port_b()
-                } else if self.soundboard_26k.is_some() && self.soundboard_86.is_some() {
-                    let sb26k = self.soundboard_26k.as_mut().unwrap();
+                } else if let Some(sb26k) = self.soundboard_26k.as_mut()
+                    && self.soundboard_86.is_some()
+                {
                     if sb26k.address() == 0x0E {
                         let irq_bits = match sb26k.irq_line() {
                             3 => 0x00,

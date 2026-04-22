@@ -9,6 +9,7 @@ use zlib_rs::{InflateConfig, ReturnCode, decompress_slice};
 pub struct MooState {
     pub regs: HashMap<String, u32>,
     pub ram: Vec<(u32, u8)>,
+    pub queue: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +109,12 @@ fn parse_ram(payload: &[u8]) -> Vec<(u32, u8)> {
     entries
 }
 
+fn parse_queue(payload: &[u8]) -> Vec<u8> {
+    let mut offset = 0;
+    let count = read_u32(payload, &mut offset) as usize;
+    payload[offset..offset + count].to_vec()
+}
+
 fn parse_cycles(payload: &[u8]) -> Vec<MooCycle> {
     let mut offset = 0;
     let count = read_u32(payload, &mut offset) as usize;
@@ -160,6 +167,7 @@ fn parse_cpu_state(payload: &[u8], reg_order16: &[&str], reg_order32: &[&str]) -
     let mut offset = 0;
     let mut regs = HashMap::new();
     let mut ram = Vec::new();
+    let mut queue = Vec::new();
 
     while offset < payload.len() {
         let tag = read_tag(payload, &mut offset);
@@ -171,14 +179,15 @@ fn parse_cpu_state(payload: &[u8], reg_order16: &[&str], reg_order32: &[&str]) -
             b"REGS" => regs = parse_regs16(sub_payload, reg_order16),
             b"RG32" => regs = parse_regs32(sub_payload, reg_order32),
             b"RAM " => ram = parse_ram(sub_payload),
-            b"QUEU" | b"EA32" => {}
+            b"QUEU" => queue = parse_queue(sub_payload),
+            b"EA32" => {}
             _ => {}
         }
 
         offset = end;
     }
 
-    MooState { regs, ram }
+    MooState { regs, ram, queue }
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
@@ -197,10 +206,12 @@ fn parse_test_chunk(payload: &[u8], reg_order16: &[&str], reg_order32: &[&str]) 
     let mut initial = MooState {
         regs: HashMap::new(),
         ram: Vec::new(),
+        queue: Vec::new(),
     };
     let mut final_state = MooState {
         regs: HashMap::new(),
         ram: Vec::new(),
+        queue: Vec::new(),
     };
     let mut cycles = Vec::new();
     let mut ports = Vec::new();
