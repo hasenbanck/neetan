@@ -33,7 +33,7 @@ impl I286 {
         self.regs.set_word(WordReg::SI, si.wrapping_add(delta));
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        let penalty = if si & 1 == 1 || di & 1 == 1 { 8 } else { 0 };
+        let penalty = 2 * i32::from(si & 1 == 1) + i32::from(di & 1 == 1);
         self.clk(5 + penalty);
     }
 
@@ -62,7 +62,7 @@ impl I286 {
         self.regs.set_word(WordReg::SI, si.wrapping_add(delta));
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        let penalty = if si & 1 == 1 || di & 1 == 1 { 8 } else { 0 };
+        let penalty = 2 * i32::from(si & 1 == 1) + 2 * i32::from(di & 1 == 1);
         self.clk(8 + penalty);
     }
 
@@ -79,7 +79,7 @@ impl I286 {
         self.write_word_seg(bus, SegReg16::ES, di, self.regs.word(WordReg::AX));
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        let penalty = if di & 1 == 1 { 4 } else { 0 };
+        let penalty = if di & 1 == 1 { 1 } else { 0 };
         self.clk(3 + penalty);
     }
 
@@ -100,7 +100,7 @@ impl I286 {
         self.regs.set_word(WordReg::AX, val);
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::SI, si.wrapping_add(delta));
-        let penalty = if si & 1 == 1 { 4 } else { 0 };
+        let penalty = if si & 1 == 1 { 2 } else { 0 };
         self.clk(5 + penalty);
     }
 
@@ -121,14 +121,14 @@ impl I286 {
         self.alu_sub_word(aw, dst);
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        let penalty = if di & 1 == 1 { 4 } else { 0 };
+        let penalty = if di & 1 == 1 { 2 } else { 0 };
         self.clk(7 + penalty);
     }
 
     pub(super) fn insb(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
         let di = self.regs.word(WordReg::DI);
-        let val = bus.io_read_byte(port);
+        let val = self.io_read_byte_timed(bus, port);
         self.write_byte_seg(bus, SegReg16::ES, di, val);
         let delta = self.direction_delta();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
@@ -138,11 +138,11 @@ impl I286 {
     pub(super) fn insw(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
         let di = self.regs.word(WordReg::DI);
-        let val = bus.io_read_word(port);
+        let val = self.io_read_word_timed(bus, port);
         self.write_word_seg(bus, SegReg16::ES, di, val);
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        let penalty = if di & 1 == 1 { 8 } else { 0 };
+        let penalty = 2 * i32::from(port & 1 == 1) + i32::from(di & 1 == 1);
         self.clk(5 + penalty);
     }
 
@@ -151,7 +151,7 @@ impl I286 {
         let si = self.regs.word(WordReg::SI);
         let seg = self.default_seg(SegReg16::DS);
         let val = self.read_byte_seg(bus, seg, si);
-        bus.io_write_byte(port, val);
+        self.io_write_byte_timed(bus, port, val);
         let delta = self.direction_delta();
         self.regs.set_word(WordReg::SI, si.wrapping_add(delta));
         self.clk(5);
@@ -162,10 +162,10 @@ impl I286 {
         let si = self.regs.word(WordReg::SI);
         let seg = self.default_seg(SegReg16::DS);
         let val = self.read_word_seg(bus, seg, si);
-        bus.io_write_word(port, val);
+        self.io_write_word_timed(bus, port, val);
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::SI, si.wrapping_add(delta));
-        let penalty = if si & 1 == 1 { 8 } else { 0 };
+        let penalty = 2 * i32::from(port & 1 == 1) + 2 * i32::from(si & 1 == 1);
         self.clk(5 + penalty);
     }
 }

@@ -95,7 +95,8 @@ impl I286 {
             let delta = match next {
                 0xA6 | 0xA7 | 0xAE | 0xAF => 1, // CMPS, SCAS: +1
                 0xAA | 0xAB => 0,               // STOS: 0
-                _ => -1,                        // MOVS, LODS, INS, OUTS: -1
+                0xA5 | 0x6D => -1 + i32::from(self.regs.word(WordReg::DI) & 1 == 1),
+                _ => -1, // MOVS, LODS, INS, OUTS: -1
             };
             self.clk(delta);
 

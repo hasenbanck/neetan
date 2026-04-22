@@ -15,12 +15,14 @@ mod modrm;
 mod rep;
 mod state;
 mod string_ops;
+mod timing;
 
 use std::ops::{Deref, DerefMut};
 
 use common::Cpu as _;
 pub use flags::I286Flags;
 pub use state::I286State;
+use timing::{FlushKind, TimingModel};
 
 use crate::{SegReg16, WordReg};
 
@@ -70,6 +72,9 @@ pub struct I286 {
 
     trap_level: u8,
     shutdown: bool,
+    pending_prefix_cycles: i32,
+    ignore_pending_prefix_cycles: bool,
+    timing: TimingModel,
 }
 
 impl Deref for I286 {
@@ -118,6 +123,9 @@ impl I286 {
             ea_seg: SegReg16::DS,
             trap_level: 0,
             shutdown: false,
+            pending_prefix_cycles: 0,
+            ignore_pending_prefix_cycles: false,
+            timing: TimingModel::default(),
         };
         cpu.reset();
         cpu
@@ -126,11 +134,19 @@ impl I286 {
     #[inline(always)]
     fn clk(&mut self, cycles: i32) {
         self.cycles_remaining -= cycles as i64;
+        self.timing.current.eu_cycles += cycles;
+    }
+
+    #[inline(always)]
+    fn clk_au(&mut self, cycles: i32) {
+        self.cycles_remaining -= cycles as i64;
+        self.timing.current.au_cycles += cycles;
     }
 
     #[inline(always)]
     fn clk_modrm(&mut self, modrm: u8, reg_cycles: i32, mem_cycles: i32) {
         if modrm >= 0xC0 {
+            self.mark_pending_prefix_cycles_ignored();
             self.clk(reg_cycles);
         } else {
             self.clk(mem_cycles);
@@ -140,6 +156,7 @@ impl I286 {
     #[inline(always)]
     fn clk_modrm_word(&mut self, modrm: u8, reg_cycles: i32, mem_cycles: i32, word_accesses: i32) {
         if modrm >= 0xC0 {
+            self.mark_pending_prefix_cycles_ignored();
             self.clk(reg_cycles);
         } else {
             let penalty = if self.ea & 1 == 1 {
@@ -152,18 +169,63 @@ impl I286 {
     }
 
     #[inline(always)]
-    fn sp_penalty(&self, word_accesses: i32) -> i32 {
-        if self.regs.word(WordReg::SP) & 1 == 1 {
-            4 * word_accesses
-        } else {
-            0
+    fn sp_penalty(&self, _word_accesses: i32) -> i32 {
+        0
+    }
+
+    #[inline(always)]
+    fn paired_word_read_penalty(&self, address: u32) -> i32 {
+        if address & 1 == 1 { 4 } else { 0 }
+    }
+
+    #[inline(always)]
+    fn shift_timing_count(&self, count: u8) -> i32 {
+        i32::from(count & 0x1F)
+    }
+
+    #[inline(always)]
+    fn note_pending_prefix_cycle(&mut self) {}
+
+    #[inline(always)]
+    fn mark_pending_prefix_cycles_ignored(&mut self) {
+        self.ignore_pending_prefix_cycles = true;
+    }
+
+    #[inline(always)]
+    fn apply_pending_prefix_cycles(&mut self) {
+        if !self.ignore_pending_prefix_cycles {
+            self.clk(self.pending_prefix_cycles);
         }
+        self.pending_prefix_cycles = 0;
+        self.ignore_pending_prefix_cycles = false;
+    }
+
+    #[inline(always)]
+    fn prefix_neutral_opcode(opcode: u8) -> bool {
+        matches!(
+            opcode,
+            0x27
+                | 0x2F
+                | 0x37
+                | 0x3F
+                | 0x40..=0x4F
+                | 0x90..=0x99
+                | 0x9E
+                | 0x9F
+                | 0xB0..=0xBF
+                | 0xD4
+                | 0xD5
+                | 0xD6
+                | 0xF5
+                | 0xF8..=0xFD
+        )
     }
 
     #[inline(always)]
     fn fetch(&mut self, bus: &mut impl common::Bus) -> u8 {
         let addr = self.seg_bases[SegReg16::CS as usize].wrapping_add(self.ip as u32) & 0xFFFFFF;
         self.ip = self.ip.wrapping_add(1);
+        self.timing.note_instruction_byte();
         bus.read_byte(addr)
     }
 
@@ -222,6 +284,9 @@ impl I286 {
         self.seg_limits[seg as usize] = 0xFFFF;
         self.seg_rights[seg as usize] = if seg == SegReg16::CS { 0x9B } else { 0x93 };
         self.seg_valid[seg as usize] = true;
+        if seg == SegReg16::CS {
+            self.timing.mark_flush(FlushKind::ControlTransfer);
+        }
     }
 
     fn set_loaded_segment_cache(
@@ -235,6 +300,9 @@ impl I286 {
         self.seg_limits[seg as usize] = descriptor.limit;
         self.seg_rights[seg as usize] = descriptor.rights;
         self.seg_valid[seg as usize] = true;
+        if seg == SegReg16::CS {
+            self.timing.mark_flush(FlushKind::ControlTransfer);
+        }
     }
 
     fn set_null_segment(&mut self, seg: SegReg16, selector: u16) {
@@ -516,6 +584,7 @@ impl I286 {
         if !self.check_segment_access(self.ea_seg, offset, 1, false, bus) {
             return 0;
         }
+        self.timing.note_bus_pressure(1);
         bus.read_byte(self.seg_addr(delta))
     }
 
@@ -525,6 +594,7 @@ impl I286 {
         if !self.check_segment_access(self.ea_seg, offset, 1, true, bus) {
             return;
         }
+        self.timing.note_bus_pressure(1);
         bus.write_byte(self.seg_addr(delta), value);
     }
 
@@ -536,6 +606,8 @@ impl I286 {
         if !self.check_segment_access(self.ea_seg, offset, 2, false, bus) {
             return 0;
         }
+        self.timing
+            .note_bus_pressure(2 + i32::from(offset & 1 != 0));
         let low = bus.read_byte(self.seg_addr(delta)) as u16;
         let high = bus.read_byte(self.seg_addr(delta.wrapping_add(1))) as u16;
         low | (high << 8)
@@ -555,6 +627,8 @@ impl I286 {
         if !self.check_segment_access(self.ea_seg, self.eo, 2, true, bus) {
             return;
         }
+        self.timing
+            .note_bus_pressure(2 + i32::from(self.eo & 1 != 0));
         bus.write_byte(self.ea, value as u8);
         bus.write_byte(self.seg_addr(1), (value >> 8) as u8);
     }
@@ -566,6 +640,7 @@ impl I286 {
             return 0;
         }
         let base = self.seg_base(seg);
+        self.timing.note_bus_pressure(1);
         bus.read_byte(base.wrapping_add(offset as u32) & 0xFFFFFF)
     }
 
@@ -582,6 +657,7 @@ impl I286 {
             return;
         }
         let base = self.seg_base(seg);
+        self.timing.note_bus_pressure(1);
         bus.write_byte(base.wrapping_add(offset as u32) & 0xFFFFFF, value);
     }
 
@@ -592,6 +668,8 @@ impl I286 {
             return 0;
         }
         let base = self.seg_base(seg);
+        self.timing
+            .note_bus_pressure(2 + i32::from(offset & 1 != 0));
         let lo = bus.read_byte(base.wrapping_add(offset as u32) & 0xFFFFFF) as u16;
         let hi = bus.read_byte(base.wrapping_add(offset.wrapping_add(1) as u32) & 0xFFFFFF) as u16;
         lo | (hi << 8)
@@ -610,6 +688,8 @@ impl I286 {
             return;
         }
         let base = self.seg_base(seg);
+        self.timing
+            .note_bus_pressure(2 + i32::from(offset & 1 != 0));
         bus.write_byte(base.wrapping_add(offset as u32) & 0xFFFFFF, value as u8);
         bus.write_byte(
             base.wrapping_add(offset.wrapping_add(1) as u32) & 0xFFFFFF,
@@ -624,6 +704,7 @@ impl I286 {
         }
         self.regs.set_word(WordReg::SP, sp);
         let base = self.seg_base(SegReg16::SS);
+        self.timing.note_bus_pressure(2 + i32::from(sp & 1 != 0));
         bus.write_byte(base.wrapping_add(sp as u32) & 0xFFFFFF, value as u8);
         bus.write_byte(
             base.wrapping_add(sp.wrapping_add(1) as u32) & 0xFFFFFF,
@@ -637,6 +718,7 @@ impl I286 {
             return 0;
         }
         let base = self.seg_base(SegReg16::SS);
+        self.timing.note_bus_pressure(2 + i32::from(sp & 1 != 0));
         let low = bus.read_byte(base.wrapping_add(sp as u32) & 0xFFFFFF) as u16;
         let high = bus.read_byte(base.wrapping_add(sp.wrapping_add(1) as u32) & 0xFFFFFF) as u16;
         self.regs.set_word(WordReg::SP, sp.wrapping_add(2));
@@ -697,14 +779,52 @@ impl I286 {
         }
     }
 
-    fn read_word_phys(&self, bus: &mut impl common::Bus, addr: u32) -> u16 {
+    fn read_word_phys(&mut self, bus: &mut impl common::Bus, addr: u32) -> u16 {
+        self.timing
+            .note_bus_pressure(2 + i32::from((addr & 1) != 0));
         bus.read_byte(addr & 0xFFFFFF) as u16
             | ((bus.read_byte(addr.wrapping_add(1) & 0xFFFFFF) as u16) << 8)
     }
 
-    fn write_word_phys(&self, bus: &mut impl common::Bus, addr: u32, value: u16) {
+    fn write_word_phys(&mut self, bus: &mut impl common::Bus, addr: u32, value: u16) {
+        self.timing
+            .note_bus_pressure(2 + i32::from((addr & 1) != 0));
         bus.write_byte(addr & 0xFFFFFF, value as u8);
         bus.write_byte(addr.wrapping_add(1) & 0xFFFFFF, (value >> 8) as u8);
+    }
+
+    #[inline(always)]
+    fn io_read_byte_timed(&mut self, bus: &mut impl common::Bus, port: u16) -> u8 {
+        self.timing.note_bus_pressure(1);
+        bus.io_read_byte(port)
+    }
+
+    #[inline(always)]
+    fn io_read_word_timed(&mut self, bus: &mut impl common::Bus, port: u16) -> u16 {
+        self.timing.note_bus_pressure(2);
+        bus.io_read_word(port)
+    }
+
+    #[inline(always)]
+    fn io_write_byte_timed(&mut self, bus: &mut impl common::Bus, port: u16, value: u8) {
+        self.timing.note_bus_pressure(1);
+        bus.io_write_byte(port, value);
+    }
+
+    #[inline(always)]
+    fn io_write_word_timed(&mut self, bus: &mut impl common::Bus, port: u16, value: u16) {
+        self.timing.note_bus_pressure(2);
+        bus.io_write_word(port, value);
+    }
+
+    #[inline(always)]
+    fn timing_mark_control_transfer(&mut self) {
+        self.timing.mark_flush(FlushKind::ControlTransfer);
+    }
+
+    #[inline(always)]
+    fn timing_mark_fault_transfer(&mut self) {
+        self.timing.mark_flush(FlushKind::FaultTransfer);
     }
 
     fn switch_task(&mut self, ntask: u16, task_type: TaskType, bus: &mut impl common::Bus) {
@@ -1157,6 +1277,11 @@ impl I286 {
     fn execute_one(&mut self, bus: &mut impl common::Bus) {
         self.prev_ip = self.ip;
 
+        if !self.rep_active {
+            let startup_cycles = self.timing.begin_instruction();
+            self.cycles_remaining -= startup_cycles as i64;
+        }
+
         if self.pending_irq != 0 {
             self.check_interrupts(bus);
         }
@@ -1172,43 +1297,53 @@ impl I286 {
         if self.rep_active {
             self.continue_rep(bus);
         } else {
+            self.pending_prefix_cycles = 0;
+            self.ignore_pending_prefix_cycles = false;
             let mut opcode = self.fetch(bus);
             loop {
                 match opcode {
                     0x26 => {
                         self.seg_prefix = true;
                         self.prefix_seg = SegReg16::ES;
-                        self.clk(2);
+                        self.note_pending_prefix_cycle();
                         opcode = self.fetch(bus);
                     }
                     0x2E => {
                         self.seg_prefix = true;
                         self.prefix_seg = SegReg16::CS;
-                        self.clk(2);
+                        self.note_pending_prefix_cycle();
                         opcode = self.fetch(bus);
                     }
                     0x36 => {
                         self.seg_prefix = true;
                         self.prefix_seg = SegReg16::SS;
-                        self.clk(2);
+                        self.note_pending_prefix_cycle();
                         opcode = self.fetch(bus);
                     }
                     0x3E => {
                         self.seg_prefix = true;
                         self.prefix_seg = SegReg16::DS;
-                        self.clk(2);
+                        self.note_pending_prefix_cycle();
                         opcode = self.fetch(bus);
                     }
                     0xF0 => {
-                        self.clk(2);
+                        self.note_pending_prefix_cycle();
                         opcode = self.fetch(bus);
                     }
                     _ => {
+                        if Self::prefix_neutral_opcode(opcode) {
+                            self.mark_pending_prefix_cycles_ignored();
+                        }
                         self.dispatch(opcode, bus);
                         break;
                     }
                 }
             }
+            self.apply_pending_prefix_cycles();
+        }
+        if !self.rep_active {
+            let completion_cycles = self.timing.finish_instruction();
+            self.cycles_remaining -= completion_cycles as i64;
         }
     }
 
@@ -1227,6 +1362,20 @@ impl I286 {
     /// Returns the number of cycles consumed by the last `step()` call.
     pub fn cycles_consumed(&self) -> u64 {
         (i64::MAX - self.cycles_remaining) as u64
+    }
+
+    /// Returns the last timing-model contribution tuple as
+    /// `(eu, au, bu_data_pressure, bu_fetch_stall, iu_stall, flush_penalty)`.
+    pub fn timing_model_contributions(&self) -> (i32, i32, i32, i32, i32, i32) {
+        let breakdown = self.timing.last;
+        (
+            breakdown.eu_cycles,
+            breakdown.au_cycles,
+            breakdown.bu_data_pressure,
+            breakdown.bu_fetch_stall,
+            breakdown.iu_stall,
+            breakdown.flush_penalty,
+        )
     }
 
     /// Returns the last computed effective address (for alignment checks).
@@ -1297,6 +1446,9 @@ impl common::Cpu for I286 {
         self.ea_seg = SegReg16::DS;
         self.trap_level = 0;
         self.shutdown = false;
+        self.pending_prefix_cycles = 0;
+        self.ignore_pending_prefix_cycles = false;
+        self.timing.reset(FlushKind::SetupJump);
     }
 
     fn halted(&self) -> bool {
@@ -1311,6 +1463,7 @@ impl common::Cpu for I286 {
         self.sregs[SegReg16::CS as usize] = cs;
         self.set_real_segment_cache(SegReg16::CS, cs);
         self.ip = ip;
+        self.timing.reset(FlushKind::SetupJump);
     }
 
     fn ax(&self) -> u16 {

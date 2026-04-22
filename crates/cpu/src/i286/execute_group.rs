@@ -92,7 +92,7 @@ impl I286 {
             6 => self.alu_xor_word(dst, src),
             7 => {
                 self.alu_sub_word(dst, src);
-                self.clk_modrm_word(modrm, 3, 6, 1);
+                self.clk_modrm_word(modrm, 4, 6, 1);
                 return;
             }
             _ => unreachable!(),
@@ -100,7 +100,7 @@ impl I286 {
         if (modrm >> 3) & 7 != 7 {
             self.putback_rm_word(modrm, result, bus);
         }
-        self.clk_modrm_word(modrm, 3, 7, 2);
+        self.clk_modrm_word(modrm, 4, 7, 2);
     }
 
     /// Group 0xC0: shift/rotate r/m8, imm8
@@ -120,7 +120,7 @@ impl I286 {
             _ => unreachable!(),
         };
         self.putback_rm_byte(modrm, result, bus);
-        let n = count as i32;
+        let n = self.shift_timing_count(count);
         self.clk_modrm(modrm, 5 + n, 8 + n);
     }
 
@@ -141,8 +141,8 @@ impl I286 {
             _ => unreachable!(),
         };
         self.putback_rm_word(modrm, result, bus);
-        let n = count as i32;
-        self.clk_modrm_word(modrm, 5 + n, 8 + n, 2);
+        let n = self.shift_timing_count(count);
+        self.clk_modrm_word(modrm, 5 + n, 6 + n, 2);
     }
 
     /// Group 0xD0: shift/rotate r/m8, 1
@@ -200,7 +200,7 @@ impl I286 {
             _ => unreachable!(),
         };
         self.putback_rm_byte(modrm, result, bus);
-        let n = count as i32;
+        let n = self.shift_timing_count(count);
         self.clk_modrm(modrm, 5 + n, 8 + n);
     }
 
@@ -221,8 +221,8 @@ impl I286 {
             _ => unreachable!(),
         };
         self.putback_rm_word(modrm, result, bus);
-        let n = count as i32;
-        self.clk_modrm_word(modrm, 5 + n, 8 + n, 2);
+        let n = self.shift_timing_count(count);
+        self.clk_modrm_word(modrm, 5 + n, 6 + n, 2);
     }
 
     /// Group 0xF6: various byte operations
@@ -458,12 +458,14 @@ impl I286 {
                 let sp_pen = self.sp_penalty(1);
                 let dst = self.get_rm_word(modrm, bus);
                 self.push(bus, self.ip);
+                self.timing_mark_control_transfer();
                 self.ip = dst;
                 if modrm >= 0xC0 {
-                    self.clk(7 + sp_pen);
+                    self.mark_pending_prefix_cycles_ignored();
+                    self.clk(8 + sp_pen);
                 } else {
                     let ea_pen = if self.ea & 1 == 1 { 4 } else { 0 };
-                    self.clk(11 + sp_pen + ea_pen);
+                    self.clk(10 + sp_pen + ea_pen);
                 }
             }
             3 => {
@@ -487,14 +489,15 @@ impl I286 {
                     self.push(bus, ip);
                     self.ip = offset;
                 }
-                let ea_pen = if self.ea & 1 == 1 { 8 } else { 0 };
-                self.clk(16 + sp_pen + ea_pen);
+                let ea_pen = self.paired_word_read_penalty(self.ea);
+                self.clk(15 + sp_pen + ea_pen);
             }
             4 => {
                 // JMP r/m16 (near indirect)
                 let dst = self.get_rm_word(modrm, bus);
+                self.timing_mark_control_transfer();
                 self.ip = dst;
-                self.clk_modrm_word(modrm, 7, 11, 1);
+                self.clk_modrm_word(modrm, 8, 10, 1);
             }
             5 => {
                 // JMP m16:16 (far indirect)
@@ -512,18 +515,20 @@ impl I286 {
                         return;
                     }
                 }
-                let penalty = if self.ea & 1 == 1 { 8 } else { 0 };
-                self.clk(15 + penalty);
+                let penalty = self.paired_word_read_penalty(self.ea);
+                self.clk(14 + penalty);
             }
             6 | 7 => {
                 // PUSH r/m16 (7 is undocumented alias)
                 if modrm >= 0xC0 && (modrm & 7) == 4 {
+                    self.mark_pending_prefix_cycles_ignored();
                     self.push_sp(bus);
                 } else {
                     let sp_pen = self.sp_penalty(1);
                     let val = self.get_rm_word(modrm, bus);
                     self.push(bus, val);
                     if modrm >= 0xC0 {
+                        self.mark_pending_prefix_cycles_ignored();
                         self.clk(3 + sp_pen);
                     } else {
                         let ea_pen = if self.ea & 1 == 1 { 4 } else { 0 };

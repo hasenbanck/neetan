@@ -1,4 +1,4 @@
-use super::{I286, flags::I286Flags};
+use super::{I286, flags::I286Flags, timing::FlushKind};
 use crate::{ByteReg, RegisterFile16, SegReg16, WordReg};
 
 /// Snapshot of all I286 CPU registers and flags.
@@ -197,6 +197,7 @@ impl I286 {
         self.rep_active = false;
         self.rep_restart_ip = 0;
         self.seg_prefix = false;
+        self.timing.reset(FlushKind::SetupJump);
     }
 
     /// Returns the AL register value.

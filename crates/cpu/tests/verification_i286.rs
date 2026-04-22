@@ -7,6 +7,8 @@ mod verification_common;
 
 use std::{
     collections::{HashMap, HashSet},
+    fmt::Write,
+    fs,
     path::{Path, PathBuf},
     sync::LazyLock,
 };
@@ -14,13 +16,234 @@ use std::{
 use common::Cpu as _;
 use cpu::{I286, I286State};
 use metadata_json::{Metadata, load_metadata};
-use verification_common::{load_moo_tests, load_revocation_list};
+use verification_common::{MooTest, load_moo_tests, load_revocation_list};
 
 const RAM_SIZE: usize = 16 * 1024 * 1024;
 const ADDRESS_MASK: u32 = 0x00FF_FFFF;
 const REG_ORDER: [&str; 14] = [
     "ax", "bx", "cx", "dx", "cs", "ss", "ds", "es", "sp", "bp", "si", "di", "ip", "flags",
 ];
+const LOCAL_REVOKED_F6_7: &[&str] = &[
+    "0038b4bacfb75535b5da175f619b0812b16d0601",
+    "de153d1e3812cdb2c9d25272844b4b28a5adc35f",
+    "dce03c62813266bf0ba50e3325fa3898132cad1f",
+    "38a27640b8a9475f75998d2cab801d51eb8bb0b2",
+];
+const TERMINATING_HALT_CYCLES: u64 = 2;
+
+#[derive(Debug, Clone, Default)]
+struct TimingGroupStats {
+    case_count: u64,
+    exact_match_count: u64,
+    total_expected_cycles: u64,
+    total_actual_cycles: u64,
+    signed_delta_sum: i64,
+    squared_delta_sum: u128,
+    absolute_delta_sum: u64,
+    min_signed_delta: i64,
+    max_signed_delta: i64,
+    max_absolute_delta: u64,
+    max_absolute_signed_delta: i64,
+}
+
+impl TimingGroupStats {
+    fn record(&mut self, expected_cycles: u64, actual_cycles: u64) {
+        let signed_delta = actual_cycles as i64 - expected_cycles as i64;
+        let absolute_delta = signed_delta.unsigned_abs();
+        let squared_delta = (signed_delta as i128 * signed_delta as i128) as u128;
+
+        if self.case_count == 0 {
+            self.min_signed_delta = signed_delta;
+            self.max_signed_delta = signed_delta;
+        } else {
+            self.min_signed_delta = self.min_signed_delta.min(signed_delta);
+            self.max_signed_delta = self.max_signed_delta.max(signed_delta);
+        }
+
+        self.case_count += 1;
+        self.total_expected_cycles += expected_cycles;
+        self.total_actual_cycles += actual_cycles;
+        self.signed_delta_sum += signed_delta;
+        self.squared_delta_sum += squared_delta;
+        self.absolute_delta_sum += absolute_delta;
+        if signed_delta == 0 {
+            self.exact_match_count += 1;
+        }
+        if absolute_delta > self.max_absolute_delta {
+            self.max_absolute_delta = absolute_delta;
+            self.max_absolute_signed_delta = signed_delta;
+        }
+    }
+
+    fn merge(&mut self, other: &Self) {
+        if other.case_count == 0 {
+            return;
+        }
+        if self.case_count == 0 {
+            self.min_signed_delta = other.min_signed_delta;
+            self.max_signed_delta = other.max_signed_delta;
+        } else {
+            self.min_signed_delta = self.min_signed_delta.min(other.min_signed_delta);
+            self.max_signed_delta = self.max_signed_delta.max(other.max_signed_delta);
+        }
+        self.case_count += other.case_count;
+        self.exact_match_count += other.exact_match_count;
+        self.total_expected_cycles += other.total_expected_cycles;
+        self.total_actual_cycles += other.total_actual_cycles;
+        self.signed_delta_sum += other.signed_delta_sum;
+        self.squared_delta_sum += other.squared_delta_sum;
+        self.absolute_delta_sum += other.absolute_delta_sum;
+        if other.max_absolute_delta > self.max_absolute_delta {
+            self.max_absolute_delta = other.max_absolute_delta;
+            self.max_absolute_signed_delta = other.max_absolute_signed_delta;
+        }
+    }
+
+    fn mean_deviation(&self) -> f64 {
+        if self.case_count == 0 {
+            0.0
+        } else {
+            self.signed_delta_sum as f64 / self.case_count as f64
+        }
+    }
+
+    fn mean_absolute_delta(&self) -> f64 {
+        if self.case_count == 0 {
+            0.0
+        } else {
+            self.absolute_delta_sum as f64 / self.case_count as f64
+        }
+    }
+
+    fn variance(&self) -> f64 {
+        if self.case_count == 0 {
+            return 0.0;
+        }
+        let mean = self.mean_deviation();
+        (self.squared_delta_sum as f64 / self.case_count as f64) - (mean * mean)
+    }
+
+    fn closeness_percent(&self) -> f64 {
+        if self.total_expected_cycles == 0 {
+            0.0
+        } else {
+            (100.0 - (self.absolute_delta_sum as f64 / self.total_expected_cycles as f64) * 100.0)
+                .clamp(0.0, 100.0)
+        }
+    }
+
+    fn skew_percent(&self) -> f64 {
+        if self.total_expected_cycles == 0 {
+            0.0
+        } else {
+            ((self.total_actual_cycles as f64 - self.total_expected_cycles as f64)
+                / self.total_expected_cycles as f64)
+                * 100.0
+        }
+    }
+
+    fn exact_match_percent(&self) -> f64 {
+        if self.case_count == 0 {
+            0.0
+        } else {
+            (self.exact_match_count as f64 / self.case_count as f64) * 100.0
+        }
+    }
+
+    fn min_deviation(&self) -> i64 {
+        if self.case_count == 0 {
+            0
+        } else {
+            self.min_signed_delta
+        }
+    }
+
+    fn max_deviation(&self) -> i64 {
+        if self.case_count == 0 {
+            0
+        } else {
+            self.max_signed_delta
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct TimingModelStats {
+    case_count: u64,
+    total_eu_cycles: u64,
+    total_au_cycles: u64,
+    total_bu_data_pressure: u64,
+    total_bu_fetch_stall: u64,
+    total_iu_stall: u64,
+    total_flush_penalty: u64,
+}
+
+impl TimingModelStats {
+    fn record_case(
+        &mut self,
+        eu_cycles: u64,
+        au_cycles: u64,
+        bu_data_pressure: u64,
+        bu_fetch_stall: u64,
+        iu_stall: u64,
+        flush_penalty: u64,
+    ) {
+        self.case_count += 1;
+        self.total_eu_cycles += eu_cycles;
+        self.total_au_cycles += au_cycles;
+        self.total_bu_data_pressure += bu_data_pressure;
+        self.total_bu_fetch_stall += bu_fetch_stall;
+        self.total_iu_stall += iu_stall;
+        self.total_flush_penalty += flush_penalty;
+    }
+
+    fn merge(&mut self, other: &Self) {
+        self.case_count += other.case_count;
+        self.total_eu_cycles += other.total_eu_cycles;
+        self.total_au_cycles += other.total_au_cycles;
+        self.total_bu_data_pressure += other.total_bu_data_pressure;
+        self.total_bu_fetch_stall += other.total_bu_fetch_stall;
+        self.total_iu_stall += other.total_iu_stall;
+        self.total_flush_penalty += other.total_flush_penalty;
+    }
+
+    fn mean(total: u64, count: u64) -> f64 {
+        if count == 0 {
+            0.0
+        } else {
+            total as f64 / count as f64
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CaseExecution {
+    initial: I286State,
+    expected: I286State,
+    actual: I286State,
+    total_cycles: u64,
+    instruction_cycles: u64,
+    timing_model: TimingModelStats,
+    instruction_timing_model: TimingModelStats,
+}
+
+#[derive(Debug, Clone)]
+struct TimingGroupReport {
+    stem: String,
+    raw_stats: TimingGroupStats,
+    instruction_window_stats: TimingGroupStats,
+    register_only_instruction_window_stats: TimingGroupStats,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TimingAnalysis {
+    raw_stats: TimingGroupStats,
+    instruction_window_stats: TimingGroupStats,
+    register_only_instruction_window_stats: TimingGroupStats,
+    raw_model_stats: TimingModelStats,
+    instruction_window_model_stats: TimingModelStats,
+    register_only_instruction_window_model_stats: TimingModelStats,
+}
 
 struct TestBus {
     ram: Vec<u8>,
@@ -129,6 +352,26 @@ fn initial_reg_value(initial_regs: &HashMap<String, u32>, name: &str) -> u16 {
         .unwrap_or_else(|| panic!("missing register in initial state: {name}")) as u16
 }
 
+fn build_initial_state(initial_regs: &HashMap<String, u32>) -> I286State {
+    let mut state = I286State::default();
+    state.set_ax(initial_reg_value(initial_regs, "ax"));
+    state.set_bx(initial_reg_value(initial_regs, "bx"));
+    state.set_cx(initial_reg_value(initial_regs, "cx"));
+    state.set_dx(initial_reg_value(initial_regs, "dx"));
+    state.set_sp(initial_reg_value(initial_regs, "sp"));
+    state.set_bp(initial_reg_value(initial_regs, "bp"));
+    state.set_si(initial_reg_value(initial_regs, "si"));
+    state.set_di(initial_reg_value(initial_regs, "di"));
+    state.set_cs(initial_reg_value(initial_regs, "cs"));
+    state.set_ss(initial_reg_value(initial_regs, "ss"));
+    state.set_ds(initial_reg_value(initial_regs, "ds"));
+    state.set_es(initial_reg_value(initial_regs, "es"));
+    state.ip = initial_reg_value(initial_regs, "ip");
+    state.set_compressed_flags(initial_reg_value(initial_regs, "flags"));
+    state.msw = 0xFFF0;
+    state
+}
+
 fn build_expected_state(
     initial_regs: &HashMap<String, u32>,
     final_regs: &HashMap<String, u32>,
@@ -218,7 +461,205 @@ fn format_flags_diff(expected: u16, actual: u16, mask: u16) -> String {
     )
 }
 
-fn run_test_file(stem: &str, local_revoked_hashes: &[&str]) {
+fn local_revoked_hashes(stem: &str) -> &'static [&'static str] {
+    match stem {
+        "F6.7" => LOCAL_REVOKED_F6_7,
+        _ => &[],
+    }
+}
+
+fn all_test_stems() -> Vec<String> {
+    let mut stems = Vec::new();
+
+    for entry in fs::read_dir(test_dir()).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !file_name.ends_with(".MOO.gz") {
+            continue;
+        }
+
+        stems.push(file_name.trim_end_matches(".MOO.gz").to_string());
+    }
+
+    stems.sort_unstable();
+    stems
+}
+
+fn skip_instruction_prefixes(bytes: &[u8]) -> usize {
+    let mut index = 0;
+    while let Some(&byte) = bytes.get(index) {
+        match byte {
+            0x26 | 0x2E | 0x36 | 0x3E | 0xF0 | 0xF2 | 0xF3 => index += 1,
+            _ => break,
+        }
+    }
+    index
+}
+
+fn implicit_register_only_opcode(opcode: u8) -> bool {
+    matches!(
+        opcode,
+        0x27
+            | 0x2F
+            | 0x37
+            | 0x3F
+            | 0x40..=0x4F
+            | 0x90..=0x99
+            | 0x9E
+            | 0x9F
+            | 0xB0..=0xBF
+            | 0xD4
+            | 0xD5
+            | 0xD6
+            | 0xF5
+            | 0xF8..=0xFD
+    )
+}
+
+fn modrm_register_form_opcode(opcode: u8, reg_ext: Option<&str>) -> bool {
+    match opcode {
+        0x00..=0x03
+        | 0x08..=0x0B
+        | 0x10..=0x13
+        | 0x18..=0x1B
+        | 0x20..=0x23
+        | 0x28..=0x2B
+        | 0x30..=0x33
+        | 0x38..=0x3B
+        | 0x63
+        | 0x69
+        | 0x6B
+        | 0x80..=0x83
+        | 0x84..=0x8C
+        | 0x8E
+        | 0x8F
+        | 0xC0
+        | 0xC1
+        | 0xC6
+        | 0xC7
+        | 0xD0..=0xD3
+        | 0xF6
+        | 0xF7
+        | 0xFE => true,
+        0xFF => !matches!(reg_ext, Some("3" | "5")),
+        _ => false,
+    }
+}
+
+fn register_only_instruction_window_case(stem: &str, bytes: &[u8]) -> bool {
+    let (opcode_stem, reg_ext) = parse_stem(stem);
+    if opcode_stem == "F4" {
+        return false;
+    }
+
+    let opcode_index = skip_instruction_prefixes(bytes);
+    let Some(&opcode) = bytes.get(opcode_index) else {
+        return false;
+    };
+
+    if opcode == 0x0F {
+        return false;
+    }
+
+    if implicit_register_only_opcode(opcode) {
+        return true;
+    }
+
+    if !modrm_register_form_opcode(opcode, reg_ext) {
+        return false;
+    }
+
+    bytes
+        .get(opcode_index + 1)
+        .is_some_and(|modrm| *modrm >= 0xC0)
+}
+
+fn execute_test_case(test: &MooTest, bus: &mut TestBus) -> Result<CaseExecution, String> {
+    bus.clear();
+    for &(address, value) in &test.initial.ram {
+        bus.set_memory(address, value);
+    }
+
+    let initial = build_initial_state(&test.initial.regs);
+    let expected = build_expected_state(&test.initial.regs, &test.final_state.regs);
+
+    let mut cpu = I286::new();
+    cpu.load_state(&initial);
+
+    let mut total_cycles = 0u64;
+    let mut total_eu_cycles = 0u64;
+    let mut total_au_cycles = 0u64;
+    let mut total_bu_data_pressure = 0u64;
+    let mut total_bu_fetch_stall = 0u64;
+    let mut total_iu_stall = 0u64;
+    let mut total_flush_penalty = 0u64;
+    let mut instruction_cycles = 0u64;
+    let mut instruction_timing_model = TimingModelStats::default();
+    let mut steps = 0usize;
+    while !cpu.halted() && steps < 1024 {
+        cpu.step(bus);
+        let step_cycles = cpu.cycles_consumed();
+        total_cycles += step_cycles;
+        let (eu_cycles, au_cycles, bu_data_pressure, bu_fetch_stall, iu_stall, flush_penalty) =
+            cpu.timing_model_contributions();
+        total_eu_cycles += eu_cycles as u64;
+        total_au_cycles += au_cycles as u64;
+        total_bu_data_pressure += bu_data_pressure as u64;
+        total_bu_fetch_stall += bu_fetch_stall as u64;
+        total_iu_stall += iu_stall as u64;
+        total_flush_penalty += flush_penalty as u64;
+        if steps == 0 {
+            instruction_cycles = step_cycles;
+            instruction_timing_model.record_case(
+                eu_cycles as u64,
+                au_cycles as u64,
+                bu_data_pressure as u64,
+                bu_fetch_stall as u64,
+                iu_stall as u64,
+                flush_penalty as u64,
+            );
+        }
+        steps += 1;
+    }
+
+    if steps >= 1024 {
+        return Err("execution did not reach HLT within 1024 instructions".to_string());
+    }
+
+    Ok(CaseExecution {
+        initial,
+        expected,
+        actual: cpu.state.clone(),
+        total_cycles,
+        instruction_cycles,
+        timing_model: {
+            let mut timing_model = TimingModelStats::default();
+            timing_model.record_case(
+                total_eu_cycles,
+                total_au_cycles,
+                total_bu_data_pressure,
+                total_bu_fetch_stall,
+                total_iu_stall,
+                total_flush_penalty,
+            );
+            timing_model
+        },
+        instruction_timing_model,
+    })
+}
+
+fn run_test_file(
+    stem: &str,
+    local_revoked_hashes: &[&str],
+    check_cycles: bool,
+) -> Option<TimingAnalysis> {
     let revoked = revocation_list();
     let local_revoked: HashSet<String> = local_revoked_hashes
         .iter()
@@ -226,17 +667,16 @@ fn run_test_file(stem: &str, local_revoked_hashes: &[&str]) {
         .collect();
     let mut bus = TestBus::new();
 
-    let Some((status, flags_mask)) = status_and_mask(stem) else {
-        return;
-    };
+    let (status, flags_mask) = status_and_mask(stem)?;
     if !should_test(status) {
-        return;
+        return None;
     }
 
     let filename = format!("{stem}.MOO.gz");
     let path = test_dir().join(&filename);
     let test_cases = load_moo_tests(&path, &REG_ORDER, &[]);
     let mut failures: Vec<String> = Vec::new();
+    let mut analysis = TimingAnalysis::default();
 
     for test in &test_cases {
         if let Some(hash) = &test.hash
@@ -249,49 +689,44 @@ fn run_test_file(stem: &str, local_revoked_hashes: &[&str]) {
             continue;
         }
 
-        bus.clear();
-        for &(address, value) in &test.initial.ram {
-            bus.set_memory(address, value);
-        }
-
-        let initial = {
-            let mut s = I286State::default();
-            s.set_ax(initial_reg_value(&test.initial.regs, "ax"));
-            s.set_bx(initial_reg_value(&test.initial.regs, "bx"));
-            s.set_cx(initial_reg_value(&test.initial.regs, "cx"));
-            s.set_dx(initial_reg_value(&test.initial.regs, "dx"));
-            s.set_sp(initial_reg_value(&test.initial.regs, "sp"));
-            s.set_bp(initial_reg_value(&test.initial.regs, "bp"));
-            s.set_si(initial_reg_value(&test.initial.regs, "si"));
-            s.set_di(initial_reg_value(&test.initial.regs, "di"));
-            s.set_cs(initial_reg_value(&test.initial.regs, "cs"));
-            s.set_ss(initial_reg_value(&test.initial.regs, "ss"));
-            s.set_ds(initial_reg_value(&test.initial.regs, "ds"));
-            s.set_es(initial_reg_value(&test.initial.regs, "es"));
-            s.ip = initial_reg_value(&test.initial.regs, "ip");
-            s.set_compressed_flags(initial_reg_value(&test.initial.regs, "flags"));
-            s.msw = 0xFFF0;
-            s
+        let execution = match execute_test_case(test, &mut bus) {
+            Ok(execution) => execution,
+            Err(reason) => {
+                failures.push(format!(
+                    "[{filename} #{} idx={}] {} ({reason})",
+                    failures.len(),
+                    test.idx,
+                    test.name
+                ));
+                continue;
+            }
         };
 
-        let mut cpu = I286::new();
-        cpu.load_state(&initial);
-        let mut steps = 0usize;
-        while !cpu.halted() && steps < 1024 {
-            cpu.step(&mut bus);
-            steps += 1;
-        }
-        if steps >= 1024 {
-            failures.push(format!(
-                "[{filename} #{} idx={}] {} (execution did not reach HLT within 1024 instructions)",
-                failures.len(),
-                test.idx,
-                test.name
-            ));
-            continue;
-        }
+        let expected_cycles = test.cycles.len() as u64;
+        let expected_instruction_cycles = if parse_stem(stem).0 == "F4" {
+            expected_cycles
+        } else {
+            expected_cycles.saturating_sub(TERMINATING_HALT_CYCLES)
+        };
 
-        let expected = build_expected_state(&test.initial.regs, &test.final_state.regs);
+        analysis
+            .raw_stats
+            .record(expected_cycles, execution.total_cycles);
+        analysis
+            .instruction_window_stats
+            .record(expected_instruction_cycles, execution.instruction_cycles);
+        analysis.raw_model_stats.merge(&execution.timing_model);
+        analysis
+            .instruction_window_model_stats
+            .merge(&execution.instruction_timing_model);
+        if register_only_instruction_window_case(stem, &test.bytes) {
+            analysis
+                .register_only_instruction_window_stats
+                .record(expected_instruction_cycles, execution.instruction_cycles);
+            analysis
+                .register_only_instruction_window_model_stats
+                .merge(&execution.instruction_timing_model);
+        }
         let mut diffs: Vec<String> = Vec::new();
 
         let check_reg = |name: &str,
@@ -306,30 +741,119 @@ fn run_test_file(stem: &str, local_revoked_hashes: &[&str]) {
             }
         };
 
-        check_reg("ax", initial.ax(), cpu.ax(), expected.ax(), &mut diffs);
-        check_reg("bx", initial.bx(), cpu.bx(), expected.bx(), &mut diffs);
-        check_reg("cx", initial.cx(), cpu.cx(), expected.cx(), &mut diffs);
-        check_reg("dx", initial.dx(), cpu.dx(), expected.dx(), &mut diffs);
-        check_reg("sp", initial.sp(), cpu.sp(), expected.sp(), &mut diffs);
-        check_reg("bp", initial.bp(), cpu.bp(), expected.bp(), &mut diffs);
-        check_reg("si", initial.si(), cpu.si(), expected.si(), &mut diffs);
-        check_reg("di", initial.di(), cpu.di(), expected.di(), &mut diffs);
-        check_reg("cs", initial.cs(), cpu.cs(), expected.cs(), &mut diffs);
-        check_reg("ss", initial.ss(), cpu.ss(), expected.ss(), &mut diffs);
-        check_reg("ds", initial.ds(), cpu.ds(), expected.ds(), &mut diffs);
-        check_reg("es", initial.es(), cpu.es(), expected.es(), &mut diffs);
-        check_reg("ip", initial.ip, cpu.ip, expected.ip, &mut diffs);
+        check_reg(
+            "ax",
+            execution.initial.ax(),
+            execution.actual.ax(),
+            execution.expected.ax(),
+            &mut diffs,
+        );
+        check_reg(
+            "bx",
+            execution.initial.bx(),
+            execution.actual.bx(),
+            execution.expected.bx(),
+            &mut diffs,
+        );
+        check_reg(
+            "cx",
+            execution.initial.cx(),
+            execution.actual.cx(),
+            execution.expected.cx(),
+            &mut diffs,
+        );
+        check_reg(
+            "dx",
+            execution.initial.dx(),
+            execution.actual.dx(),
+            execution.expected.dx(),
+            &mut diffs,
+        );
+        check_reg(
+            "sp",
+            execution.initial.sp(),
+            execution.actual.sp(),
+            execution.expected.sp(),
+            &mut diffs,
+        );
+        check_reg(
+            "bp",
+            execution.initial.bp(),
+            execution.actual.bp(),
+            execution.expected.bp(),
+            &mut diffs,
+        );
+        check_reg(
+            "si",
+            execution.initial.si(),
+            execution.actual.si(),
+            execution.expected.si(),
+            &mut diffs,
+        );
+        check_reg(
+            "di",
+            execution.initial.di(),
+            execution.actual.di(),
+            execution.expected.di(),
+            &mut diffs,
+        );
+        check_reg(
+            "cs",
+            execution.initial.cs(),
+            execution.actual.cs(),
+            execution.expected.cs(),
+            &mut diffs,
+        );
+        check_reg(
+            "ss",
+            execution.initial.ss(),
+            execution.actual.ss(),
+            execution.expected.ss(),
+            &mut diffs,
+        );
+        check_reg(
+            "ds",
+            execution.initial.ds(),
+            execution.actual.ds(),
+            execution.expected.ds(),
+            &mut diffs,
+        );
+        check_reg(
+            "es",
+            execution.initial.es(),
+            execution.actual.es(),
+            execution.expected.es(),
+            &mut diffs,
+        );
+        check_reg(
+            "ip",
+            execution.initial.ip,
+            execution.actual.ip,
+            execution.expected.ip,
+            &mut diffs,
+        );
 
-        if (cpu.compressed_flags() & flags_mask) != (expected.compressed_flags() & flags_mask) {
+        if (execution.actual.compressed_flags() & flags_mask)
+            != (execution.expected.compressed_flags() & flags_mask)
+        {
             diffs.push(format!(
                 "{} (was 0x{:04X})",
                 format_flags_diff(
-                    expected.compressed_flags(),
-                    cpu.compressed_flags(),
+                    execution.expected.compressed_flags(),
+                    execution.actual.compressed_flags(),
                     flags_mask
                 ),
-                initial.compressed_flags()
+                execution.initial.compressed_flags()
             ));
+        }
+
+        if check_cycles {
+            if execution.total_cycles != expected_cycles {
+                diffs.push(format!(
+                    "  cycles: expected {expected_cycles}, got {}",
+                    execution.total_cycles
+                ));
+            }
         }
 
         for &(address, expected_value) in &test.final_state.ram {
@@ -388,19 +912,377 @@ fn run_test_file(stem: &str, local_revoked_hashes: &[&str]) {
         }
         panic!("{message}");
     }
+
+    Some(analysis)
+}
+
+fn write_summary_line(
+    report: &mut String,
+    tag: &str,
+    totals: &TimingGroupStats,
+    analyzed_group_count: usize,
+) {
+    let overall_direction = if totals.total_actual_cycles >= totals.total_expected_cycles {
+        "over"
+    } else {
+        "under"
+    };
+
+    let _ = writeln!(
+        report,
+        "{tag}\tgroups_analyzed={analyzed_group_count}\tcase_count={}\texact_match_count={}\texact_match_percent={:.4}\tmean_deviation={:.4}\tmean_absolute_delta={:.4}\tvariance={:.4}\tmin_deviation={}\tmax_deviation={}\tworst_single_case_deviation={}\tcloseness_percent={:.4}\tskew_percent={:.4}\tskew_direction={overall_direction}\ttotal_actual_cycles={}\ttotal_expected_cycles={}",
+        totals.case_count,
+        totals.exact_match_count,
+        totals.exact_match_percent(),
+        totals.mean_deviation(),
+        totals.mean_absolute_delta(),
+        totals.variance(),
+        totals.min_deviation(),
+        totals.max_deviation(),
+        totals.max_absolute_signed_delta,
+        totals.closeness_percent(),
+        totals.skew_percent(),
+        totals.total_actual_cycles,
+        totals.total_expected_cycles
+    );
+}
+
+fn write_model_summary_line(report: &mut String, tag: &str, model_totals: &TimingModelStats) {
+    let _ = writeln!(
+        report,
+        "{tag}\tcase_count={}\tmean_eu_cycles={:.4}\tmean_au_cycles={:.4}\tmean_bu_data_pressure={:.4}\tmean_bu_fetch_stall={:.4}\tmean_iu_stall={:.4}\tmean_flush_penalty={:.4}\ttotal_eu_cycles={}\ttotal_au_cycles={}\ttotal_bu_data_pressure={}\ttotal_bu_fetch_stall={}\ttotal_iu_stall={}\ttotal_flush_penalty={}",
+        model_totals.case_count,
+        TimingModelStats::mean(model_totals.total_eu_cycles, model_totals.case_count),
+        TimingModelStats::mean(model_totals.total_au_cycles, model_totals.case_count),
+        TimingModelStats::mean(model_totals.total_bu_data_pressure, model_totals.case_count),
+        TimingModelStats::mean(model_totals.total_bu_fetch_stall, model_totals.case_count),
+        TimingModelStats::mean(model_totals.total_iu_stall, model_totals.case_count),
+        TimingModelStats::mean(model_totals.total_flush_penalty, model_totals.case_count),
+        model_totals.total_eu_cycles,
+        model_totals.total_au_cycles,
+        model_totals.total_bu_data_pressure,
+        model_totals.total_bu_fetch_stall,
+        model_totals.total_iu_stall,
+        model_totals.total_flush_penalty
+    );
+}
+
+fn write_group_line(report: &mut String, section: &str, stem: &str, stats: &TimingGroupStats) {
+    let _ = writeln!(
+        report,
+        "GROUP\tsection={section}\tstem={stem}\tcase_count={}\texact_match_count={}\texact_match_percent={:.4}\tmean_deviation={:.4}\tmean_absolute_delta={:.4}\tvariance={:.4}\tmin_deviation={}\tmax_deviation={}\tworst_single_case_deviation={}\tcloseness_percent={:.4}\tskew_percent={:.4}\ttotal_actual_cycles={}\ttotal_expected_cycles={}",
+        stats.case_count,
+        stats.exact_match_count,
+        stats.exact_match_percent(),
+        stats.mean_deviation(),
+        stats.mean_absolute_delta(),
+        stats.variance(),
+        stats.min_deviation(),
+        stats.max_deviation(),
+        stats.max_absolute_signed_delta,
+        stats.closeness_percent(),
+        stats.skew_percent(),
+        stats.total_actual_cycles,
+        stats.total_expected_cycles
+    );
+}
+
+fn raw_stats_for(report: &TimingGroupReport) -> &TimingGroupStats {
+    &report.raw_stats
+}
+
+fn instruction_window_stats_for(report: &TimingGroupReport) -> &TimingGroupStats {
+    &report.instruction_window_stats
+}
+
+fn register_only_instruction_window_stats_for(report: &TimingGroupReport) -> &TimingGroupStats {
+    &report.register_only_instruction_window_stats
+}
+
+fn write_ranked_sections(
+    report: &mut String,
+    reports: &[TimingGroupReport],
+    suffix: &str,
+    stats_for: fn(&TimingGroupReport) -> &TimingGroupStats,
+) {
+    let section_name = |base: &str| {
+        if suffix.is_empty() {
+            base.to_string()
+        } else {
+            format!("{base}_{suffix}")
+        }
+    };
+
+    let mut most_negative = reports.to_vec();
+    most_negative.sort_by(|left, right| {
+        stats_for(left)
+            .mean_deviation()
+            .total_cmp(&stats_for(right).mean_deviation())
+            .then_with(|| left.stem.cmp(&right.stem))
+    });
+
+    let most_under_timed = section_name("most_under_timed");
+    let _ = writeln!(
+        report,
+        "SECTION\tname={most_under_timed}\tsort=mean_deviation_ascending\tcount={}",
+        most_negative.len().min(10)
+    );
+    for group_report in most_negative.iter().take(10) {
+        write_group_line(
+            report,
+            &most_under_timed,
+            &group_report.stem,
+            stats_for(group_report),
+        );
+    }
+
+    let mut most_positive = reports.to_vec();
+    most_positive.sort_by(|left, right| {
+        stats_for(right)
+            .mean_deviation()
+            .total_cmp(&stats_for(left).mean_deviation())
+            .then_with(|| left.stem.cmp(&right.stem))
+    });
+
+    let most_over_timed = section_name("most_over_timed");
+    let _ = writeln!(
+        report,
+        "SECTION\tname={most_over_timed}\tsort=mean_deviation_descending\tcount={}",
+        most_positive.len().min(10)
+    );
+    for group_report in most_positive.iter().take(10) {
+        write_group_line(
+            report,
+            &most_over_timed,
+            &group_report.stem,
+            stats_for(group_report),
+        );
+    }
+
+    let mut worst_by_mean_abs = reports.to_vec();
+    worst_by_mean_abs.sort_by(|left, right| {
+        stats_for(right)
+            .mean_absolute_delta()
+            .total_cmp(&stats_for(left).mean_absolute_delta())
+            .then_with(|| left.stem.cmp(&right.stem))
+    });
+
+    let worst_by_mean_absolute_delta = section_name("worst_by_mean_absolute_delta");
+    let _ = writeln!(
+        report,
+        "SECTION\tname={worst_by_mean_absolute_delta}\tsort=mean_absolute_delta_descending\tcount={}",
+        worst_by_mean_abs.len().min(20)
+    );
+    for group_report in worst_by_mean_abs.iter().take(20) {
+        write_group_line(
+            report,
+            &worst_by_mean_absolute_delta,
+            &group_report.stem,
+            stats_for(group_report),
+        );
+    }
+
+    let mut largest_single_case = reports.to_vec();
+    largest_single_case.sort_by(|left, right| {
+        stats_for(right)
+            .max_absolute_delta
+            .cmp(&stats_for(left).max_absolute_delta)
+            .then_with(|| {
+                stats_for(right)
+                    .mean_absolute_delta()
+                    .total_cmp(&stats_for(left).mean_absolute_delta())
+            })
+            .then_with(|| left.stem.cmp(&right.stem))
+    });
+
+    let largest_single_case_outliers = section_name("largest_single_case_outliers");
+    let _ = writeln!(
+        report,
+        "SECTION\tname={largest_single_case_outliers}\tsort=max_absolute_delta_descending\tcount={}",
+        largest_single_case.len().min(10)
+    );
+    for group_report in largest_single_case.iter().take(10) {
+        write_group_line(
+            report,
+            &largest_single_case_outliers,
+            &group_report.stem,
+            stats_for(group_report),
+        );
+    }
+
+    let mut full_table = reports.to_vec();
+    full_table.sort_by(|left, right| left.stem.cmp(&right.stem));
+
+    let full_per_group = section_name("full_per_group");
+    let _ = writeln!(
+        report,
+        "SECTION\tname={full_per_group}\tsort=stem_ascending\tcount={}",
+        full_table.len()
+    );
+    for group_report in &full_table {
+        write_group_line(
+            report,
+            &full_per_group,
+            &group_report.stem,
+            stats_for(group_report),
+        );
+    }
+}
+
+fn render_report(
+    reports: &[TimingGroupReport],
+    raw_totals: &TimingGroupStats,
+    instruction_window_totals: &TimingGroupStats,
+    register_only_instruction_window_totals: &TimingGroupStats,
+    raw_model_totals: &TimingModelStats,
+    instruction_window_model_totals: &TimingModelStats,
+    register_only_instruction_window_model_totals: &TimingModelStats,
+    analyzed_group_count: usize,
+) -> String {
+    let mut report = String::new();
+
+    let _ = writeln!(
+        &mut report,
+        "REPORT\tversion=2\tformat=tsv_key_value\tdataset=crates/cpu/tests/SingleStepTests/80286/v1_real_mode"
+    );
+    let _ = writeln!(
+        &mut report,
+        "META\tkey=grouping\tvalue=file_stem_per_opcode_group"
+    );
+    let _ = writeln!(
+        &mut report,
+        "META\tkey=filters\tvalue=revoked_hashes_local_skips_exception_cases_excluded"
+    );
+    let _ = writeln!(
+        &mut report,
+        "META\tkey=cycle_metric\tvalue=sum_of_I286_cycles_consumed_across_each_step_until_HLT"
+    );
+    let _ = writeln!(
+        &mut report,
+        "META\tkey=instruction_window_cycle_metric\tvalue=first_logical_instruction_cycles_with_trailing_HLT_removed_but_setup_jump_refill_retained"
+    );
+    let _ = writeln!(
+        &mut report,
+        "META\tkey=closeness_metric\tvalue=100_minus_absolute_deviation_sum_div_expected_cycle_sum_times_100_clamped_0_to_100"
+    );
+    let _ = writeln!(
+        &mut report,
+        "META\tkey=notes\tvalue=raw_summary_includes_test_harness_overhead_queue_refill_after_setup_jump_and_trailing_HLT"
+    );
+    let _ = writeln!(
+        &mut report,
+        "META\tkey=instruction_window_notes\tvalue=instruction_window_removes_only_the_trailing_two_HLT_cycles_because_the_dataset_does_not_expose_enough_queue_state_to_remove_post_jump_refill_exactly"
+    );
+
+    write_summary_line(&mut report, "SUMMARY", raw_totals, analyzed_group_count);
+    write_model_summary_line(&mut report, "MODEL_SUMMARY", raw_model_totals);
+    write_summary_line(
+        &mut report,
+        "INSTRUCTION_WINDOW_SUMMARY",
+        instruction_window_totals,
+        analyzed_group_count,
+    );
+    write_model_summary_line(
+        &mut report,
+        "INSTRUCTION_WINDOW_MODEL_SUMMARY",
+        instruction_window_model_totals,
+    );
+    let register_only_reports: Vec<_> = reports
+        .iter()
+        .filter(|report| report.register_only_instruction_window_stats.case_count > 0)
+        .cloned()
+        .collect();
+    write_summary_line(
+        &mut report,
+        "REGISTER_ONLY_INSTRUCTION_WINDOW_SUMMARY",
+        register_only_instruction_window_totals,
+        register_only_reports.len(),
+    );
+    write_model_summary_line(
+        &mut report,
+        "REGISTER_ONLY_INSTRUCTION_WINDOW_MODEL_SUMMARY",
+        register_only_instruction_window_model_totals,
+    );
+
+    write_ranked_sections(&mut report, reports, "", raw_stats_for);
+    write_ranked_sections(
+        &mut report,
+        reports,
+        "instruction_window",
+        instruction_window_stats_for,
+    );
+    if !register_only_reports.is_empty() {
+        write_ranked_sections(
+            &mut report,
+            &register_only_reports,
+            "register_only_instruction_window",
+            register_only_instruction_window_stats_for,
+        );
+    }
+    let _ = writeln!(&mut report, "END_REPORT");
+
+    report
+}
+
+#[test]
+#[ignore]
+fn write_286_timing_report() {
+    let mut reports = Vec::new();
+    let mut raw_totals = TimingGroupStats::default();
+    let mut instruction_window_totals = TimingGroupStats::default();
+    let mut register_only_instruction_window_totals = TimingGroupStats::default();
+    let mut raw_model_totals = TimingModelStats::default();
+    let mut instruction_window_model_totals = TimingModelStats::default();
+    let mut register_only_instruction_window_model_totals = TimingModelStats::default();
+
+    for stem in all_test_stems() {
+        let Some(analysis) = run_test_file(&stem, local_revoked_hashes(&stem), false) else {
+            continue;
+        };
+        if analysis.raw_stats.case_count == 0 {
+            continue;
+        }
+
+        raw_totals.merge(&analysis.raw_stats);
+        instruction_window_totals.merge(&analysis.instruction_window_stats);
+        register_only_instruction_window_totals
+            .merge(&analysis.register_only_instruction_window_stats);
+        raw_model_totals.merge(&analysis.raw_model_stats);
+        instruction_window_model_totals.merge(&analysis.instruction_window_model_stats);
+        register_only_instruction_window_model_totals
+            .merge(&analysis.register_only_instruction_window_model_stats);
+        reports.push(TimingGroupReport {
+            stem,
+            raw_stats: analysis.raw_stats,
+            instruction_window_stats: analysis.instruction_window_stats,
+            register_only_instruction_window_stats: analysis.register_only_instruction_window_stats,
+        });
+    }
+
+    let report = render_report(
+        &reports,
+        &raw_totals,
+        &instruction_window_totals,
+        &register_only_instruction_window_totals,
+        &raw_model_totals,
+        &instruction_window_model_totals,
+        &register_only_instruction_window_model_totals,
+        reports.len(),
+    );
+    print!("{report}");
 }
 
 macro_rules! test_opcode {
     ($name:ident, $file:expr) => {
         #[test]
         fn $name() {
-            run_test_file($file, &[]);
+            run_test_file($file, &[], true);
         }
     };
-    ($name:ident, $file:expr, [$($skip_hash:expr),* $(,)?]) => {
+    ($name:ident, $file:expr, $skip_hashes:expr) => {
         #[test]
         fn $name() {
-            run_test_file($file, &[$($skip_hash),*]);
+            run_test_file($file, $skip_hashes, true);
         }
     };
 }
@@ -792,16 +1674,7 @@ test_opcode!(op_f6_6, "F6.6");
 // These vectors match a quirk of the specific CPU/model used to generate the
 // validation data, not strict 80286 divide-fault behavior. Keep them as local
 // skips until the upstream dataset is reconciled.
-test_opcode!(
-    op_f6_7,
-    "F6.7",
-    [
-        "0038b4bacfb75535b5da175f619b0812b16d0601",
-        "de153d1e3812cdb2c9d25272844b4b28a5adc35f",
-        "dce03c62813266bf0ba50e3325fa3898132cad1f",
-        "38a27640b8a9475f75998d2cab801d51eb8bb0b2",
-    ]
-);
+test_opcode!(op_f6_7, "F6.7", LOCAL_REVOKED_F6_7);
 test_opcode!(op_f7_0, "F7.0");
 test_opcode!(op_f7_1, "F7.1");
 test_opcode!(op_f7_2, "F7.2");

@@ -37,6 +37,7 @@ impl I286 {
         bus: &mut impl common::Bus,
     ) {
         self.rep_active = false;
+        self.timing_mark_fault_transfer();
         if self.msw & 1 == 0 {
             let flags_val = self.flags.compress();
             self.push(bus, flags_val);
@@ -48,8 +49,8 @@ impl I286 {
             self.push(bus, return_ip);
 
             let addr = (vector as u32) * 4;
-            let dest_ip = bus.read_word(addr);
-            let dest_cs = bus.read_word(addr + 2);
+            let dest_ip = self.read_word_phys(bus, addr);
+            let dest_cs = self.read_word_phys(bus, addr + 2);
             if !self.load_segment(SegReg16::CS, dest_cs, bus) {
                 return;
             }

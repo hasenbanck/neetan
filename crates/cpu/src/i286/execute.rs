@@ -208,7 +208,7 @@ impl I286 {
 
             // CALL far, WAIT
             0x9A => self.call_far(bus),
-            0x9B => self.clk(3), // WAIT
+            0x9B => self.clk(7), // WAIT
             0x9C => self.pushf(bus),
             0x9D => self.popf(bus),
             0x9E => self.sahf(),
@@ -897,7 +897,7 @@ impl I286 {
             return;
         }
         self.calc_ea(modrm, bus);
-        let ea_pen = if self.ea & 1 == 1 { 8 } else { 0 };
+        let ea_pen = self.paired_word_read_penalty(self.ea);
         let low = self.seg_read_word(bus) as i16;
         let high = self.seg_read_word_at(bus, 2) as i16;
         if val < low || val > high {
@@ -939,7 +939,7 @@ impl I286 {
         let penalty = self.sp_penalty(1);
         let val = self.fetch(bus) as i8 as u16;
         self.push(bus, val);
-        self.clk(3 + penalty);
+        self.clk(4 + penalty);
     }
 
     fn imul_r16w_imm16(&mut self, bus: &mut impl common::Bus) {
@@ -971,16 +971,17 @@ impl I286 {
             0
         };
         self.flags.overflow_val = self.flags.carry_val;
-        self.clk_modrm_word(modrm, 21, 24, 1);
+        self.clk_modrm_word(modrm, 22, 24, 1);
     }
 
     fn jcc(&mut self, bus: &mut impl common::Bus, condition: bool) {
         let disp = self.fetch(bus) as i8;
         if condition {
+            self.timing_mark_control_transfer();
             self.ip = self.ip.wrapping_add(disp as u16);
-            self.clk(7);
+            self.clk(8);
         } else {
-            self.clk(3);
+            self.clk(4);
         }
     }
 
@@ -1158,12 +1159,14 @@ impl I286 {
         let penalty = self.sp_penalty(1);
         let disp = self.fetchword(bus);
         self.push(bus, self.ip);
+        self.timing_mark_control_transfer();
         self.ip = self.ip.wrapping_add(disp);
         self.clk(7 + penalty);
     }
 
     fn jmp_near(&mut self, bus: &mut impl common::Bus) {
         let disp = self.fetchword(bus);
+        self.timing_mark_control_transfer();
         self.ip = self.ip.wrapping_add(disp);
         self.clk(7);
     }
@@ -1184,12 +1187,14 @@ impl I286 {
 
     fn jmp_short(&mut self, bus: &mut impl common::Bus) {
         let disp = self.fetch(bus) as i8 as u16;
+        self.timing_mark_control_transfer();
         self.ip = self.ip.wrapping_add(disp);
-        self.clk(7);
+        self.clk(8);
     }
 
     fn ret_near(&mut self, bus: &mut impl common::Bus) {
         let penalty = self.sp_penalty(1);
+        self.timing_mark_control_transfer();
         self.ip = self.pop(bus);
         self.clk(11 + penalty);
     }
@@ -1197,6 +1202,7 @@ impl I286 {
     fn ret_near_imm(&mut self, bus: &mut impl common::Bus) {
         let penalty = self.sp_penalty(1);
         let imm = self.fetchword(bus);
+        self.timing_mark_control_transfer();
         self.ip = self.pop(bus);
         let sp = self.regs.word(WordReg::SP).wrapping_add(imm);
         self.regs.set_word(WordReg::SP, sp);
@@ -1207,6 +1213,7 @@ impl I286 {
         let penalty = self.sp_penalty(2);
 
         if !self.is_protected_mode() {
+            self.timing_mark_control_transfer();
             self.ip = self.pop(bus);
             let cs = self.pop(bus);
             if !self.load_segment(SegReg16::CS, cs, bus) {
@@ -1273,6 +1280,7 @@ impl I286 {
         let imm = self.fetchword(bus);
 
         if !self.is_protected_mode() {
+            self.timing_mark_control_transfer();
             self.ip = self.pop(bus);
             let cs = self.pop(bus);
             if !self.load_segment(SegReg16::CS, cs, bus) {
@@ -1348,12 +1356,16 @@ impl I286 {
     }
 
     fn popf(&mut self, bus: &mut impl common::Bus) {
-        let penalty = self.sp_penalty(1);
+        let penalty = if self.regs.word(WordReg::SP) & 1 == 1 {
+            2
+        } else {
+            0
+        };
         let val = self.pop(bus);
         let cpl = self.cpl();
         let pm = self.is_protected_mode();
         self.flags.load_flags(val, cpl, pm);
-        self.clk(5 + penalty);
+        self.clk(6 + penalty);
     }
 
     fn sahf(&mut self) {
@@ -1461,7 +1473,7 @@ impl I286 {
         if !self.load_segment(SegReg16::ES, segment, bus) {
             return;
         }
-        let penalty = if self.ea & 1 == 1 { 8 } else { 0 };
+        let penalty = self.paired_word_read_penalty(self.ea);
         self.clk(7 + penalty);
     }
 
@@ -1475,14 +1487,15 @@ impl I286 {
         if !self.load_segment(SegReg16::DS, segment, bus) {
             return;
         }
-        let penalty = if self.ea & 1 == 1 { 8 } else { 0 };
+        let penalty = self.paired_word_read_penalty(self.ea);
         self.clk(7 + penalty);
     }
 
     fn enter(&mut self, bus: &mut impl common::Bus) {
         let alloc = self.fetchword(bus);
         let level = self.fetch(bus) & 0x1F;
-        let sp_pen = self.sp_penalty(if level == 0 { 1 } else { 2 * level as i32 - 1 });
+        let sp_odd = self.regs.word(WordReg::SP) & 1 == 1;
+        let bp_odd = self.regs.word(WordReg::BP) & 1 == 1;
         let bp = self.regs.word(WordReg::BP);
         self.push(bus, bp);
         let frame_ptr = self.regs.word(WordReg::SP);
@@ -1498,14 +1511,16 @@ impl I286 {
         self.regs.set_word(WordReg::BP, frame_ptr);
         let sp = self.regs.word(WordReg::SP).wrapping_sub(alloc);
         self.regs.set_word(WordReg::SP, sp);
-        if level == 0 {
-            self.clk(11 + sp_pen);
-        } else if level == 1 {
-            self.clk(15 + sp_pen);
-        } else {
-            let l = level as i32;
-            self.clk(12 + 4 * l + sp_pen);
-        }
+        let level = i32::from(level);
+        let cycles = match level {
+            0 => 9,
+            1 => 12,
+            _ => {
+                let parity_penalty = 2 * (level - 1) * (i32::from(sp_odd) + i32::from(bp_odd));
+                10 + 4 * level + parity_penalty
+            }
+        };
+        self.clk(cycles);
     }
 
     fn leave(&mut self, bus: &mut impl common::Bus) {
@@ -1630,10 +1645,11 @@ impl I286 {
         let cw = self.regs.word(WordReg::CX).wrapping_sub(1);
         self.regs.set_word(WordReg::CX, cw);
         if cw != 0 && !self.flags.zf() {
+            self.timing_mark_control_transfer();
             self.ip = self.ip.wrapping_add(disp);
-            self.clk(8);
+            self.clk(9);
         } else {
-            self.clk(4);
+            self.clk(5);
         }
     }
 
@@ -1642,10 +1658,11 @@ impl I286 {
         let cw = self.regs.word(WordReg::CX).wrapping_sub(1);
         self.regs.set_word(WordReg::CX, cw);
         if cw != 0 && self.flags.zf() {
+            self.timing_mark_control_transfer();
             self.ip = self.ip.wrapping_add(disp);
-            self.clk(8);
+            self.clk(9);
         } else {
-            self.clk(4);
+            self.clk(5);
         }
     }
 
@@ -1654,33 +1671,35 @@ impl I286 {
         let cw = self.regs.word(WordReg::CX).wrapping_sub(1);
         self.regs.set_word(WordReg::CX, cw);
         if cw != 0 {
+            self.timing_mark_control_transfer();
             self.ip = self.ip.wrapping_add(disp);
-            self.clk(8);
+            self.clk(9);
         } else {
-            self.clk(4);
+            self.clk(5);
         }
     }
 
     fn jcxz(&mut self, bus: &mut impl common::Bus) {
         let disp = self.fetch(bus) as i8 as u16;
         if self.regs.word(WordReg::CX) == 0 {
+            self.timing_mark_control_transfer();
             self.ip = self.ip.wrapping_add(disp);
-            self.clk(8);
+            self.clk(9);
         } else {
-            self.clk(4);
+            self.clk(5);
         }
     }
 
     fn in_al_imm(&mut self, bus: &mut impl common::Bus) {
         let port = self.fetch(bus) as u16;
-        let val = bus.io_read_byte(port);
+        let val = self.io_read_byte_timed(bus, port);
         self.regs.set_byte(ByteReg::AL, val);
         self.clk(5);
     }
 
     fn in_aw_imm(&mut self, bus: &mut impl common::Bus) {
         let port = self.fetch(bus) as u16;
-        let val = bus.io_read_word(port);
+        let val = self.io_read_word_timed(bus, port);
         self.regs.set_word(WordReg::AX, val);
         self.clk(5);
     }
@@ -1688,27 +1707,27 @@ impl I286 {
     fn out_imm_al(&mut self, bus: &mut impl common::Bus) {
         let port = self.fetch(bus) as u16;
         let val = self.regs.byte(ByteReg::AL);
-        bus.io_write_byte(port, val);
+        self.io_write_byte_timed(bus, port, val);
         self.clk(3);
     }
 
     fn out_imm_aw(&mut self, bus: &mut impl common::Bus) {
         let port = self.fetch(bus) as u16;
         let val = self.regs.word(WordReg::AX);
-        bus.io_write_word(port, val);
+        self.io_write_word_timed(bus, port, val);
         self.clk(3);
     }
 
     fn in_al_dw(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
-        let val = bus.io_read_byte(port);
+        let val = self.io_read_byte_timed(bus, port);
         self.regs.set_byte(ByteReg::AL, val);
         self.clk(5);
     }
 
     fn in_aw_dw(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
-        let val = bus.io_read_word(port);
+        let val = self.io_read_word_timed(bus, port);
         self.regs.set_word(WordReg::AX, val);
         self.clk(5);
     }
@@ -1716,14 +1735,14 @@ impl I286 {
     fn out_dw_al(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
         let val = self.regs.byte(ByteReg::AL);
-        bus.io_write_byte(port, val);
+        self.io_write_byte_timed(bus, port, val);
         self.clk(3);
     }
 
     fn out_dw_aw(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
         let val = self.regs.word(WordReg::AX);
-        bus.io_write_word(port, val);
+        self.io_write_word_timed(bus, port, val);
         self.clk(3);
     }
 
@@ -1850,7 +1869,7 @@ impl I286 {
     fn salc(&mut self) {
         let val = if self.flags.cf() { 0xFF } else { 0x00 };
         self.regs.set_byte(ByteReg::AL, val);
-        self.clk(2);
+        self.clk(3);
     }
 
     fn fpu_escape(&mut self, bus: &mut impl common::Bus) {
@@ -1858,9 +1877,9 @@ impl I286 {
         if modrm < 0xC0 {
             self.calc_ea(modrm, bus);
             let penalty = if self.ea & 1 == 1 { 4 } else { 0 };
-            self.clk(11 + penalty);
+            self.clk(25 + penalty);
         } else {
-            self.clk(2);
+            self.clk(16);
         }
     }
 

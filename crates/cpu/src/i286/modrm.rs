@@ -104,7 +104,7 @@ impl I286 {
                 self.ea = self.default_base(seg).wrapping_add(self.eo as u32) & 0xFFFFFF;
                 self.ea_seg = self.default_seg(seg);
                 if rm <= 3 {
-                    self.clk(1);
+                    self.clk_au(1);
                 }
             }
             2 => {
@@ -118,7 +118,7 @@ impl I286 {
                 self.ea = self.default_base(seg).wrapping_add(self.eo as u32) & 0xFFFFFF;
                 self.ea_seg = self.default_seg(seg);
                 if rm <= 3 {
-                    self.clk(1);
+                    self.clk_au(1);
                 }
             }
             _ => unreachable!(),
