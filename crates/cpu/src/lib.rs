@@ -23,14 +23,14 @@
 //!
 //! ## Supported CPUs
 //!
-//! | CPU   | Functionality verified | Cycle-count accurate | Uses datasheet timings |
-//! |-------|------------------------|----------------------|------------------------|
-//! | 8086  | Yes                    | Yes                  | No                     |
-//! | V30   | Yes                    | No                   | Yes                    |
-//! | 80286 | Yes                    | No                   | Yes                    |
-//! | 80386 | Yes                    | No                   | Yes                    |
-//! | 80486 | Yes                    | No                   | Yes                    |
-//! | Z80   | Yes                    | Yes                  | No                     |
+//! | CPU   | Functionality verified | Cycle-count accurate | Trace based timings | Datasheet timings |
+//! |-------|------------------------|----------------------|---------------------|-------------------|
+//! | 8086  | Yes                    | Yes                  | Yes                 | No                |
+//! | V30   | Yes                    | No                   | No                  | Yes               |
+//! | 80286 | Yes                    | No                   | Yes                 | No                |
+//! | 80386 | Yes                    | No                   | No                  | Yes               |
+//! | 80486 | Yes                    | No                   | No                  | Yes               |
+//! | Z80   | Yes                    | Yes                  | Yes                 | No                |
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
@@ -41,7 +41,11 @@ mod i8086;
 mod v30;
 mod z80;
 
-pub use i286::{I286, I286Flags, I286State};
+pub use i286::{
+    EaClass, I286, I286AuStage, I286BusPhase, I286CycleState, I286CycleTraceEntry, I286EuStage,
+    I286FinishState, I286Flags, I286FlushState, I286PendingBusRequest, I286RepState, I286State,
+    I286TimingMilestones, I286TraceBusStatus, I286WarmStartConfig,
+};
 pub use i386::{CPU_MODEL_386, CPU_MODEL_486, I386, I386Flags, I386State};
 pub use i8086::{I8086, I8086Flags, I8086State, PC9801F_CPU_CLOCK_5MHZ, PC9801F_CPU_CLOCK_8MHZ};
 pub use v30::{V30, V30Flags, V30State};

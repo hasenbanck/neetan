@@ -1,13 +1,428 @@
-use super::I286;
+use super::{
+    EaClass, I286, TRACE_ADDRESS_MASK, address_is_odd, modrm,
+    timing::{
+        I286ControlTransferTimingTemplate, I286DemandPrefetchPolicy, I286FinishState,
+        LOCK_PREFIX_OVERLAP_CREDIT,
+    },
+};
 use crate::{ByteReg, SegReg16, WordReg};
 
+const FAR_INDIRECT_JMP_RESTART_TIMING: I286ControlTransferTimingTemplate =
+    I286ControlTransferTimingTemplate {
+        initial_internal_cycles: 4,
+        restart_prefetch_fetches: 3,
+        final_internal_cycles: 2,
+    };
+
+const LOCK_FAR_INDIRECT_JMP_RESTART_TIMING: I286ControlTransferTimingTemplate =
+    I286ControlTransferTimingTemplate {
+        initial_internal_cycles: 5,
+        restart_prefetch_fetches: 3,
+        final_internal_cycles: 2,
+    };
+
+const FAR_INDIRECT_CALL_RESTART_TIMING: I286ControlTransferTimingTemplate =
+    I286ControlTransferTimingTemplate {
+        initial_internal_cycles: 2,
+        restart_prefetch_fetches: 1,
+        final_internal_cycles: 2,
+    };
+
+const NEAR_INDIRECT_CALL_MEMORY_RESTART_TIMING: I286ControlTransferTimingTemplate =
+    I286ControlTransferTimingTemplate {
+        initial_internal_cycles: 1,
+        restart_prefetch_fetches: 3,
+        final_internal_cycles: 2,
+    };
+
+const SPLIT_STACK_NEAR_INDIRECT_CALL_MEMORY_RESTART_TIMING: I286ControlTransferTimingTemplate =
+    I286ControlTransferTimingTemplate {
+        initial_internal_cycles: 0,
+        restart_prefetch_fetches: 3,
+        final_internal_cycles: 2,
+    };
+
+const LOCK_NEAR_INDIRECT_CALL_MEMORY_RESTART_TIMING: I286ControlTransferTimingTemplate =
+    I286ControlTransferTimingTemplate {
+        initial_internal_cycles: 2,
+        restart_prefetch_fetches: 3,
+        final_internal_cycles: 2,
+    };
+
+const LOCK_SPLIT_STACK_NEAR_INDIRECT_CALL_MEMORY_RESTART_TIMING: I286ControlTransferTimingTemplate =
+    I286ControlTransferTimingTemplate {
+        initial_internal_cycles: 1,
+        restart_prefetch_fetches: 3,
+        final_internal_cycles: 2,
+    };
+
+const NEAR_INDIRECT_JMP_RESTART_TIMING: I286ControlTransferTimingTemplate =
+    I286ControlTransferTimingTemplate {
+        initial_internal_cycles: 2,
+        restart_prefetch_fetches: 3,
+        final_internal_cycles: 2,
+    };
+
+const LOCK_NEAR_INDIRECT_JMP_MEMORY_RESTART_TIMING: I286ControlTransferTimingTemplate =
+    I286ControlTransferTimingTemplate {
+        initial_internal_cycles: 3,
+        restart_prefetch_fetches: 3,
+        final_internal_cycles: 2,
+    };
+
+const NEAR_INDIRECT_JMP_REGISTER_RESTART_TIMING: I286ControlTransferTimingTemplate =
+    I286ControlTransferTimingTemplate {
+        initial_internal_cycles: 1,
+        restart_prefetch_fetches: 3,
+        final_internal_cycles: 2,
+    };
+
+const PREFIXED_NEAR_INDIRECT_JMP_REGISTER_RESTART_TIMING: I286ControlTransferTimingTemplate =
+    I286ControlTransferTimingTemplate {
+        initial_internal_cycles: 0,
+        restart_prefetch_fetches: 3,
+        final_internal_cycles: 2,
+    };
+
 impl I286 {
+    /// True when the operand is a register form, the LOCK prefix is active,
+    /// and the prefix count is odd. The 286 charges an extra AU demand cycle
+    /// in this configuration during indirect-pointer/jmp dispatch.
+    fn lock_register_form_with_odd_prefix(&self, ea_class: EaClass) -> bool {
+        self.timing.lock_active()
+            && self.timing.prefix_count_is_odd()
+            && ea_class.is_no_displacement_memory()
+    }
+
+    fn shift_cl_memory_cycles(&self, count_cycles: i32) -> i32 {
+        let memory_operand_credit = match self.ea_class {
+            EaClass::SingleRegister => 2,
+            EaClass::DoubleRegister => 3,
+            EaClass::Disp8Double | EaClass::Disp16Double => 1,
+            _ => 0,
+        };
+        8 + count_cycles - memory_operand_credit
+    }
+
+    fn divide_word_memory_cycles(&self, memory_cycles: i32) -> i32 {
+        let memory_operand_credit = match self.ea_class {
+            EaClass::SingleRegister | EaClass::DoubleRegister => 3,
+            EaClass::Disp8Double if self.timing.lock_active() => 3,
+            _ => 0,
+        };
+        memory_cycles - memory_operand_credit
+    }
+
+    fn divide_byte_memory_cycles(&self, memory_cycles: i32) -> i32 {
+        let memory_operand_credit = match self.ea_class {
+            EaClass::SingleRegister => 2,
+            EaClass::DoubleRegister => 3,
+            EaClass::Disp8Double if self.timing.lock_active() => 3,
+            EaClass::Disp8Double | EaClass::Disp16Double => 1,
+            _ => 0,
+        };
+        memory_cycles - memory_operand_credit
+    }
+
+    fn prepare_byte_immediate_memory_operand(&mut self, modrm: u8) {
+        if self.timing.prefix_count_is_nonzero() {
+            if modrm::modrm_is_no_displacement_memory(modrm) {
+                self.timing
+                    .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
+                if self.timing.prefix_count_is_odd() {
+                    self.timing.suppress_next_demand_prefetch();
+                    self.timing
+                        .borrow_internal_cycles(LOCK_PREFIX_OVERLAP_CREDIT);
+                    self.timing.note_au_demand_cycles(1);
+                } else {
+                    self.timing.note_demand_prefetch_limit(1);
+                }
+                return;
+            }
+            if modrm::modrm_is_direct_memory(modrm) {
+                if self.timing.prefix_count_is_odd() {
+                    self.timing.note_demand_prefetch_limit(1);
+                    self.timing.note_au_demand_cycles(1);
+                } else {
+                    self.timing
+                        .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
+                    self.timing.note_demand_prefetch_limit(2);
+                }
+                return;
+            }
+            if modrm::modrm_is_disp8_memory(modrm) {
+                self.timing.note_demand_prefetch_policy(
+                    I286DemandPrefetchPolicy::AfterTurnaroundThenPrefetch,
+                );
+                self.timing.clear_au_demand_cycles();
+                let au_cycles = i32::from(modrm::modrm_uses_double_register_base(modrm))
+                    + i32::from(self.timing.prefix_count_is_even());
+                if au_cycles != 0 {
+                    self.timing.note_au_demand_cycles(au_cycles as u8);
+                }
+                self.timing.note_demand_prefetch_limit(1);
+                return;
+            }
+            if modrm::modrm_is_disp16_memory(modrm) {
+                if self.timing.prefix_count_is_odd() {
+                    let au_cycles = if modrm::modrm_uses_double_register_base(modrm) {
+                        2
+                    } else {
+                        1
+                    };
+                    self.timing.note_au_demand_cycles(au_cycles);
+                    self.timing.note_demand_prefetch_limit(1);
+                } else {
+                    self.timing
+                        .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
+                    if modrm::modrm_uses_double_register_base(modrm) {
+                        self.timing.note_au_demand_cycles(1);
+                    }
+                    self.timing.note_demand_prefetch_limit(2);
+                }
+                return;
+            }
+            self.prepare_immediate_memory_operand(modrm);
+            return;
+        }
+
+        match modrm {
+            _ if modrm::modrm_is_direct_memory(modrm) => {
+                self.timing
+                    .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
+                self.timing.note_demand_prefetch_limit(2);
+            }
+            _ if modrm::modrm_is_no_displacement_memory(modrm) => {
+                self.timing
+                    .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
+                self.timing.note_demand_prefetch_limit(1);
+            }
+            _ if modrm::modrm_is_disp8_memory(modrm) => {
+                let au_cycles = if modrm::modrm_uses_double_register_base(modrm) {
+                    2
+                } else {
+                    1
+                };
+                self.timing.note_au_demand_cycles(au_cycles);
+                self.timing.note_demand_prefetch_limit(1);
+            }
+            _ if modrm::modrm_is_disp16_memory(modrm) => {
+                self.timing
+                    .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
+                self.timing.note_demand_prefetch_limit(2);
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn prepare_immediate_memory_operand(&mut self, modrm: u8) {
+        match modrm {
+            _ if modrm::modrm_is_direct_memory(modrm) => {
+                self.timing.note_demand_prefetch_limit(2);
+            }
+            _ if modrm::modrm_is_no_displacement_memory(modrm) => {
+                self.timing
+                    .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeTurnaround);
+                self.timing.note_demand_prefetch_limit(1);
+            }
+            _ if modrm::modrm_is_disp8_memory(modrm) && self.timing.prefix_count_is_odd() => {
+                self.timing.note_demand_prefetch_policy(
+                    I286DemandPrefetchPolicy::AfterTurnaroundPrefetchThenGap,
+                );
+                self.timing.note_demand_prefetch_limit(1);
+            }
+            _ if modrm::modrm_is_disp8_memory(modrm) || modrm::modrm_is_disp16_memory(modrm) => {
+                self.timing.note_demand_prefetch_limit(2);
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn prepare_sign_extended_immediate_memory_operand(&mut self, modrm: u8) {
+        match modrm {
+            _ if modrm::modrm_is_direct_memory(modrm) => {
+                self.timing.note_demand_prefetch_policy(
+                    I286DemandPrefetchPolicy::BeforeAndAfterTurnaround,
+                );
+                self.timing.note_demand_prefetch_limit(1);
+            }
+            _ if modrm::modrm_is_no_displacement_memory(modrm) => {
+                self.timing
+                    .note_demand_prefetch_policy(I286DemandPrefetchPolicy::AfterTurnaround);
+                self.timing.note_demand_prefetch_limit(1);
+            }
+            _ if modrm::modrm_is_disp8_memory(modrm) && self.timing.prefix_count_is_odd() => {
+                self.timing.note_demand_prefetch_policy(
+                    I286DemandPrefetchPolicy::AfterTurnaroundAuThenPrefetchThenGap,
+                );
+                let au_cycles = if modrm::modrm_uses_double_register_base(modrm) {
+                    1
+                } else {
+                    0
+                };
+                self.timing.note_au_demand_cycles(au_cycles);
+                self.timing.note_demand_prefetch_limit(1);
+            }
+            _ if modrm::modrm_is_disp8_memory(modrm) => {
+                let au_cycles = if modrm::modrm_uses_double_register_base(modrm) {
+                    3
+                } else {
+                    2
+                };
+                self.timing.note_au_demand_cycles(au_cycles);
+                self.timing.note_demand_prefetch_limit(1);
+            }
+            _ if modrm::modrm_is_disp16_memory(modrm) && self.timing.prefix_count_is_nonzero() => {
+                self.timing.note_demand_prefetch_policy(
+                    I286DemandPrefetchPolicy::BeforeAndAfterTurnaround,
+                );
+                self.timing.note_au_demand_cycles(1);
+                self.timing.note_demand_prefetch_limit(1);
+            }
+            _ if modrm::modrm_is_disp16_memory(modrm) => {
+                self.timing.note_demand_prefetch_policy(
+                    I286DemandPrefetchPolicy::BeforeAndAfterTurnaround,
+                );
+                self.timing.note_demand_prefetch_limit(1);
+            }
+            _ if modrm::modrm_is_memory(modrm) => {
+                self.timing.note_demand_prefetch_limit(1);
+            }
+            _ => {}
+        }
+    }
+
+    fn prepare_immediate_shift_memory_operand(&mut self, modrm: u8, count: u8) {
+        if self.timing.prefix_count_is_zero() {
+            if modrm::modrm_is_disp16_memory(modrm)
+                && self.timing.prefetch_wrapped_before_instruction_start()
+            {
+                self.timing
+                    .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
+                self.timing.note_au_demand_cycles(2);
+                self.timing.note_demand_prefetch_limit(2);
+                return;
+            }
+            self.prepare_byte_immediate_memory_operand(modrm);
+            return;
+        }
+
+        let prefix_count = self.timing.prefix_count();
+        let no_displacement = self.ea_class.is_no_displacement_memory();
+        if count & 0x1F == 0 && self.timing.lock_active() && prefix_count == 2 && !no_displacement {
+            self.timing
+                .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
+            self.timing.note_demand_prefetch_limit(1);
+            return;
+        }
+
+        if !no_displacement {
+            if (prefix_count & 1 == 0 && self.ea_class.is_disp8())
+                || (self.timing.lock_active() && prefix_count == 2)
+            {
+                self.timing.note_demand_prefetch_policy(
+                    I286DemandPrefetchPolicy::AfterTurnaroundThenPrefetch,
+                );
+                let au_demand_cycles = match self.ea_class {
+                    EaClass::Disp8Double => 2,
+                    _ => 1,
+                };
+                self.timing.note_au_demand_cycles(au_demand_cycles);
+                self.timing.note_demand_prefetch_limit(1);
+            } else if prefix_count & 1 == 0 {
+                self.timing
+                    .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
+                self.timing.note_demand_prefetch_limit(2);
+            } else {
+                if self.ea_class.is_disp8() {
+                    self.timing.note_demand_prefetch_policy(
+                        I286DemandPrefetchPolicy::AfterTurnaroundThenPrefetch,
+                    );
+                } else {
+                    self.timing
+                        .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
+                    let au_demand_cycles = match self.ea_class {
+                        EaClass::Disp16Double => 2,
+                        _ => 1,
+                    };
+                    self.timing.note_au_demand_cycles(au_demand_cycles);
+                }
+                self.timing.note_demand_prefetch_limit(1);
+            }
+            return;
+        }
+
+        self.timing
+            .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
+        self.timing.note_demand_prefetch_limit(1);
+        if self.timing.prefix_count_is_odd() {
+            self.timing.clear_au_demand_cycles();
+            self.timing.suppress_next_demand_prefetch();
+            self.timing.note_au_demand_cycles(1);
+        }
+    }
+
+    fn prepare_far_indirect_pointer_read(&mut self) {
+        if self.ea_class.is_disp8() || self.timing.prefix_count_is_odd() {
+            self.timing.passivize_next_demand_prefetch();
+        }
+
+        if self.lock_register_form_with_odd_prefix(self.ea_class) {
+            self.timing.note_au_demand_cycles(1);
+        }
+    }
+
+    fn prepare_far_indirect_modrm_fetch(&mut self, bus: &mut impl common::Bus) {
+        if self.timing.prefix_count_at_most(1) {
+            return;
+        }
+
+        let code_segment_base = self.seg_bases[SegReg16::CS as usize];
+        let modrm =
+            bus.read_byte(code_segment_base.wrapping_add(u32::from(self.ip)) & TRACE_ADDRESS_MASK);
+        let reg = modrm::modrm_register(modrm);
+        if !matches!(reg, 3 | 5) || modrm::modrm_is_register(modrm) {
+            return;
+        }
+
+        if modrm::modrm_is_no_displacement_memory(modrm) {
+            self.timing.passivize_next_code_fetch();
+        }
+    }
+
+    fn prepare_near_indirect_jmp_read(&mut self, modrm: u8) {
+        if modrm::modrm_is_register(modrm) {
+            return;
+        }
+
+        let ea_class = EaClass::from_modrm(modrm);
+        if ea_class.is_disp8() || self.timing.prefix_count_is_odd() {
+            self.timing.passivize_next_demand_prefetch();
+        }
+
+        if self.lock_register_form_with_odd_prefix(ea_class) {
+            self.timing.note_au_demand_cycles(1);
+        }
+    }
+
     /// Group 0x80: ALU r/m8, imm8
     pub(super) fn group_80(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
-        let dst = self.get_rm_byte(modrm, bus);
-        let src = self.fetch(bus);
-        let result = match (modrm >> 3) & 7 {
+        let operation = modrm::modrm_register(modrm);
+        let src;
+        let dst;
+        if modrm::modrm_is_register(modrm) {
+            src = self.fetch(bus);
+            dst = self.regs.byte(self.rm_byte(modrm));
+        } else {
+            self.calc_ea(modrm, bus);
+            self.prepare_byte_immediate_memory_operand(modrm);
+            src = self.fetch(bus);
+            dst = self.seg_read_byte_at(bus, 0);
+            self.timing.note_au_idle();
+        }
+
+        let result = match operation {
             0 => self.alu_add_byte(dst, src),
             1 => self.alu_or_byte(dst, src),
             2 => {
@@ -23,23 +438,35 @@ impl I286 {
             6 => self.alu_xor_byte(dst, src),
             7 => {
                 self.alu_sub_byte(dst, src);
-                self.clk_modrm(modrm, 3, 6);
+                self.clk_modrm_prefetch(bus, modrm, 3, 6);
                 return;
             }
             _ => unreachable!(),
         };
-        if (modrm >> 3) & 7 != 7 {
+        if operation != 7 {
             self.putback_rm_byte(modrm, result, bus);
         }
-        self.clk_modrm(modrm, 3, 7);
+        self.clk_modrm_prefetch(bus, modrm, 3, 7);
     }
 
     /// Group 0x81: ALU r/m16, imm16
     pub(super) fn group_81(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
-        let dst = self.get_rm_word(modrm, bus);
-        let src = self.fetchword(bus);
-        let result = match (modrm >> 3) & 7 {
+        let operation = modrm::modrm_register(modrm);
+        let src;
+        let dst;
+        if modrm::modrm_is_register(modrm) {
+            src = self.fetchword(bus);
+            dst = self.regs.word(self.rm_word(modrm));
+        } else {
+            self.calc_ea(modrm, bus);
+            self.prepare_immediate_memory_operand(modrm);
+            src = self.fetchword(bus);
+            dst = self.seg_read_word(bus);
+            self.timing.note_au_idle();
+        }
+
+        let result = match operation {
             0 => self.alu_add_word(dst, src),
             1 => self.alu_or_word(dst, src),
             2 => {
@@ -55,15 +482,15 @@ impl I286 {
             6 => self.alu_xor_word(dst, src),
             7 => {
                 self.alu_sub_word(dst, src);
-                self.clk_modrm_word(modrm, 3, 6, 1);
+                self.clk_modrm_word_prefetch(bus, modrm, 6, 6, 0);
                 return;
             }
             _ => unreachable!(),
         };
-        if (modrm >> 3) & 7 != 7 {
+        if operation != 7 {
             self.putback_rm_word(modrm, result, bus);
         }
-        self.clk_modrm_word(modrm, 3, 7, 2);
+        self.clk_modrm_word_prefetch(bus, modrm, 6, 6, 0);
     }
 
     /// Group 0x82: ALU r/m8, imm8 (same as 0x80)
@@ -74,9 +501,21 @@ impl I286 {
     /// Group 0x83: ALU r/m16, sign-extended imm8
     pub(super) fn group_83(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
-        let dst = self.get_rm_word(modrm, bus);
-        let src = self.fetch(bus) as i8 as u16;
-        let result = match (modrm >> 3) & 7 {
+        let operation = modrm::modrm_register(modrm);
+        let src;
+        let dst;
+        if modrm::modrm_is_register(modrm) {
+            src = self.fetch(bus) as i8 as u16;
+            dst = self.regs.word(self.rm_word(modrm));
+        } else {
+            self.calc_ea(modrm, bus);
+            self.prepare_sign_extended_immediate_memory_operand(modrm);
+            src = self.fetch(bus) as i8 as u16;
+            dst = self.seg_read_word(bus);
+            self.timing.note_au_idle();
+        }
+
+        let result = match operation {
             0 => self.alu_add_word(dst, src),
             1 => self.alu_or_word(dst, src),
             2 => {
@@ -92,23 +531,41 @@ impl I286 {
             6 => self.alu_xor_word(dst, src),
             7 => {
                 self.alu_sub_word(dst, src);
-                self.clk_modrm_word(modrm, 3, 6, 1);
+                if modrm::modrm_is_register(modrm) {
+                    self.clk_visible(1);
+                    self.clk_prefetch(bus, 5);
+                } else {
+                    self.clk_modrm_word_prefetch(bus, modrm, 6, 6, 0);
+                }
                 return;
             }
             _ => unreachable!(),
         };
-        if (modrm >> 3) & 7 != 7 {
+        if operation != 7 {
             self.putback_rm_word(modrm, result, bus);
         }
-        self.clk_modrm_word(modrm, 3, 7, 2);
+        if modrm::modrm_is_register(modrm) {
+            self.clk_visible(1);
+            self.clk_prefetch(bus, 5);
+        } else {
+            self.clk_modrm_word_prefetch(bus, modrm, 6, 6, 0);
+        }
     }
 
     /// Group 0xC0: shift/rotate r/m8, imm8
     pub(super) fn group_c0(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
-        let dst = self.get_rm_byte(modrm, bus);
-        let count = self.fetch(bus);
-        let result = match (modrm >> 3) & 7 {
+        let (dst, count) = if modrm::modrm_is_register(modrm) {
+            (self.regs.byte(self.rm_byte(modrm)), self.fetch(bus))
+        } else {
+            self.calc_ea(modrm, bus);
+            let count = self.fetch(bus);
+            self.prepare_immediate_shift_memory_operand(modrm, count);
+            let dst = self.seg_read_byte_at(bus, 0);
+            self.timing.note_au_idle();
+            (dst, count)
+        };
+        let result = match modrm::modrm_register(modrm) {
             0 => self.alu_rol_byte(dst, count),
             1 => self.alu_ror_byte(dst, count),
             2 => self.alu_rcl_byte(dst, count),
@@ -119,17 +576,42 @@ impl I286 {
             7 => self.alu_sar_byte(dst, count),
             _ => unreachable!(),
         };
-        self.putback_rm_byte(modrm, result, bus);
-        let n = count as i32;
-        self.clk_modrm(modrm, 5 + n, 8 + n);
+        let n = (count & 0x1F) as i32;
+        if modrm::modrm_is_register(modrm) {
+            self.putback_rm_byte(modrm, result, bus);
+            self.clk_modrm_prefetch(bus, modrm, 5 + n, 8 + n);
+        } else if n == 0 {
+            self.clk_visible(4);
+        } else {
+            let short_ea_path = matches!(
+                self.ea_class,
+                EaClass::Direct
+                    | EaClass::SingleRegister
+                    | EaClass::Disp8Single
+                    | EaClass::Disp16Single
+            );
+            self.timing
+                .overlap_immediate_shift_writeback_compute(short_ea_path);
+            self.clk_modrm_prefetch(bus, modrm, 5 + n, 8 + n);
+            self.putback_rm_byte(modrm, result, bus);
+            self.clk_visible(1);
+        }
     }
 
     /// Group 0xC1: shift/rotate r/m16, imm8
     pub(super) fn group_c1(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
-        let dst = self.get_rm_word(modrm, bus);
-        let count = self.fetch(bus);
-        let result = match (modrm >> 3) & 7 {
+        let (dst, count) = if modrm::modrm_is_register(modrm) {
+            (self.regs.word(self.rm_word(modrm)), self.fetch(bus))
+        } else {
+            self.calc_ea(modrm, bus);
+            let count = self.fetch(bus);
+            self.prepare_immediate_shift_memory_operand(modrm, count);
+            let dst = self.seg_read_word(bus);
+            self.timing.note_au_idle();
+            (dst, count)
+        };
+        let result = match modrm::modrm_register(modrm) {
             0 => self.alu_rol_word(dst, count),
             1 => self.alu_ror_word(dst, count),
             2 => self.alu_rcl_word(dst, count),
@@ -140,47 +622,67 @@ impl I286 {
             7 => self.alu_sar_word(dst, count),
             _ => unreachable!(),
         };
-        self.putback_rm_word(modrm, result, bus);
-        let n = count as i32;
-        self.clk_modrm_word(modrm, 5 + n, 8 + n, 2);
+        let n = (count & 0x1F) as i32;
+        if modrm::modrm_is_register(modrm) {
+            self.putback_rm_word(modrm, result, bus);
+            self.clk_modrm_word_prefetch(bus, modrm, 5 + n, 8 + n, 0);
+        } else if n == 0 {
+            self.clk_visible(4);
+        } else {
+            let write_splits = self.word_access_is_split(self.ea_seg, self.eo);
+            let short_ea_path = matches!(
+                self.ea_class,
+                EaClass::Direct
+                    | EaClass::SingleRegister
+                    | EaClass::Disp8Single
+                    | EaClass::Disp16Single
+            );
+            self.timing
+                .overlap_immediate_shift_writeback_compute(short_ea_path);
+            self.clk_modrm_word_prefetch(bus, modrm, 5 + n, 8 + n, 0);
+            self.putback_rm_word(modrm, result, bus);
+            if !write_splits {
+                self.clk_visible(1);
+            }
+        }
     }
 
     /// Group 0xD0: shift/rotate r/m8, 1
     pub(super) fn group_d0(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
-        let dst = self.get_rm_byte(modrm, bus);
-        let result = match (modrm >> 3) & 7 {
-            0 => self.alu_rol_byte(dst, 1),
-            1 => self.alu_ror_byte(dst, 1),
-            2 => self.alu_rcl_byte(dst, 1),
-            3 => self.alu_rcr_byte(dst, 1),
-            4 => self.alu_shl_byte(dst, 1),
-            5 => self.alu_shr_byte(dst, 1),
-            6 => self.alu_shl_byte(dst, 1),
-            7 => self.alu_sar_byte(dst, 1),
+        let destination = self.get_rm_byte(modrm, bus);
+        let result = match modrm::modrm_register(modrm) {
+            0 => self.alu_rol_byte(destination, 1),
+            1 => self.alu_ror_byte(destination, 1),
+            2 => self.alu_rcl_byte(destination, 1),
+            3 => self.alu_rcr_byte(destination, 1),
+            4 => self.alu_shl_byte(destination, 1),
+            5 => self.alu_shr_byte(destination, 1),
+            6 => self.alu_shl_byte(destination, 1),
+            7 => self.alu_sar_byte(destination, 1),
             _ => unreachable!(),
         };
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_modrm(modrm, 2, 7);
+        self.clk_modrm_prefetch(bus, modrm, 2, 6);
     }
 
     /// Group 0xD1: shift/rotate r/m16, 1
     pub(super) fn group_d1(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
-        let dst = self.get_rm_word(modrm, bus);
-        let result = match (modrm >> 3) & 7 {
-            0 => self.alu_rol_word(dst, 1),
-            1 => self.alu_ror_word(dst, 1),
-            2 => self.alu_rcl_word(dst, 1),
-            3 => self.alu_rcr_word(dst, 1),
-            4 => self.alu_shl_word(dst, 1),
-            5 => self.alu_shr_word(dst, 1),
-            6 => self.alu_shl_word(dst, 1),
-            7 => self.alu_sar_word(dst, 1),
+        let destination = self.get_rm_word(modrm, bus);
+        let result = match modrm::modrm_register(modrm) {
+            0 => self.alu_rol_word(destination, 1),
+            1 => self.alu_ror_word(destination, 1),
+            2 => self.alu_rcl_word(destination, 1),
+            3 => self.alu_rcr_word(destination, 1),
+            4 => self.alu_shl_word(destination, 1),
+            5 => self.alu_shr_word(destination, 1),
+            6 => self.alu_shl_word(destination, 1),
+            7 => self.alu_sar_word(destination, 1),
             _ => unreachable!(),
         };
         self.putback_rm_word(modrm, result, bus);
-        self.clk_modrm_word(modrm, 2, 7, 2);
+        self.clk_modrm_word_prefetch(bus, modrm, 2, 6, 0);
     }
 
     /// Group 0xD2: shift/rotate r/m8, CL
@@ -188,7 +690,7 @@ impl I286 {
         let modrm = self.fetch(bus);
         let dst = self.get_rm_byte(modrm, bus);
         let count = self.regs.byte(ByteReg::CL);
-        let result = match (modrm >> 3) & 7 {
+        let result = match modrm::modrm_register(modrm) {
             0 => self.alu_rol_byte(dst, count),
             1 => self.alu_ror_byte(dst, count),
             2 => self.alu_rcl_byte(dst, count),
@@ -199,9 +701,23 @@ impl I286 {
             7 => self.alu_sar_byte(dst, count),
             _ => unreachable!(),
         };
-        self.putback_rm_byte(modrm, result, bus);
-        let n = count as i32;
-        self.clk_modrm(modrm, 5 + n, 8 + n);
+        let n = (count & 0x1F) as i32;
+        if modrm::modrm_is_register(modrm) {
+            self.putback_rm_byte(modrm, result, bus);
+            self.clk_modrm_prefetch(bus, modrm, 5 + n, 8 + n);
+        } else if n == 0 {
+            self.clk_visible(4);
+        } else {
+            let prefixed_displacement_path = !matches!(
+                self.ea_class,
+                EaClass::SingleRegister | EaClass::DoubleRegister
+            );
+            self.timing
+                .overlap_read_modify_write_compute(prefixed_displacement_path);
+            self.clk_modrm_prefetch(bus, modrm, 5 + n, self.shift_cl_memory_cycles(n));
+            self.putback_rm_byte(modrm, result, bus);
+            self.clk_visible(1);
+        }
     }
 
     /// Group 0xD3: shift/rotate r/m16, CL
@@ -209,7 +725,7 @@ impl I286 {
         let modrm = self.fetch(bus);
         let dst = self.get_rm_word(modrm, bus);
         let count = self.regs.byte(ByteReg::CL);
-        let result = match (modrm >> 3) & 7 {
+        let result = match modrm::modrm_register(modrm) {
             0 => self.alu_rol_word(dst, count),
             1 => self.alu_ror_word(dst, count),
             2 => self.alu_rcl_word(dst, count),
@@ -220,35 +736,62 @@ impl I286 {
             7 => self.alu_sar_word(dst, count),
             _ => unreachable!(),
         };
-        self.putback_rm_word(modrm, result, bus);
-        let n = count as i32;
-        self.clk_modrm_word(modrm, 5 + n, 8 + n, 2);
+        let n = (count & 0x1F) as i32;
+        if modrm::modrm_is_register(modrm) {
+            self.putback_rm_word(modrm, result, bus);
+            self.clk_modrm_word_prefetch(bus, modrm, 5 + n, 8 + n, 0);
+        } else if n == 0 {
+            self.clk_visible(4);
+        } else {
+            let write_splits = self.word_access_is_split(self.ea_seg, self.eo);
+            let prefixed_displacement_path = !matches!(
+                self.ea_class,
+                EaClass::SingleRegister | EaClass::DoubleRegister
+            );
+            self.timing
+                .overlap_read_modify_write_compute(prefixed_displacement_path);
+            self.clk_modrm_word_prefetch(bus, modrm, 5 + n, self.shift_cl_memory_cycles(n), 0);
+            self.putback_rm_word(modrm, result, bus);
+            if !write_splits {
+                self.clk_visible(1);
+            }
+        }
     }
 
     /// Group 0xF6: various byte operations
     pub(super) fn group_f6(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
-        let op = (modrm >> 3) & 7;
+        let op = modrm::modrm_register(modrm);
         match op {
             0 | 1 => {
                 // TEST r/m8, imm8
-                let dst = self.get_rm_byte(modrm, bus);
-                let src = self.fetch(bus);
+                let src;
+                let dst;
+                if modrm::modrm_is_register(modrm) {
+                    src = self.fetch(bus);
+                    dst = self.regs.byte(self.rm_byte(modrm));
+                } else {
+                    self.calc_ea(modrm, bus);
+                    self.prepare_byte_immediate_memory_operand(modrm);
+                    src = self.fetch(bus);
+                    dst = self.seg_read_byte_at(bus, 0);
+                    self.timing.note_au_idle();
+                }
                 self.alu_and_byte(dst, src);
-                self.clk_modrm(modrm, 3, 6);
+                self.clk_modrm_prefetch(bus, modrm, 3, 6);
             }
             2 => {
                 // NOT r/m8
                 let dst = self.get_rm_byte(modrm, bus);
                 self.putback_rm_byte(modrm, !dst, bus);
-                self.clk_modrm(modrm, 2, 7);
+                self.clk_modrm_prefetch(bus, modrm, 2, 6);
             }
             3 => {
                 // NEG r/m8
                 let dst = self.get_rm_byte(modrm, bus);
                 let result = self.alu_neg_byte(dst);
                 self.putback_rm_byte(modrm, result, bus);
-                self.clk_modrm(modrm, 2, 7);
+                self.clk_modrm_prefetch(bus, modrm, 2, 6);
             }
             4 => {
                 // MUL r/m8 (unsigned)
@@ -258,7 +801,7 @@ impl I286 {
                 self.regs.set_word(WordReg::AX, result);
                 self.flags.carry_val = if result & 0xFF00 != 0 { 1 } else { 0 };
                 self.flags.overflow_val = self.flags.carry_val;
-                self.clk_modrm(modrm, 13, 16);
+                self.clk_modrm_prefetch(bus, modrm, 13, 16);
             }
             5 => {
                 // IMUL r/m8 (signed)
@@ -270,7 +813,7 @@ impl I286 {
                 let al_sign = result as i8;
                 self.flags.carry_val = if ah != (al_sign >> 7) { 1 } else { 0 };
                 self.flags.overflow_val = self.flags.carry_val;
-                self.clk_modrm(modrm, 13, 16);
+                self.clk_modrm_prefetch(bus, modrm, 13, 16);
             }
             6 => {
                 // DIV r/m8 (unsigned)
@@ -288,7 +831,7 @@ impl I286 {
                 let remainder = aw % src;
                 self.regs.set_byte(ByteReg::AL, quotient as u8);
                 self.regs.set_byte(ByteReg::AH, remainder as u8);
-                self.clk_modrm(modrm, 14, 17);
+                self.clk_modrm_prefetch(bus, modrm, 14, self.divide_byte_memory_cycles(17));
             }
             7 => {
                 // IDIV r/m8 (signed)
@@ -309,7 +852,7 @@ impl I286 {
                 let remainder = aw.checked_rem(src).unwrap_or(0);
                 self.regs.set_byte(ByteReg::AL, quotient as u8);
                 self.regs.set_byte(ByteReg::AH, remainder as u8);
-                self.clk_modrm(modrm, 17, 20);
+                self.clk_modrm_prefetch(bus, modrm, 17, self.divide_byte_memory_cycles(20));
             }
             _ => unreachable!(),
         }
@@ -318,27 +861,37 @@ impl I286 {
     /// Group 0xF7: various word operations
     pub(super) fn group_f7(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
-        let op = (modrm >> 3) & 7;
+        let op = modrm::modrm_register(modrm);
         match op {
             0 | 1 => {
                 // TEST r/m16, imm16
-                let dst = self.get_rm_word(modrm, bus);
-                let src = self.fetchword(bus);
+                let src;
+                let dst;
+                if modrm::modrm_is_register(modrm) {
+                    src = self.fetchword(bus);
+                    dst = self.regs.word(self.rm_word(modrm));
+                } else {
+                    self.calc_ea(modrm, bus);
+                    self.prepare_immediate_memory_operand(modrm);
+                    src = self.fetchword(bus);
+                    dst = self.seg_read_word(bus);
+                    self.timing.note_au_idle();
+                }
                 self.alu_and_word(dst, src);
-                self.clk_modrm_word(modrm, 3, 6, 1);
+                self.clk_modrm_word_prefetch(bus, modrm, 6, 7, 0);
             }
             2 => {
                 // NOT r/m16
                 let dst = self.get_rm_word(modrm, bus);
                 self.putback_rm_word(modrm, !dst, bus);
-                self.clk_modrm_word(modrm, 2, 7, 2);
+                self.clk_modrm_word_prefetch(bus, modrm, 2, 6, 0);
             }
             3 => {
                 // NEG r/m16
                 let dst = self.get_rm_word(modrm, bus);
                 let result = self.alu_neg_word(dst);
                 self.putback_rm_word(modrm, result, bus);
-                self.clk_modrm_word(modrm, 2, 7, 2);
+                self.clk_modrm_word_prefetch(bus, modrm, 2, 6, 0);
             }
             4 => {
                 // MUL r/m16 (unsigned)
@@ -349,7 +902,7 @@ impl I286 {
                 self.regs.set_word(WordReg::DX, (result >> 16) as u16);
                 self.flags.carry_val = if result & 0xFFFF0000 != 0 { 1 } else { 0 };
                 self.flags.overflow_val = self.flags.carry_val;
-                self.clk_modrm_word(modrm, 21, 24, 1);
+                self.clk_modrm_word_prefetch(bus, modrm, 21, 24, 0);
             }
             5 => {
                 // IMUL r/m16 (signed)
@@ -362,7 +915,7 @@ impl I286 {
                 let lower_sign = result as i16;
                 self.flags.carry_val = if upper != (lower_sign >> 15) { 1 } else { 0 };
                 self.flags.overflow_val = self.flags.carry_val;
-                self.clk_modrm_word(modrm, 21, 24, 1);
+                self.clk_modrm_word_prefetch(bus, modrm, 21, 24, 0);
             }
             6 => {
                 // DIV r/m16 (unsigned)
@@ -382,7 +935,7 @@ impl I286 {
                 let remainder = dividend % src;
                 self.regs.set_word(WordReg::AX, quotient as u16);
                 self.regs.set_word(WordReg::DX, remainder as u16);
-                self.clk_modrm_word(modrm, 22, 25, 1);
+                self.clk_modrm_word_prefetch(bus, modrm, 22, self.divide_word_memory_cycles(25), 0);
             }
             7 => {
                 // IDIV r/m16 (signed)
@@ -405,7 +958,7 @@ impl I286 {
                 let remainder = dividend.checked_rem(src).unwrap_or(0);
                 self.regs.set_word(WordReg::AX, quotient as u16);
                 self.regs.set_word(WordReg::DX, remainder as u16);
-                self.clk_modrm_word(modrm, 25, 28, 1);
+                self.clk_modrm_word_prefetch(bus, modrm, 25, self.divide_word_memory_cycles(28), 0);
             }
             _ => unreachable!(),
         }
@@ -414,20 +967,20 @@ impl I286 {
     /// Group 0xFE: INC/DEC r/m8
     pub(super) fn group_fe(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
-        match (modrm >> 3) & 7 {
+        match modrm::modrm_register(modrm) {
             0 => {
                 // INC r/m8
                 let dst = self.get_rm_byte(modrm, bus);
                 let result = self.alu_inc_byte(dst);
                 self.putback_rm_byte(modrm, result, bus);
-                self.clk_modrm(modrm, 2, 7);
+                self.clk_modrm_prefetch(bus, modrm, 2, 6);
             }
             1 => {
                 // DEC r/m8
                 let dst = self.get_rm_byte(modrm, bus);
                 let result = self.alu_dec_byte(dst);
                 self.putback_rm_byte(modrm, result, bus);
-                self.clk_modrm(modrm, 2, 7);
+                self.clk_modrm_prefetch(bus, modrm, 2, 6);
             }
             _ => {
                 self.clk(2);
@@ -437,72 +990,190 @@ impl I286 {
 
     /// Group 0xFF: various word operations
     pub(super) fn group_ff(&mut self, bus: &mut impl common::Bus) {
+        self.prepare_far_indirect_modrm_fetch(bus);
         let modrm = self.fetch(bus);
-        match (modrm >> 3) & 7 {
+        match modrm::modrm_register(modrm) {
             0 => {
                 // INC r/m16
                 let dst = self.get_rm_word(modrm, bus);
                 let result = self.alu_inc_word(dst);
                 self.putback_rm_word(modrm, result, bus);
-                self.clk_modrm_word(modrm, 2, 7, 2);
+                self.clk_modrm_word_prefetch(bus, modrm, 2, 6, 0);
             }
             1 => {
                 // DEC r/m16
                 let dst = self.get_rm_word(modrm, bus);
                 let result = self.alu_dec_word(dst);
                 self.putback_rm_word(modrm, result, bus);
-                self.clk_modrm_word(modrm, 2, 7, 2);
+                self.clk_modrm_word_prefetch(bus, modrm, 2, 6, 0);
             }
             2 => {
                 // CALL r/m16 (near indirect)
-                let sp_pen = self.sp_penalty(1);
+                self.finish_state = I286FinishState::ControlTransferRestart;
+                if modrm::modrm_is_memory(modrm) {
+                    self.prepare_near_indirect_jmp_read(modrm);
+                }
                 let dst = self.get_rm_word(modrm, bus);
-                self.push(bus, self.ip);
+                let return_ip = self.ip;
                 self.ip = dst;
-                if modrm >= 0xC0 {
-                    self.clk(7 + sp_pen);
+                if modrm::modrm_is_register(modrm) {
+                    let stack_write_split = self.word_access_is_split(
+                        SegReg16::SS,
+                        self.regs.word(WordReg::SP).wrapping_sub(2),
+                    );
+                    self.timing.arm_control_transfer_restart(self.ip);
+                    let code_segment_base = self.seg_bases[SegReg16::CS as usize];
+                    let initial_cycles =
+                        if !self.timing.lock_active() && self.timing.prefix_count_is_odd() {
+                            0
+                        } else {
+                            1
+                        };
+                    self.timing
+                        .advance_control_transfer_internal_cycles(initial_cycles);
+                    self.timing
+                        .advance_control_transfer_fetches(bus, code_segment_base, 1);
+                    self.sync_timing_cycles();
+                    if address_is_odd(
+                        code_segment_base.wrapping_add(u32::from(self.ip)) & TRACE_ADDRESS_MASK,
+                    ) {
+                        self.timing.drive_next_write_low_byte_on_ts();
+                    }
+                    self.push(bus, return_ip);
+                    if !stack_write_split {
+                        self.timing
+                            .advance_control_transfer_fetches(bus, code_segment_base, 1);
+                    }
+                    self.timing.complete_control_transfer_restart(2);
+                    self.sync_timing_cycles();
                 } else {
-                    let ea_pen = if self.ea & 1 == 1 { 4 } else { 0 };
-                    self.clk(11 + sp_pen + ea_pen);
+                    let stack_write_split = self.word_access_is_split(
+                        SegReg16::SS,
+                        self.regs.word(WordReg::SP).wrapping_sub(2),
+                    );
+                    self.timing.suppress_next_read_writeback_gap();
+                    self.push(bus, return_ip);
+                    let timing = match (self.timing.lock_active(), stack_write_split) {
+                        (true, true) => LOCK_SPLIT_STACK_NEAR_INDIRECT_CALL_MEMORY_RESTART_TIMING,
+                        (true, false) => LOCK_NEAR_INDIRECT_CALL_MEMORY_RESTART_TIMING,
+                        (false, true) => SPLIT_STACK_NEAR_INDIRECT_CALL_MEMORY_RESTART_TIMING,
+                        (false, false) => NEAR_INDIRECT_CALL_MEMORY_RESTART_TIMING,
+                    };
+                    self.clk_control_transfer_restart(bus, self.ip, timing);
                 }
             }
             3 => {
                 // CALL m16:16 (far indirect)
-                if modrm >= 0xC0 {
+                if modrm::modrm_is_register(modrm) {
                     return;
                 }
+                self.finish_state = I286FinishState::ControlTransferRestart;
                 let sp_pen = self.sp_penalty(2);
                 self.calc_ea(modrm, bus);
+                self.prepare_far_indirect_pointer_read();
                 let offset = self.seg_read_word(bus);
+                self.timing.suppress_next_memory_read_window();
                 let segment = self.seg_read_word_at(bus, 2);
                 let cs = self.sregs[SegReg16::CS as usize];
-                let ip = self.ip;
+                let return_ip = self.ip;
                 if self.is_protected_mode() {
-                    self.code_descriptor(segment, offset, super::TaskType::Call, cs, ip, bus);
+                    self.code_descriptor(
+                        segment,
+                        offset,
+                        super::TaskType::Call,
+                        cs,
+                        return_ip,
+                        bus,
+                    );
                 } else {
                     if !self.load_segment(SegReg16::CS, segment, bus) {
                         return;
                     }
-                    self.push(bus, cs);
-                    self.push(bus, ip);
                     self.ip = offset;
+                    self.timing
+                        .arm_control_transfer_restart_without_gap_credit(self.ip);
+                    let code_segment_base = self.seg_bases[SegReg16::CS as usize];
+                    let (terminal_fetch_count, restart_tail_cycles) =
+                        self.timing.control_transfer_restart_fetches_and_tail(
+                            FAR_INDIRECT_CALL_RESTART_TIMING,
+                        );
+                    self.timing.suppress_next_read_writeback_gap();
+                    if !address_is_odd(self.ea) {
+                        self.clk_visible(1);
+                    }
+                    self.timing.note_au_idle();
+                    self.timing
+                        .note_demand_prefetch_policy(I286DemandPrefetchPolicy::None);
+                    self.push(bus, cs);
+                    self.timing.advance_control_transfer_internal_cycles(
+                        FAR_INDIRECT_CALL_RESTART_TIMING.initial_internal_cycles,
+                    );
+                    self.timing
+                        .advance_control_transfer_fetches(bus, code_segment_base, 1);
+                    self.sync_timing_cycles();
+                    if address_is_odd(
+                        code_segment_base.wrapping_add(u32::from(self.ip)) & TRACE_ADDRESS_MASK,
+                    ) {
+                        self.timing.drive_next_write_low_byte_on_ts();
+                    }
+                    self.push(bus, return_ip);
+                    self.timing.advance_control_transfer_fetches(
+                        bus,
+                        code_segment_base,
+                        terminal_fetch_count,
+                    );
+                    self.timing
+                        .complete_control_transfer_restart(restart_tail_cycles);
+                    self.sync_timing_cycles();
+                    return;
                 }
-                let ea_pen = if self.ea & 1 == 1 { 8 } else { 0 };
+                let ea_pen = if address_is_odd(self.ea) { 8 } else { 0 };
                 self.clk(16 + sp_pen + ea_pen);
             }
             4 => {
                 // JMP r/m16 (near indirect)
-                let dst = self.get_rm_word(modrm, bus);
+                self.finish_state = I286FinishState::ControlTransferRestart;
+                let dst = if modrm::modrm_is_register(modrm) {
+                    self.regs.word(self.rm_word(modrm))
+                } else {
+                    self.calc_ea(modrm, bus);
+                    self.prepare_near_indirect_jmp_read(modrm);
+                    let value = self.seg_read_word(bus);
+                    self.timing.note_au_idle();
+                    value
+                };
                 self.ip = dst;
-                self.clk_modrm_word(modrm, 7, 11, 1);
+                let timing = if modrm::modrm_is_register(modrm) {
+                    if self.timing.lock_active()
+                        && (self.timing.lock_prefix_after_prefix()
+                            || (self.timing.lock_prefix_followed_by_prefix()
+                                && self.timing.prefix_count_is_odd()))
+                    {
+                        NEAR_INDIRECT_JMP_REGISTER_RESTART_TIMING
+                    } else if self.timing.lock_active() {
+                        NEAR_INDIRECT_JMP_RESTART_TIMING
+                    } else if self.timing.prefix_count_is_odd() {
+                        PREFIXED_NEAR_INDIRECT_JMP_REGISTER_RESTART_TIMING
+                    } else {
+                        NEAR_INDIRECT_JMP_REGISTER_RESTART_TIMING
+                    }
+                } else if self.timing.lock_active() {
+                    LOCK_NEAR_INDIRECT_JMP_MEMORY_RESTART_TIMING
+                } else {
+                    NEAR_INDIRECT_JMP_RESTART_TIMING
+                };
+                self.clk_control_transfer_restart(bus, self.ip, timing);
             }
             5 => {
                 // JMP m16:16 (far indirect)
-                if modrm >= 0xC0 {
+                if modrm::modrm_is_register(modrm) {
                     return;
                 }
+                self.finish_state = I286FinishState::ControlTransferRestart;
                 self.calc_ea(modrm, bus);
+                self.prepare_far_indirect_pointer_read();
                 let offset = self.seg_read_word(bus);
+                self.timing.suppress_next_memory_read_window();
                 let segment = self.seg_read_word_at(bus, 2);
                 if self.is_protected_mode() {
                     self.code_descriptor(segment, offset, super::TaskType::Jmp, 0, 0, bus);
@@ -511,24 +1182,39 @@ impl I286 {
                     if !self.load_segment(SegReg16::CS, segment, bus) {
                         return;
                     }
+                    let timing = if self.timing.lock_active() {
+                        LOCK_FAR_INDIRECT_JMP_RESTART_TIMING
+                    } else {
+                        FAR_INDIRECT_JMP_RESTART_TIMING
+                    };
+                    self.clk_control_transfer_restart_without_gap_credit(bus, self.ip, timing);
+                    return;
                 }
-                let penalty = if self.ea & 1 == 1 { 8 } else { 0 };
+                let penalty = if address_is_odd(self.ea) { 8 } else { 0 };
                 self.clk(15 + penalty);
             }
             6 | 7 => {
                 // PUSH r/m16 (7 is undocumented alias)
-                if modrm >= 0xC0 && (modrm & 7) == 4 {
+                let needs_register_setup_cycle = self.timing.prefix_count_is_even()
+                    && (!self.timing.lock_active() || !self.timing.lock_prefix_after_prefix());
+                if modrm::modrm_is_register(modrm) && modrm::modrm_rm(modrm) == 4 {
+                    if needs_register_setup_cycle {
+                        self.clk_visible(1);
+                    }
                     self.push_sp(bus);
+                } else if modrm::modrm_is_register(modrm) {
+                    let tail_cycles = self.stack_push_tail_cycles(3);
+                    let val = self.regs.word(self.rm_word(modrm));
+                    if needs_register_setup_cycle {
+                        self.clk_visible(1);
+                    }
+                    self.push(bus, val);
+                    self.clk(tail_cycles);
                 } else {
-                    let sp_pen = self.sp_penalty(1);
                     let val = self.get_rm_word(modrm, bus);
                     self.push(bus, val);
-                    if modrm >= 0xC0 {
-                        self.clk(3 + sp_pen);
-                    } else {
-                        let ea_pen = if self.ea & 1 == 1 { 4 } else { 0 };
-                        self.clk(5 + sp_pen + ea_pen);
-                    }
+                    let ea_pen = if address_is_odd(self.ea) { 4 } else { 0 };
+                    self.clk(5 + ea_pen);
                 }
             }
             _ => {

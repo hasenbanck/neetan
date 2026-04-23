@@ -1,4 +1,8 @@
-use super::I286;
+use super::{
+    I286, TRACE_ADDRESS_MASK,
+    string_ops::{rep_string_complete_cycles, rep_string_odd_di_adjustment, string_timing},
+    timing::I286FinishState,
+};
 use crate::{SegReg16, WordReg};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -8,56 +12,77 @@ pub(super) enum RepType {
 }
 
 impl I286 {
+    fn peek_rep_opcode(&self, bus: &mut impl common::Bus) -> u8 {
+        let code_segment_base = self.seg_bases[SegReg16::CS as usize];
+        bus.read_byte(code_segment_base.wrapping_add(u32::from(self.ip)) & TRACE_ADDRESS_MASK)
+    }
+
+    fn handle_rep_segment_prefix(
+        &mut self,
+        bus: &mut impl common::Bus,
+        prefix_seg: SegReg16,
+    ) -> u8 {
+        self.seg_prefix = true;
+        self.prefix_seg = prefix_seg;
+        self.timing.note_prefix();
+        let next = self.peek_rep_opcode(bus);
+        if !Self::string_opcode(next) || self.timing.prefix_count_is_odd() {
+            self.clk_prefix(bus);
+        } else {
+            self.clk_visible(1);
+        }
+        self.fetch(bus)
+    }
+
     fn start_rep(&mut self, rep_type: RepType, bus: &mut impl common::Bus) {
         self.rep_restart_ip = self.prev_ip;
+        self.timing.note_rep_startup();
         let mut next = self.fetch(bus);
+        let mut rep_prefix_seen = false;
 
         // Handle any number of prefixes between REP and opcode.
         loop {
             match next {
                 0x26 => {
-                    self.seg_prefix = true;
-                    self.prefix_seg = SegReg16::ES;
-                    next = self.fetch(bus);
-                    self.clk(2);
+                    rep_prefix_seen = true;
+                    next = self.handle_rep_segment_prefix(bus, SegReg16::ES);
                 }
                 0x2E => {
-                    self.seg_prefix = true;
-                    self.prefix_seg = SegReg16::CS;
-                    next = self.fetch(bus);
-                    self.clk(2);
+                    rep_prefix_seen = true;
+                    next = self.handle_rep_segment_prefix(bus, SegReg16::CS);
                 }
                 0x36 => {
-                    self.seg_prefix = true;
-                    self.prefix_seg = SegReg16::SS;
-                    next = self.fetch(bus);
-                    self.clk(2);
+                    rep_prefix_seen = true;
+                    next = self.handle_rep_segment_prefix(bus, SegReg16::SS);
                 }
                 0x3E => {
-                    self.seg_prefix = true;
-                    self.prefix_seg = SegReg16::DS;
-                    next = self.fetch(bus);
-                    self.clk(2);
+                    rep_prefix_seen = true;
+                    next = self.handle_rep_segment_prefix(bus, SegReg16::DS);
                 }
                 0xF0 => {
+                    rep_prefix_seen = true;
+                    self.timing.note_lock_prefix(0);
                     next = self.fetch(bus);
-                    self.clk(2);
+                    self.clk_lock_prefix(bus, next, 0, true);
                 }
                 _ => break,
             }
         }
 
-        let startup = match next {
-            0xA4 | 0xA5 => 5, // REP MOVSB/W
-            0xA6 | 0xA7 => 5, // REP CMPSB/W
-            0xAA | 0xAB => 4, // REP STOSB/W
-            0xAC | 0xAD => 5, // REP LODSB/W
-            0xAE | 0xAF => 5, // REP SCASB/W
-            0x6C | 0x6D => 5, // REP INSB/W
-            0x6E | 0x6F => 5, // REP OUTSB/W
-            _ => 2,
-        };
-        self.clk(startup);
+        if Self::string_opcode(next) {
+            let timing = string_timing(next);
+            let mut startup = if self.regs.word(WordReg::CX) == 0 {
+                timing.rep_zero_count_startup_cycles
+            } else {
+                timing.rep_startup_cycles
+            };
+            if rep_prefix_seen || self.timing.prefix_count_is_odd() {
+                startup = startup.saturating_sub(1);
+            }
+            self.clk_visible(startup);
+        } else {
+            self.clk_prefetch(bus, 2);
+        }
         self.do_rep(rep_type, next, bus);
     }
 
@@ -71,33 +96,35 @@ impl I286 {
         let is_cmps_scas = matches!(next, 0xA6 | 0xA7 | 0xAE | 0xAF);
 
         loop {
+            self.timing.note_rep_iteration();
+            self.finish_state = I286FinishState::RepSteadyState;
+
+            let di_before = self.regs.word(WordReg::DI);
+
             match next {
-                0x6C => self.insb(bus),
-                0x6D => self.insw(bus),
-                0x6E => self.outsb(bus),
-                0x6F => self.outsw(bus),
-                0xA4 => self.movsb(bus),
-                0xA5 => self.movsw(bus),
-                0xA6 => self.cmpsb(bus),
-                0xA7 => self.cmpsw(bus),
-                0xAA => self.stosb(bus),
-                0xAB => self.stosw(bus),
-                0xAC => self.lodsb(bus),
-                0xAD => self.lodsw(bus),
-                0xAE => self.scasb(bus),
-                0xAF => self.scasw(bus),
+                0x6C => self.insb_body(bus),
+                0x6D => self.insw_body(bus),
+                0x6E => self.outsb_body(bus),
+                0x6F => self.outsw_body(bus),
+                0xA4 => self.movsb_body(bus),
+                0xA5 => self.movsw_body(bus),
+                0xA6 => self.cmpsb_body(bus),
+                0xA7 => self.cmpsw_body(bus),
+                0xAA => self.stosb_body(bus),
+                0xAB => self.stosw_body(bus),
+                0xAC => self.lodsb_body(bus),
+                0xAD => self.lodsw_body(bus),
+                0xAE => self.scasb_body(bus),
+                0xAF => self.scasw_body(bus),
                 _ => {
                     self.dispatch(next, bus);
                     return;
                 }
             }
 
-            let delta = match next {
-                0xA6 | 0xA7 | 0xAE | 0xAF => 1, // CMPS, SCAS: +1
-                0xAA | 0xAB => 0,               // STOS: 0
-                _ => -1,                        // MOVS, LODS, INS, OUTS: -1
-            };
-            self.clk(delta);
+            let timing = string_timing(next);
+            let odd_di_adjustment = rep_string_odd_di_adjustment(timing, di_before);
+            self.clk(timing.rep_iter_base_cycles + odd_di_adjustment);
 
             count -= 1;
             if count == 0 {
@@ -128,6 +155,8 @@ impl I286 {
 
             if self.cycles_remaining <= 0 || interrupt_pending {
                 // Save state for resume.
+                self.timing.note_rep_suspend();
+                self.finish_state = I286FinishState::RepSuspended;
                 self.rep_active = true;
                 self.rep_ip = self.ip;
                 self.rep_seg_prefix = self.seg_prefix;
@@ -144,6 +173,13 @@ impl I286 {
 
         self.regs.set_word(WordReg::CX, count);
         self.seg_prefix = false;
+        let complete_cycles =
+            rep_string_complete_cycles(string_timing(next), self.regs.word(WordReg::DI));
+        if complete_cycles != 0 {
+            self.clk_visible(complete_cycles);
+        }
+        self.timing.note_rep_complete();
+        self.finish_state = I286FinishState::RepComplete;
     }
 
     pub(super) fn continue_rep(&mut self, bus: &mut impl common::Bus) {
@@ -157,6 +193,8 @@ impl I286 {
             RepType::RepE
         };
         self.rep_active = false;
+        self.timing.note_rep_iteration();
+        self.finish_state = I286FinishState::RepSteadyState;
         self.do_rep(rep_type, next, bus);
     }
 
