@@ -13,10 +13,29 @@ pub struct MooState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MooCycle {
+pub struct MooLegacyCycle {
     pub address: Option<u16>,
     pub data: Option<u8>,
     pub status: [u8; 4],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MooI286Cycle {
+    pub pin_bitfield: u8,
+    pub address: u32,
+    pub memory_status: u8,
+    pub io_status: u8,
+    pub bhe_status: u8,
+    pub data_bus: u16,
+    pub bus_status: String,
+    pub raw_bus_status: u8,
+    pub t_state: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MooCycle {
+    Legacy(MooLegacyCycle),
+    I286(MooI286Cycle),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,7 +47,10 @@ pub struct MooPort {
 
 #[cfg(feature = "verification")]
 #[derive(Debug, Clone)]
-pub struct MooException {}
+pub struct MooException {
+    pub number: u8,
+    pub flag_address: u32,
+}
 
 #[derive(Debug, Clone)]
 pub struct MooTest {
@@ -115,28 +137,90 @@ fn parse_queue(payload: &[u8]) -> Vec<u8> {
     payload[offset..offset + count].to_vec()
 }
 
-fn parse_cycles(payload: &[u8]) -> Vec<MooCycle> {
+fn decode_i286_bus_status(raw_bus_status: u8) -> String {
+    match raw_bus_status & 0x0F {
+        0x0 => "IRQA",
+        0x4 => "HALT",
+        0x5 => "MEMR",
+        0x6 => "MEMW",
+        0x9 => "IOR",
+        0xA => "IOW",
+        0xD => "CODE",
+        _ => "PASV",
+    }
+    .to_string()
+}
+
+fn decode_i286_t_state(raw_t_state: u8) -> String {
+    match raw_t_state & 0x07 {
+        1 => "Ts",
+        2 => "Tc",
+        _ => "Ti",
+    }
+    .to_string()
+}
+
+fn parse_cycles(payload: &[u8], cpu_name: &str) -> Vec<MooCycle> {
     let mut offset = 0;
     let count = read_u32(payload, &mut offset) as usize;
     let mut cycles = Vec::with_capacity(count);
 
+    if cpu_name.contains("286") {
+        for _ in 0..count {
+            let pin_bitfield = payload[offset];
+            offset += 1;
+            let address = read_u32(payload, &mut offset);
+            offset += 1;
+            let memory_status = payload[offset];
+            offset += 1;
+            let io_status = payload[offset];
+            offset += 1;
+            let bhe_status = payload[offset];
+            offset += 1;
+            let data_bus = read_u16(payload, &mut offset);
+            let raw_bus_status = payload[offset];
+            offset += 1;
+            let raw_t_state = payload[offset];
+            offset += 1;
+            offset += 2;
+
+            cycles.push(MooCycle::I286(MooI286Cycle {
+                pin_bitfield,
+                address,
+                memory_status,
+                io_status,
+                bhe_status,
+                data_bus,
+                bus_status: decode_i286_bus_status(raw_bus_status),
+                raw_bus_status,
+                t_state: decode_i286_t_state(raw_t_state),
+            }));
+        }
+
+        return cycles;
+    }
+
     for _ in 0..count {
-        let flags = payload[offset];
+        let pin_bitfield = payload[offset];
         offset += 1;
         let address = read_u16(payload, &mut offset);
         let data = payload[offset];
         offset += 1;
         let status = read_tag(payload, &mut offset);
 
-        cycles.push(MooCycle {
-            address: if flags & 0x01 != 0 {
+        cycles.push(MooCycle::Legacy(MooLegacyCycle {
+            address: if pin_bitfield & 0x01 != 0 {
                 Some(address)
             } else {
                 None
             },
-            data: if flags & 0x02 != 0 { Some(data) } else { None },
+            data: if pin_bitfield & 0x02 != 0 {
+                Some(data)
+            } else {
+                None
+            },
             status,
-        });
+        }));
     }
 
     cycles
@@ -198,7 +282,12 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
     output
 }
 
-fn parse_test_chunk(payload: &[u8], reg_order16: &[&str], reg_order32: &[&str]) -> MooTest {
+fn parse_test_chunk(
+    payload: &[u8],
+    reg_order16: &[&str],
+    reg_order32: &[&str],
+    cpu_name: &str,
+) -> MooTest {
     let mut offset = 0;
     let idx = read_u32(payload, &mut offset);
     let mut name = String::new();
@@ -238,10 +327,17 @@ fn parse_test_chunk(payload: &[u8], reg_order16: &[&str], reg_order32: &[&str]) 
             }
             b"INIT" => initial = parse_cpu_state(sub_payload, reg_order16, reg_order32),
             b"FINA" => final_state = parse_cpu_state(sub_payload, reg_order16, reg_order32),
-            b"CYCL" => cycles = parse_cycles(sub_payload),
+            b"CYCL" => cycles = parse_cycles(sub_payload, cpu_name),
             b"PORT" => ports = parse_ports(sub_payload),
             b"EXCP" if !sub_payload.is_empty() => {
-                exception = Some(MooException {});
+                let mut exception_offset = 0;
+                let number = sub_payload[exception_offset];
+                exception_offset += 1;
+                let flag_address = read_u32(sub_payload, &mut exception_offset);
+                exception = Some(MooException {
+                    number,
+                    flag_address,
+                });
             }
             b"EXCP" => {}
             b"HASH" => {
@@ -296,6 +392,8 @@ pub fn load_moo_tests(path: &Path, reg_order16: &[&str], reg_order32: &[&str]) -
     offset += 4;
 
     let header_len = read_u32(&data, &mut offset) as usize;
+    let header = &data[offset..offset + header_len];
+    let cpu_name = std::str::from_utf8(&header[8..12]).unwrap().trim_end();
     offset += header_len;
 
     let mut tests = Vec::new();
@@ -309,6 +407,7 @@ pub fn load_moo_tests(path: &Path, reg_order16: &[&str], reg_order32: &[&str]) -
                 &data[offset..end],
                 reg_order16,
                 reg_order32,
+                cpu_name,
             ));
         }
 

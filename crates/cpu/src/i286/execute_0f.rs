@@ -1,4 +1,4 @@
-use super::I286;
+use super::{I286, TRACE_ADDRESS_MASK};
 
 impl I286 {
     pub(super) fn extended_0f(&mut self, bus: &mut impl common::Bus) {
@@ -22,12 +22,12 @@ impl I286 {
             0 => {
                 // SLDT - Store LDTR selector
                 self.put_rm_word(modrm, self.ldtr, bus);
-                self.clk_modrm(modrm, 2, 3);
+                self.clk_modrm_prefetch(bus, modrm, 2, 3);
             }
             1 => {
                 // STR - Store Task Register selector
                 self.put_rm_word(modrm, self.tr, bus);
-                self.clk_modrm(modrm, 2, 3);
+                self.clk_modrm_prefetch(bus, modrm, 2, 3);
             }
             2 => {
                 // LLDT - Load LDTR from GDT descriptor (Bug #4: CPL=0 required)
@@ -62,7 +62,7 @@ impl I286 {
                     self.ldtr_base = descriptor.base;
                     self.ldtr_limit = descriptor.limit;
                 }
-                self.clk_modrm(modrm, 17, 19);
+                self.clk_modrm_prefetch(bus, modrm, 17, 19);
             }
             3 => {
                 // LTR - Load Task Register from GDT descriptor
@@ -102,24 +102,24 @@ impl I286 {
                 // Bug #5: Mark TSS as busy by setting bit 1 of type field.
                 self.tr_rights |= 0x02;
                 if let Some(addr) = self.descriptor_addr_checked(selector) {
-                    let r = bus.read_byte(addr.wrapping_add(5) & 0xFFFFFF);
-                    bus.write_byte(addr.wrapping_add(5) & 0xFFFFFF, r | 0x02);
+                    let r = bus.read_byte(addr.wrapping_add(5) & TRACE_ADDRESS_MASK);
+                    bus.write_byte(addr.wrapping_add(5) & TRACE_ADDRESS_MASK, r | 0x02);
                 }
-                self.clk_modrm(modrm, 17, 19);
+                self.clk_modrm_prefetch(bus, modrm, 17, 19);
             }
             4 => {
                 // VERR - Verify segment readable (Bug #11: conforming exemption)
                 let selector = self.get_rm_word(modrm, bus);
                 let readable = self.verr_accessible(selector, bus);
                 self.flags.zero_val = if readable { 0 } else { 1 };
-                self.clk_modrm(modrm, 14, 16);
+                self.clk_modrm_prefetch(bus, modrm, 14, 16);
             }
             5 => {
                 // VERW - Verify segment writable
                 let selector = self.get_rm_word(modrm, bus);
                 let writable = self.selector_accessible(selector, true, bus);
                 self.flags.zero_val = if writable { 0 } else { 1 };
-                self.clk_modrm(modrm, 14, 16);
+                self.clk_modrm_prefetch(bus, modrm, 14, 16);
             }
             _ => self.raise_fault(6, bus),
         }
@@ -174,7 +174,7 @@ impl I286 {
                 let base = bus.read_byte(self.seg_addr(2)) as u32
                     | ((bus.read_byte(self.seg_addr(3)) as u32) << 8)
                     | ((bus.read_byte(self.seg_addr(4)) as u32) << 16);
-                self.gdt_base = base & 0xFFFFFF;
+                self.gdt_base = base & TRACE_ADDRESS_MASK;
                 self.gdt_limit = limit;
                 self.clk(11);
             }
@@ -194,14 +194,14 @@ impl I286 {
                 let base = bus.read_byte(self.seg_addr(2)) as u32
                     | ((bus.read_byte(self.seg_addr(3)) as u32) << 8)
                     | ((bus.read_byte(self.seg_addr(4)) as u32) << 16);
-                self.idt_base = base & 0xFFFFFF;
+                self.idt_base = base & TRACE_ADDRESS_MASK;
                 self.idt_limit = limit;
                 self.clk(12);
             }
             4 => {
                 // SMSW - Store Machine Status Word
                 self.put_rm_word(modrm, self.msw, bus);
-                self.clk_modrm(modrm, 2, 3);
+                self.clk_modrm_prefetch(bus, modrm, 2, 3);
             }
             6 => {
                 // LMSW - Load Machine Status Word (Bug #4: CPL=0 in PM)
@@ -213,7 +213,7 @@ impl I286 {
                 let value = self.get_rm_word(modrm, bus);
                 let old_pe = self.msw & 1;
                 self.msw = value | old_pe;
-                self.clk_modrm(modrm, 3, 6);
+                self.clk_modrm_prefetch(bus, modrm, 3, 6);
             }
             _ => self.raise_fault(6, bus),
         }
@@ -255,7 +255,7 @@ impl I286 {
                 }
             }
         }
-        self.clk_modrm(modrm, 14, 16);
+        self.clk_modrm_prefetch(bus, modrm, 14, 16);
     }
 
     fn lsl_instr(&mut self, bus: &mut impl common::Bus) {
@@ -294,7 +294,7 @@ impl I286 {
                 }
             }
         }
-        self.clk_modrm(modrm, 14, 16);
+        self.clk_modrm_prefetch(bus, modrm, 14, 16);
     }
 
     fn verr_accessible(&self, selector: u16, bus: &mut impl common::Bus) -> bool {

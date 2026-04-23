@@ -276,6 +276,14 @@ fn run_test_file(stem: &str, local_revoked_hashes: &[&str]) {
 
         let mut cpu = I286::new();
         cpu.load_state(&initial);
+        if !test.initial.queue.is_empty() {
+            cpu.install_front_end_state(
+                &mut bus,
+                &test.initial.queue,
+                test.initial.queue.len() as u8,
+                cpu::I286FlushState::None,
+            );
+        }
         let mut steps = 0usize;
         while !cpu.halted() && steps < 1024 {
             cpu.step(&mut bus);
