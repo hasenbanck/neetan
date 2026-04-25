@@ -1365,79 +1365,6 @@ fn mcb_chain_intact_after_alloc_free() {
 }
 
 #[test]
-fn free_coalesces_adjacent_blocks() {
-    let mut machine = harness::boot_hle();
-    // Allocate A, B, C. Free A, C, then B. After freeing B, the three
-    // freed blocks should coalesce into one (since A and C were already free).
-    #[rustfmt::skip]
-    let code: &[u8] = &[
-        // Allocate A: 0x10
-        0xBB, 0x10, 0x00,
-        0xB4, 0x48, 0xCD, 0x21,
-        0xA3, 0x00, 0x01,                   // [0x0100] = seg A
-        // Allocate B: 0x10
-        0xBB, 0x10, 0x00,
-        0xB4, 0x48, 0xCD, 0x21,
-        0xA3, 0x02, 0x01,                   // [0x0102] = seg B
-        // Allocate C: 0x10
-        0xBB, 0x10, 0x00,
-        0xB4, 0x48, 0xCD, 0x21,
-        0xA3, 0x04, 0x01,                   // [0x0104] = seg C
-        // Count MCBs before freeing (store at [0x0106])
-        0xFA,                               // CLI
-        0xF4,                               // HLT
-    ];
-    harness::inject_and_run(&mut machine, code);
-
-    let seg_a = harness::result_word(&machine.bus, 0);
-    let seg_b = harness::result_word(&machine.bus, 2);
-    let seg_c = harness::result_word(&machine.bus, 4);
-
-    // Free A
-    #[rustfmt::skip]
-    let free_a: Vec<u8> = vec![
-        0xB8, (seg_a & 0xFF) as u8, (seg_a >> 8) as u8,
-        0x8E, 0xC0,
-        0xB4, 0x49, 0xCD, 0x21,
-        0xFA, 0xF4,
-    ];
-    harness::inject_and_run(&mut machine, &free_a);
-
-    // Free C
-    #[rustfmt::skip]
-    let free_c: Vec<u8> = vec![
-        0xB8, (seg_c & 0xFF) as u8, (seg_c >> 8) as u8,
-        0x8E, 0xC0,
-        0xB4, 0x49, 0xCD, 0x21,
-        0xFA, 0xF4,
-    ];
-    harness::inject_and_run(&mut machine, &free_c);
-
-    // Count MCBs before freeing B
-    let sysvars = harness::get_sysvars_address(&mut machine);
-    let first_mcb = harness::read_word(&machine.bus, sysvars - 2);
-    let count_before = count_mcb_entries(&machine.bus, first_mcb);
-
-    // Free B (should coalesce A+B+C into one free block)
-    #[rustfmt::skip]
-    let free_b: Vec<u8> = vec![
-        0xB8, (seg_b & 0xFF) as u8, (seg_b >> 8) as u8,
-        0x8E, 0xC0,
-        0xB4, 0x49, 0xCD, 0x21,
-        0xFA, 0xF4,
-    ];
-    harness::inject_and_run(&mut machine, &free_b);
-
-    let count_after = count_mcb_entries(&machine.bus, first_mcb);
-    assert!(
-        count_after < count_before,
-        "MCB chain should have fewer entries after coalescing: before={}, after={}",
-        count_before,
-        count_after
-    );
-}
-
-#[test]
 fn allocate_best_fit_strategy() {
     let mut machine = harness::boot_hle();
     // Allocate A(0x10), B(0x10), C(0x30), D(0x10). Free A (0x10 hole). Free C (0x30 hole).
@@ -1573,48 +1500,6 @@ fn int21h_4ah_resize_query_only_returns_max_possible_size() {
         bx > 16,
         "Query-only resize should return max>16 (the neighbouring free block), got {bx}"
     );
-}
-
-#[test]
-fn int21h_49h_free_backward_coalesces_with_prior_free_block() {
-    // Allocate three blocks A, B, C. Free B (coalesces with any following
-    // free), then free A. A's free must swallow B via backward coalesce:
-    // the MCB at A's position ends up sized to cover A+B+1 (the MCB of B).
-    let mut machine = harness::boot_hle();
-    #[rustfmt::skip]
-    let code: &[u8] = &[
-        // Allocate A (16)
-        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
-        0xA3, 0x00, 0x01,                   // seg_a -> [0x0100]
-        // Allocate B (16)
-        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
-        0xA3, 0x02, 0x01,                   // seg_b -> [0x0102]
-        // Allocate C (16)
-        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
-        0xA3, 0x04, 0x01,                   // seg_c -> [0x0104]
-        // Free B first
-        0xA1, 0x02, 0x01,                   // MOV AX, [seg_b]
-        0x8E, 0xC0,                         // MOV ES, AX
-        0xB4, 0x49, 0xCD, 0x21,
-        // Free A second
-        0xA1, 0x00, 0x01,                   // MOV AX, [seg_a]
-        0x8E, 0xC0,                         // MOV ES, AX
-        0xB4, 0x49, 0xCD, 0x21,
-        0xFA, 0xF4,
-    ];
-    harness::inject_and_run(&mut machine, code);
-    let seg_a = harness::result_word(&machine.bus, 0);
-    let seg_b = harness::result_word(&machine.bus, 2);
-    // MCB of A is at seg_a-1. After backward coalesce, A's MCB size should
-    // span A (16 paras) + B's MCB (1 para) + B's payload (16 paras) = 33.
-    let mcb_a = seg_a.wrapping_sub(1);
-    let size = harness::read_word(&machine.bus, ((mcb_a as u32) << 4) + 3);
-    assert_eq!(
-        size, 33,
-        "After freeing B then A, A's MCB should have coalesced size 33 (16+1+16), got {size}"
-    );
-    // Sanity: seg_b - 1 = mcb_a + 16 + 1 = mcb_a + 17 (original layout).
-    assert_eq!(seg_b.wrapping_sub(1), mcb_a + 17);
 }
 
 #[test]
@@ -1756,21 +1641,641 @@ fn int21h_5803h_rejects_invalid_link_state_values() {
     );
 }
 
-fn count_mcb_entries(bus: &machine::Pc9801Bus, first_mcb_segment: u16) -> u32 {
-    let mut count = 0u32;
-    let mut mcb_addr = harness::far_to_linear(first_mcb_segment, 0);
+// Tests below cover documented MS-DOS memory-management quirks
+// (https://www.os2museum.com/wp/dos-memory-management/).
+
+#[derive(Clone, Copy, Debug)]
+struct McbView {
+    segment: u16,
+    block_type: u8,
+    owner: u16,
+    size: u16,
+}
+
+fn first_mcb_segment(machine: &mut machine::Pc9801Ra) -> u16 {
+    let sysvars = harness::get_sysvars_address(machine);
+    harness::read_word(&machine.bus, sysvars - 2)
+}
+
+fn walk_mcb_chain(bus: &machine::Pc9801Bus, first: u16) -> Vec<McbView> {
+    let mut entries = Vec::new();
+    let mut segment = first;
     for _ in 0..1000 {
-        let block_type = harness::read_byte(bus, mcb_addr);
-        if block_type != 0x4D && block_type != 0x5A {
+        let base = harness::far_to_linear(segment, 0);
+        let block_type = harness::read_byte(bus, base);
+        let owner = harness::read_word(bus, base + 1);
+        let size = harness::read_word(bus, base + 3);
+        entries.push(McbView {
+            segment,
+            block_type,
+            owner,
+            size,
+        });
+        if block_type != 0x4D {
             break;
         }
-        count += 1;
-        if block_type == 0x5A {
-            break;
-        }
-        let size = harness::read_word(bus, mcb_addr + 3);
-        let current_segment = mcb_addr >> 4;
-        mcb_addr = (current_segment + size as u32 + 1) << 4;
+        segment = segment.wrapping_add(size).wrapping_add(1);
     }
-    count
+    entries
+}
+
+fn largest_free_paragraphs(chain: &[McbView]) -> u16 {
+    chain
+        .iter()
+        .filter(|m| m.owner == 0x0000)
+        .map(|m| m.size)
+        .max()
+        .unwrap_or(0)
+}
+
+#[test]
+fn mcb_chain_signature_bytes_z_only_at_end() {
+    let mut machine = harness::boot_hle();
+    let first = first_mcb_segment(&mut machine);
+    let chain = walk_mcb_chain(&machine.bus, first);
+    assert!(!chain.is_empty(), "MCB chain must have at least one entry");
+    for (i, mcb) in chain.iter().enumerate() {
+        let expected = if i == chain.len() - 1 { 0x5A } else { 0x4D };
+        assert_eq!(
+            mcb.block_type, expected,
+            "MCB #{} at seg {:#06X}: signature should be {:#04X}, got {:#04X}",
+            i, mcb.segment, expected, mcb.block_type
+        );
+    }
+}
+
+#[test]
+fn int21h_49h_free_zeroes_owner_field() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBB, 0x10, 0x00,                   // MOV BX, 0010h
+        0xB4, 0x48,                         // MOV AH, 48h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (data segment)
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xB4, 0x49,                         // MOV AH, 49h
+        0xCD, 0x21,                         // INT 21h
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let data_segment = harness::result_word(&machine.bus, 0);
+    let mcb_segment = data_segment.wrapping_sub(1);
+    let owner = harness::read_word(&machine.bus, harness::far_to_linear(mcb_segment, 1));
+    assert_eq!(
+        owner, 0x0000,
+        "Freed MCB at seg {:#06X} should have owner=0, got {:#06X}",
+        mcb_segment, owner
+    );
+}
+
+#[test]
+fn int21h_48h_allocate_clears_carry_on_success() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBB, 0x10, 0x00,                   // MOV BX, 0010h
+        0xB4, 0x48,                         // MOV AH, 48h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (FLAGS)
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let segment = harness::result_word(&machine.bus, 0);
+    let flags = harness::result_word(&machine.bus, 2);
+    assert_eq!(flags & 0x0001, 0, "CF should be 0, flags={:#06X}", flags);
+    assert!(segment != 0, "Returned segment should be non-zero");
+}
+
+#[test]
+fn int21h_48h_allocate_failure_reports_largest_in_bx() {
+    let mut machine = harness::boot_hle();
+    let first = first_mcb_segment(&mut machine);
+    let expected_largest = largest_free_paragraphs(&walk_mcb_chain(&machine.bus, first));
+
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBB, 0xFF, 0xFF,                   // MOV BX, FFFFh (impossible)
+        0xB4, 0x48,                         // MOV AH, 48h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (error code)
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (largest free)
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x04, 0x01,                   // MOV [0x0104], AX (FLAGS)
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let ax = harness::result_word(&machine.bus, 0);
+    let bx = harness::result_word(&machine.bus, 2);
+    let flags = harness::result_word(&machine.bus, 4);
+    assert_eq!(flags & 0x0001, 1, "CF should be 1, flags={:#06X}", flags);
+    assert_eq!(ax, 8, "Error code in AX should be 8 (insufficient memory)");
+    assert_eq!(
+        bx, expected_largest,
+        "BX should report largest free paragraphs ({}), got {}",
+        expected_largest, bx
+    );
+}
+
+#[test]
+fn int21h_48h_allocate_coalesces_adjacent_free_blocks() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x00, 0x01,                   // [0x0100] = A
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x02, 0x01,                   // [0x0102] = B
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x04, 0x01,                   // [0x0104] = C (sentinel)
+        0x8B, 0x1E, 0x00, 0x01,             // FREE A
+        0x8E, 0xC3, 0xB4, 0x49, 0xCD, 0x21,
+        0x8B, 0x1E, 0x02, 0x01,             // FREE B
+        0x8E, 0xC3, 0xB4, 0x49, 0xCD, 0x21,
+        0xBB, 0x21, 0x00, 0xB4, 0x48, 0xCD, 0x21, // ALLOC 0x21 -> D
+        0xA3, 0x06, 0x01,                   // [0x0106] = D
+        0x9C, 0x58, 0xA3, 0x08, 0x01,       // [0x0108] = FLAGS
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let a = harness::result_word(&machine.bus, 0);
+    let d = harness::result_word(&machine.bus, 6);
+    let flags = harness::result_word(&machine.bus, 8);
+    assert_eq!(flags & 1, 0, "Final ALLOC should succeed");
+    assert_eq!(
+        d, a,
+        "Coalesced ALLOC should land at A's segment {:#06X}, got {:#06X}",
+        a, d
+    );
+}
+
+#[test]
+fn int21h_49h_free_does_not_coalesce() {
+    // Article: AH=49h FREE only flips the owner to zero. Coalescing of
+    // adjacent free blocks is the next AH=48h ALLOC's responsibility.
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x00, 0x01,
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x02, 0x01,
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,    // C sentinel
+        0x8B, 0x1E, 0x00, 0x01, 0x8E, 0xC3, 0xB4, 0x49, 0xCD, 0x21,
+        0x8B, 0x1E, 0x02, 0x01, 0x8E, 0xC3, 0xB4, 0x49, 0xCD, 0x21,
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let a_data = harness::result_word(&machine.bus, 0);
+    let b_data = harness::result_word(&machine.bus, 2);
+    let a_mcb = a_data.wrapping_sub(1);
+    let b_mcb = b_data.wrapping_sub(1);
+
+    let owner_a = harness::read_word(&machine.bus, harness::far_to_linear(a_mcb, 1));
+    let size_a = harness::read_word(&machine.bus, harness::far_to_linear(a_mcb, 3));
+    let owner_b = harness::read_word(&machine.bus, harness::far_to_linear(b_mcb, 1));
+    let size_b = harness::read_word(&machine.bus, harness::far_to_linear(b_mcb, 3));
+
+    assert_eq!(owner_a, 0, "A's MCB should be free after FREE");
+    assert_eq!(
+        size_a, 0x10,
+        "A's MCB size should remain 0x10, got {:#06X}",
+        size_a
+    );
+    assert_eq!(owner_b, 0, "B's MCB should be free after FREE");
+    assert_eq!(
+        size_b, 0x10,
+        "B's MCB size should remain 0x10, got {:#06X}",
+        size_b
+    );
+}
+
+#[test]
+fn int21h_49h_free_ignores_owner_field() {
+    // DOS performs no ownership check on FREE. Overwrite an MCB's owner
+    // with a fake PSP, then FREE -- it must still succeed and zero out
+    // the owner.
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x00, 0x01,                   // [0x0100] = data segment
+        0x8B, 0xD8,                         // MOV BX, AX
+        0x4B,                               // DEC BX -> MCB segment
+        0x8E, 0xC3,                         // MOV ES, BX
+        0x26, 0xC7, 0x06, 0x01, 0x00, 0x34, 0x12, // MOV WORD ES:[1], 0x1234
+        0xA1, 0x00, 0x01,                   // MOV AX, [0x0100]
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xB4, 0x49, 0xCD, 0x21,
+        0x9C, 0x58, 0xA3, 0x02, 0x01,       // [0x0102] = FLAGS
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let data_segment = harness::result_word(&machine.bus, 0);
+    let flags = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        flags & 1,
+        0,
+        "FREE should succeed despite mismatched owner; flags={:#06X}",
+        flags
+    );
+    let mcb_segment = data_segment.wrapping_sub(1);
+    let owner = harness::read_word(&machine.bus, harness::far_to_linear(mcb_segment, 1));
+    assert_eq!(owner, 0, "Owner should be zero after FREE");
+}
+
+#[test]
+fn int21h_4ah_resize_shrink_always_succeeds() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBB, 0x20, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x00, 0x01,
+        0x8E, 0xC0,
+        0xBB, 0x10, 0x00,
+        0xB4, 0x4A, 0xCD, 0x21,
+        0x9C, 0x58, 0xA3, 0x02, 0x01,
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let flags = harness::result_word(&machine.bus, 2);
+    assert_eq!(flags & 1, 0, "Shrink should succeed, flags={:#06X}", flags);
+
+    let data_segment = harness::result_word(&machine.bus, 0);
+    let mcb_segment = data_segment.wrapping_sub(1);
+    let size = harness::read_word(&machine.bus, harness::far_to_linear(mcb_segment, 3));
+    assert_eq!(
+        size, 0x10,
+        "MCB size should be 0x10 after shrink, got {:#06X}",
+        size
+    );
+}
+
+#[test]
+fn int21h_4ah_resize_grows_into_adjacent_free_block() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x00, 0x01,
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x02, 0x01,
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,    // C sentinel
+        0x8B, 0x1E, 0x02, 0x01, 0x8E, 0xC3, 0xB4, 0x49, 0xCD, 0x21,
+        0x8B, 0x1E, 0x00, 0x01, 0x8E, 0xC3,
+        0xBB, 0x21, 0x00, 0xB4, 0x4A, 0xCD, 0x21,
+        0x9C, 0x58, 0xA3, 0x04, 0x01,
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let a_data = harness::result_word(&machine.bus, 0);
+    let flags = harness::result_word(&machine.bus, 4);
+    assert_eq!(
+        flags & 1,
+        0,
+        "Grow into free should succeed, flags={:#06X}",
+        flags
+    );
+    let a_mcb = a_data.wrapping_sub(1);
+    let size = harness::read_word(&machine.bus, harness::far_to_linear(a_mcb, 3));
+    assert_eq!(size, 0x21, "A should be resized to 0x21, got {:#06X}", size);
+}
+
+#[test]
+fn int21h_4ah_resize_grow_failure_leaves_block_unchanged_when_no_free_neighbour() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x00, 0x01,
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0x8B, 0x1E, 0x00, 0x01, 0x8E, 0xC3,
+        0xBB, 0x00, 0x01, 0xB4, 0x4A, 0xCD, 0x21,
+        0xA3, 0x02, 0x01,
+        0x89, 0x1E, 0x04, 0x01,
+        0x9C, 0x58, 0xA3, 0x06, 0x01,
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let a_data = harness::result_word(&machine.bus, 0);
+    let ax = harness::result_word(&machine.bus, 2);
+    let bx = harness::result_word(&machine.bus, 4);
+    let flags = harness::result_word(&machine.bus, 6);
+    assert_eq!(flags & 1, 1, "Grow should fail (CF=1)");
+    assert_eq!(ax, 8, "Error code should be 8");
+    assert_eq!(
+        bx, 0x10,
+        "BX should report A's unchanged size 0x10, got {:#06X}",
+        bx
+    );
+    let a_mcb = a_data.wrapping_sub(1);
+    let size = harness::read_word(&machine.bus, harness::far_to_linear(a_mcb, 3));
+    assert_eq!(size, 0x10, "A's MCB size should be unchanged");
+}
+
+#[test]
+fn int21h_4ah_resize_grow_failure_resizes_to_maximum_available() {
+    // Article quirk: when a grow request exceeds available coalesced
+    // space, DOS still resizes the block to the maximum reachable size
+    // before returning CF=1.
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x00, 0x01,
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x02, 0x01,
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,    // C sentinel
+        0x8B, 0x1E, 0x02, 0x01, 0x8E, 0xC3, 0xB4, 0x49, 0xCD, 0x21,
+        0x8B, 0x1E, 0x00, 0x01, 0x8E, 0xC3,
+        0xBB, 0x00, 0x01, 0xB4, 0x4A, 0xCD, 0x21,
+        0xA3, 0x04, 0x01,
+        0x89, 0x1E, 0x06, 0x01,
+        0x9C, 0x58, 0xA3, 0x08, 0x01,
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let a_data = harness::result_word(&machine.bus, 0);
+    let ax = harness::result_word(&machine.bus, 4);
+    let bx = harness::result_word(&machine.bus, 6);
+    let flags = harness::result_word(&machine.bus, 8);
+    assert_eq!(flags & 1, 1, "Grow should fail");
+    assert_eq!(ax, 8, "Error code should be 8");
+    assert_eq!(
+        bx, 0x21,
+        "BX should report the merged max 0x21, got {:#06X}",
+        bx
+    );
+    let a_mcb = a_data.wrapping_sub(1);
+    let size = harness::read_word(&machine.bus, harness::far_to_linear(a_mcb, 3));
+    assert_eq!(
+        size, 0x21,
+        "A should have been resized to 0x21 (DOS quirk), got {:#06X}",
+        size
+    );
+}
+
+#[test]
+fn int21h_4ah_resize_never_relocates_block() {
+    // SETBLOCK is "somewhat like realloc() in the Standard C library, but
+    // never moves the allocated block." Even when the chain has plenty of
+    // free space elsewhere, SETBLOCK must fail rather than relocate. A
+    // subsequent independent AH=48h proves the space exists.
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x00, 0x01,
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,    // B blocks A's growth
+        0x8B, 0x1E, 0x00, 0x01, 0x8E, 0xC3,
+        0xBB, 0x00, 0x04, 0xB4, 0x4A, 0xCD, 0x21,
+        0x9C, 0x58, 0xA3, 0x02, 0x01,
+        0xBB, 0x00, 0x04, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x04, 0x01,
+        0x9C, 0x58, 0xA3, 0x06, 0x01,
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let a_data = harness::result_word(&machine.bus, 0);
+    let resize_flags = harness::result_word(&machine.bus, 2);
+    let c_segment = harness::result_word(&machine.bus, 4);
+    let alloc_flags = harness::result_word(&machine.bus, 6);
+
+    assert_eq!(
+        resize_flags & 1,
+        1,
+        "SETBLOCK must fail rather than relocate"
+    );
+    assert_eq!(
+        alloc_flags & 1,
+        0,
+        "Fresh ALLOC must succeed, proving the space exists"
+    );
+    assert_ne!(c_segment, 0);
+
+    let a_mcb = a_data.wrapping_sub(1);
+    let owner = harness::read_word(&machine.bus, harness::far_to_linear(a_mcb, 1));
+    assert_ne!(
+        owner, 0,
+        "A's MCB owner must remain non-zero (block not freed)"
+    );
+    let size = harness::read_word(&machine.bus, harness::far_to_linear(a_mcb, 3));
+    assert_eq!(size, 0x10, "A's MCB size must be unchanged at 0x10");
+}
+
+#[test]
+fn int21h_48h_allocate_zero_paragraphs_succeeds() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBB, 0x00, 0x00,
+        0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x00, 0x01,
+        0x9C, 0x58, 0xA3, 0x02, 0x01,
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let segment = harness::result_word(&machine.bus, 0);
+    let flags = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        flags & 1,
+        0,
+        "Zero-paragraph ALLOC should succeed, flags={:#06X}",
+        flags
+    );
+    let mcb_segment = segment.wrapping_sub(1);
+    let size = harness::read_word(&machine.bus, harness::far_to_linear(mcb_segment, 3));
+    assert_eq!(size, 0, "Allocated MCB size should be 0, got {:#06X}", size);
+}
+
+#[test]
+fn int21h_5800h_default_strategy_is_first_fit() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x00, 0x58,
+        0xCD, 0x21,
+        0xA3, 0x00, 0x01,
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let strategy = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        strategy, 0,
+        "Default strategy should be 0 (first-fit), got {:#06X}",
+        strategy
+    );
+}
+
+#[test]
+fn int21h_5801h_set_strategy_first_then_last_fit_round_trip() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x01, 0x58, 0xBB, 0x01, 0x00, 0xCD, 0x21,
+        0xB8, 0x00, 0x58, 0xCD, 0x21,
+        0xA3, 0x00, 0x01,
+        0xB8, 0x01, 0x58, 0xBB, 0x02, 0x00, 0xCD, 0x21,
+        0xB8, 0x00, 0x58, 0xCD, 0x21,
+        0xA3, 0x02, 0x01,
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let s1 = harness::result_word(&machine.bus, 0);
+    let s2 = harness::result_word(&machine.bus, 2);
+    assert_eq!(s1, 1, "Strategy after set 1 should be 1, got {:#06X}", s1);
+    assert_eq!(s2, 2, "Strategy after set 2 should be 2, got {:#06X}", s2);
+}
+
+// Heap shape used by the best-fit and last-fit quirk tests:
+//   ALLOC 0x40 -> A (separator)
+//   ALLOC 0x10 -> SMALL
+//   ALLOC 0x40 -> B (separator)
+//   ALLOC 0x20 -> MEDIUM
+//   ALLOC 0x40 -> SENTINEL
+//   FREE SMALL, FREE MEDIUM
+// The two free holes (0x10 and 0x20) are surrounded by owned blocks, so
+// no coalescing can merge them with anything.
+#[rustfmt::skip]
+const BEST_LAST_FIT_HEAP_SETUP: &[u8] = &[
+    0xBB, 0x40, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+    0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+    0xA3, 0x00, 0x01,
+    0xBB, 0x40, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+    0xBB, 0x20, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+    0xA3, 0x02, 0x01,
+    0xBB, 0x40, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+    0x8B, 0x1E, 0x00, 0x01, 0x8E, 0xC3, 0xB4, 0x49, 0xCD, 0x21,
+    0x8B, 0x1E, 0x02, 0x01, 0x8E, 0xC3, 0xB4, 0x49, 0xCD, 0x21,
+];
+
+#[test]
+fn int21h_48h_best_fit_picks_smallest_sufficient_block() {
+    let mut machine = harness::boot_hle();
+    let mut code: Vec<u8> = BEST_LAST_FIT_HEAP_SETUP.to_vec();
+    #[rustfmt::skip]
+    code.extend_from_slice(&[
+        0xB8, 0x01, 0x58, 0xBB, 0x01, 0x00, 0xCD, 0x21,
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x04, 0x01,
+        0x9C, 0x58, 0xA3, 0x06, 0x01,
+        0xFA, 0xF4,
+    ]);
+    harness::inject_and_run(&mut machine, &code);
+    let small = harness::result_word(&machine.bus, 0);
+    let result = harness::result_word(&machine.bus, 4);
+    let flags = harness::result_word(&machine.bus, 6);
+    assert_eq!(flags & 1, 0, "Best-fit ALLOC should succeed");
+    assert_eq!(
+        result, small,
+        "Best-fit should pick the smallest hole (SMALL={:#06X}), got {:#06X}",
+        small, result
+    );
+}
+
+#[test]
+fn int21h_48h_last_fit_picks_highest_segment_block() {
+    let mut machine = harness::boot_hle();
+    let mut code: Vec<u8> = BEST_LAST_FIT_HEAP_SETUP.to_vec();
+    #[rustfmt::skip]
+    code.extend_from_slice(&[
+        0xB8, 0x01, 0x58, 0xBB, 0x02, 0x00, 0xCD, 0x21,
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x04, 0x01,
+        0x9C, 0x58, 0xA3, 0x06, 0x01,
+        0xFA, 0xF4,
+    ]);
+    harness::inject_and_run(&mut machine, &code);
+    let small = harness::result_word(&machine.bus, 0);
+    let medium = harness::result_word(&machine.bus, 2);
+    let result = harness::result_word(&machine.bus, 4);
+    let flags = harness::result_word(&machine.bus, 6);
+    assert_eq!(flags & 1, 0, "Last-fit ALLOC should succeed");
+    // Last-fit picks the highest-segment sufficient free block. Here that
+    // is the large trailing free region after SENTINEL, above both
+    // SMALL and MEDIUM.
+    assert!(
+        result > medium,
+        "Last-fit should pick a higher-segment block than MEDIUM ({:#06X}), got {:#06X}",
+        medium,
+        result
+    );
+    assert_ne!(result, small, "Last-fit must not pick SMALL");
+}
+
+#[test]
+fn int21h_5803h_umb_link_query_and_set_round_trip() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x02, 0x58, 0xCD, 0x21,
+        0xA3, 0x00, 0x01,
+        0xB8, 0x03, 0x58, 0xBB, 0x01, 0x00, 0xCD, 0x21,
+        0xB8, 0x02, 0x58, 0xCD, 0x21,
+        0xA3, 0x02, 0x01,
+        0xB8, 0x03, 0x58, 0xBB, 0x00, 0x00, 0xCD, 0x21,
+        0xB8, 0x02, 0x58, 0xCD, 0x21,
+        0xA3, 0x04, 0x01,
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let initial = harness::result_word(&machine.bus, 0);
+    let after_link = harness::result_word(&machine.bus, 2);
+    let after_unlink = harness::result_word(&machine.bus, 4);
+    assert!(
+        initial <= 1,
+        "Initial UMB link should be 0 or 1, got {}",
+        initial
+    );
+    assert_eq!(
+        after_link, 1,
+        "After link, query should return 1, got {}",
+        after_link
+    );
+    assert_eq!(
+        after_unlink, 0,
+        "After unlink, query should return 0, got {}",
+        after_unlink
+    );
+}
+
+#[test]
+fn int21h_48h_umb_only_strategy_allocates_from_umb_arena() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x03, 0x58, 0xBB, 0x01, 0x00, 0xCD, 0x21,
+        0xB8, 0x01, 0x58, 0xBB, 0x80, 0x00, 0xCD, 0x21,
+        0xBB, 0x10, 0x00, 0xB4, 0x48, 0xCD, 0x21,
+        0xA3, 0x00, 0x01,
+        0x9C, 0x58, 0xA3, 0x02, 0x01,
+        0xFA, 0xF4,
+    ];
+    harness::inject_and_run(&mut machine, code);
+    let segment = harness::result_word(&machine.bus, 0);
+    let flags = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        flags & 1,
+        0,
+        "UMB-only ALLOC should succeed, flags={:#06X}",
+        flags
+    );
+    assert!(
+        segment >= 0xD000,
+        "UMB-only ALLOC should return a UMB segment (>=0xD000), got {:#06X}",
+        segment
+    );
 }

@@ -611,7 +611,29 @@ fn allocate_with_limit(
         }
 
         let block_owner = read_mcb_owner(mem, current);
-        let block_size = read_mcb_size(mem, current);
+        let mut block_size = read_mcb_size(mem, current);
+
+        // Lazy coalescing: real MS-DOS merges adjacent free blocks during the
+        // ALLOC chain walk, not in FREE. Greedily merge any free blocks
+        // immediately following this one before evaluating fit.
+        if block_owner == MCB_OWNER_FREE {
+            loop {
+                let block_type_now = read_mcb_type(mem, current);
+                if block_type_now != MCB_TYPE_M {
+                    break;
+                }
+                let next = current + block_size + 1;
+                let next_type = read_mcb_type(mem, next);
+                if !is_valid_mcb_type(next_type) {
+                    break;
+                }
+                if read_mcb_owner(mem, next) != MCB_OWNER_FREE {
+                    break;
+                }
+                coalesce_forward(mem, current);
+                block_size = read_mcb_size(mem, current);
+            }
+        }
 
         if block_owner == MCB_OWNER_FREE {
             if block_size > largest_free {
@@ -728,10 +750,8 @@ pub(crate) fn free(
 ) -> Result<(), u8> {
     let target_mcb = data_segment.wrapping_sub(1);
 
-    // Walk the chain to verify the target MCB exists and remember the
-    // preceding MCB so we can coalesce backwards.
+    // Walk the chain to verify the target MCB exists.
     let mut current = first_mcb_segment;
-    let mut prev: Option<u16> = None;
     let mut found = false;
 
     for _ in 0..MAX_CHAIN_WALK {
@@ -750,7 +770,6 @@ pub(crate) fn free(
         }
 
         let block_size = read_mcb_size(mem, current);
-        prev = Some(current);
         current = current + block_size + 1;
     }
 
@@ -758,26 +777,15 @@ pub(crate) fn free(
         return Err(ERR_INVALID_BLOCK);
     }
 
-    // Verify block is actually owned (not already free)
     if read_mcb_owner(mem, target_mcb) == MCB_OWNER_FREE {
         return Err(ERR_INVALID_BLOCK);
     }
 
-    // Free the block
+    // Real MS-DOS only flips the owner to zero on FREE; it does not
+    // coalesce. Coalescing of adjacent free blocks happens lazily during
+    // the next AH=48h ALLOC chain walk.
     write_mcb_owner(mem, target_mcb, MCB_OWNER_FREE);
     clear_mcb_name(mem, target_mcb);
-
-    // Coalesce forward with next free block.
-    coalesce_forward(mem, target_mcb);
-
-    // Coalesce backward: if the predecessor MCB is free, merging forward
-    // from it swallows our now-free block. This prevents fragmentation
-    // that real MS-DOS avoids and avoids needing a separate manual pass.
-    if let Some(prev_segment) = prev
-        && read_mcb_owner(mem, prev_segment) == MCB_OWNER_FREE
-    {
-        coalesce_forward(mem, prev_segment);
-    }
 
     Ok(())
 }
@@ -1120,7 +1128,8 @@ pub(crate) fn resize_dos(
 /// Frees all MCB blocks owned by `owner_psp`.
 ///
 /// Walks the chain, collects data segments, then frees each one.
-/// The existing `free()` coalesces adjacent free blocks automatically.
+/// `free()` does not coalesce; the next ALLOC will lazily merge adjacent
+/// free blocks during its chain walk.
 pub(crate) fn free_process_blocks(
     mem: &mut dyn MemoryAccess,
     first_mcb_segment: u16,
@@ -1144,6 +1153,7 @@ pub(crate) fn free_process_blocks(
     for data_seg in to_free.into_iter().rev() {
         let _ = free(mem, first_mcb_segment, data_seg);
     }
+    coalesce_chain(mem, first_mcb_segment);
 }
 
 pub(crate) fn free_process_blocks_dos(
@@ -1189,6 +1199,7 @@ pub(crate) fn free_process_blocks_tsr(
     for data_seg in to_free.into_iter().rev() {
         let _ = free(mem, first_mcb_segment, data_seg);
     }
+    coalesce_chain(mem, first_mcb_segment);
 }
 
 pub(crate) fn free_process_blocks_tsr_dos(
@@ -1201,6 +1212,40 @@ pub(crate) fn free_process_blocks_tsr_dos(
     free_process_blocks_tsr(mem, first_mcb_segment, owner_psp, keep_paragraphs);
     if let Some(umb_segment) = umb_first_mcb_segment {
         free_process_blocks_tsr(mem, umb_segment, owner_psp, keep_paragraphs);
+    }
+}
+
+/// Walks the chain starting at `first_mcb_segment` and merges every run of
+/// adjacent free MCBs. Used by bulk-cleanup paths (process termination)
+/// since single FREE no longer coalesces.
+fn coalesce_chain(mem: &mut dyn MemoryAccess, first_mcb_segment: u16) {
+    let mut current = first_mcb_segment;
+    for _ in 0..MAX_CHAIN_WALK {
+        let block_type = read_mcb_type(mem, current);
+        if !is_valid_mcb_type(block_type) {
+            return;
+        }
+        if read_mcb_owner(mem, current) == MCB_OWNER_FREE {
+            loop {
+                let block_type_now = read_mcb_type(mem, current);
+                if block_type_now != MCB_TYPE_M {
+                    break;
+                }
+                let next = current + read_mcb_size(mem, current) + 1;
+                let next_type = read_mcb_type(mem, next);
+                if !is_valid_mcb_type(next_type) {
+                    break;
+                }
+                if read_mcb_owner(mem, next) != MCB_OWNER_FREE {
+                    break;
+                }
+                coalesce_forward(mem, current);
+            }
+        }
+        if read_mcb_type(mem, current) == MCB_TYPE_Z {
+            return;
+        }
+        current = current + read_mcb_size(mem, current) + 1;
     }
 }
 
