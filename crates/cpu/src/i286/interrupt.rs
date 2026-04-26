@@ -1,4 +1,4 @@
-use super::{I286, TRACE_ADDRESS_MASK};
+use super::{ADDRESS_MASK, I286};
 use crate::{PENDING_IRQ, PENDING_NMI, SegReg16};
 
 const INTGATE: u8 = 6;
@@ -84,12 +84,12 @@ impl I286 {
         }
 
         let gate_addr = self.idt_base.wrapping_add(gate_offset);
-        let w0 = bus.read_byte(gate_addr & TRACE_ADDRESS_MASK) as u16
-            | ((bus.read_byte(gate_addr.wrapping_add(1) & TRACE_ADDRESS_MASK) as u16) << 8);
-        let w1 = bus.read_byte(gate_addr.wrapping_add(2) & TRACE_ADDRESS_MASK) as u16
-            | ((bus.read_byte(gate_addr.wrapping_add(3) & TRACE_ADDRESS_MASK) as u16) << 8);
-        let w2 = bus.read_byte(gate_addr.wrapping_add(4) & TRACE_ADDRESS_MASK) as u16
-            | ((bus.read_byte(gate_addr.wrapping_add(5) & TRACE_ADDRESS_MASK) as u16) << 8);
+        let w0 = bus.read_byte(gate_addr & ADDRESS_MASK) as u16
+            | ((bus.read_byte(gate_addr.wrapping_add(1) & ADDRESS_MASK) as u16) << 8);
+        let w1 = bus.read_byte(gate_addr.wrapping_add(2) & ADDRESS_MASK) as u16
+            | ((bus.read_byte(gate_addr.wrapping_add(3) & ADDRESS_MASK) as u16) << 8);
+        let w2 = bus.read_byte(gate_addr.wrapping_add(4) & ADDRESS_MASK) as u16
+            | ((bus.read_byte(gate_addr.wrapping_add(5) & ADDRESS_MASK) as u16) << 8);
 
         let gate_ip = w0;
         let gate_selector = w1;
@@ -184,21 +184,21 @@ impl I286 {
             }
 
             let new_sp = bus
-                .read_byte(self.tr_base.wrapping_add(tss_sp_offset as u32) & TRACE_ADDRESS_MASK)
+                .read_byte(self.tr_base.wrapping_add(tss_sp_offset as u32) & ADDRESS_MASK)
                 as u16
                 | ((bus.read_byte(
                     self.tr_base
                         .wrapping_add(tss_sp_offset.wrapping_add(1) as u32)
-                        & TRACE_ADDRESS_MASK,
+                        & ADDRESS_MASK,
                 ) as u16)
                     << 8);
             let new_ss = bus
-                .read_byte(self.tr_base.wrapping_add(tss_ss_offset as u32) & TRACE_ADDRESS_MASK)
+                .read_byte(self.tr_base.wrapping_add(tss_ss_offset as u32) & ADDRESS_MASK)
                 as u16
                 | ((bus.read_byte(
                     self.tr_base
                         .wrapping_add(tss_ss_offset.wrapping_add(1) as u32)
-                        & TRACE_ADDRESS_MASK,
+                        & ADDRESS_MASK,
                 ) as u16)
                     << 8);
 

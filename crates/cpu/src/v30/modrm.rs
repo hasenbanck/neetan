@@ -141,7 +141,7 @@ impl V30 {
             self.regs.byte(self.rm_byte(modrm))
         } else {
             self.calc_ea(modrm, bus);
-            bus.read_byte(self.ea)
+            self.biu_read_u8_physical(bus, self.ea)
         }
     }
 
@@ -159,7 +159,7 @@ impl V30 {
             let reg = self.rm_byte(modrm);
             self.regs.set_byte(reg, value);
         } else {
-            bus.write_byte(self.ea, value);
+            self.biu_write_u8_physical(bus, self.ea, value);
         }
     }
 
@@ -178,7 +178,7 @@ impl V30 {
             self.regs.set_byte(reg, value);
         } else {
             self.calc_ea(modrm, bus);
-            bus.write_byte(self.ea, value);
+            self.biu_write_u8_physical(bus, self.ea, value);
         }
     }
 

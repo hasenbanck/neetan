@@ -23,7 +23,7 @@ impl V30 {
             6 => self.alu_xor_byte(dst, src),
             7 => {
                 self.alu_sub_byte(dst, src);
-                self.clk_modrm(modrm, 3, 7);
+                self.clk_modrm(bus, modrm, 3, 7);
                 return;
             }
             _ => unreachable!(),
@@ -31,7 +31,7 @@ impl V30 {
         if (modrm >> 3) & 7 != 7 {
             self.putback_rm_byte(modrm, result, bus);
         }
-        self.clk_modrm(modrm, 3, 7);
+        self.clk_modrm(bus, modrm, 3, 7);
     }
 
     /// Group 0x81: ALU r/m16, imm16
@@ -55,7 +55,7 @@ impl V30 {
             6 => self.alu_xor_word(dst, src),
             7 => {
                 self.alu_sub_word(dst, src);
-                self.clk_modrm_word(modrm, 3, 7, 1);
+                self.clk_modrm_word(bus, modrm, 3, 7);
                 return;
             }
             _ => unreachable!(),
@@ -63,7 +63,7 @@ impl V30 {
         if (modrm >> 3) & 7 != 7 {
             self.putback_rm_word(modrm, result, bus);
         }
-        self.clk_modrm_word(modrm, 3, 7, 2);
+        self.clk_modrm_word(bus, modrm, 3, 7);
     }
 
     /// Group 0x82: ALU r/m8, imm8 (same as 0x80)
@@ -92,7 +92,7 @@ impl V30 {
             6 => self.alu_xor_word(dst, src),
             7 => {
                 self.alu_sub_word(dst, src);
-                self.clk_modrm_word(modrm, 3, 7, 1);
+                self.clk_modrm_word(bus, modrm, 3, 7);
                 return;
             }
             _ => unreachable!(),
@@ -100,7 +100,7 @@ impl V30 {
         if (modrm >> 3) & 7 != 7 {
             self.putback_rm_word(modrm, result, bus);
         }
-        self.clk_modrm_word(modrm, 3, 7, 2);
+        self.clk_modrm_word(bus, modrm, 3, 7);
     }
 
     /// Group 0xC0: shift/rotate r/m8, imm8
@@ -121,7 +121,7 @@ impl V30 {
         };
         self.putback_rm_byte(modrm, result, bus);
         let n = count as i32;
-        self.clk_modrm(modrm, 5 + n, 8 + n);
+        self.clk_modrm(bus, modrm, 5 + n, 8 + n);
     }
 
     /// Group 0xC1: shift/rotate r/m16, imm8
@@ -142,7 +142,7 @@ impl V30 {
         };
         self.putback_rm_word(modrm, result, bus);
         let n = count as i32;
-        self.clk_modrm_word(modrm, 5 + n, 8 + n, 2);
+        self.clk_modrm_word(bus, modrm, 5 + n, 8 + n);
     }
 
     /// Group 0xD0: shift/rotate r/m8, 1
@@ -161,7 +161,7 @@ impl V30 {
             _ => unreachable!(),
         };
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_modrm(modrm, 2, 7);
+        self.clk_modrm(bus, modrm, 2, 7);
     }
 
     /// Group 0xD1: shift/rotate r/m16, 1
@@ -180,7 +180,7 @@ impl V30 {
             _ => unreachable!(),
         };
         self.putback_rm_word(modrm, result, bus);
-        self.clk_modrm_word(modrm, 2, 7, 2);
+        self.clk_modrm_word(bus, modrm, 2, 7);
     }
 
     /// Group 0xD2: shift/rotate r/m8, CL
@@ -201,7 +201,7 @@ impl V30 {
         };
         self.putback_rm_byte(modrm, result, bus);
         let n = count as i32;
-        self.clk_modrm(modrm, 5 + n, 8 + n);
+        self.clk_modrm(bus, modrm, 5 + n, 8 + n);
     }
 
     /// Group 0xD3: shift/rotate r/m16, CL
@@ -222,7 +222,7 @@ impl V30 {
         };
         self.putback_rm_word(modrm, result, bus);
         let n = count as i32;
-        self.clk_modrm_word(modrm, 5 + n, 8 + n, 2);
+        self.clk_modrm_word(bus, modrm, 5 + n, 8 + n);
     }
 
     /// Group 0xF6: various byte operations
@@ -235,20 +235,20 @@ impl V30 {
                 let dst = self.get_rm_byte(modrm, bus);
                 let src = self.fetch(bus);
                 self.alu_and_byte(dst, src);
-                self.clk_modrm(modrm, 2, 6);
+                self.clk_modrm(bus, modrm, 2, 6);
             }
             2 => {
                 // NOT r/m8
                 let dst = self.get_rm_byte(modrm, bus);
                 self.putback_rm_byte(modrm, !dst, bus);
-                self.clk_modrm(modrm, 2, 7);
+                self.clk_modrm(bus, modrm, 2, 7);
             }
             3 => {
                 // NEG r/m8
                 let dst = self.get_rm_byte(modrm, bus);
                 let result = self.alu_neg_byte(dst);
                 self.putback_rm_byte(modrm, result, bus);
-                self.clk_modrm(modrm, 2, 7);
+                self.clk_modrm(bus, modrm, 2, 7);
             }
             4 => {
                 // MUL r/m8 (unsigned, NEC MULU)
@@ -258,58 +258,64 @@ impl V30 {
                 self.regs.set_word(WordReg::AX, result);
                 self.flags.carry_val = if result & 0xFF00 != 0 { 1 } else { 0 };
                 self.flags.overflow_val = self.flags.carry_val;
-                self.clk_modrm(modrm, 13, 16);
+                self.clk_modrm(bus, modrm, 22, 25);
             }
             5 => {
                 // IMUL r/m8 (signed, NEC MUL)
-                let src = self.get_rm_byte(modrm, bus) as i8 as i16;
-                let al = self.regs.byte(ByteReg::AL) as i8 as i16;
-                let result = al * src;
+                let src = self.get_rm_byte(modrm, bus) as i8;
+                let al = self.regs.byte(ByteReg::AL) as i8;
+                let result = al as i16 * src as i16;
+                let cycles = Self::signed_multiply_byte_cycles(al, src);
                 self.regs.set_word(WordReg::AX, result as u16);
                 let ah = (result >> 8) as i8;
                 let al_sign = result as i8;
                 self.flags.carry_val = if ah != (al_sign >> 7) { 1 } else { 0 };
                 self.flags.overflow_val = self.flags.carry_val;
-                self.clk_modrm(modrm, 13, 16);
+                self.clk_modrm(bus, modrm, cycles, cycles + 3);
             }
             6 => {
                 // DIV r/m8 (unsigned, NEC DIVU)
                 let src = self.get_rm_byte(modrm, bus) as u16;
                 if src == 0 {
+                    self.clk_modrm(bus, modrm, 14, 17);
                     self.raise_interrupt(0, bus);
                     return;
                 }
                 let aw = self.regs.word(WordReg::AX);
                 let quotient = aw / src;
                 if quotient > 0xFF {
+                    self.clk_modrm(bus, modrm, 14, 17);
                     self.raise_interrupt(0, bus);
                     return;
                 }
                 let remainder = aw % src;
                 self.regs.set_byte(ByteReg::AL, quotient as u8);
                 self.regs.set_byte(ByteReg::AH, remainder as u8);
-                self.clk_modrm(modrm, 14, 17);
+                self.clk_modrm(bus, modrm, 14, 17);
             }
             7 => {
                 // IDIV r/m8 (signed, NEC DIV)
                 let src = self.get_rm_byte(modrm, bus) as i8 as i16;
                 if src == 0 {
+                    self.clk_modrm(bus, modrm, 17, 20);
                     self.raise_interrupt(0, bus);
                     return;
                 }
                 let aw = self.regs.word(WordReg::AX) as i16;
                 let Some(quotient) = aw.checked_div(src) else {
+                    self.clk_modrm(bus, modrm, 17, 20);
                     self.raise_interrupt(0, bus);
                     return;
                 };
                 if !(-127..=127).contains(&quotient) {
+                    self.clk_modrm(bus, modrm, 17, 20);
                     self.raise_interrupt(0, bus);
                     return;
                 }
                 let remainder = aw.checked_rem(src).unwrap_or(0);
                 self.regs.set_byte(ByteReg::AL, quotient as u8);
                 self.regs.set_byte(ByteReg::AH, remainder as u8);
-                self.clk_modrm(modrm, 17, 20);
+                self.clk_modrm(bus, modrm, 17, 20);
             }
             _ => unreachable!(),
         }
@@ -325,20 +331,20 @@ impl V30 {
                 let dst = self.get_rm_word(modrm, bus);
                 let src = self.fetchword(bus);
                 self.alu_and_word(dst, src);
-                self.clk_modrm_word(modrm, 2, 6, 1);
+                self.clk_modrm_word(bus, modrm, 2, 6);
             }
             2 => {
                 // NOT r/m16
                 let dst = self.get_rm_word(modrm, bus);
                 self.putback_rm_word(modrm, !dst, bus);
-                self.clk_modrm_word(modrm, 2, 7, 2);
+                self.clk_modrm_word(bus, modrm, 2, 7);
             }
             3 => {
                 // NEG r/m16
                 let dst = self.get_rm_word(modrm, bus);
                 let result = self.alu_neg_word(dst);
                 self.putback_rm_word(modrm, result, bus);
-                self.clk_modrm_word(modrm, 2, 7, 2);
+                self.clk_modrm_word(bus, modrm, 2, 7);
             }
             4 => {
                 // MUL r/m16 (unsigned, NEC MULU)
@@ -349,25 +355,27 @@ impl V30 {
                 self.regs.set_word(WordReg::DX, (result >> 16) as u16);
                 self.flags.carry_val = if result & 0xFFFF0000 != 0 { 1 } else { 0 };
                 self.flags.overflow_val = self.flags.carry_val;
-                self.clk_modrm_word(modrm, 21, 24, 1);
+                self.clk_modrm_word(bus, modrm, 29, 32);
             }
             5 => {
                 // IMUL r/m16 (signed, NEC MUL)
-                let src = self.get_rm_word(modrm, bus) as i16 as i32;
-                let aw = self.regs.word(WordReg::AX) as i16 as i32;
-                let result = aw * src;
+                let src = self.get_rm_word(modrm, bus) as i16;
+                let aw = self.regs.word(WordReg::AX) as i16;
+                let result = aw as i32 * src as i32;
+                let cycles = Self::signed_multiply_word_cycles(aw, src);
                 self.regs.set_word(WordReg::AX, result as u16);
                 self.regs.set_word(WordReg::DX, (result >> 16) as u16);
                 let upper = (result >> 16) as i16;
                 let lower_sign = result as i16;
                 self.flags.carry_val = if upper != (lower_sign >> 15) { 1 } else { 0 };
                 self.flags.overflow_val = self.flags.carry_val;
-                self.clk_modrm_word(modrm, 21, 24, 1);
+                self.clk_modrm_word(bus, modrm, cycles, cycles + 3);
             }
             6 => {
                 // DIV r/m16 (unsigned, NEC DIVU)
                 let src = self.get_rm_word(modrm, bus) as u32;
                 if src == 0 {
+                    self.clk_modrm_word(bus, modrm, 22, 25);
                     self.raise_interrupt(0, bus);
                     return;
                 }
@@ -376,18 +384,20 @@ impl V30 {
                 let dividend = (dw << 16) | aw;
                 let quotient = dividend / src;
                 if quotient > 0xFFFF {
+                    self.clk_modrm_word(bus, modrm, 22, 25);
                     self.raise_interrupt(0, bus);
                     return;
                 }
                 let remainder = dividend % src;
                 self.regs.set_word(WordReg::AX, quotient as u16);
                 self.regs.set_word(WordReg::DX, remainder as u16);
-                self.clk_modrm_word(modrm, 22, 25, 1);
+                self.clk_modrm_word(bus, modrm, 22, 25);
             }
             7 => {
                 // IDIV r/m16 (signed, NEC DIV)
                 let src = self.get_rm_word(modrm, bus) as i16 as i32;
                 if src == 0 {
+                    self.clk_modrm_word(bus, modrm, 25, 28);
                     self.raise_interrupt(0, bus);
                     return;
                 }
@@ -395,17 +405,19 @@ impl V30 {
                 let aw = self.regs.word(WordReg::AX) as u32;
                 let dividend = ((dw << 16) | aw) as i32;
                 let Some(quotient) = dividend.checked_div(src) else {
+                    self.clk_modrm_word(bus, modrm, 25, 28);
                     self.raise_interrupt(0, bus);
                     return;
                 };
                 if !(-32767..=32767).contains(&quotient) {
+                    self.clk_modrm_word(bus, modrm, 25, 28);
                     self.raise_interrupt(0, bus);
                     return;
                 }
                 let remainder = dividend.checked_rem(src).unwrap_or(0);
                 self.regs.set_word(WordReg::AX, quotient as u16);
                 self.regs.set_word(WordReg::DX, remainder as u16);
-                self.clk_modrm_word(modrm, 25, 28, 1);
+                self.clk_modrm_word(bus, modrm, 25, 28);
             }
             _ => unreachable!(),
         }
@@ -420,17 +432,17 @@ impl V30 {
                 let dst = self.get_rm_byte(modrm, bus);
                 let result = self.alu_inc_byte(dst);
                 self.putback_rm_byte(modrm, result, bus);
-                self.clk_modrm(modrm, 2, 7);
+                self.clk_modrm(bus, modrm, 2, 7);
             }
             1 => {
                 // DEC r/m8
                 let dst = self.get_rm_byte(modrm, bus);
                 let result = self.alu_dec_byte(dst);
                 self.putback_rm_byte(modrm, result, bus);
-                self.clk_modrm(modrm, 2, 7);
+                self.clk_modrm(bus, modrm, 2, 7);
             }
             _ => {
-                self.clk(2);
+                self.clk(bus, 2);
             }
         }
     }
@@ -444,26 +456,25 @@ impl V30 {
                 let dst = self.get_rm_word(modrm, bus);
                 let result = self.alu_inc_word(dst);
                 self.putback_rm_word(modrm, result, bus);
-                self.clk_modrm_word(modrm, 2, 7, 2);
+                self.clk_modrm_word(bus, modrm, 2, 7);
             }
             1 => {
                 // DEC r/m16
                 let dst = self.get_rm_word(modrm, bus);
                 let result = self.alu_dec_word(dst);
                 self.putback_rm_word(modrm, result, bus);
-                self.clk_modrm_word(modrm, 2, 7, 2);
+                self.clk_modrm_word(bus, modrm, 2, 7);
             }
             2 => {
                 // CALL r/m16 (near indirect)
-                let sp_pen = self.sp_penalty(1);
                 let dst = self.get_rm_word(modrm, bus);
                 self.push(bus, self.ip);
                 self.ip = dst;
                 if modrm >= 0xC0 {
-                    self.clk(7 + sp_pen);
+                    self.clk(bus, 7);
                 } else {
                     let ea_pen = if self.ea & 1 == 1 { 4 } else { 0 };
-                    self.clk(11 + sp_pen + ea_pen);
+                    self.clk(bus, 11 + ea_pen);
                 }
             }
             3 => {
@@ -471,7 +482,6 @@ impl V30 {
                 if modrm >= 0xC0 {
                     return;
                 }
-                let sp_pen = self.sp_penalty(2);
                 self.calc_ea(modrm, bus);
                 let offset = self.seg_read_word(bus);
                 let segment = self.seg_read_word_at(bus, 2);
@@ -481,13 +491,13 @@ impl V30 {
                 self.ip = offset;
                 self.sregs[SegReg16::CS as usize] = segment;
                 let ea_pen = if self.ea & 1 == 1 { 8 } else { 0 };
-                self.clk(16 + sp_pen + ea_pen);
+                self.clk(bus, 16 + ea_pen);
             }
             4 => {
                 // JMP r/m16 (near indirect)
                 let dst = self.get_rm_word(modrm, bus);
                 self.ip = dst;
-                self.clk_modrm_word(modrm, 7, 11, 1);
+                self.clk_modrm_word(bus, modrm, 7, 11);
             }
             5 => {
                 // JMP m16:16 (far indirect)
@@ -499,28 +509,44 @@ impl V30 {
                 let segment = self.seg_read_word_at(bus, 2);
                 self.ip = offset;
                 self.sregs[SegReg16::CS as usize] = segment;
-                let penalty = if self.ea & 1 == 1 { 8 } else { 0 };
-                self.clk(11 + penalty);
+                self.clk(bus, 11);
             }
             6 | 7 => {
                 // PUSH r/m16 (7 is undocumented alias)
                 if modrm >= 0xC0 && (modrm & 7) == 4 {
                     self.push_sp(bus);
                 } else {
-                    let sp_pen = self.sp_penalty(1);
                     let val = self.get_rm_word(modrm, bus);
                     self.push(bus, val);
                     if modrm >= 0xC0 {
-                        self.clk(3 + sp_pen);
+                        self.clk(bus, 3);
                     } else {
                         let ea_pen = if self.ea & 1 == 1 { 4 } else { 0 };
-                        self.clk(5 + sp_pen + ea_pen);
+                        self.clk(bus, 5 + ea_pen);
                     }
                 }
             }
             _ => {
-                self.clk(2);
+                self.clk(bus, 2);
             }
+        }
+    }
+
+    #[inline(always)]
+    fn signed_multiply_byte_cycles(left: i8, right: i8) -> i32 {
+        if left.is_negative() ^ right.is_negative() {
+            36
+        } else {
+            32
+        }
+    }
+
+    #[inline(always)]
+    fn signed_multiply_word_cycles(left: i16, right: i16) -> i32 {
+        if left.is_negative() ^ right.is_negative() {
+            43
+        } else {
+            39
         }
     }
 }

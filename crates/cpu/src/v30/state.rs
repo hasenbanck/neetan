@@ -147,18 +147,6 @@ impl V30State {
 }
 
 impl V30 {
-    /// Loads CPU state from a snapshot, resetting runtime flags.
-    pub fn load_state(&mut self, state: &V30State) {
-        self.state = state.clone();
-        self.halted = false;
-        self.pending_irq = 0;
-        self.no_interrupt = 0;
-        self.inhibit_all = 0;
-        self.rep_active = false;
-        self.rep_restart_ip = 0;
-        self.seg_prefix = false;
-    }
-
     /// Returns the AL register value.
     pub fn al(&self) -> u8 {
         self.regs.byte(ByteReg::AL)

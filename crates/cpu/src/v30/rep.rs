@@ -20,25 +20,25 @@ impl V30 {
                 self.seg_prefix = true;
                 self.prefix_seg = SegReg16::ES;
                 next = self.fetch(bus);
-                self.clk(0);
+                self.clk(bus, 0);
             }
             0x2E => {
                 self.seg_prefix = true;
                 self.prefix_seg = SegReg16::CS;
                 next = self.fetch(bus);
-                self.clk(0);
+                self.clk(bus, 0);
             }
             0x36 => {
                 self.seg_prefix = true;
                 self.prefix_seg = SegReg16::SS;
                 next = self.fetch(bus);
-                self.clk(0);
+                self.clk(bus, 0);
             }
             0x3E => {
                 self.seg_prefix = true;
                 self.prefix_seg = SegReg16::DS;
                 next = self.fetch(bus);
-                self.clk(0);
+                self.clk(bus, 0);
             }
             _ => {}
         }
@@ -53,7 +53,7 @@ impl V30 {
             0x6E | 0x6F => 5, // REP OUTSB/W
             _ => 0,
         };
-        self.clk(startup);
+        self.clk(bus, startup);
         self.do_rep(rep_type, next, bus);
     }
 
@@ -65,19 +65,20 @@ impl V30 {
         }
 
         let is_cmps_scas = matches!(next, 0xA6 | 0xA7 | 0xAE | 0xAF);
+        let ends_with_write = matches!(next, 0x6C | 0x6D | 0x6E | 0x6F | 0xA4 | 0xA5 | 0xAA | 0xAB);
 
         loop {
             match next {
-                0x6C => self.insb(bus),
-                0x6D => self.insw(bus),
-                0x6E => self.outsb(bus),
-                0x6F => self.outsw(bus),
+                0x6C => self.insb_body(bus),
+                0x6D => self.insw_body(bus),
+                0x6E => self.outsb_body(bus),
+                0x6F => self.outsw_body(bus),
                 0xA4 => self.movsb(bus),
                 0xA5 => self.movsw(bus),
                 0xA6 => self.cmpsb(bus),
                 0xA7 => self.cmpsw(bus),
-                0xAA => self.stosb(bus),
-                0xAB => self.stosw(bus),
+                0xAA => self.stosb_body(bus),
+                0xAB => self.stosw_body(bus),
                 0xAC => self.lodsb(bus),
                 0xAD => self.lodsw(bus),
                 0xAE => self.scasb(bus),
@@ -108,6 +109,10 @@ impl V30 {
                 break;
             }
 
+            if is_cmps_scas {
+                self.clk(bus, 5);
+            }
+
             self.cycles_remaining -= bus.drain_wait_cycles();
 
             // Update the bus cycle so scheduler events (vsync, PIT, etc.)
@@ -118,6 +123,10 @@ impl V30 {
             let interrupt_pending = bus.has_nmi() || (self.flags.if_flag && bus.has_irq());
 
             if self.cycles_remaining <= 0 || interrupt_pending {
+                if ends_with_write {
+                    self.biu_bus_wait_finish(bus);
+                }
+
                 // Save state for resume.
                 self.rep_active = true;
                 self.rep_ip = self.ip;
@@ -133,6 +142,14 @@ impl V30 {
                 self.regs.set_word(WordReg::CX, count);
                 return;
             }
+
+            if ends_with_write {
+                self.biu_chain_eu_transfer();
+            }
+        }
+
+        if ends_with_write {
+            self.biu_bus_wait_finish(bus);
         }
 
         self.regs.set_word(WordReg::CX, count);

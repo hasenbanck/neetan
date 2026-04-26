@@ -48,7 +48,10 @@ pub use i286::{
 };
 pub use i386::{CPU_MODEL_386, CPU_MODEL_486, I386, I386Flags, I386State};
 pub use i8086::{I8086, I8086Flags, I8086State, PC9801F_CPU_CLOCK_5MHZ, PC9801F_CPU_CLOCK_8MHZ};
-pub use v30::{V30, V30Flags, V30State};
+pub use v30::{
+    V30, V30BusPhase, V30CycleTraceEntry, V30Flags, V30QueueOpTrace, V30State, V30TraceBusStatus,
+    V30TraceFetchState, V30TraceTCycle, V30TraceTaCycle,
+};
 pub use z80::{Z80, Z80Flags, Z80State};
 
 pub(crate) const PENDING_IRQ: u8 = 0x01;

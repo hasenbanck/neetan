@@ -1,5 +1,5 @@
 use super::{
-    EaClass, I286, TRACE_ADDRESS_MASK, address_is_odd, modrm,
+    ADDRESS_MASK, EaClass, I286, address_is_odd, modrm,
     timing::{
         I286ControlTransferTimingTemplate, I286DemandPrefetchPolicy, I286FinishState,
         I286FpuEscapeTiming, LOCK_PREFIX_OVERLAP_CREDIT, MOFFS_PREFIX_OVERLAP_CREDIT,
@@ -1556,9 +1556,7 @@ impl I286 {
             self.timing
                 .advance_control_transfer_fetches(bus, code_segment_base, 1);
             self.sync_timing_cycles();
-            if address_is_odd(
-                code_segment_base.wrapping_add(u32::from(self.ip)) & TRACE_ADDRESS_MASK,
-            ) {
+            if address_is_odd(code_segment_base.wrapping_add(u32::from(self.ip)) & ADDRESS_MASK) {
                 self.timing.drive_next_write_low_byte_on_ts();
             }
             self.push(bus, ip);
@@ -1715,14 +1713,13 @@ impl I286 {
         // Read new IP and CS from stack without modifying SP yet.
         let sp = self.regs.word(WordReg::SP);
         let ss_base = self.seg_base(SegReg16::SS);
-        let new_ip = bus.read_byte(ss_base.wrapping_add(sp as u32) & TRACE_ADDRESS_MASK) as u16
-            | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(1) as u32) & TRACE_ADDRESS_MASK)
+        let new_ip = bus.read_byte(ss_base.wrapping_add(sp as u32) & ADDRESS_MASK) as u16
+            | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(1) as u32) & ADDRESS_MASK)
                 as u16)
                 << 8);
-        let new_cs = bus
-            .read_byte(ss_base.wrapping_add(sp.wrapping_add(2) as u32) & TRACE_ADDRESS_MASK)
+        let new_cs = bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(2) as u32) & ADDRESS_MASK)
             as u16
-            | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(3) as u32) & TRACE_ADDRESS_MASK)
+            | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(3) as u32) & ADDRESS_MASK)
                 as u16)
                 << 8);
 
@@ -1732,17 +1729,15 @@ impl I286 {
         if new_rpl > old_cpl {
             // Inter-privilege return: also read new SP and SS.
             let new_sp = bus
-                .read_byte(ss_base.wrapping_add(sp.wrapping_add(4) as u32) & TRACE_ADDRESS_MASK)
+                .read_byte(ss_base.wrapping_add(sp.wrapping_add(4) as u32) & ADDRESS_MASK)
                 as u16
-                | ((bus
-                    .read_byte(ss_base.wrapping_add(sp.wrapping_add(5) as u32) & TRACE_ADDRESS_MASK)
+                | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(5) as u32) & ADDRESS_MASK)
                     as u16)
                     << 8);
             let new_ss = bus
-                .read_byte(ss_base.wrapping_add(sp.wrapping_add(6) as u32) & TRACE_ADDRESS_MASK)
+                .read_byte(ss_base.wrapping_add(sp.wrapping_add(6) as u32) & ADDRESS_MASK)
                 as u16
-                | ((bus
-                    .read_byte(ss_base.wrapping_add(sp.wrapping_add(7) as u32) & TRACE_ADDRESS_MASK)
+                | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(7) as u32) & ADDRESS_MASK)
                     as u16)
                     << 8);
 
@@ -1801,14 +1796,13 @@ impl I286 {
 
         let sp = self.regs.word(WordReg::SP);
         let ss_base = self.seg_base(SegReg16::SS);
-        let new_ip = bus.read_byte(ss_base.wrapping_add(sp as u32) & TRACE_ADDRESS_MASK) as u16
-            | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(1) as u32) & TRACE_ADDRESS_MASK)
+        let new_ip = bus.read_byte(ss_base.wrapping_add(sp as u32) & ADDRESS_MASK) as u16
+            | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(1) as u32) & ADDRESS_MASK)
                 as u16)
                 << 8);
-        let new_cs = bus
-            .read_byte(ss_base.wrapping_add(sp.wrapping_add(2) as u32) & TRACE_ADDRESS_MASK)
+        let new_cs = bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(2) as u32) & ADDRESS_MASK)
             as u16
-            | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(3) as u32) & TRACE_ADDRESS_MASK)
+            | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(3) as u32) & ADDRESS_MASK)
                 as u16)
                 << 8);
 
@@ -1817,17 +1811,17 @@ impl I286 {
 
         if new_rpl > old_cpl {
             let sp_ss_base = sp.wrapping_add(4).wrapping_add(imm);
-            let new_sp = bus.read_byte(ss_base.wrapping_add(sp_ss_base as u32) & TRACE_ADDRESS_MASK)
+            let new_sp = bus.read_byte(ss_base.wrapping_add(sp_ss_base as u32) & ADDRESS_MASK)
                 as u16
                 | ((bus.read_byte(
-                    ss_base.wrapping_add(sp_ss_base.wrapping_add(1) as u32) & TRACE_ADDRESS_MASK,
+                    ss_base.wrapping_add(sp_ss_base.wrapping_add(1) as u32) & ADDRESS_MASK,
                 ) as u16)
                     << 8);
-            let new_ss = bus.read_byte(
-                ss_base.wrapping_add(sp_ss_base.wrapping_add(2) as u32) & TRACE_ADDRESS_MASK,
-            ) as u16
+            let new_ss = bus
+                .read_byte(ss_base.wrapping_add(sp_ss_base.wrapping_add(2) as u32) & ADDRESS_MASK)
+                as u16
                 | ((bus.read_byte(
-                    ss_base.wrapping_add(sp_ss_base.wrapping_add(3) as u32) & TRACE_ADDRESS_MASK,
+                    ss_base.wrapping_add(sp_ss_base.wrapping_add(3) as u32) & ADDRESS_MASK,
                 ) as u16)
                     << 8);
 
@@ -1904,7 +1898,7 @@ impl I286 {
         self.ea_seg = self.default_seg(SegReg16::DS);
         let base = self.seg_base(self.ea_seg);
         self.eo = offset;
-        self.ea = base.wrapping_add(offset as u32) & TRACE_ADDRESS_MASK;
+        self.ea = base.wrapping_add(offset as u32) & ADDRESS_MASK;
         self.prepare_moffs_access(offset);
         let val = self.seg_read_word(bus);
         self.regs.set_word(WordReg::AX, val);
@@ -1925,7 +1919,7 @@ impl I286 {
         self.ea_seg = self.default_seg(SegReg16::DS);
         let base = self.seg_base(self.ea_seg);
         self.eo = offset;
-        self.ea = base.wrapping_add(offset as u32) & TRACE_ADDRESS_MASK;
+        self.ea = base.wrapping_add(offset as u32) & ADDRESS_MASK;
         self.prepare_moffs_access(offset);
         self.seg_write_word(bus, self.regs.word(WordReg::AX));
         let tail_cycles = if address_is_odd(self.ea) { 2 } else { 3 };
@@ -2130,8 +2124,8 @@ impl I286 {
         }
 
         if self.flags.nt {
-            let backlink = bus.read_byte(self.tr_base & TRACE_ADDRESS_MASK) as u16
-                | ((bus.read_byte(self.tr_base.wrapping_add(1) & TRACE_ADDRESS_MASK) as u16) << 8);
+            let backlink = bus.read_byte(self.tr_base & ADDRESS_MASK) as u16
+                | ((bus.read_byte(self.tr_base.wrapping_add(1) & ADDRESS_MASK) as u16) << 8);
             self.switch_task(backlink, super::TaskType::Iret, bus);
             let flags_val = self.flags.compress();
             let cpl = self.cpl();
@@ -2145,39 +2139,35 @@ impl I286 {
         // Read values from stack without modifying SP yet.
         let sp = self.regs.word(WordReg::SP);
         let ss_base = self.seg_base(SegReg16::SS);
-        let new_ip = bus.read_byte(ss_base.wrapping_add(sp as u32) & TRACE_ADDRESS_MASK) as u16
-            | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(1) as u32) & TRACE_ADDRESS_MASK)
+        let new_ip = bus.read_byte(ss_base.wrapping_add(sp as u32) & ADDRESS_MASK) as u16
+            | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(1) as u32) & ADDRESS_MASK)
                 as u16)
                 << 8);
-        let new_cs = bus
-            .read_byte(ss_base.wrapping_add(sp.wrapping_add(2) as u32) & TRACE_ADDRESS_MASK)
+        let new_cs = bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(2) as u32) & ADDRESS_MASK)
             as u16
-            | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(3) as u32) & TRACE_ADDRESS_MASK)
+            | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(3) as u32) & ADDRESS_MASK)
                 as u16)
                 << 8);
-        let new_flags = bus
-            .read_byte(ss_base.wrapping_add(sp.wrapping_add(4) as u32) & TRACE_ADDRESS_MASK)
-            as u16
-            | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(5) as u32) & TRACE_ADDRESS_MASK)
-                as u16)
-                << 8);
+        let new_flags =
+            bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(4) as u32) & ADDRESS_MASK) as u16
+                | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(5) as u32) & ADDRESS_MASK)
+                    as u16)
+                    << 8);
 
         let new_rpl = new_cs & 3;
 
         if new_rpl > old_cpl {
             // Inter-privilege return: also read SP and SS from stack.
             let new_sp = bus
-                .read_byte(ss_base.wrapping_add(sp.wrapping_add(6) as u32) & TRACE_ADDRESS_MASK)
+                .read_byte(ss_base.wrapping_add(sp.wrapping_add(6) as u32) & ADDRESS_MASK)
                 as u16
-                | ((bus
-                    .read_byte(ss_base.wrapping_add(sp.wrapping_add(7) as u32) & TRACE_ADDRESS_MASK)
+                | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(7) as u32) & ADDRESS_MASK)
                     as u16)
                     << 8);
             let new_ss = bus
-                .read_byte(ss_base.wrapping_add(sp.wrapping_add(8) as u32) & TRACE_ADDRESS_MASK)
+                .read_byte(ss_base.wrapping_add(sp.wrapping_add(8) as u32) & ADDRESS_MASK)
                 as u16
-                | ((bus
-                    .read_byte(ss_base.wrapping_add(sp.wrapping_add(9) as u32) & TRACE_ADDRESS_MASK)
+                | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(9) as u32) & ADDRESS_MASK)
                     as u16)
                     << 8);
 

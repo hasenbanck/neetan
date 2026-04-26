@@ -33,9 +33,27 @@ pub struct MooI286Cycle {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MooV20Cycle {
+    pub pin_bitfield: u8,
+    pub bus_value: u32,
+    pub segment_status: u8,
+    pub memory_status: u8,
+    pub io_status: u8,
+    pub data: u8,
+    pub raw_bus_status: u8,
+    pub bus_status: String,
+    pub raw_t_state: u8,
+    pub t_state: String,
+    pub raw_queue_op: u8,
+    pub queue_op: String,
+    pub queue_byte: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MooCycle {
     Legacy(MooLegacyCycle),
     I286(MooI286Cycle),
+    V20(MooV20Cycle),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,10 +178,90 @@ fn decode_i286_t_state(raw_t_state: u8) -> String {
     .to_string()
 }
 
+fn decode_v20_bus_status(raw_bus_status: u8) -> String {
+    match raw_bus_status & 0x07 {
+        0 => "INTA",
+        1 => "IOR",
+        2 => "IOW",
+        3 => "MEMR",
+        4 => "MEMW",
+        5 => "HALT",
+        6 => "CODE",
+        _ => "PASV",
+    }
+    .to_string()
+}
+
+fn decode_v20_t_state(raw_t_state: u8) -> String {
+    match raw_t_state & 0x07 {
+        1 => "T1",
+        2 => "T2",
+        3 => "T3",
+        4 => "T4",
+        5 => "Tw",
+        _ => "Ti",
+    }
+    .to_string()
+}
+
+fn decode_v20_queue_op(raw_queue_op: u8) -> String {
+    match raw_queue_op & 0x03 {
+        1 => "F",
+        2 => "E",
+        3 => "S",
+        _ => "-",
+    }
+    .to_string()
+}
+
 fn parse_cycles(payload: &[u8], cpu_name: &str) -> Vec<MooCycle> {
     let mut offset = 0;
     let count = read_u32(payload, &mut offset) as usize;
     let mut cycles = Vec::with_capacity(count);
+
+    if cpu_name.contains("V20") {
+        for _ in 0..count {
+            let pin_bitfield = payload[offset];
+            offset += 1;
+            let bus_value = read_u32(payload, &mut offset);
+            let segment_status = payload[offset];
+            offset += 1;
+            let memory_status = payload[offset];
+            offset += 1;
+            let io_status = payload[offset];
+            offset += 1;
+            offset += 1;
+            let data = payload[offset];
+            offset += 1;
+            offset += 1;
+            let raw_bus_status = payload[offset];
+            offset += 1;
+            let raw_t_state = payload[offset];
+            offset += 1;
+            let raw_queue_op = payload[offset];
+            offset += 1;
+            let queue_byte = payload[offset];
+            offset += 1;
+
+            cycles.push(MooCycle::V20(MooV20Cycle {
+                pin_bitfield,
+                bus_value,
+                segment_status,
+                memory_status,
+                io_status,
+                data,
+                raw_bus_status,
+                bus_status: decode_v20_bus_status(raw_bus_status),
+                raw_t_state,
+                t_state: decode_v20_t_state(raw_t_state),
+                raw_queue_op,
+                queue_op: decode_v20_queue_op(raw_queue_op),
+                queue_byte,
+            }));
+        }
+
+        return cycles;
+    }
 
     if cpu_name.contains("286") {
         for _ in 0..count {

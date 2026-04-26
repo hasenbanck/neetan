@@ -15,13 +15,13 @@ impl V30 {
         let di = self.regs.word(WordReg::DI);
         let src_addr = self.default_base(SegReg16::DS).wrapping_add(si as u32) & 0xFFFFF;
         let dst_addr = self.seg_base(SegReg16::ES).wrapping_add(di as u32) & 0xFFFFF;
-        let val = bus.read_byte(src_addr);
-        bus.write_byte(dst_addr, val);
+        let val = self.biu_read_u8_physical(bus, src_addr);
+        self.biu_chain_eu_transfer();
+        self.biu_write_u8_physical(bus, dst_addr, val);
         let delta = self.direction_delta();
         self.regs.set_word(WordReg::SI, si.wrapping_add(delta));
         let delta = self.direction_delta();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        self.clk(4);
     }
 
     pub(super) fn movsw(&mut self, bus: &mut impl common::Bus) {
@@ -30,12 +30,12 @@ impl V30 {
         let src_base = self.default_base(SegReg16::DS);
         let dst_base = self.seg_base(SegReg16::ES);
         let val = self.read_word_seg(bus, src_base, si);
+        self.biu_chain_eu_transfer();
         self.write_word_seg(bus, dst_base, di, val);
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::SI, si.wrapping_add(delta));
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        self.clk(4);
     }
 
     pub(super) fn cmpsb(&mut self, bus: &mut impl common::Bus) {
@@ -43,14 +43,14 @@ impl V30 {
         let di = self.regs.word(WordReg::DI);
         let src_addr = self.default_base(SegReg16::DS).wrapping_add(si as u32) & 0xFFFFF;
         let dst_addr = self.seg_base(SegReg16::ES).wrapping_add(di as u32) & 0xFFFFF;
-        let src = bus.read_byte(src_addr);
-        let dst = bus.read_byte(dst_addr);
+        let src = self.biu_read_u8_physical(bus, src_addr);
+        self.biu_chain_eu_transfer();
+        let dst = self.biu_read_u8_physical(bus, dst_addr);
         self.alu_sub_byte(src, dst);
         let delta = self.direction_delta();
         self.regs.set_word(WordReg::SI, si.wrapping_add(delta));
         let delta = self.direction_delta();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        self.clk(9);
     }
 
     pub(super) fn cmpsw(&mut self, bus: &mut impl common::Bus) {
@@ -59,62 +59,77 @@ impl V30 {
         let src_base = self.default_base(SegReg16::DS);
         let dst_base = self.seg_base(SegReg16::ES);
         let src = self.read_word_seg(bus, src_base, si);
+        self.biu_chain_eu_transfer();
         let dst = self.read_word_seg(bus, dst_base, di);
         self.alu_sub_word(src, dst);
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::SI, si.wrapping_add(delta));
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        self.clk(9);
+    }
+
+    pub(super) fn stosb_body(&mut self, bus: &mut impl common::Bus) {
+        let di = self.regs.word(WordReg::DI);
+        let addr = self.seg_base(SegReg16::ES).wrapping_add(di as u32) & 0xFFFFF;
+        self.biu_write_u8_physical(bus, addr, self.regs.byte(ByteReg::AL));
+        let delta = self.direction_delta();
+        self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
     }
 
     pub(super) fn stosb(&mut self, bus: &mut impl common::Bus) {
-        let di = self.regs.word(WordReg::DI);
-        let addr = self.seg_base(SegReg16::ES).wrapping_add(di as u32) & 0xFFFFF;
-        bus.write_byte(addr, self.regs.byte(ByteReg::AL));
-        let delta = self.direction_delta();
-        self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        self.clk(3);
+        self.stosb_body(bus);
+        self.clk(bus, 3);
     }
 
-    pub(super) fn stosw(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn stosw_body(&mut self, bus: &mut impl common::Bus) {
         let di = self.regs.word(WordReg::DI);
         let base = self.seg_base(SegReg16::ES);
         self.write_word_seg(bus, base, di, self.regs.word(WordReg::AX));
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        self.clk(3);
     }
 
-    pub(super) fn lodsb(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn stosw(&mut self, bus: &mut impl common::Bus) {
+        self.stosw_body(bus);
+        self.clk(bus, 3);
+    }
+
+    pub(super) fn lodsb_body(&mut self, bus: &mut impl common::Bus) {
         let si = self.regs.word(WordReg::SI);
         let addr = self.default_base(SegReg16::DS).wrapping_add(si as u32) & 0xFFFFF;
-        let val = bus.read_byte(addr);
+        let val = self.biu_read_u8_physical(bus, addr);
         self.regs.set_byte(ByteReg::AL, val);
         let delta = self.direction_delta();
         self.regs.set_word(WordReg::SI, si.wrapping_add(delta));
-        self.clk(4);
     }
 
-    pub(super) fn lodsw(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn lodsb(&mut self, bus: &mut impl common::Bus) {
+        self.lodsb_body(bus);
+        self.clk(bus, 3);
+    }
+
+    pub(super) fn lodsw_body(&mut self, bus: &mut impl common::Bus) {
         let si = self.regs.word(WordReg::SI);
         let base = self.default_base(SegReg16::DS);
         let val = self.read_word_seg(bus, base, si);
         self.regs.set_word(WordReg::AX, val);
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::SI, si.wrapping_add(delta));
-        self.clk(4);
+    }
+
+    pub(super) fn lodsw(&mut self, bus: &mut impl common::Bus) {
+        self.lodsw_body(bus);
+        self.clk(bus, 2);
     }
 
     pub(super) fn scasb(&mut self, bus: &mut impl common::Bus) {
         let di = self.regs.word(WordReg::DI);
         let addr = self.seg_base(SegReg16::ES).wrapping_add(di as u32) & 0xFFFFF;
-        let dst = bus.read_byte(addr);
+        let dst = self.biu_read_u8_physical(bus, addr);
         let al = self.regs.byte(ByteReg::AL);
         self.alu_sub_byte(al, dst);
         let delta = self.direction_delta();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        self.clk(8);
     }
 
     pub(super) fn scasw(&mut self, bus: &mut impl common::Bus) {
@@ -125,50 +140,69 @@ impl V30 {
         self.alu_sub_word(aw, dst);
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        self.clk(8);
     }
 
-    pub(super) fn insb(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn insb_body(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
         let di = self.regs.word(WordReg::DI);
         let addr = self.seg_base(SegReg16::ES).wrapping_add(di as u32) & 0xFFFFF;
-        let val = bus.io_read_byte(port);
-        bus.write_byte(addr, val);
+        let val = self.biu_io_read_u8(bus, port);
+        self.biu_chain_eu_transfer();
+        self.biu_write_u8_physical(bus, addr, val);
         let delta = self.direction_delta();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        self.clk(4);
     }
 
-    pub(super) fn insw(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn insb(&mut self, bus: &mut impl common::Bus) {
+        self.insb_body(bus);
+        self.clk(bus, 4);
+    }
+
+    pub(super) fn insw_body(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
         let di = self.regs.word(WordReg::DI);
         let base = self.seg_base(SegReg16::ES);
-        let val = bus.io_read_word(port);
+        let val = self.biu_io_read_u16(bus, port);
+        self.biu_chain_eu_transfer();
         self.write_word_seg(bus, base, di, val);
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::DI, di.wrapping_add(delta));
-        self.clk(4);
     }
 
-    pub(super) fn outsb(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn insw(&mut self, bus: &mut impl common::Bus) {
+        self.insw_body(bus);
+        self.clk(bus, 4);
+    }
+
+    pub(super) fn outsb_body(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
         let si = self.regs.word(WordReg::SI);
         let addr = self.default_base(SegReg16::DS).wrapping_add(si as u32) & 0xFFFFF;
-        let val = bus.read_byte(addr);
-        bus.io_write_byte(port, val);
+        let val = self.biu_read_u8_physical(bus, addr);
+        self.biu_chain_eu_transfer();
+        self.biu_io_write_u8(bus, port, val);
         let delta = self.direction_delta();
         self.regs.set_word(WordReg::SI, si.wrapping_add(delta));
-        self.clk(4);
     }
 
-    pub(super) fn outsw(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn outsb(&mut self, bus: &mut impl common::Bus) {
+        self.outsb_body(bus);
+        self.clk(bus, 4);
+    }
+
+    pub(super) fn outsw_body(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
         let si = self.regs.word(WordReg::SI);
         let base = self.default_base(SegReg16::DS);
         let val = self.read_word_seg(bus, base, si);
-        bus.io_write_word(port, val);
+        self.biu_chain_eu_transfer();
+        self.biu_io_write_u16(bus, port, val);
         let delta = self.direction_delta_word();
         self.regs.set_word(WordReg::SI, si.wrapping_add(delta));
-        self.clk(4);
+    }
+
+    pub(super) fn outsw(&mut self, bus: &mut impl common::Bus) {
+        self.outsw_body(bus);
+        self.clk(bus, 4);
     }
 }

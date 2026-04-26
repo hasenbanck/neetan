@@ -1,12 +1,7 @@
 //! Implements the NEC V30 (μPD70116) emulation.
-//!
-//! Following references were used to write the emulator:
-//!
-//! - NEC Electronics Inc., "V20/V30 Users Manual", October 1986.
-//! - MAME NEC V20/V30/V33 emulator (`devices/cpu/nec/`), by Bryan McPhail,
-//!   Oliver Bergmann, Fabrice Frances, and David Hedley.
 
 mod alu;
+mod biu;
 mod execute;
 mod execute_0f;
 mod execute_group;
@@ -19,6 +14,14 @@ mod string_ops;
 
 use std::ops::{Deref, DerefMut};
 
+use biu::{
+    ADDRESS_MASK, BusPendingType, BusStatus, FetchState, OperandSize, QUEUE_SIZE, QueueOp,
+    QueueType, TCycle, TaCycle, TransferSize,
+};
+pub use biu::{
+    V30BusPhase, V30CycleTraceEntry, V30QueueOpTrace, V30TraceBusStatus, V30TraceFetchState,
+    V30TraceTCycle, V30TraceTaCycle,
+};
 use common::Cpu as _;
 pub use flags::V30Flags;
 pub use state::V30State;
@@ -31,6 +34,7 @@ pub struct V30 {
     pub state: V30State,
 
     prev_ip: u16,
+    opcode_start_ip: u16,
     seg_prefix: bool,
     prefix_seg: SegReg16,
 
@@ -43,6 +47,7 @@ pub struct V30 {
     rep_restart_ip: u16,
     rep_seg_prefix: bool,
     rep_prefix_seg: SegReg16,
+    rep_prefix: bool,
     rep_opcode: u8,
     rep_type: u8,
     rep_active: bool,
@@ -53,6 +58,35 @@ pub struct V30 {
 
     ea: u32,
     eo: u16,
+    effective_address_segment: SegReg16,
+
+    instruction_queue: [u8; QUEUE_SIZE],
+    instruction_queue_len: usize,
+    instruction_preload: Option<u8>,
+    instruction_entry_queue_bytes: u8,
+    prefetch_ip: u16,
+    queue_op: QueueOp,
+    last_queue_op: QueueOp,
+    last_queue_byte: u8,
+
+    t_cycle: TCycle,
+    ta_cycle: TaCycle,
+    bus_status: BusStatus,
+    bus_status_latch: BusStatus,
+    pl_status: BusStatus,
+    bus_pending: BusPendingType,
+    fetch_state: FetchState,
+    transfer_size: TransferSize,
+    operand_size: OperandSize,
+    transfer_n: u32,
+    final_transfer: bool,
+    address_bus: u32,
+    address_latch: u32,
+    data_bus: u16,
+    cycle_num: u64,
+
+    cycle_trace_enabled: bool,
+    cycle_trace: Vec<V30CycleTraceEntry>,
 }
 
 impl Deref for V30 {
@@ -74,12 +108,14 @@ impl Default for V30 {
     }
 }
 
+#[allow(dead_code)]
 impl V30 {
     /// Creates a new V30 CPU in its reset state.
     pub fn new() -> Self {
         let mut cpu = Self {
             state: V30State::default(),
             prev_ip: 0,
+            opcode_start_ip: 0,
             seg_prefix: false,
             prefix_seg: SegReg16::DS,
             halted: false,
@@ -90,6 +126,7 @@ impl V30 {
             rep_restart_ip: 0,
             rep_seg_prefix: false,
             rep_prefix_seg: SegReg16::DS,
+            rep_prefix: false,
             rep_opcode: 0,
             rep_type: 0,
             rep_active: false,
@@ -98,149 +135,382 @@ impl V30 {
             run_budget: 0,
             ea: 0,
             eo: 0,
+            effective_address_segment: SegReg16::DS,
+            instruction_queue: [0; QUEUE_SIZE],
+            instruction_queue_len: 0,
+            instruction_preload: None,
+            instruction_entry_queue_bytes: 0,
+            prefetch_ip: 0,
+            queue_op: QueueOp::Idle,
+            last_queue_op: QueueOp::Idle,
+            last_queue_byte: 0,
+            t_cycle: TCycle::Ti,
+            ta_cycle: TaCycle::Td,
+            bus_status: BusStatus::Passive,
+            bus_status_latch: BusStatus::Passive,
+            pl_status: BusStatus::Passive,
+            bus_pending: BusPendingType::None,
+            fetch_state: FetchState::Normal,
+            transfer_size: TransferSize::Byte,
+            operand_size: OperandSize::Operand8,
+            transfer_n: 1,
+            final_transfer: false,
+            address_bus: 0,
+            address_latch: 0,
+            data_bus: 0,
+            cycle_num: 0,
+            cycle_trace_enabled: false,
+            cycle_trace: Vec::new(),
         };
         cpu.reset();
         cpu
     }
 
+    /// Spend `cycles` internal EU cycles. Each cycle advances the BIU
+    /// T-state machine by one tick.
     #[inline(always)]
-    fn clk(&mut self, cycles: i32) {
-        self.cycles_remaining -= cycles as i64;
+    pub(crate) fn clk(&mut self, bus: &mut impl common::Bus, cycles: i32) {
+        if cycles > 0 {
+            self.cycles(bus, cycles as u32);
+        }
     }
 
     #[inline(always)]
-    fn clk_modrm(&mut self, modrm: u8, reg_cycles: i32, mem_cycles: i32) {
+    pub(crate) fn clk_modrm(
+        &mut self,
+        bus: &mut impl common::Bus,
+        modrm: u8,
+        reg_cycles: i32,
+        mem_cycles: i32,
+    ) {
         if modrm >= 0xC0 {
-            self.clk(reg_cycles);
+            self.clk(bus, reg_cycles);
         } else {
-            self.clk(mem_cycles);
+            self.clk(bus, mem_cycles);
         }
     }
 
     #[inline(always)]
-    fn clk_modrm_word(&mut self, modrm: u8, reg_cycles: i32, mem_cycles: i32, word_accesses: i32) {
+    pub(crate) fn clk_modrm_word(
+        &mut self,
+        bus: &mut impl common::Bus,
+        modrm: u8,
+        reg_cycles: i32,
+        mem_cycles: i32,
+    ) {
         if modrm >= 0xC0 {
-            self.clk(reg_cycles);
+            self.clk(bus, reg_cycles);
         } else {
-            let penalty = if self.ea & 1 == 1 {
-                4 * word_accesses
-            } else {
-                0
-            };
-            self.clk(mem_cycles + penalty);
+            self.clk(bus, mem_cycles);
         }
     }
 
     #[inline(always)]
-    fn sp_penalty(&self, word_accesses: i32) -> i32 {
-        if self.regs.word(WordReg::SP) & 1 == 1 {
-            4 * word_accesses
-        } else {
-            0
-        }
+    pub(crate) fn clk_ea_done(&mut self, bus: &mut impl common::Bus) {
+        let cycles = match self.t_cycle {
+            TCycle::T2 => 3,
+            TCycle::T3 => 0,
+            TCycle::Tinit | TCycle::Ti | TCycle::T1 | TCycle::Tw | TCycle::T4 => 1,
+        };
+        self.clk(bus, cycles);
     }
 
     #[inline(always)]
-    fn fetch(&mut self, bus: &mut impl common::Bus) -> u8 {
-        let addr = ((self.sregs[SegReg16::CS as usize] as u32) << 4).wrapping_add(self.ip as u32)
-            & 0xFFFFF;
+    pub(crate) fn clk_accumulator_immediate_byte_tail(&mut self, bus: &mut impl common::Bus) {
+        let cycles = if self.seg_prefix && self.instruction_entry_queue_had_current_instruction() {
+            1
+        } else {
+            2
+        };
+        self.clk(bus, cycles);
+    }
+
+    #[inline(always)]
+    pub(crate) fn instruction_entry_queue_had_current_instruction(&self) -> bool {
+        let instruction_len = self.ip.wrapping_sub(self.prev_ip) as usize;
+        usize::from(self.instruction_entry_queue_bytes) >= instruction_len
+    }
+
+    #[inline(always)]
+    pub(crate) fn fetch(&mut self, bus: &mut impl common::Bus) -> u8 {
+        let value = self.biu_queue_read(bus, QueueType::Subsequent);
         self.ip = self.ip.wrapping_add(1);
-        bus.read_byte(addr)
+        value
     }
 
     #[inline(always)]
-    fn fetchword(&mut self, bus: &mut impl common::Bus) -> u16 {
+    pub(crate) fn fetch_first(&mut self, bus: &mut impl common::Bus) -> u8 {
+        let value = self.biu_queue_read(bus, QueueType::First);
+        self.ip = self.ip.wrapping_add(1);
+        value
+    }
+
+    #[inline(always)]
+    pub(crate) fn fetchword(&mut self, bus: &mut impl common::Bus) -> u16 {
         let low = self.fetch(bus) as u16;
         let high = self.fetch(bus) as u16;
         low | (high << 8)
     }
 
     #[inline(always)]
-    fn default_base(&self, seg: SegReg16) -> u32 {
+    pub(crate) fn default_segment(&self, seg: SegReg16) -> SegReg16 {
         if self.seg_prefix && matches!(seg, SegReg16::DS | SegReg16::SS) {
-            (self.sregs[self.prefix_seg as usize] as u32) << 4
+            self.prefix_seg
         } else {
-            (self.sregs[seg as usize] as u32) << 4
+            seg
         }
     }
 
     #[inline(always)]
-    fn seg_base(&self, seg: SegReg16) -> u32 {
+    pub(crate) fn default_base(&self, seg: SegReg16) -> u32 {
+        self.seg_base(self.default_segment(seg))
+    }
+
+    #[inline(always)]
+    pub(crate) fn seg_base(&self, seg: SegReg16) -> u32 {
         (self.sregs[seg as usize] as u32) << 4
+    }
+
+    #[inline(always)]
+    pub(crate) fn set_effective_address(&mut self, seg: SegReg16, offset: u16) {
+        self.effective_address_segment = self.default_segment(seg);
+        self.eo = offset;
+        self.ea = self
+            .seg_base(self.effective_address_segment)
+            .wrapping_add(offset as u32)
+            & ADDRESS_MASK;
     }
 
     /// Computes the physical address for a byte at `eo + delta`, wrapping
     /// the offset within the 16-bit segment boundary.
     #[inline(always)]
-    fn seg_addr(&self, delta: u16) -> u32 {
+    pub(crate) fn seg_addr(&self, delta: u16) -> u32 {
         let seg_base = self.ea.wrapping_sub(self.eo as u32);
-        seg_base.wrapping_add(self.eo.wrapping_add(delta) as u32) & 0xFFFFF
+        seg_base.wrapping_add(self.eo.wrapping_add(delta) as u32) & ADDRESS_MASK
     }
 
     /// Reads a word from memory at `ea + delta`, wrapping the offset
     /// within the segment boundary (offset 0xFFFF wraps to 0x0000).
     #[inline(always)]
-    fn seg_read_word_at(&self, bus: &mut impl common::Bus, delta: u16) -> u16 {
-        let low = bus.read_byte(self.seg_addr(delta)) as u16;
-        let high = bus.read_byte(self.seg_addr(delta.wrapping_add(1))) as u16;
-        low | (high << 8)
+    pub(crate) fn seg_read_word_at(&mut self, bus: &mut impl common::Bus, delta: u16) -> u16 {
+        let lo_address = self.seg_addr(delta);
+        let hi_address = self.seg_addr(delta.wrapping_add(1));
+        self.biu_read_word_physical_pair(bus, lo_address, hi_address)
     }
 
-    /// Reads a word from memory at the current EA, wrapping the offset
-    /// within the segment boundary (offset 0xFFFF wraps to 0x0000).
+    /// Reads a word from memory at the current EA.
     #[inline(always)]
-    fn seg_read_word(&self, bus: &mut impl common::Bus) -> u16 {
+    pub(crate) fn seg_read_word(&mut self, bus: &mut impl common::Bus) -> u16 {
         self.seg_read_word_at(bus, 0)
     }
 
-    /// Writes a word to memory at the current EA, wrapping the offset
-    /// within the segment boundary (offset 0xFFFF wraps to 0x0000).
+    /// Writes a word to memory at the current EA.
     #[inline(always)]
-    fn seg_write_word(&self, bus: &mut impl common::Bus, value: u16) {
-        bus.write_byte(self.ea, value as u8);
-        bus.write_byte(self.seg_addr(1), (value >> 8) as u8);
+    pub(crate) fn seg_write_word(&mut self, bus: &mut impl common::Bus, value: u16) {
+        let lo_address = self.seg_addr(0);
+        let hi_address = self.seg_addr(1);
+        self.biu_write_word_physical_pair(bus, lo_address, hi_address, value);
     }
 
-    /// Reads a word from `base:offset`, wrapping the offset within 16 bits.
+    /// Reads a word from `base:offset`, where `base` is a pre-shifted 20-bit
+    /// segment base. Wraps the offset within 16 bits.
     #[inline(always)]
-    fn read_word_seg(&self, bus: &mut impl common::Bus, base: u32, offset: u16) -> u16 {
-        let lo = bus.read_byte(base.wrapping_add(offset as u32) & 0xFFFFF) as u16;
-        let hi = bus.read_byte(base.wrapping_add(offset.wrapping_add(1) as u32) & 0xFFFFF) as u16;
-        lo | (hi << 8)
+    pub(crate) fn read_word_seg(
+        &mut self,
+        bus: &mut impl common::Bus,
+        base: u32,
+        offset: u16,
+    ) -> u16 {
+        let lo_address = base.wrapping_add(offset as u32) & ADDRESS_MASK;
+        let hi_address = base.wrapping_add(offset.wrapping_add(1) as u32) & ADDRESS_MASK;
+        self.biu_read_word_physical_pair(bus, lo_address, hi_address)
     }
 
-    /// Writes a word to `base:offset`, wrapping the offset within 16 bits.
+    /// Writes a word to `base:offset`, where `base` is a pre-shifted 20-bit
+    /// segment base. Wraps the offset within 16 bits.
     #[inline(always)]
-    fn write_word_seg(&self, bus: &mut impl common::Bus, base: u32, offset: u16, value: u16) {
-        bus.write_byte(base.wrapping_add(offset as u32) & 0xFFFFF, value as u8);
-        bus.write_byte(
-            base.wrapping_add(offset.wrapping_add(1) as u32) & 0xFFFFF,
-            (value >> 8) as u8,
-        );
+    pub(crate) fn write_word_seg(
+        &mut self,
+        bus: &mut impl common::Bus,
+        base: u32,
+        offset: u16,
+        value: u16,
+    ) {
+        let lo_address = base.wrapping_add(offset as u32) & ADDRESS_MASK;
+        let hi_address = base.wrapping_add(offset.wrapping_add(1) as u32) & ADDRESS_MASK;
+        self.biu_write_word_physical_pair(bus, lo_address, hi_address, value);
     }
 
-    fn push(&mut self, bus: &mut impl common::Bus, value: u16) {
+    #[inline(always)]
+    pub(crate) fn read_memory_byte(&mut self, bus: &mut impl common::Bus, address: u32) -> u8 {
+        self.biu_read_u8_physical(bus, address)
+    }
+
+    #[inline(always)]
+    pub(crate) fn write_memory_byte(
+        &mut self,
+        bus: &mut impl common::Bus,
+        address: u32,
+        value: u8,
+    ) {
+        self.biu_write_u8_physical(bus, address, value);
+    }
+
+    #[inline(always)]
+    pub(crate) fn read_memory_word(&mut self, bus: &mut impl common::Bus, address: u32) -> u16 {
+        self.biu_read_u16_physical(bus, address)
+    }
+
+    #[inline(always)]
+    pub(crate) fn write_memory_word(
+        &mut self,
+        bus: &mut impl common::Bus,
+        address: u32,
+        value: u16,
+    ) {
+        self.biu_write_u16_physical(bus, address, value);
+    }
+
+    #[inline(always)]
+    pub(crate) fn read_io_byte(&mut self, bus: &mut impl common::Bus, port: u16) -> u8 {
+        self.biu_io_read_u8(bus, port)
+    }
+
+    #[inline(always)]
+    pub(crate) fn write_io_byte(&mut self, bus: &mut impl common::Bus, port: u16, value: u8) {
+        self.biu_io_write_u8(bus, port, value);
+    }
+
+    #[inline(always)]
+    pub(crate) fn read_io_word(&mut self, bus: &mut impl common::Bus, port: u16) -> u16 {
+        self.biu_io_read_u16(bus, port)
+    }
+
+    #[inline(always)]
+    pub(crate) fn write_io_word(&mut self, bus: &mut impl common::Bus, port: u16, value: u16) {
+        self.biu_io_write_u16(bus, port, value);
+    }
+
+    /// Reset queue and pipeline state without advancing the bus. Called by
+    /// the CPU trait's `set_cs`/`set_ip` which have no bus access.
+    fn flush_prefetch_queue(&mut self) {
+        self.prefetch_ip = self.ip;
+        self.queue_flush();
+        self.queue_op = QueueOp::Idle;
+        self.last_queue_op = QueueOp::Idle;
+        self.last_queue_byte = 0;
+        self.t_cycle = TCycle::Ti;
+        self.ta_cycle = TaCycle::Td;
+        self.bus_status = BusStatus::Passive;
+        self.bus_status_latch = BusStatus::Passive;
+        self.pl_status = BusStatus::Passive;
+        self.bus_pending = BusPendingType::None;
+        self.fetch_state = FetchState::Normal;
+    }
+
+    /// Flush the queue and start a fetch cycle via the BIU. Used by the EU
+    /// after jumps, interrupts, and RET-class instructions.
+    pub(crate) fn flush_and_fetch(&mut self, bus: &mut impl common::Bus) {
+        self.prefetch_ip = self.ip;
+        self.biu_queue_flush(bus);
+    }
+
+    pub(crate) fn flush_and_fetch_early(&mut self, bus: &mut impl common::Bus) {
+        self.prefetch_ip = self.ip;
+        self.biu_queue_flush_early(bus);
+    }
+
+    pub(crate) fn restart_fetch_after_delay(&mut self, bus: &mut impl common::Bus, delay: i32) {
+        self.biu_fetch_suspend(bus);
+        self.biu_complete_current_bus_for_eu();
+        self.clk(bus, delay);
+        self.prefetch_ip = self.ip;
+        self.biu_queue_flush_and_start_code_fetch_for_eu();
+    }
+
+    pub(crate) fn set_ip_and_flush(&mut self, bus: &mut impl common::Bus, ip: u16) {
+        self.ip = ip;
+        self.flush_and_fetch(bus);
+    }
+
+    pub(crate) fn set_cs_ip_and_flush(&mut self, bus: &mut impl common::Bus, cs: u16, ip: u16) {
+        self.sregs[SegReg16::CS as usize] = cs;
+        self.ip = ip;
+        self.flush_and_fetch(bus);
+    }
+
+    fn finish_step_timing(&mut self, bus: &mut impl common::Bus) {
+        if self.halted || self.rep_active {
+            return;
+        }
+        self.biu_fetch_next(bus);
+    }
+
+    /// Installs prefetched instruction bytes and advances the BIU fetch pointer.
+    pub fn install_prefetch_queue(&mut self, bytes: &[u8]) {
+        assert!(bytes.len() <= QUEUE_SIZE, "V30 prefetch queue overflow");
+        self.instruction_queue = [0; QUEUE_SIZE];
+        self.instruction_queue[..bytes.len()].copy_from_slice(bytes);
+        self.instruction_queue_len = bytes.len();
+        self.instruction_preload = None;
+        self.prefetch_ip = self.ip.wrapping_add(bytes.len() as u16);
+        self.queue_op = QueueOp::Idle;
+        self.last_queue_op = QueueOp::Idle;
+        self.last_queue_byte = 0;
+        self.fetch_state = FetchState::Normal;
+        self.t_cycle = TCycle::Ti;
+        self.ta_cycle = TaCycle::Td;
+        self.bus_status = BusStatus::Passive;
+        self.bus_status_latch = BusStatus::Passive;
+        self.pl_status = BusStatus::Passive;
+        self.bus_pending = BusPendingType::None;
+    }
+
+    /// Enable or disable cycle-trace capture.
+    pub fn set_cycle_trace_capture(&mut self, capture_enabled: bool) {
+        self.cycle_trace_enabled = capture_enabled;
+        if !capture_enabled {
+            self.cycle_trace.clear();
+        }
+    }
+
+    /// Drain the captured cycle trace.
+    pub fn drain_cycle_trace(&mut self) -> Vec<V30CycleTraceEntry> {
+        std::mem::take(&mut self.cycle_trace)
+    }
+
+    /// Load registers from a snapshot.
+    pub fn load_state(&mut self, state: &V30State) {
+        self.state = state.clone();
+        self.halted = false;
+        self.pending_irq = 0;
+        self.no_interrupt = 0;
+        self.inhibit_all = 0;
+        self.rep_active = false;
+        self.rep_restart_ip = 0;
+        self.seg_prefix = false;
+        self.flush_prefetch_queue();
+    }
+
+    pub(crate) fn push(&mut self, bus: &mut impl common::Bus, value: u16) {
         let sp = self.regs.word(WordReg::SP).wrapping_sub(2);
         self.regs.set_word(WordReg::SP, sp);
         let base = self.seg_base(SegReg16::SS);
-        bus.write_byte(base.wrapping_add(sp as u32) & 0xFFFFF, value as u8);
-        bus.write_byte(
-            base.wrapping_add(sp.wrapping_add(1) as u32) & 0xFFFFF,
-            (value >> 8) as u8,
-        );
+        self.write_word_seg(bus, base, sp, value);
     }
 
-    fn pop(&mut self, bus: &mut impl common::Bus) -> u16 {
+    pub(crate) fn pop(&mut self, bus: &mut impl common::Bus) -> u16 {
         let sp = self.regs.word(WordReg::SP);
         let base = self.seg_base(SegReg16::SS);
-        let low = bus.read_byte(base.wrapping_add(sp as u32) & 0xFFFFF) as u16;
-        let high = bus.read_byte(base.wrapping_add(sp.wrapping_add(1) as u32) & 0xFFFFF) as u16;
+        let value = self.read_word_seg(bus, base, sp);
         self.regs.set_word(WordReg::SP, sp.wrapping_add(2));
-        low | (high << 8)
+        value
     }
 
     fn execute_one(&mut self, bus: &mut impl common::Bus) {
         self.prev_ip = self.ip;
+        self.instruction_entry_queue_bytes =
+            (self.queue_len() + usize::from(self.instruction_preload.is_some())) as u8;
 
         if self.pending_irq != 0 {
             self.check_interrupts(bus);
@@ -257,39 +527,40 @@ impl V30 {
         if self.rep_active {
             self.continue_rep(bus);
         } else {
-            let mut opcode = self.fetch(bus);
+            let mut opcode = self.fetch_first(bus);
             loop {
                 match opcode {
                     0x26 => {
                         self.seg_prefix = true;
                         self.prefix_seg = SegReg16::ES;
-                        self.clk(2);
+                        self.clk(bus, 2);
                         opcode = self.fetch(bus);
                     }
                     0x2E => {
                         self.seg_prefix = true;
                         self.prefix_seg = SegReg16::CS;
-                        self.clk(2);
+                        self.clk(bus, 2);
                         opcode = self.fetch(bus);
                     }
                     0x36 => {
                         self.seg_prefix = true;
                         self.prefix_seg = SegReg16::SS;
-                        self.clk(2);
+                        self.clk(bus, 2);
                         opcode = self.fetch(bus);
                     }
                     0x3E => {
                         self.seg_prefix = true;
                         self.prefix_seg = SegReg16::DS;
-                        self.clk(2);
+                        self.clk(bus, 2);
                         opcode = self.fetch(bus);
                     }
                     0xF0 => {
                         self.inhibit_all = 1;
-                        self.clk(2);
+                        self.clk(bus, 2);
                         opcode = self.fetch(bus);
                     }
                     _ => {
+                        self.opcode_start_ip = self.ip.wrapping_sub(1);
                         self.dispatch(opcode, bus);
                         break;
                     }
@@ -299,15 +570,10 @@ impl V30 {
     }
 
     /// Executes exactly one logical instruction (should only be used in tests).
-    ///
-    /// Sets `cycles_remaining` to `i64::MAX` so that REP-prefixed string
-    /// instructions run to completion in a single call instead of pausing
-    /// mid-loop when the cycle budget runs out. This is necessary because
-    /// `execute_one` resumes a paused REP via `continue_rep`, which would
-    /// otherwise split a single logical instruction across multiple calls.
     pub fn step(&mut self, bus: &mut impl common::Bus) {
         self.cycles_remaining = i64::MAX;
         self.execute_one(bus);
+        self.finish_step_timing(bus);
     }
 
     /// Returns the number of cycles consumed by the last `step()` call.
@@ -332,21 +598,104 @@ impl V30 {
 }
 
 impl common::Cpu for V30 {
-    crate::impl_cpu_run_for!();
+    fn run_for(&mut self, cycles_to_run: u64, bus: &mut impl common::Bus) -> u64 {
+        let start_cycle = bus.current_cycle();
+        self.run_start_cycle = start_cycle;
+        self.run_budget = cycles_to_run;
+        self.cycles_remaining = cycles_to_run as i64;
+
+        while self.cycles_remaining > 0 {
+            if self.halted {
+                if bus.has_nmi() {
+                    self.pending_irq |= crate::PENDING_NMI;
+                }
+                if self.flags.if_flag {
+                    if bus.has_irq() {
+                        self.pending_irq |= crate::PENDING_IRQ;
+                    }
+                } else {
+                    self.pending_irq &= !crate::PENDING_IRQ;
+                }
+                if self.pending_irq != 0 {
+                    self.halted = false;
+                } else {
+                    let consumed = (cycles_to_run as i64 - self.cycles_remaining) as u64;
+                    bus.set_current_cycle(start_cycle + consumed);
+                    return consumed;
+                }
+            }
+
+            self.execute_one(bus);
+            if !self.rep_active {
+                self.finish_step_timing(bus);
+            }
+            self.cycles_remaining -= bus.drain_wait_cycles();
+
+            let consumed = cycles_to_run as i64 - self.cycles_remaining;
+            bus.set_current_cycle(start_cycle + consumed as u64);
+
+            if bus.has_nmi() {
+                self.pending_irq |= crate::PENDING_NMI;
+            }
+            if bus.has_irq() {
+                self.pending_irq |= crate::PENDING_IRQ;
+            } else {
+                self.pending_irq &= !crate::PENDING_IRQ;
+            }
+
+            if bus.reset_pending() {
+                break;
+            }
+            if bus.cpu_should_yield() {
+                break;
+            }
+        }
+
+        let actual = (cycles_to_run as i64 - self.cycles_remaining) as u64;
+        bus.set_current_cycle(start_cycle + actual);
+        actual
+    }
 
     fn reset(&mut self) {
         self.state = V30State::default();
         self.sregs[SegReg16::CS as usize] = 0xFFFF;
         self.prev_ip = 0;
+        self.opcode_start_ip = 0;
         self.halted = false;
         self.pending_irq = 0;
         self.no_interrupt = 0;
         self.inhibit_all = 0;
         self.rep_active = false;
         self.rep_restart_ip = 0;
+        self.rep_prefix = false;
         self.seg_prefix = false;
         self.ea = 0;
         self.eo = 0;
+        self.effective_address_segment = SegReg16::DS;
+        self.instruction_queue = [0; QUEUE_SIZE];
+        self.instruction_queue_len = 0;
+        self.instruction_preload = None;
+        self.instruction_entry_queue_bytes = 0;
+        self.prefetch_ip = self.ip;
+        self.queue_op = QueueOp::Idle;
+        self.last_queue_op = QueueOp::Idle;
+        self.last_queue_byte = 0;
+        self.t_cycle = TCycle::Ti;
+        self.ta_cycle = TaCycle::Td;
+        self.bus_status = BusStatus::Passive;
+        self.bus_status_latch = BusStatus::Passive;
+        self.pl_status = BusStatus::Passive;
+        self.bus_pending = BusPendingType::None;
+        self.fetch_state = FetchState::Normal;
+        self.transfer_size = TransferSize::Byte;
+        self.operand_size = OperandSize::Operand8;
+        self.transfer_n = 1;
+        self.final_transfer = false;
+        self.address_bus = 0;
+        self.address_latch = 0;
+        self.data_bus = 0;
+        self.cycle_num = 0;
+        self.cycle_trace.clear();
     }
 
     fn halted(&self) -> bool {
@@ -431,6 +780,7 @@ impl common::Cpu for V30 {
 
     fn set_cs(&mut self, v: u16) {
         self.state.set_cs(v);
+        self.flush_prefetch_queue();
     }
 
     fn ss(&self) -> u16 {
@@ -455,6 +805,7 @@ impl common::Cpu for V30 {
 
     fn set_ip(&mut self, v: u16) {
         self.state.ip = v;
+        self.flush_prefetch_queue();
     }
 
     fn flags(&self) -> u16 {
