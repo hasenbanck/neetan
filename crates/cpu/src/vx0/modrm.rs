@@ -1,10 +1,10 @@
-use super::V30;
+use super::{VX0, biu::queue_size_for};
 use crate::{ByteReg, SegReg16, WordReg, build_x86_reg_word_table, build_x86_rm_table};
 
 static MODRM_REG: [u8; 256] = build_x86_reg_word_table();
 static MODRM_RM: [u8; 256] = build_x86_rm_table();
 
-impl V30 {
+impl<const MODEL: u8> VX0<MODEL> {
     #[inline(always)]
     pub(super) fn reg_word(&self, modrm: u8) -> WordReg {
         WordReg::from_index(MODRM_REG[modrm as usize])
@@ -136,15 +136,17 @@ impl V30 {
         }
     }
 
+    #[inline]
     pub(super) fn get_rm_byte(&mut self, modrm: u8, bus: &mut impl common::Bus) -> u8 {
         if modrm >= 0xC0 {
             self.regs.byte(self.rm_byte(modrm))
         } else {
             self.calc_ea(modrm, bus);
-            bus.read_byte(self.ea)
+            self.biu_read_u8_physical(bus, self.ea)
         }
     }
 
+    #[inline]
     pub(super) fn get_rm_word(&mut self, modrm: u8, bus: &mut impl common::Bus) -> u16 {
         if modrm >= 0xC0 {
             self.regs.word(self.rm_word(modrm))
@@ -154,15 +156,67 @@ impl V30 {
         }
     }
 
+    #[inline]
+    pub(super) fn get_rm_byte_prepared(&mut self, modrm: u8, bus: &mut impl common::Bus) -> u8 {
+        if modrm >= 0xC0 {
+            self.regs.byte(self.rm_byte(modrm))
+        } else {
+            self.calc_ea(modrm, bus);
+            self.prepare_modrm_memory_read(bus, modrm);
+            let value = self.biu_read_u8_physical(bus, self.ea);
+            self.biu_fetch_resume_immediate_for_eu();
+            value
+        }
+    }
+
+    #[inline]
+    pub(super) fn get_rm_word_prepared(&mut self, modrm: u8, bus: &mut impl common::Bus) -> u16 {
+        if modrm >= 0xC0 {
+            self.regs.word(self.rm_word(modrm))
+        } else {
+            self.calc_ea(modrm, bus);
+            self.prepare_modrm_memory_read(bus, modrm);
+            let value = self.seg_read_word(bus);
+            self.biu_fetch_resume_immediate_for_eu();
+            value
+        }
+    }
+
+    pub(super) fn prepare_modrm_memory_read(&mut self, bus: &mut impl common::Bus, modrm: u8) {
+        let entry_queue_len = self.biu_instruction_entry_queue_len_for_timing();
+        let mode = modrm >> 6;
+        let rm = modrm & 7;
+        let has_word_displacement = mode == 2 || (mode == 0 && rm == 6);
+        let delayed_read = entry_queue_len == 0
+            || (has_word_displacement
+                && (!self.seg_prefix || entry_queue_len == queue_size_for(MODEL)));
+
+        if delayed_read {
+            self.biu_fetch_suspend(bus);
+            self.clk(bus, 2);
+            self.biu_ready_memory_read();
+        } else if self.seg_prefix && entry_queue_len == queue_size_for(MODEL) && mode == 1 {
+            self.biu_complete_code_fetch_for_eu();
+            self.biu_start_code_fetch_for_eu();
+            self.biu_fetch_suspend(bus);
+            self.biu_complete_code_fetch_for_eu();
+            self.biu_ready_memory_read();
+        } else if self.seg_prefix && entry_queue_len == queue_size_for(MODEL) && mode == 0 {
+            self.biu_prepare_memory_read();
+        }
+    }
+
+    #[inline]
     pub(super) fn putback_rm_byte(&mut self, modrm: u8, value: u8, bus: &mut impl common::Bus) {
         if modrm >= 0xC0 {
             let reg = self.rm_byte(modrm);
             self.regs.set_byte(reg, value);
         } else {
-            bus.write_byte(self.ea, value);
+            self.biu_write_u8_physical(bus, self.ea, value);
         }
     }
 
+    #[inline]
     pub(super) fn putback_rm_word(&mut self, modrm: u8, value: u16, bus: &mut impl common::Bus) {
         if modrm >= 0xC0 {
             let reg = self.rm_word(modrm);
@@ -172,16 +226,18 @@ impl V30 {
         }
     }
 
+    #[inline]
     pub(super) fn put_rm_byte(&mut self, modrm: u8, value: u8, bus: &mut impl common::Bus) {
         if modrm >= 0xC0 {
             let reg = self.rm_byte(modrm);
             self.regs.set_byte(reg, value);
         } else {
             self.calc_ea(modrm, bus);
-            bus.write_byte(self.ea, value);
+            self.biu_write_u8_physical(bus, self.ea, value);
         }
     }
 
+    #[inline]
     pub(super) fn put_rm_word(&mut self, modrm: u8, value: u16, bus: &mut impl common::Bus) {
         if modrm >= 0xC0 {
             let reg = self.rm_word(modrm);

@@ -2,7 +2,7 @@ use std::mem;
 
 use common::Bus;
 
-use super::TRACE_ADDRESS_MASK;
+use super::ADDRESS_MASK;
 
 const PREFETCH_QUEUE_CAPACITY: u8 = 6;
 const DECODED_QUEUE_CAPACITY: u8 = 3;
@@ -364,6 +364,7 @@ pub(crate) struct I286Timing {
     instruction_start_offset: u16,
     consumed_code_bytes: u8,
     milestones: I286TimingMilestones,
+    // TODO: Remove once 286 is cycle-count accurate and tracing is not needed anymore.
     trace: Vec<I286CycleTraceEntry>,
 }
 
@@ -1216,9 +1217,9 @@ impl I286Timing {
         } else {
             self.emit_memory_demand_prefetch_window(bus, code_segment_base, true);
         }
-        let masked_low_address = low_address & TRACE_ADDRESS_MASK;
-        let masked_high_address = high_address & TRACE_ADDRESS_MASK;
-        if masked_low_address.wrapping_add(1) & TRACE_ADDRESS_MASK == masked_high_address
+        let masked_low_address = low_address & ADDRESS_MASK;
+        let masked_high_address = high_address & ADDRESS_MASK;
+        if masked_low_address.wrapping_add(1) & ADDRESS_MASK == masked_high_address
             && masked_low_address & 1 == 0
         {
             self.emit_read_bus_transaction(
@@ -1262,10 +1263,10 @@ impl I286Timing {
         value: u16,
     ) {
         self.eu_stage = I286EuStage::WriteBack;
-        let masked_low_address = low_address & TRACE_ADDRESS_MASK;
-        let masked_high_address = high_address & TRACE_ADDRESS_MASK;
+        let masked_low_address = low_address & ADDRESS_MASK;
+        let masked_high_address = high_address & ADDRESS_MASK;
         let contiguous_word =
-            masked_low_address.wrapping_add(1) & TRACE_ADDRESS_MASK == masked_high_address;
+            masked_low_address.wrapping_add(1) & ADDRESS_MASK == masked_high_address;
         let split_word_writeback = !contiguous_word || masked_low_address & 1 != 0;
         let allow_opportunistic_prefetch = !self.emit_pending_writeback_gap(split_word_writeback);
         self.emit_memory_demand_prefetch_window(
@@ -1516,20 +1517,19 @@ impl I286Timing {
         }
 
         let current_address =
-            code_segment_base.wrapping_add(u32::from(self.prefetch_offset)) & TRACE_ADDRESS_MASK;
+            code_segment_base.wrapping_add(u32::from(self.prefetch_offset)) & ADDRESS_MASK;
         let ts_data = self.data_bus_value;
         let fetch_kind = self.prefetch_fetch_kind();
         if fetch_kind != I286PrefetchFetchKind::Word {
             let fetch_width = fetch_kind.stored_bytes();
-            let value = bus.read_byte(current_address & TRACE_ADDRESS_MASK);
+            let value = bus.read_byte(current_address & ADDRESS_MASK);
             self.prefetch_queue_fill =
                 (self.prefetch_queue_fill + fetch_width).min(PREFETCH_QUEUE_CAPACITY);
             self.decoded_queue_fill =
                 (self.decoded_queue_fill + fetch_width).min(DECODED_QUEUE_CAPACITY);
             self.prefetch_offset = self.prefetch_offset.wrapping_add(u16::from(fetch_width));
             self.data_bus_value = if fetch_kind == I286PrefetchFetchKind::QueueRoomByte {
-                let high_value =
-                    bus.read_byte(current_address.wrapping_add(1) & TRACE_ADDRESS_MASK);
+                let high_value = bus.read_byte(current_address.wrapping_add(1) & ADDRESS_MASK);
                 u16::from(value) | (u16::from(high_value) << 8)
             } else {
                 self.merge_byte_data_bus(current_address, value)
@@ -1557,8 +1557,8 @@ impl I286Timing {
         }
 
         let low_address = current_address & !1;
-        let low_value = bus.read_byte(low_address & TRACE_ADDRESS_MASK);
-        let high_value = bus.read_byte(low_address.wrapping_add(1) & TRACE_ADDRESS_MASK);
+        let low_value = bus.read_byte(low_address & ADDRESS_MASK);
+        let high_value = bus.read_byte(low_address.wrapping_add(1) & ADDRESS_MASK);
         let value = u16::from(low_value) | (u16::from(high_value) << 8);
         self.prefetch_queue_fill = (self.prefetch_queue_fill + 2).min(PREFETCH_QUEUE_CAPACITY);
         self.decoded_queue_fill = (self.decoded_queue_fill + 2).min(DECODED_QUEUE_CAPACITY);
@@ -1568,7 +1568,7 @@ impl I286Timing {
             I286BusPhase::Ts,
             I286PendingBusRequest::CodeFetchWord,
             I286TraceBusStatus::Code,
-            Some(low_address & TRACE_ADDRESS_MASK),
+            Some(low_address & ADDRESS_MASK),
             Some(ts_data),
         );
         self.emit_cycle(
@@ -1983,7 +1983,7 @@ impl I286Timing {
         self.emit_read_bus_transaction(
             I286PendingBusRequest::MemoryReadByte,
             I286TraceBusStatus::MemoryRead,
-            Some(address & TRACE_ADDRESS_MASK),
+            Some(address & ADDRESS_MASK),
             Some(self.merge_byte_data_bus(address, value)),
         );
     }
@@ -1992,7 +1992,7 @@ impl I286Timing {
         self.emit_byte_write_bus_transaction(
             I286PendingBusRequest::MemoryWriteByte,
             I286TraceBusStatus::MemoryWrite,
-            address & TRACE_ADDRESS_MASK,
+            address & ADDRESS_MASK,
             value,
         );
     }
@@ -2067,7 +2067,7 @@ impl I286Timing {
             I286BusPhase::Ts,
             pending_bus_request,
             bus_status,
-            Some(address & TRACE_ADDRESS_MASK),
+            Some(address & ADDRESS_MASK),
             Some(ts_data),
         );
         self.emit_cycle(

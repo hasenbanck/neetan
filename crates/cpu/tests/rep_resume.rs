@@ -1,5 +1,5 @@
 use common::Cpu as _;
-use cpu::{I286, I286State, I386, I386State, V30, V30State};
+use cpu::{I286, I286State, I386, I386State, V30State, VX0};
 
 const RAM_SIZE: usize = 1024 * 1024;
 const ADDRESS_MASK: u32 = 0x000F_FFFF;
@@ -124,10 +124,10 @@ struct I286Harness;
 struct I386Harness;
 
 impl RepCpuHarness for V30Harness {
-    type Cpu = V30;
+    type Cpu = VX0;
 
     fn build_cpu() -> Self::Cpu {
-        V30::new()
+        VX0::new()
     }
 
     fn set_state(cpu: &mut Self::Cpu, cs: u16, ip: u16, ds: u16, es: u16, ss: u16, sp: u16) {

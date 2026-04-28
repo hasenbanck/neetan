@@ -92,7 +92,6 @@ pub struct I8086 {
     address_bus: u32,
     address_latch: u32,
     data_bus: u16,
-    cycle_num: u64,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -178,7 +177,6 @@ impl I8086 {
             address_bus: 0,
             address_latch: 0,
             data_bus: 0,
-            cycle_num: 0,
         };
         cpu.reset();
         cpu
@@ -929,7 +927,6 @@ impl common::Cpu for I8086 {
         self.address_bus = 0;
         self.address_latch = 0;
         self.data_bus = 0;
-        self.cycle_num = 0;
         self.reset_instruction_timing();
     }
 

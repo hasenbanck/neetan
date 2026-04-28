@@ -32,9 +32,8 @@ use timing::{I286ColdStartPrefetchPolicy, I286Timing};
 
 use crate::{SegReg16, WordReg};
 
-/// 24-bit physical address mask used by the 80286 across the timing trace,
-/// the bus interface, and descriptor reads.
-pub(super) const TRACE_ADDRESS_MASK: u32 = 0x00FF_FFFF;
+/// 24-bit physical address mask.
+pub(super) const ADDRESS_MASK: u32 = 0x00FF_FFFF;
 
 /// Returns true when the low bit of the supplied bus address is set.
 /// The 286 has a 16-bit data bus, so an odd address forces an extra
@@ -393,7 +392,7 @@ impl I286 {
 
     fn code_byte_at(&self, bus: &mut impl common::Bus, offset: u16) -> u8 {
         let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        bus.read_byte(code_segment_base.wrapping_add(u32::from(offset)) & TRACE_ADDRESS_MASK)
+        bus.read_byte(code_segment_base.wrapping_add(u32::from(offset)) & ADDRESS_MASK)
     }
 
     fn consumed_opcode_lookahead(&self, opcode: u8) -> I286OpcodeLookahead {
@@ -711,7 +710,7 @@ impl I286 {
     #[inline(always)]
     fn fetch(&mut self, bus: &mut impl common::Bus) -> u8 {
         let addr =
-            self.seg_bases[SegReg16::CS as usize].wrapping_add(self.ip as u32) & TRACE_ADDRESS_MASK;
+            self.seg_bases[SegReg16::CS as usize].wrapping_add(self.ip as u32) & ADDRESS_MASK;
         let value = bus.read_byte(addr);
         let code_segment_base = self.seg_bases[SegReg16::CS as usize];
         self.timing.note_code_byte_consumed(
@@ -800,7 +799,7 @@ impl I286 {
     fn seg_addr(&self, delta: u16) -> u32 {
         self.seg_base(self.ea_seg)
             .wrapping_add(self.eo.wrapping_add(delta) as u32)
-            & TRACE_ADDRESS_MASK
+            & ADDRESS_MASK
     }
 
     #[inline(always)]
@@ -852,12 +851,12 @@ impl I286 {
         bus: &mut impl common::Bus,
     ) -> Option<SegmentDescriptor> {
         let addr = self.descriptor_addr_checked(selector)?;
-        let limit = bus.read_byte(addr & TRACE_ADDRESS_MASK) as u16
-            | ((bus.read_byte(addr.wrapping_add(1) & TRACE_ADDRESS_MASK) as u16) << 8);
-        let base = bus.read_byte(addr.wrapping_add(2) & TRACE_ADDRESS_MASK) as u32
-            | ((bus.read_byte(addr.wrapping_add(3) & TRACE_ADDRESS_MASK) as u32) << 8)
-            | ((bus.read_byte(addr.wrapping_add(4) & TRACE_ADDRESS_MASK) as u32) << 16);
-        let rights = bus.read_byte(addr.wrapping_add(5) & TRACE_ADDRESS_MASK);
+        let limit = bus.read_byte(addr & ADDRESS_MASK) as u16
+            | ((bus.read_byte(addr.wrapping_add(1) & ADDRESS_MASK) as u16) << 8);
+        let base = bus.read_byte(addr.wrapping_add(2) & ADDRESS_MASK) as u32
+            | ((bus.read_byte(addr.wrapping_add(3) & ADDRESS_MASK) as u32) << 8)
+            | ((bus.read_byte(addr.wrapping_add(4) & ADDRESS_MASK) as u32) << 16);
+        let rights = bus.read_byte(addr.wrapping_add(5) & ADDRESS_MASK);
         Some(SegmentDescriptor {
             base,
             limit,
@@ -1205,7 +1204,7 @@ impl I286 {
             return 0;
         }
         let base = self.seg_base(seg);
-        let address = base.wrapping_add(offset as u32) & TRACE_ADDRESS_MASK;
+        let address = base.wrapping_add(offset as u32) & ADDRESS_MASK;
         let value = bus.read_byte(address);
         self.timing.note_memory_read_byte(
             bus,
@@ -1230,7 +1229,7 @@ impl I286 {
             return;
         }
         let base = self.seg_base(seg);
-        let address = base.wrapping_add(offset as u32) & TRACE_ADDRESS_MASK;
+        let address = base.wrapping_add(offset as u32) & ADDRESS_MASK;
         bus.write_byte(address, value);
         self.timing.note_memory_write_byte(
             bus,
@@ -1248,8 +1247,8 @@ impl I286 {
             return 0;
         }
         let base = self.seg_base(seg);
-        let low_address = base.wrapping_add(offset as u32) & TRACE_ADDRESS_MASK;
-        let high_address = base.wrapping_add(offset.wrapping_add(1) as u32) & TRACE_ADDRESS_MASK;
+        let low_address = base.wrapping_add(offset as u32) & ADDRESS_MASK;
+        let high_address = base.wrapping_add(offset.wrapping_add(1) as u32) & ADDRESS_MASK;
         let low = bus.read_byte(low_address) as u16;
         let high = bus.read_byte(high_address) as u16;
         let value = low | (high << 8);
@@ -1277,8 +1276,8 @@ impl I286 {
             return;
         }
         let base = self.seg_base(seg);
-        let low_address = base.wrapping_add(offset as u32) & TRACE_ADDRESS_MASK;
-        let high_address = base.wrapping_add(offset.wrapping_add(1) as u32) & TRACE_ADDRESS_MASK;
+        let low_address = base.wrapping_add(offset as u32) & ADDRESS_MASK;
+        let high_address = base.wrapping_add(offset.wrapping_add(1) as u32) & ADDRESS_MASK;
         bus.write_byte(low_address, value as u8);
         bus.write_byte(high_address, (value >> 8) as u8);
         self.timing.note_memory_write_word(
@@ -1298,8 +1297,8 @@ impl I286 {
         }
         self.regs.set_word(WordReg::SP, sp);
         let base = self.seg_base(SegReg16::SS);
-        let low_address = base.wrapping_add(sp as u32) & TRACE_ADDRESS_MASK;
-        let high_address = base.wrapping_add(sp.wrapping_add(1) as u32) & TRACE_ADDRESS_MASK;
+        let low_address = base.wrapping_add(sp as u32) & ADDRESS_MASK;
+        let high_address = base.wrapping_add(sp.wrapping_add(1) as u32) & ADDRESS_MASK;
         bus.write_byte(low_address, value as u8);
         bus.write_byte(high_address, (value >> 8) as u8);
         self.timing.note_memory_write_word(
@@ -1319,8 +1318,8 @@ impl I286 {
             return 0;
         }
         let base = self.seg_base(SegReg16::SS);
-        let low_address = base.wrapping_add(sp as u32) & TRACE_ADDRESS_MASK;
-        let high_address = base.wrapping_add(sp.wrapping_add(1) as u32) & TRACE_ADDRESS_MASK;
+        let low_address = base.wrapping_add(sp as u32) & ADDRESS_MASK;
+        let high_address = base.wrapping_add(sp.wrapping_add(1) as u32) & ADDRESS_MASK;
         let low = bus.read_byte(low_address) as u16;
         let high = bus.read_byte(high_address) as u16;
         let value = low | (high << 8);
@@ -1339,9 +1338,9 @@ impl I286 {
 
     fn word_access_is_split(&self, seg: SegReg16, offset: u16) -> bool {
         let base = self.seg_base(seg);
-        let low_address = base.wrapping_add(offset as u32) & TRACE_ADDRESS_MASK;
-        let high_address = base.wrapping_add(offset.wrapping_add(1) as u32) & TRACE_ADDRESS_MASK;
-        (low_address.wrapping_add(1) & TRACE_ADDRESS_MASK) != high_address || low_address & 1 != 0
+        let low_address = base.wrapping_add(offset as u32) & ADDRESS_MASK;
+        let high_address = base.wrapping_add(offset.wrapping_add(1) as u32) & ADDRESS_MASK;
+        (low_address.wrapping_add(1) & ADDRESS_MASK) != high_address || low_address & 1 != 0
     }
 
     fn load_segment(&mut self, seg: SegReg16, selector: u16, bus: &mut impl common::Bus) -> bool {
@@ -1373,9 +1372,9 @@ impl I286 {
 
     fn set_accessed_bit(&self, selector: u16, bus: &mut impl common::Bus) {
         if let Some(addr) = self.descriptor_addr_checked(selector) {
-            let rights = bus.read_byte(addr.wrapping_add(5) & TRACE_ADDRESS_MASK);
+            let rights = bus.read_byte(addr.wrapping_add(5) & ADDRESS_MASK);
             if rights & 0x01 == 0 {
-                bus.write_byte(addr.wrapping_add(5) & TRACE_ADDRESS_MASK, rights | 0x01);
+                bus.write_byte(addr.wrapping_add(5) & ADDRESS_MASK, rights | 0x01);
             }
         }
     }
@@ -1399,16 +1398,13 @@ impl I286 {
     }
 
     fn read_word_phys(&self, bus: &mut impl common::Bus, addr: u32) -> u16 {
-        bus.read_byte(addr & TRACE_ADDRESS_MASK) as u16
-            | ((bus.read_byte(addr.wrapping_add(1) & TRACE_ADDRESS_MASK) as u16) << 8)
+        bus.read_byte(addr & ADDRESS_MASK) as u16
+            | ((bus.read_byte(addr.wrapping_add(1) & ADDRESS_MASK) as u16) << 8)
     }
 
     fn write_word_phys(&self, bus: &mut impl common::Bus, addr: u32, value: u16) {
-        bus.write_byte(addr & TRACE_ADDRESS_MASK, value as u8);
-        bus.write_byte(
-            addr.wrapping_add(1) & TRACE_ADDRESS_MASK,
-            (value >> 8) as u8,
-        );
+        bus.write_byte(addr & ADDRESS_MASK, value as u8);
+        bus.write_byte(addr.wrapping_add(1) & ADDRESS_MASK, (value >> 8) as u8);
     }
 
     fn switch_task(&mut self, ntask: u16, task_type: TaskType, bus: &mut impl common::Bus) {
@@ -1424,10 +1420,10 @@ impl I286 {
 
         let ndesc = SegmentDescriptor {
             limit: self.read_word_phys(bus, naddr),
-            base: bus.read_byte(naddr.wrapping_add(2) & TRACE_ADDRESS_MASK) as u32
-                | ((bus.read_byte(naddr.wrapping_add(3) & TRACE_ADDRESS_MASK) as u32) << 8)
-                | ((bus.read_byte(naddr.wrapping_add(4) & TRACE_ADDRESS_MASK) as u32) << 16),
-            rights: bus.read_byte(naddr.wrapping_add(5) & TRACE_ADDRESS_MASK),
+            base: bus.read_byte(naddr.wrapping_add(2) & ADDRESS_MASK) as u32
+                | ((bus.read_byte(naddr.wrapping_add(3) & ADDRESS_MASK) as u32) << 8)
+                | ((bus.read_byte(naddr.wrapping_add(4) & ADDRESS_MASK) as u32) << 16),
+            rights: bus.read_byte(naddr.wrapping_add(5) & ADDRESS_MASK),
         };
 
         let r = ndesc.rights;
@@ -1520,27 +1516,21 @@ impl I286 {
         if task_type != TaskType::Call
             && let Some(oaddr) = self.descriptor_addr_checked(self.tr)
         {
-            let old_rights = bus.read_byte(oaddr.wrapping_add(5) & TRACE_ADDRESS_MASK);
-            bus.write_byte(
-                oaddr.wrapping_add(5) & TRACE_ADDRESS_MASK,
-                old_rights & !0x02,
-            );
+            let old_rights = bus.read_byte(oaddr.wrapping_add(5) & ADDRESS_MASK);
+            bus.write_byte(oaddr.wrapping_add(5) & ADDRESS_MASK, old_rights & !0x02);
         }
 
         // Mark new TSS busy (CALL/JMP).
         if task_type != TaskType::Iret {
-            let new_rights = bus.read_byte(naddr.wrapping_add(5) & TRACE_ADDRESS_MASK);
-            bus.write_byte(
-                naddr.wrapping_add(5) & TRACE_ADDRESS_MASK,
-                new_rights | 0x02,
-            );
+            let new_rights = bus.read_byte(naddr.wrapping_add(5) & ADDRESS_MASK);
+            bus.write_byte(naddr.wrapping_add(5) & ADDRESS_MASK, new_rights | 0x02);
         }
 
         // Update TR.
         self.tr = ntask;
         self.tr_limit = ndesc.limit;
         self.tr_base = ndesc.base;
-        self.tr_rights = bus.read_byte(naddr.wrapping_add(5) & TRACE_ADDRESS_MASK);
+        self.tr_rights = bus.read_byte(naddr.wrapping_add(5) & ADDRESS_MASK);
 
         // Load registers from new TSS.
         self.flags.expand(ntss_flags);
@@ -1565,10 +1555,10 @@ impl I286 {
             };
             let ldt_desc = SegmentDescriptor {
                 limit: self.read_word_phys(bus, ldtaddr),
-                base: bus.read_byte(ldtaddr.wrapping_add(2) & TRACE_ADDRESS_MASK) as u32
-                    | ((bus.read_byte(ldtaddr.wrapping_add(3) & TRACE_ADDRESS_MASK) as u32) << 8)
-                    | ((bus.read_byte(ldtaddr.wrapping_add(4) & TRACE_ADDRESS_MASK) as u32) << 16),
-                rights: bus.read_byte(ldtaddr.wrapping_add(5) & TRACE_ADDRESS_MASK),
+                base: bus.read_byte(ldtaddr.wrapping_add(2) & ADDRESS_MASK) as u32
+                    | ((bus.read_byte(ldtaddr.wrapping_add(3) & ADDRESS_MASK) as u32) << 8)
+                    | ((bus.read_byte(ldtaddr.wrapping_add(4) & ADDRESS_MASK) as u32) << 16),
+                rights: bus.read_byte(ldtaddr.wrapping_add(5) & ADDRESS_MASK),
             };
             let lr = ldt_desc.rights;
             if Self::descriptor_is_segment(lr) || (lr & 0x0F) != 0x02 {
@@ -1697,10 +1687,10 @@ impl I286 {
 
         let desc = SegmentDescriptor {
             limit: self.read_word_phys(bus, addr),
-            base: bus.read_byte(addr.wrapping_add(2) & TRACE_ADDRESS_MASK) as u32
-                | ((bus.read_byte(addr.wrapping_add(3) & TRACE_ADDRESS_MASK) as u32) << 8)
-                | ((bus.read_byte(addr.wrapping_add(4) & TRACE_ADDRESS_MASK) as u32) << 16),
-            rights: bus.read_byte(addr.wrapping_add(5) & TRACE_ADDRESS_MASK),
+            base: bus.read_byte(addr.wrapping_add(2) & ADDRESS_MASK) as u32
+                | ((bus.read_byte(addr.wrapping_add(3) & ADDRESS_MASK) as u32) << 8)
+                | ((bus.read_byte(addr.wrapping_add(4) & ADDRESS_MASK) as u32) << 16),
+            rights: bus.read_byte(addr.wrapping_add(5) & ADDRESS_MASK),
         };
         let r = desc.rights;
         let cpl = self.cpl();
@@ -1764,14 +1754,11 @@ impl I286 {
                 };
                 let target_desc = SegmentDescriptor {
                     limit: self.read_word_phys(bus, target_addr),
-                    base: bus.read_byte(target_addr.wrapping_add(2) & TRACE_ADDRESS_MASK) as u32
-                        | ((bus.read_byte(target_addr.wrapping_add(3) & TRACE_ADDRESS_MASK)
-                            as u32)
-                            << 8)
-                        | ((bus.read_byte(target_addr.wrapping_add(4) & TRACE_ADDRESS_MASK)
-                            as u32)
+                    base: bus.read_byte(target_addr.wrapping_add(2) & ADDRESS_MASK) as u32
+                        | ((bus.read_byte(target_addr.wrapping_add(3) & ADDRESS_MASK) as u32) << 8)
+                        | ((bus.read_byte(target_addr.wrapping_add(4) & ADDRESS_MASK) as u32)
                             << 16),
-                    rights: bus.read_byte(target_addr.wrapping_add(5) & TRACE_ADDRESS_MASK),
+                    rights: bus.read_byte(target_addr.wrapping_add(5) & ADDRESS_MASK),
                 };
                 let tr = target_desc.rights;
                 if !Self::descriptor_is_code(tr) || !Self::descriptor_is_segment(tr) {
