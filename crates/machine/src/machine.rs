@@ -119,7 +119,7 @@ impl<C: Cpu, T: Tracing> Machine<C, T> {
 }
 
 /// PC-9801VM machine type (V30 CPU at 10 MHz).
-pub type Pc9801Vm = Machine<cpu::V30>;
+pub type Pc9801Vm = Machine<cpu::VX0>;
 
 /// PC-9801VX machine type (80286 CPU at 10 MHz).
 pub type Pc9801Vx = Machine<cpu::I286>;
@@ -133,7 +133,7 @@ pub type Pc9821As = Machine<cpu::I386<{ cpu::CPU_MODEL_486 }>>;
 /// PC-9821AP machine type (486DX2 CPU at 66 MHz, IDE, PEGC).
 pub type Pc9821Ap = Machine<cpu::I386<{ cpu::CPU_MODEL_486 }>>;
 
-impl<T: Tracing> Machine<cpu::V30, T> {
+impl<T: Tracing> Machine<cpu::VX0, T> {
     /// Captures the full machine state.
     pub fn save_state(&self) -> MachineState {
         self.bus.save_state(CpuState::V30(self.cpu.state.clone()))
@@ -228,7 +228,7 @@ fn insert_cdrom_impl<T: Tracing>(
     Ok(description)
 }
 
-impl<T: Tracing> common::Machine for Machine<cpu::V30, T> {
+impl<T: Tracing> common::Machine for Machine<cpu::VX0, T> {
     fn cpu_clock_hz(&self) -> f64 {
         f64::from(self.bus.cpu_clock_hz())
     }

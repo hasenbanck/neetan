@@ -1,4 +1,4 @@
-use super::{I286, TRACE_ADDRESS_MASK};
+use super::{ADDRESS_MASK, I286};
 
 impl I286 {
     pub(super) fn extended_0f(&mut self, bus: &mut impl common::Bus) {
@@ -102,8 +102,8 @@ impl I286 {
                 // Bug #5: Mark TSS as busy by setting bit 1 of type field.
                 self.tr_rights |= 0x02;
                 if let Some(addr) = self.descriptor_addr_checked(selector) {
-                    let r = bus.read_byte(addr.wrapping_add(5) & TRACE_ADDRESS_MASK);
-                    bus.write_byte(addr.wrapping_add(5) & TRACE_ADDRESS_MASK, r | 0x02);
+                    let r = bus.read_byte(addr.wrapping_add(5) & ADDRESS_MASK);
+                    bus.write_byte(addr.wrapping_add(5) & ADDRESS_MASK, r | 0x02);
                 }
                 self.clk_modrm_prefetch(bus, modrm, 17, 19);
             }
@@ -174,7 +174,7 @@ impl I286 {
                 let base = bus.read_byte(self.seg_addr(2)) as u32
                     | ((bus.read_byte(self.seg_addr(3)) as u32) << 8)
                     | ((bus.read_byte(self.seg_addr(4)) as u32) << 16);
-                self.gdt_base = base & TRACE_ADDRESS_MASK;
+                self.gdt_base = base & ADDRESS_MASK;
                 self.gdt_limit = limit;
                 self.clk(11);
             }
@@ -194,7 +194,7 @@ impl I286 {
                 let base = bus.read_byte(self.seg_addr(2)) as u32
                     | ((bus.read_byte(self.seg_addr(3)) as u32) << 8)
                     | ((bus.read_byte(self.seg_addr(4)) as u32) << 16);
-                self.idt_base = base & TRACE_ADDRESS_MASK;
+                self.idt_base = base & ADDRESS_MASK;
                 self.idt_limit = limit;
                 self.clk(12);
             }

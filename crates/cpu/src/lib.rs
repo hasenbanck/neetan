@@ -21,16 +21,37 @@
 //! Preserving correct total cycle cost is the priority; modeling exactly where a wait lands
 //! between internal clock counts is not.
 //!
+//! Our Z80, 8086, V30 and 80286 CPUs should be cycle-count accurate, since they have a complexitly,
+//! that still can be accurately modelled while still beeing performant enough to run on modern
+//! hardware with a single core.
+//!
+//! The 386 / 486 are out of scope for cycle-count accuracy, since their real hardware
+//! design and behavior is much more complex and the benefit of having a 486 cycle-count accurate
+//! core is very minimal. When the 386 and 486 were dominant, there were a lot of alternative
+//! CPU models on the market, so software really couldn't be optimized for a single CPU anymore
+//! (the 286 was the last CPU were this might have been the case).
+//!
+//! Since Neetan aims to emulate NEC machines roughly between 1979 to 1996, and put a hard line
+//! with the introduction of the Win32 API (and the irrelevance of the PC-98 as a platform),
+//! we don't think that we need to emulate Pentiums or Celeron processors in this emulator.
+//!
+//!
 //! ## Supported CPUs
 //!
 //! | CPU   | Functionality verified | Cycle-count accurate | Trace based timings | Datasheet timings |
 //! |-------|------------------------|----------------------|---------------------|-------------------|
 //! | 8086  | Yes                    | Yes                  | Yes                 | No                |
-//! | V30   | Yes                    | No                   | No                  | Yes               |
-//! | 80286 | Yes                    | No                   | Yes                 | No                |
-//! | 80386 | Yes                    | No                   | No                  | Yes               |
-//! | 80486 | Yes                    | No                   | No                  | Yes               |
+//! | V30   | Yes                    | Yes (1)              | Yes                 | No                |
+//! | 80286 | Yes                    | No yet               | Yes                 | No                |
+//! | 80386 | Yes                    | Never                | No                  | Yes               |
+//! | 80486 | Yes                    | Never                | No                  | Yes               |
 //! | Z80   | Yes                    | Yes                  | Yes                 | No                |
+//!
+//! Note 1: We validated the timings using the V20 testdata and the V20 bus behavior. We then
+//!         added the V30 bus behavior and verified if the cycles adjust accordingly, how we
+//!         would expect them based on the documentation NEC provided. We will use V30 testdata,
+//!         as soon as they are available, but we are very confident, that our current V30 is
+//!         already 99% cycle accurate when beeing compared to an original V30.
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
@@ -38,7 +59,7 @@
 mod i286;
 mod i386;
 mod i8086;
-mod v30;
+mod vx0;
 mod z80;
 
 pub use i286::{
@@ -48,7 +69,9 @@ pub use i286::{
 };
 pub use i386::{CPU_MODEL_386, CPU_MODEL_486, I386, I386Flags, I386State};
 pub use i8086::{I8086, I8086Flags, I8086State, PC9801F_CPU_CLOCK_5MHZ, PC9801F_CPU_CLOCK_8MHZ};
-pub use v30::{V30, V30Flags, V30State};
+pub use vx0::{
+    V20, V20_BUS, V30, V30_BUS, V30BusPhase, V30Flags, V30QueueOpTrace, V30State, V30TaCycle, VX0,
+};
 pub use z80::{Z80, Z80Flags, Z80State};
 
 pub(crate) const PENDING_IRQ: u8 = 0x01;

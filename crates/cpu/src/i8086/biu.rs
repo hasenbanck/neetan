@@ -187,7 +187,6 @@ impl I8086 {
         }
 
         self.cycles_remaining -= 1;
-        self.cycle_num = self.cycle_num.wrapping_add(1);
 
         // Phase 1: Operate on the current (latched) T-state.
         match self.bus_status_latch {

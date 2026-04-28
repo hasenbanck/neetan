@@ -1,5 +1,5 @@
 use super::{
-    I286, TRACE_ADDRESS_MASK,
+    ADDRESS_MASK, I286,
     string_ops::{rep_string_complete_cycles, rep_string_odd_di_adjustment, string_timing},
     timing::I286FinishState,
 };
@@ -14,7 +14,7 @@ pub(super) enum RepType {
 impl I286 {
     fn peek_rep_opcode(&self, bus: &mut impl common::Bus) -> u8 {
         let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        bus.read_byte(code_segment_base.wrapping_add(u32::from(self.ip)) & TRACE_ADDRESS_MASK)
+        bus.read_byte(code_segment_base.wrapping_add(u32::from(self.ip)) & ADDRESS_MASK)
     }
 
     fn handle_rep_segment_prefix(

@@ -1,4 +1,4 @@
-use super::{I286, TRACE_ADDRESS_MASK, timing::I286DemandPrefetchPolicy};
+use super::{ADDRESS_MASK, I286, timing::I286DemandPrefetchPolicy};
 use crate::{ByteReg, SegReg16, WordReg, build_x86_reg_word_table, build_x86_rm_table};
 
 static MODRM_REG: [u8; 256] = build_x86_reg_word_table();
@@ -202,8 +202,8 @@ impl I286 {
                         .regs
                         .word(WordReg::BX)
                         .wrapping_add(self.regs.word(WordReg::SI));
-                    self.ea = self.default_base(SegReg16::DS).wrapping_add(self.eo as u32)
-                        & TRACE_ADDRESS_MASK;
+                    self.ea =
+                        self.default_base(SegReg16::DS).wrapping_add(self.eo as u32) & ADDRESS_MASK;
                     self.ea_seg = self.default_seg(SegReg16::DS);
                 }
                 1 => {
@@ -211,8 +211,8 @@ impl I286 {
                         .regs
                         .word(WordReg::BX)
                         .wrapping_add(self.regs.word(WordReg::DI));
-                    self.ea = self.default_base(SegReg16::DS).wrapping_add(self.eo as u32)
-                        & TRACE_ADDRESS_MASK;
+                    self.ea =
+                        self.default_base(SegReg16::DS).wrapping_add(self.eo as u32) & ADDRESS_MASK;
                     self.ea_seg = self.default_seg(SegReg16::DS);
                 }
                 2 => {
@@ -220,8 +220,8 @@ impl I286 {
                         .regs
                         .word(WordReg::BP)
                         .wrapping_add(self.regs.word(WordReg::SI));
-                    self.ea = self.default_base(SegReg16::SS).wrapping_add(self.eo as u32)
-                        & TRACE_ADDRESS_MASK;
+                    self.ea =
+                        self.default_base(SegReg16::SS).wrapping_add(self.eo as u32) & ADDRESS_MASK;
                     self.ea_seg = self.default_seg(SegReg16::SS);
                 }
                 3 => {
@@ -229,20 +229,20 @@ impl I286 {
                         .regs
                         .word(WordReg::BP)
                         .wrapping_add(self.regs.word(WordReg::DI));
-                    self.ea = self.default_base(SegReg16::SS).wrapping_add(self.eo as u32)
-                        & TRACE_ADDRESS_MASK;
+                    self.ea =
+                        self.default_base(SegReg16::SS).wrapping_add(self.eo as u32) & ADDRESS_MASK;
                     self.ea_seg = self.default_seg(SegReg16::SS);
                 }
                 4 => {
                     self.eo = self.regs.word(WordReg::SI);
-                    self.ea = self.default_base(SegReg16::DS).wrapping_add(self.eo as u32)
-                        & TRACE_ADDRESS_MASK;
+                    self.ea =
+                        self.default_base(SegReg16::DS).wrapping_add(self.eo as u32) & ADDRESS_MASK;
                     self.ea_seg = self.default_seg(SegReg16::DS);
                 }
                 5 => {
                     self.eo = self.regs.word(WordReg::DI);
-                    self.ea = self.default_base(SegReg16::DS).wrapping_add(self.eo as u32)
-                        & TRACE_ADDRESS_MASK;
+                    self.ea =
+                        self.default_base(SegReg16::DS).wrapping_add(self.eo as u32) & ADDRESS_MASK;
                     self.ea_seg = self.default_seg(SegReg16::DS);
                 }
                 6 => {
@@ -250,14 +250,14 @@ impl I286 {
                     self.timing
                         .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeTurnaround);
                     self.eo = self.fetchword(bus);
-                    self.ea = self.default_base(SegReg16::DS).wrapping_add(self.eo as u32)
-                        & TRACE_ADDRESS_MASK;
+                    self.ea =
+                        self.default_base(SegReg16::DS).wrapping_add(self.eo as u32) & ADDRESS_MASK;
                     self.ea_seg = self.default_seg(SegReg16::DS);
                 }
                 7 => {
                     self.eo = self.regs.word(WordReg::BX);
-                    self.ea = self.default_base(SegReg16::DS).wrapping_add(self.eo as u32)
-                        & TRACE_ADDRESS_MASK;
+                    self.ea =
+                        self.default_base(SegReg16::DS).wrapping_add(self.eo as u32) & ADDRESS_MASK;
                     self.ea_seg = self.default_seg(SegReg16::DS);
                 }
                 _ => unreachable!(),
@@ -273,7 +273,7 @@ impl I286 {
                     SegReg16::DS
                 };
                 self.eo = self.ea_base(rm).wrapping_add(disp);
-                self.ea = self.default_base(seg).wrapping_add(self.eo as u32) & TRACE_ADDRESS_MASK;
+                self.ea = self.default_base(seg).wrapping_add(self.eo as u32) & ADDRESS_MASK;
                 self.ea_seg = self.default_seg(seg);
                 if rm <= 3 {
                     self.timing.note_au_demand_cycles(1);
@@ -290,7 +290,7 @@ impl I286 {
                     SegReg16::DS
                 };
                 self.eo = self.ea_base(rm).wrapping_add(disp);
-                self.ea = self.default_base(seg).wrapping_add(self.eo as u32) & TRACE_ADDRESS_MASK;
+                self.ea = self.default_base(seg).wrapping_add(self.eo as u32) & ADDRESS_MASK;
                 self.ea_seg = self.default_seg(seg);
                 if rm <= 3 {
                     self.timing.note_au_demand_cycles(1);

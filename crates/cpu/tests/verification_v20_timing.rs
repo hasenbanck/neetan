@@ -5,35 +5,70 @@ mod metadata_json;
 #[path = "common/verification_common.rs"]
 mod verification_common;
 
-use std::{collections::HashMap, path::Path, sync::LazyLock};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    sync::LazyLock,
+};
 
-use cpu::{V30, V30State};
+use cpu::{V20, V30State};
 use metadata_json::{Metadata, load_metadata};
-use verification_common::{MooState, load_moo_tests};
+use verification_common::{MooCycle, MooTest, load_moo_tests, load_revocation_list};
 
-const REG_ORDER_V30: [&str; 14] = [
+const RAM_SIZE: usize = 1024 * 1024;
+const ADDRESS_MASK: u32 = 0x000F_FFFF;
+const REG_ORDER: [&str; 14] = [
     "ax", "bx", "cx", "dx", "cs", "ss", "ds", "es", "sp", "bp", "si", "di", "ip", "flags",
 ];
 
 struct TestBus {
-    ram: Box<[u8; 1_048_576]>,
+    ram: Vec<u8>,
+    dirty: Vec<u32>,
+    dirty_marker: Vec<u8>,
+    current_cycle: u64,
+    wait_cycles: i64,
 }
 
 impl TestBus {
     fn new() -> Self {
         Self {
-            ram: vec![0u8; 1_048_576].into_boxed_slice().try_into().unwrap(),
+            ram: vec![0u8; RAM_SIZE],
+            dirty: Vec::new(),
+            dirty_marker: vec![0u8; RAM_SIZE],
+            current_cycle: 0,
+            wait_cycles: 0,
         }
+    }
+
+    fn clear(&mut self) {
+        for &address in &self.dirty {
+            let index = (address & ADDRESS_MASK) as usize;
+            self.ram[index] = 0;
+            self.dirty_marker[index] = 0;
+        }
+        self.dirty.clear();
+        self.current_cycle = 0;
+        self.wait_cycles = 0;
+    }
+
+    fn set_memory(&mut self, address: u32, value: u8) {
+        let masked_address = address & ADDRESS_MASK;
+        let index = masked_address as usize;
+        if self.dirty_marker[index] == 0 {
+            self.dirty_marker[index] = 1;
+            self.dirty.push(masked_address);
+        }
+        self.ram[index] = value;
     }
 }
 
 impl common::Bus for TestBus {
     fn read_byte(&mut self, address: u32) -> u8 {
-        self.ram[(address & 0xFFFFF) as usize]
+        self.ram[(address & ADDRESS_MASK) as usize]
     }
 
     fn write_byte(&mut self, address: u32, value: u8) {
-        self.ram[(address & 0xFFFFF) as usize] = value;
+        self.set_memory(address, value);
     }
 
     fn io_read_byte(&mut self, _port: u16) -> u8 {
@@ -57,14 +92,22 @@ impl common::Bus for TestBus {
     fn acknowledge_nmi(&mut self) {}
 
     fn current_cycle(&self) -> u64 {
-        0
+        self.current_cycle
     }
 
-    fn set_current_cycle(&mut self, _cycle: u64) {}
+    fn set_current_cycle(&mut self, cycle: u64) {
+        self.current_cycle = cycle;
+    }
+
+    fn drain_wait_cycles(&mut self) -> i64 {
+        let wait_cycles = self.wait_cycles;
+        self.wait_cycles = 0;
+        wait_cycles
+    }
 }
 
 fn test_dir() -> &'static Path {
-    static DIR: LazyLock<std::path::PathBuf> = LazyLock::new(|| {
+    static DIR: LazyLock<PathBuf> = LazyLock::new(|| {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/SingleStepTests/v20/v1_native")
     });
     &DIR
@@ -76,125 +119,43 @@ fn metadata() -> &'static Metadata {
     &META
 }
 
+fn revocation_list() -> &'static HashSet<String> {
+    static REVOKED: LazyLock<HashSet<String>> = LazyLock::new(|| {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/SingleStepTests/v20/revocation_list.txt");
+        if path.exists() {
+            load_revocation_list(&path)
+        } else {
+            HashSet::new()
+        }
+    });
+    &REVOKED
+}
+
+fn local_timing_revocation_list(_stem: &str) -> &'static [&'static str] {
+    &[]
+}
+
+fn timing_revocation_list(stem: &str, local_revoked_hashes: &[&str]) -> HashSet<String> {
+    let mut revoked = revocation_list().clone();
+    revoked.extend(
+        local_timing_revocation_list(stem)
+            .iter()
+            .map(|hash| hash.to_ascii_lowercase()),
+    );
+    revoked.extend(
+        local_revoked_hashes
+            .iter()
+            .map(|hash| hash.to_ascii_lowercase()),
+    );
+    revoked
+}
+
 fn should_test(status: &str) -> bool {
     matches!(
         status,
         "normal" | "alias" | "undocumented" | "fpu" | "undefined"
     )
-}
-
-fn format_flags_diff(expected: u16, actual: u16, mask: u16) -> String {
-    const FLAG_BITS: &[(u16, &str)] = &[
-        (0x0001, "CF"),
-        (0x0004, "PF"),
-        (0x0010, "AF"),
-        (0x0040, "ZF"),
-        (0x0080, "SF"),
-        (0x0100, "TF"),
-        (0x0200, "IF"),
-        (0x0400, "DF"),
-        (0x0800, "OF"),
-        (0x8000, "MD"),
-    ];
-
-    let expected_masked = expected & mask;
-    let actual_masked = actual & mask;
-    let diff_bits = expected_masked ^ actual_masked;
-
-    let mut changed: Vec<String> = Vec::new();
-    for &(bit, name) in FLAG_BITS {
-        if diff_bits & bit != 0 {
-            let exp = u16::from(expected_masked & bit != 0);
-            let act = u16::from(actual_masked & bit != 0);
-            changed.push(format!("{name}:{exp}->{act}"));
-        }
-    }
-
-    format!(
-        "  flags: expected 0x{expected_masked:04X}, got 0x{actual_masked:04X} [{}] (mask 0x{mask:04X})",
-        changed.join(", ")
-    )
-}
-
-fn initial_reg_value(regs: &HashMap<String, u32>, name: &str) -> u16 {
-    regs.get(name)
-        .copied()
-        .unwrap_or_else(|| panic!("missing register in initial state: {name}")) as u16
-}
-
-fn build_state(regs: &HashMap<String, u16>) -> V30State {
-    let get = |name: &str| -> u16 {
-        regs.get(name)
-            .copied()
-            .unwrap_or_else(|| panic!("missing register: {name}"))
-    };
-    let mut s = V30State::default();
-    s.set_ax(get("ax"));
-    s.set_cx(get("cx"));
-    s.set_dx(get("dx"));
-    s.set_bx(get("bx"));
-    s.set_sp(get("sp"));
-    s.set_bp(get("bp"));
-    s.set_si(get("si"));
-    s.set_di(get("di"));
-    s.set_es(get("es"));
-    s.set_cs(get("cs"));
-    s.set_ss(get("ss"));
-    s.set_ds(get("ds"));
-    s.ip = get("ip");
-    s.set_compressed_flags(get("flags"));
-    s
-}
-
-fn resolve_final_regs(
-    initial: &HashMap<String, u32>,
-    final_state: &HashMap<String, u32>,
-) -> HashMap<String, u16> {
-    REG_ORDER_V30
-        .iter()
-        .map(|name| {
-            let value = final_state
-                .get(*name)
-                .copied()
-                .unwrap_or_else(|| initial_reg_value(initial, name) as u32);
-            ((*name).to_string(), value as u16)
-        })
-        .collect()
-}
-
-fn resolve_initial_regs(initial: &HashMap<String, u32>) -> HashMap<String, u16> {
-    REG_ORDER_V30
-        .iter()
-        .map(|name| ((*name).to_string(), initial_reg_value(initial, name)))
-        .collect()
-}
-
-fn is_division_exception(
-    opcode: &str,
-    reg_ext: Option<&str>,
-    initial: &MooState,
-    expected: &V30State,
-) -> bool {
-    let is_div = matches!(
-        (opcode, reg_ext),
-        ("F6", Some("6")) | ("F6", Some("7")) | ("F7", Some("6")) | ("F7", Some("7"))
-    );
-    if !is_div {
-        return false;
-    }
-
-    let byte_at = |address: u32| -> u16 {
-        initial
-            .ram
-            .iter()
-            .find(|(candidate, _)| *candidate == address)
-            .map(|(_, value)| *value as u16)
-            .unwrap_or(0)
-    };
-    let handler_ip = byte_at(0) | (byte_at(1) << 8);
-    let handler_cs = byte_at(2) | (byte_at(3) << 8);
-
-    expected.cs() == handler_cs && expected.ip == handler_ip
 }
 
 fn parse_stem(stem: &str) -> (&str, Option<&str>) {
@@ -205,229 +166,164 @@ fn parse_stem(stem: &str) -> (&str, Option<&str>) {
     }
 }
 
-fn status_and_mask(stem: &str) -> Option<(&'static str, u16)> {
+fn status_and_mask(stem: &str) -> Option<(&str, u16)> {
     let metadata = metadata();
     let (opcode, reg_ext) = parse_stem(stem);
+
     let entry = metadata.opcodes.get(opcode)?;
-    match (reg_ext, &entry.reg) {
-        (Some(reg_ext), Some(reg_map)) => {
-            let info = reg_map.get(reg_ext)?;
-            Some((info.status.as_str(), info.flags_mask.unwrap_or(0xFFFF)))
-        }
-        (Some(_), None) => None,
-        (None, _) => {
-            if let Some(status) = &entry.status {
-                Some((status.as_str(), entry.flags_mask.unwrap_or(0xFFFF)))
-            } else if let Some(reg_map) = &entry.reg {
-                let any_testable = reg_map.values().any(|info| should_test(&info.status));
-                if !any_testable {
-                    return None;
-                }
-                let mask = reg_map
-                    .values()
-                    .map(|info| info.flags_mask.unwrap_or(0xFFFF))
-                    .fold(0xFFFFu16, |acc, m| acc & m);
-                Some(("normal", mask))
-            } else {
-                None
-            }
-        }
+    if let Some(reg_ext) = reg_ext {
+        let reg_info = entry.reg.as_ref()?.get(reg_ext)?;
+        Some((
+            reg_info.status.as_str(),
+            reg_info.flags_mask.unwrap_or(0xFFFF),
+        ))
+    } else if let Some(status) = &entry.status {
+        Some((status.as_str(), entry.flags_mask.unwrap_or(0xFFFF)))
+    } else {
+        None
     }
 }
 
-fn run_test_file(stem: &str) {
-    let Some((status, flags_mask)) = status_and_mask(stem) else {
+fn build_initial_state(test: &MooTest) -> V30State {
+    let get = |name: &str| -> u16 {
+        test.initial
+            .regs
+            .get(name)
+            .copied()
+            .unwrap_or_else(|| panic!("missing register in initial state: {name}")) as u16
+    };
+
+    let mut state = V30State::default();
+    state.set_ax(get("ax"));
+    state.set_bx(get("bx"));
+    state.set_cx(get("cx"));
+    state.set_dx(get("dx"));
+    state.set_sp(get("sp"));
+    state.set_bp(get("bp"));
+    state.set_si(get("si"));
+    state.set_di(get("di"));
+    state.set_cs(get("cs"));
+    state.set_ss(get("ss"));
+    state.set_ds(get("ds"));
+    state.set_es(get("es"));
+    state.ip = get("ip");
+    state.set_compressed_flags(get("flags"));
+    state
+}
+
+/// SingleStepTests V20 cycle traces begin at the QueueOp::First marker, after
+/// the leading instruction-byte fetch has already landed. When `initial.queue`
+/// is empty `step()` performs that fetch itself (4 bus T-states + 3 cycles
+/// ramping the address pipeline), so we add it to the expected count.
+const V20_COLD_START_FETCH_OVERHEAD: u64 = 7;
+
+fn expected_cycle_count(test: &MooTest) -> u64 {
+    let trace_cycles = test
+        .cycles
+        .iter()
+        .filter(|cycle| matches!(cycle, MooCycle::V20(_)))
+        .count() as u64;
+    if test.initial.queue.is_empty() {
+        trace_cycles + V20_COLD_START_FETCH_OVERHEAD
+    } else {
+        trace_cycles
+    }
+}
+
+fn run_test_cycles(test: &MooTest) -> u64 {
+    let initial_state = build_initial_state(test);
+    let mut bus = TestBus::new();
+    bus.clear();
+    for &(address, value) in &test.initial.ram {
+        bus.set_memory(address, value);
+    }
+
+    let mut cpu: V20 = V20::new();
+    cpu.load_state(&initial_state);
+    if !test.initial.queue.is_empty() {
+        cpu.install_prefetch_queue(&test.initial.queue);
+    }
+
+    cpu.step(&mut bus);
+    cpu.cycles_consumed()
+}
+
+fn run_timing_test_file(stem: &str, local_revoked_hashes: &[&str]) {
+    let revoked = timing_revocation_list(stem, local_revoked_hashes);
+
+    let Some((status, _flags_mask)) = status_and_mask(stem) else {
         return;
     };
     if !should_test(status) {
         return;
     }
 
-    let (opcode, reg_ext) = parse_stem(stem);
     let filename = format!("{stem}.MOO.gz");
     let path = test_dir().join(&filename);
-    let test_cases = load_moo_tests(&path, &REG_ORDER_V30, &[]);
-
+    let test_cases = load_moo_tests(&path, &REG_ORDER, &[]);
     let mut failures: Vec<String> = Vec::new();
+    let mut compared_tests = 0usize;
+    let mut skipped_revoked = 0usize;
+    let mut skipped_exception = 0usize;
 
-    for (index, test) in test_cases.iter().enumerate() {
-        let mut bus = TestBus::new();
-        for &(address, value) in &test.initial.ram {
-            bus.ram[(address & 0xFFFFF) as usize] = value;
+    for test in &test_cases {
+        if let Some(hash) = &test.hash
+            && revoked.contains(&hash.to_ascii_lowercase())
+        {
+            skipped_revoked += 1;
+            continue;
+        }
+        if test.exception.is_some() {
+            skipped_exception += 1;
+            continue;
         }
 
-        let initial_regs16 = resolve_initial_regs(&test.initial.regs);
-        let final_regs16 = resolve_final_regs(&test.initial.regs, &test.final_state.regs);
-        let initial_state = build_state(&initial_regs16);
-        let expected = build_state(&final_regs16);
+        compared_tests += 1;
 
-        let mut cpu = V30::new();
-        cpu.load_state(&initial_state);
-        cpu.step(&mut bus);
+        let actual_cycles = run_test_cycles(test);
+        let expected_cycles = expected_cycle_count(test);
 
-        let mut diffs: Vec<String> = Vec::new();
-        let check_reg = |name: &str,
-                         initial_value: u16,
-                         actual_value: u16,
-                         expected_value: u16,
-                         diffs: &mut Vec<String>| {
-            if actual_value != expected_value {
-                diffs.push(format!(
-                    "  {name}: expected 0x{expected_value:04X}, got 0x{actual_value:04X} (was 0x{initial_value:04X})"
-                ));
-            }
-        };
-
-        check_reg(
-            "ax",
-            initial_state.ax(),
-            cpu.ax(),
-            expected.ax(),
-            &mut diffs,
-        );
-        check_reg(
-            "bx",
-            initial_state.bx(),
-            cpu.bx(),
-            expected.bx(),
-            &mut diffs,
-        );
-        check_reg(
-            "cx",
-            initial_state.cx(),
-            cpu.cx(),
-            expected.cx(),
-            &mut diffs,
-        );
-        check_reg(
-            "dx",
-            initial_state.dx(),
-            cpu.dx(),
-            expected.dx(),
-            &mut diffs,
-        );
-        check_reg(
-            "sp",
-            initial_state.sp(),
-            cpu.sp(),
-            expected.sp(),
-            &mut diffs,
-        );
-        check_reg(
-            "bp",
-            initial_state.bp(),
-            cpu.bp(),
-            expected.bp(),
-            &mut diffs,
-        );
-        check_reg(
-            "si",
-            initial_state.si(),
-            cpu.si(),
-            expected.si(),
-            &mut diffs,
-        );
-        check_reg(
-            "di",
-            initial_state.di(),
-            cpu.di(),
-            expected.di(),
-            &mut diffs,
-        );
-        check_reg(
-            "cs",
-            initial_state.cs(),
-            cpu.cs(),
-            expected.cs(),
-            &mut diffs,
-        );
-        check_reg(
-            "ss",
-            initial_state.ss(),
-            cpu.ss(),
-            expected.ss(),
-            &mut diffs,
-        );
-        check_reg(
-            "ds",
-            initial_state.ds(),
-            cpu.ds(),
-            expected.ds(),
-            &mut diffs,
-        );
-        check_reg(
-            "es",
-            initial_state.es(),
-            cpu.es(),
-            expected.es(),
-            &mut diffs,
-        );
-        check_reg("ip", initial_state.ip, cpu.ip, expected.ip, &mut diffs);
-
-        let cpu_flags_masked = cpu.compressed_flags() & flags_mask;
-        let expected_flags_masked = expected.compressed_flags() & flags_mask;
-        if cpu_flags_masked != expected_flags_masked {
-            diffs.push(format!(
-                "{} (was 0x{:04X})",
-                format_flags_diff(
-                    expected.compressed_flags(),
-                    cpu.compressed_flags(),
-                    flags_mask
-                ),
-                initial_state.compressed_flags()
-            ));
-        }
-
-        let div_exception = is_division_exception(opcode, reg_ext, &test.initial, &expected);
-
-        if !div_exception {
-            for &(address, expected_value) in &test.final_state.ram {
-                let actual_value = bus.ram[(address & 0xFFFFF) as usize];
-                if actual_value != expected_value {
-                    let initial_value = test
-                        .initial
-                        .ram
-                        .iter()
-                        .find(|(candidate, _)| *candidate == address)
-                        .map(|(_, value)| *value);
-                    match initial_value {
-                        Some(before) => diffs.push(format!(
-                            "  ram[0x{address:05X}]: expected 0x{expected_value:02X}, got 0x{actual_value:02X} (was 0x{before:02X})"
-                        )),
-                        None => diffs.push(format!(
-                            "  ram[0x{address:05X}]: expected 0x{expected_value:02X}, got 0x{actual_value:02X} (not in initial RAM)"
-                        )),
-                    }
-                }
-            }
-        }
-
-        if !diffs.is_empty() {
+        if expected_cycles != actual_cycles {
             let bytes_hex: Vec<String> = test
                 .bytes
                 .iter()
-                .map(|byte| format!("{byte:02X}"))
+                .map(|value| format!("{value:02X}"))
                 .collect();
             failures.push(format!(
-                "[{filename} #{index}] {} ({})\n{}",
+                "[{filename} #{} idx={}] {} ({})\n  total cycles: expected {}, got {}",
+                failures.len(),
+                test.idx,
                 test.name,
                 bytes_hex.join(" "),
-                diffs.join("\n")
+                expected_cycles,
+                actual_cycles
             ));
         }
     }
 
+    if compared_tests == 0 {
+        return;
+    }
+
     if !failures.is_empty() {
-        let fail_count = failures.len();
-        let test_count = test_cases.len();
-        let mut message = format!("{filename}: {fail_count}/{test_count} tests failed\n");
+        let mut message = format!(
+            "{filename}: {}/{} compared tests failed ({} total, {} revoked, {} exception)\n",
+            failures.len(),
+            compared_tests,
+            test_cases.len(),
+            skipped_revoked,
+            skipped_exception,
+        );
         let display_count = failures.len().min(5);
         for failure in &failures[..display_count] {
             message.push_str(failure);
             message.push('\n');
         }
-        if failures.len() > 5 {
-            message.push_str(&format!("  ... and {} more failures\n", failures.len() - 5));
+        if failures.len() > display_count {
+            message.push_str(&format!(
+                "  ... and {} more failures\n",
+                failures.len() - display_count
+            ));
         }
         panic!("{message}");
     }
@@ -437,7 +333,13 @@ macro_rules! test_opcode {
     ($name:ident, $file:expr) => {
         #[test]
         fn $name() {
-            run_test_file($file);
+            run_timing_test_file($file, &[]);
+        }
+    };
+    ($name:ident, $file:expr, [$($skip_hash:expr),* $(,)?]) => {
+        #[test]
+        fn $name() {
+            run_timing_test_file($file, &[$($skip_hash),*]);
         }
     };
 }

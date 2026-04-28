@@ -1,6 +1,6 @@
-use super::V30;
+use super::VX0;
 
-impl V30 {
+impl<const MODEL: u8> VX0<MODEL> {
     #[inline(always)]
     pub(super) fn alu_add_byte(&mut self, dst: u8, src: u8) -> u8 {
         let result = dst as u32 + src as u32;

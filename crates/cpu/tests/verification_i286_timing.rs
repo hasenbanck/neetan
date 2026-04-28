@@ -376,7 +376,7 @@ fn normalize_expected_cycles(cycles: &[MooCycle]) -> Vec<NormalizedI286Cycle> {
                     None
                 },
             }),
-            MooCycle::Legacy(_) => None,
+            MooCycle::Legacy(_) | MooCycle::V20(_) => None,
         })
         .collect()
 }

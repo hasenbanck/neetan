@@ -1,5 +1,5 @@
 use super::{
-    EaClass, I286, TRACE_ADDRESS_MASK, address_is_odd, modrm,
+    ADDRESS_MASK, EaClass, I286, address_is_odd, modrm,
     timing::{
         I286ControlTransferTimingTemplate, I286DemandPrefetchPolicy, I286FinishState,
         LOCK_PREFIX_OVERLAP_CREDIT,
@@ -379,7 +379,7 @@ impl I286 {
 
         let code_segment_base = self.seg_bases[SegReg16::CS as usize];
         let modrm =
-            bus.read_byte(code_segment_base.wrapping_add(u32::from(self.ip)) & TRACE_ADDRESS_MASK);
+            bus.read_byte(code_segment_base.wrapping_add(u32::from(self.ip)) & ADDRESS_MASK);
         let reg = modrm::modrm_register(modrm);
         if !matches!(reg, 3 | 5) || modrm::modrm_is_register(modrm) {
             return;
@@ -1035,7 +1035,7 @@ impl I286 {
                         .advance_control_transfer_fetches(bus, code_segment_base, 1);
                     self.sync_timing_cycles();
                     if address_is_odd(
-                        code_segment_base.wrapping_add(u32::from(self.ip)) & TRACE_ADDRESS_MASK,
+                        code_segment_base.wrapping_add(u32::from(self.ip)) & ADDRESS_MASK,
                     ) {
                         self.timing.drive_next_write_low_byte_on_ts();
                     }
@@ -1112,7 +1112,7 @@ impl I286 {
                         .advance_control_transfer_fetches(bus, code_segment_base, 1);
                     self.sync_timing_cycles();
                     if address_is_odd(
-                        code_segment_base.wrapping_add(u32::from(self.ip)) & TRACE_ADDRESS_MASK,
+                        code_segment_base.wrapping_add(u32::from(self.ip)) & ADDRESS_MASK,
                     ) {
                         self.timing.drive_next_write_low_byte_on_ts();
                     }
