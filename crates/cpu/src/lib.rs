@@ -21,17 +21,24 @@
 //! Preserving correct total cycle cost is the priority; modeling exactly where a wait lands
 //! between internal clock counts is not.
 //!
-//! Our Z80, 8086, V30 and 80286 CPUs should be cycle-count accurate, since they have a complexitly,
-//! that still can be accurately modelled while still beeing performant enough to run on modern
+//! Our Z80, 8086 and V30 CPUs should be cycle-count accurate, since they have a complexitly,
+//! that still can be accurately modeled while still beeing performant enough to run on modern
 //! hardware with a single core.
+//!
+//! The 286 is in an odd space, were we have the CPU power to emulate it cycle-count accurate,
+//! but since there is no microcode of the 286 available, it's really hard to fully model.
+//! For now the 286 is calibrated using real 286 traces, so it runs with within 99% of the target
+//! cycles and should be indistinguishable from a performance point of view. It's also questionable
+//! that there is any games / software that requires a cycle-count accurate 286 emulation.
 //!
 //! The 386 / 486 are out of scope for cycle-count accuracy, since their real hardware
 //! design and behavior is much more complex and the benefit of having a 486 cycle-count accurate
 //! core is very minimal. When the 386 and 486 were dominant, there were a lot of alternative
-//! CPU models on the market, so software really couldn't be optimized for a single CPU anymore
-//! (the 286 was the last CPU were this might have been the case).
+//! CPU models on the market, so software really couldn't be optimized for a single CPU anymore.
+//! What could be improved is the emulated performance of the 286 and 486, since right now we are
+//! most likely faster than the original chips (since we use datasheet timings).
 //!
-//! Since Neetan aims to emulate NEC machines roughly between 1979 to 1996, and put a hard line
+//! Since Neetan aims to emulate NEC machines roughly between 1979 and 1996, and put a hard line
 //! with the introduction of the Win32 API (and the irrelevance of the PC-98 as a platform),
 //! we don't think that we need to emulate Pentiums or Celeron processors in this emulator.
 //!
@@ -42,9 +49,9 @@
 //! |-------|------------------------|----------------------|---------------------|-------------------|
 //! | 8086  | Yes                    | Yes                  | Yes                 | No                |
 //! | V30   | Yes                    | Yes (1)              | Yes                 | No                |
-//! | 80286 | Yes                    | No yet               | Yes                 | No                |
-//! | 80386 | Yes                    | Never                | No                  | Yes               |
-//! | 80486 | Yes                    | Never                | No                  | Yes               |
+//! | 80286 | Yes                    | No                   | Yes                 | No                |
+//! | 80386 | Yes                    | No                   | No                  | Yes               |
+//! | 80486 | Yes                    | No                   | No                  | Yes               |
 //! | Z80   | Yes                    | Yes                  | Yes                 | No                |
 //!
 //! Note 1: We validated the timings using the V20 testdata and the V20 bus behavior. We then
