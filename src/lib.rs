@@ -891,7 +891,8 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
 
     info!("Selected machine model {model}");
 
-    let mut bus: machine::Pc9801Bus<Tracer> = machine::Pc9801Bus::new(model, sample_rate);
+    let mut bus: machine::Pc9801Bus<Tracer> =
+        machine::Pc9801Bus::new(model, config.cpu_mode, sample_rate);
     bus.set_host_local_time_fn(host_local_time_bcd);
     bus.set_boot_device(config.boot_device);
 
@@ -1101,7 +1102,7 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
     }
 
     let machine: Box<dyn Machine> = match model.cpu_type() {
-        common::CpuType::I8086 => unreachable!("PC-9801F is not wired as a machine model yet"),
+        common::CpuType::I8086 => Box::new(machine::Machine::new(cpu::I8086::new(), bus)),
         common::CpuType::V30 => Box::new(machine::Machine::new(cpu::V30::new(), bus)),
         common::CpuType::I286 => Box::new(machine::Machine::new(cpu::I286::new(), bus)),
         common::CpuType::I386 => Box::new(machine::Machine::new(
@@ -1123,7 +1124,10 @@ fn validate_hdd_for_machine(
     label: &str,
 ) -> Result<()> {
     match model {
-        MachineModel::PC9801VM | MachineModel::PC9801VX | MachineModel::PC9801RA => {
+        MachineModel::PC9801F
+        | MachineModel::PC9801VM
+        | MachineModel::PC9801VX
+        | MachineModel::PC9801RA => {
             ensure!(
                 geometry.sasi_media_type().is_some(),
                 "{label} is not compatible with {model} (SASI): \

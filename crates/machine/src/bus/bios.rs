@@ -5,11 +5,11 @@
 //! write the vector number to the trap port, and IRET. The Rust side
 //! restores AX/DX from the stack before dispatching to the handler.
 
-use common::{Cpu, MachineModel};
+use common::{Cpu, MachineModel, warn};
 use device::{floppy::D88MediaType, i8253_pit::PIT_FLAG_I, upd7220_gdc::GdcScrollPartition};
 
 use super::{
-    BootDevice, Pc9801Bus,
+    BootDevice, KEYBOARD_ROM_OFFSET_F, KEYBOARD_ROM_OFFSET_VM, Pc9801Bus,
     os_adapter::{OsCpuAccess, OsCursorAccess, OsDiskIo, OsMemoryAccess},
 };
 use crate::{Tracing, memory::Pc9801Memory};
@@ -163,8 +163,13 @@ impl<T: Tracing> Pc9801Bus<T> {
                 self.hle_bootstrap(cpu);
             }
             0xF1 | 0xF2 => self.hle_bootstrap(cpu),
+            0xF3 => self.hle_n88_basic_entry(),
             _ => {}
         }
+    }
+
+    fn hle_n88_basic_entry(&mut self) {
+        warn!("N88-BASIC ROM entry invoked; this software requires an original ROM to run");
     }
 
     pub(super) fn set_iret_cf(&mut self, cpu: &impl Cpu, error: bool) {
@@ -354,7 +359,15 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
             b
         };
-        let table_offset = 0x0B28 + base * 0x60;
+        let table_base = match self.machine_model {
+            MachineModel::PC9801F => KEYBOARD_ROM_OFFSET_F as u16,
+            MachineModel::PC9801VM
+            | MachineModel::PC9801VX
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => KEYBOARD_ROM_OFFSET_VM as u16,
+        };
+        let table_offset = table_base + base * 0x60;
         self.ram_write_u16(0x0522, table_offset);
     }
 
@@ -519,6 +532,31 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.pic.write_port0(1, 0x20);
         if self.pic.state.chips[1].isr == 0 {
             self.pic.write_port0(0, 0x20);
+        }
+
+        if self.machine_model == MachineModel::PC9801F {
+            loop {
+                let fdc = self.floppy.fdc_640k_mut();
+                let status = fdc.read_status();
+                if status & 0x10 == 0 {
+                    if status & 0xC0 != 0x80 {
+                        return;
+                    }
+                    fdc.write_data(0x08);
+                }
+
+                let fdc_status = self.floppy.fdc_640k_mut().read_status();
+                if fdc_status & 0xD0 != 0xD0 {
+                    return;
+                }
+                let st0 = self.floppy.fdc_640k_mut().read_data();
+                if st0 == 0x80 {
+                    return;
+                }
+
+                let mut buf = [0u8; 7];
+                let _ = Self::fdc_drain_results(self.floppy.fdc_640k_mut(), &mut buf);
+            }
         }
 
         // Loop to drain all pending FDC results.
@@ -713,10 +751,18 @@ impl<T: Tracing> Pc9801Bus<T> {
         // Clear keyboard buffer and key status area.
         self.memory.state.ram[0x0502..0x0522].fill(0);
         self.memory.state.ram[0x0528..0x053B].fill(0);
-        self.ram_write_u16(0x0522, 0x0B28); // KB_SHIFT_TBL
+        let keyboard_table = match self.machine_model {
+            MachineModel::PC9801F => KEYBOARD_ROM_OFFSET_F as u16,
+            MachineModel::PC9801VM
+            | MachineModel::PC9801VX
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => KEYBOARD_ROM_OFFSET_VM as u16,
+        };
+        self.ram_write_u16(0x0522, keyboard_table); // KB_SHIFT_TBL
         self.ram_write_u16(0x0524, 0x0502); // KB_BUF_HEAD
         self.ram_write_u16(0x0526, 0x0502); // KB_BUF_TAIL
-        self.ram_write_u16(0x05C6, 0x0B28); // KB_CODE_OFF
+        self.ram_write_u16(0x05C6, keyboard_table); // KB_CODE_OFF
         self.ram_write_u16(0x05C8, 0xFD80); // KB_CODE_SEG
     }
 
@@ -1815,8 +1861,10 @@ impl<T: Tracing> Pc9801Bus<T> {
             // RA returns 0x02 for both (unsupported device).
             0x00 | 0x01 => 0x00,
             0x02 | 0x03 => 0x00,
+            0x04 if self.machine_model == MachineModel::PC9801F => 0x00,
             0x04 if self.clocks.pit_clock_hz == PIT_CLOCK_8MHZ_LINEAGE => 0x02,
             0x04 => 0x00,
+            0x05 if self.machine_model == MachineModel::PC9801F => 0x27,
             0x05 if self.clocks.pit_clock_hz == PIT_CLOCK_8MHZ_LINEAGE => 0x02,
             0x05 => 0x27,
             // Printer functions.
@@ -1897,6 +1945,13 @@ impl<T: Tracing> Pc9801Bus<T> {
             cpu.dl(),
             cpu.ch(),
         );
+
+        let devtype = cpu.al() & 0xF0;
+        // Reject 1MB-style device types on PC-9801F.
+        if self.machine_model == MachineModel::PC9801F && !matches!(devtype, 0x50 | 0x70) {
+            self.write_result_ah_cf(cpu, 0x40);
+            return;
+        }
 
         match function {
             0x00 => {
@@ -2585,10 +2640,13 @@ impl<T: Tracing> Pc9801Bus<T> {
         let ah = cpu.ah();
 
         // Bit 7 must be set for valid extended functions.
-        // On VM (expansion ROM handler), CF is cleared even for AH < 0x80.
+        // On F and VM (expansion ROM handler), CF is cleared even for AH < 0x80.
         // On VX/RA, the handler returns without modifying flags.
         if ah & 0x80 == 0 {
-            if self.machine_model == MachineModel::PC9801VM {
+            if matches!(
+                self.machine_model,
+                MachineModel::PC9801F | MachineModel::PC9801VM
+            ) {
                 self.set_iret_cf(cpu, false);
             }
             return;
@@ -2601,7 +2659,10 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
             0x90 => {
                 // Protected-mode memory copy (286/386 only).
-                if self.machine_model == MachineModel::PC9801VM {
+                if matches!(
+                    self.machine_model,
+                    MachineModel::PC9801F | MachineModel::PC9801VM
+                ) {
                     self.set_iret_cf(cpu, false);
                     return;
                 }

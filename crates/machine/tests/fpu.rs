@@ -3,7 +3,7 @@ use std::{
     process::Command,
 };
 
-use common::MachineModel;
+use common::{CpuMode, MachineModel};
 use machine::{Pc9801Bus, Pc9801Ra};
 
 const CYCLES_PER_STEP: u64 = 200_000;
@@ -99,7 +99,7 @@ fn debug_fpu_firmware_constants_page() {
     let firmware_data = std::fs::read(&firmware_path)
         .unwrap_or_else(|error| panic!("Failed to read {}: {error}", firmware_path.display()));
 
-    let mut bus = Pc9801Bus::new(MachineModel::PC9801RA, 48_000);
+    let mut bus = Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48_000);
     bus.load_bios_rom(&firmware_data);
 
     let mut machine = Pc9801Ra::new(cpu::I386::new(), bus);
@@ -151,7 +151,7 @@ fn debug_fpu_firmware_arithmetic_page() {
     let firmware_data = std::fs::read(&firmware_path)
         .unwrap_or_else(|error| panic!("Failed to read {}: {error}", firmware_path.display()));
 
-    let mut bus = Pc9801Bus::new(MachineModel::PC9801RA, 48_000);
+    let mut bus = Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48_000);
     bus.load_bios_rom(&firmware_data);
 
     let mut machine = Pc9801Ra::new(cpu::I386::new(), bus);
@@ -198,7 +198,7 @@ fn debug_fpu_firmware_transcendentals_page() {
     let firmware_data = std::fs::read(&firmware_path)
         .unwrap_or_else(|error| panic!("Failed to read {}: {error}", firmware_path.display()));
 
-    let mut bus = Pc9801Bus::new(MachineModel::PC9801RA, 48_000);
+    let mut bus = Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48_000);
     bus.load_bios_rom(&firmware_data);
 
     let mut machine = Pc9801Ra::new(cpu::I386::new(), bus);
@@ -267,7 +267,7 @@ fn debug_fpu_firmware_golden_page() {
     let firmware_data = std::fs::read(&firmware_path)
         .unwrap_or_else(|error| panic!("Failed to read {}: {error}", firmware_path.display()));
 
-    let mut bus = Pc9801Bus::new(MachineModel::PC9801RA, 48_000);
+    let mut bus = Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48_000);
     bus.load_bios_rom(&firmware_data);
 
     let mut machine = Pc9801Ra::new(cpu::I386::new(), bus);

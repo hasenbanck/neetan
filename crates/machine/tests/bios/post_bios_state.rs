@@ -509,6 +509,187 @@ fn post_bios_state_vm() {
 }
 
 #[test]
+fn post_bios_state_f() {
+    let mut machine = super::create_machine_f();
+    let _cycles = boot_to_halt!(machine);
+    let state = machine.save_state();
+    let mut f: Vec<String> = Vec::new();
+
+    // === PIC ===
+    check!(
+        f,
+        state.pic.chips[0].icw,
+        [0x11, 0x08, 0x80, 0x1D],
+        "Master PIC ICW"
+    );
+    check!(f, state.pic.chips[0].imr, 0x3D, "Master PIC IMR");
+    check!(f, state.pic.chips[0].isr, 0x00, "Master PIC ISR");
+    check!(f, state.pic.chips[0].ocw3, 0x00, "Master PIC OCW3");
+    check!(f, state.pic.chips[0].pry, 0x00, "Master PIC priority");
+    check!(
+        f,
+        state.pic.chips[0].write_icw,
+        0x00,
+        "Master PIC write_icw"
+    );
+    check!(
+        f,
+        state.pic.chips[1].icw,
+        [0x11, 0x10, 0x07, 0x09],
+        "Slave PIC ICW"
+    );
+    check!(f, state.pic.chips[1].imr, 0xFD, "Slave PIC IMR");
+    check!(f, state.pic.chips[1].isr, 0x00, "Slave PIC ISR");
+    check!(f, state.pic.chips[1].ocw3, 0x0B, "Slave PIC OCW3");
+    check!(f, state.pic.chips[1].pry, 0x00, "Slave PIC priority");
+    check!(f, state.pic.chips[1].write_icw, 0x00, "Slave PIC write_icw");
+
+    // === PIT ===
+    check!(f, state.pit.channels[0].ctrl, 0x30, "PIT ch0 ctrl");
+    check!(f, state.pit.channels[0].flag, 0x00, "PIT ch0 flag");
+    check!(f, state.pit.channels[0].value, 0x0000, "PIT ch0 value");
+    check!(f, state.pit.channels[1].ctrl, 0x14, "PIT ch1 ctrl");
+    check!(f, state.pit.channels[1].flag, 0x00, "PIT ch1 flag");
+    check!(f, state.pit.channels[1].value, 0x0039, "PIT ch1 value");
+    check!(f, state.pit.channels[2].ctrl, 0x76, "PIT ch2 ctrl");
+    check!(f, state.pit.channels[2].flag, 0x00, "PIT ch2 flag");
+    check!(f, state.pit.channels[2].value, 0x0000, "PIT ch2 value");
+
+    // === Clocks ===
+    check!(f, state.clocks.cpu_clock_hz, 8_000_000, "CPU clock");
+    check!(f, state.clocks.pit_clock_hz, 1_996_800, "PIT clock");
+
+    // === GDC Master (text) ===
+    check!(f, state.gdc_master.status, 0x04, "Master GDC status");
+    check_false!(
+        f,
+        state.gdc_master.display_enabled,
+        "F Master GDC display disabled"
+    );
+    check_true!(f, state.gdc_master.master_mode, "Master GDC master mode");
+    check_false!(f, state.gdc_master.is_slave, "Master GDC is not slave");
+    check!(f, state.gdc_master.pitch, 80, "Master GDC pitch");
+    check!(f, state.gdc_master.al, 400, "Master GDC AL");
+    check!(
+        f,
+        state.gdc_master.lines_per_row,
+        16,
+        "Master GDC lines per row"
+    );
+
+    // === GDC Slave (graphics) ===
+    check!(f, state.gdc_slave.status, 0x44, "Slave GDC status");
+    check_false!(
+        f,
+        state.gdc_slave.display_enabled,
+        "Slave GDC display disabled"
+    );
+    check_true!(f, state.gdc_slave.is_slave, "Slave GDC is slave");
+    check!(f, state.gdc_slave.pitch, 40, "Slave GDC pitch");
+
+    // === NMI / A20 / misc ===
+    check_true!(f, state.nmi_enabled, "NMI enabled");
+    check_false!(f, state.a20_enabled, "A20 disabled");
+    check!(f, state.fdc_media, 3, "FDC media");
+
+    // === Keyboard ===
+    check!(f, state.keyboard.mode, 0x5E, "KB mode");
+    check!(f, state.keyboard.command, 0x16, "KB command");
+    check!(f, state.keyboard.data, 0xFF, "KB data");
+    check_false!(f, state.keyboard.rx_ready, "KB rx not ready");
+    check_true!(f, state.keyboard.rx_fifo.is_empty(), "KB FIFO empty");
+    check_false!(f, state.keyboard.expect_mode, "KB not expecting mode");
+
+    // === Serial ===
+    check!(f, state.serial.mode, 0x02, "Serial mode");
+    check!(f, state.serial.command, 0x40, "Serial command");
+    check!(f, state.serial.status, 0x00, "Serial status");
+    check!(f, state.serial.data, 0xFF, "Serial data");
+    check_true!(f, state.serial.expect_mode, "Serial expecting mode");
+
+    // === FDC 1MB ===
+    check!(f, state.fdc_1mb.status, 0x80, "FDC 1MB MSR");
+    check!(f, state.fdc_1mb.control, 0x18, "FDC 1MB control");
+    check_false!(f, state.fdc_1mb.interrupt_pending, "FDC 1MB no interrupt");
+    check!(f, state.fdc_1mb.srt, 12, "FDC 1MB SRT");
+    check!(f, state.fdc_1mb.hut, 15, "FDC 1MB HUT");
+    check!(f, state.fdc_1mb.hlt, 18, "FDC 1MB HLT");
+    check_true!(f, state.fdc_1mb.tc, "FDC 1MB TC");
+    check!(f, state.fdc_1mb.drive_equipped, 3, "FDC 1MB equipped");
+
+    // === FDC 640K ===
+    check!(f, state.fdc_640k.status, 0x80, "FDC 640K MSR");
+    check!(f, state.fdc_640k.control, 0x48, "FDC 640K control");
+    check_false!(f, state.fdc_640k.interrupt_pending, "FDC 640K no interrupt");
+    check!(f, state.fdc_640k.drive_equipped, 3, "FDC 640K equipped");
+
+    // === System PPI ===
+    check!(f, state.system_ppi.port_b, 0xA8, "System PPI port B");
+    check!(f, state.system_ppi.port_c, 0x18, "System PPI port C");
+
+    // === CGROM ===
+    check!(f, state.cgrom.code, 0x5F56, "CGROM code");
+    check_false!(f, state.cgrom.cg_ram, "CGROM CG ROM mode");
+
+    // === Display control ===
+    check!(f, state.display_control.video_mode, 0x99, "Video mode");
+    check!(f, state.display_control.mode2, 0x0100, "Mode2");
+    check_false!(
+        f,
+        state.display_control.vsync_irq_enabled,
+        "VSYNC IRQ disabled"
+    );
+
+    // === Soundboards ===
+    check_true!(f, state.soundboard_26k.is_none(), "No 26K soundboard");
+    check_true!(f, state.soundboard_86.is_none(), "No 86 soundboard");
+
+    // === Scheduler: PIT Timer0 must be scheduled ===
+    check_true!(
+        f,
+        state.scheduler.fire_cycles[common::EventKind::PitTimer0 as usize].is_some(),
+        "PIT Timer0 event scheduled"
+    );
+
+    // === Beeper ===
+    check_false!(f, state.beeper.buzzer_enabled, "Beeper disabled");
+    check!(f, state.beeper.pit_reload, 57, "Beeper PIT reload");
+
+    // === Mouse PPI ===
+    check!(f, state.mouse_ppi.mode, 0x93, "Mouse PPI mode");
+    check!(f, state.mouse_ppi.port_a, 0x00, "Mouse PPI port A");
+    check!(f, state.mouse_ppi.port_b, 0x00, "Mouse PPI port B");
+    check!(f, state.mouse_ppi.port_c, 0xF0, "Mouse PPI port C");
+    check!(f, state.mouse_ppi.buttons, 0xE0, "Mouse buttons");
+
+    // === Memory: BDA fields ===
+    check!(f, state.memory.ram[0x0493], 0x00, "BDA F2HD_MODE");
+    check!(f, state.memory.ram[0x053C], 0x84, "BDA CRT_STS_FLAG");
+    check!(f, state.memory.ram[0x055C], 0x00, "BDA DISK_EQUIP");
+    check!(f, state.memory.ram[0x0584], 0x70, "BDA BOOT_DEVICE");
+    check!(
+        f,
+        read_ram_u16(&state.memory.ram, 0x0522),
+        0x0A58,
+        "KB shift table pointer"
+    );
+    check!(f, state.memory.ram[0x05CA], 0x00, "BDA F2DD_MODE");
+
+    // === Memory: HLE booted the inserted 2DD halt disk ===
+    check!(f, state.memory.ram[0x1FC00], 0xFA, "Boot sector byte 0");
+    check!(f, state.memory.ram[0x1FC01], 0xF4, "Boot sector byte 1");
+
+    // === Graphics VRAM zeroed ===
+    check_true!(
+        f,
+        state.memory.graphics_vram.iter().all(|&b| b == 0),
+        "Graphics VRAM zeroed"
+    );
+
+    report_failures(&f, "F");
+}
+
+#[test]
 fn post_bios_state_vx() {
     let mut machine = super::create_machine_vx();
     let _cycles = boot_to_halt!(machine);
@@ -1422,4 +1603,19 @@ fn hle_bootstrap_2hd_keeps_1mb_boot_device_vx() {
         0x00,
         "Drive 0 should be in 1MB DISK_EQUIP"
     );
+}
+
+#[test]
+#[ignore]
+fn inspect_f_ivt() {
+    let mut machine = super::create_machine_f();
+    let _cycles = boot_to_halt!(machine);
+    let state = machine.save_state();
+    for v in [
+        0x08u8, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1F,
+    ] {
+        let (segment, offset) = super::read_ivt_vector(&state.memory.ram, v);
+        eprintln!("INT {v:02X}h: {segment:#06X}:{offset:#06X}");
+    }
 }

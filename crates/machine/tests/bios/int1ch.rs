@@ -1,8 +1,9 @@
 use common::Bus;
 
 use super::{
-    CALLBACK_IRET, TEST_CALLBACK, TEST_CODE, boot_and_run_ra, boot_and_run_vm, boot_and_run_vx,
-    create_machine_ra, create_machine_vm, create_machine_vx, read_ivt_vector, write_bytes,
+    CALLBACK_IRET, TEST_CALLBACK, TEST_CODE, boot_and_run_f, boot_and_run_ra, boot_and_run_vm,
+    boot_and_run_vx, create_machine_f, create_machine_ra, create_machine_vm, create_machine_vx,
+    read_ivt_vector, write_bytes,
 };
 
 const RESULT: u32 = 0x0600;
@@ -98,6 +99,19 @@ fn make_setup_counter_code(count: u8) -> Vec<u8> {
 // ============================================================================
 
 #[test]
+fn int1ch_vector_f() {
+    let mut machine = create_machine_f();
+    let _cycles = boot_to_halt!(machine);
+    let state = machine.save_state();
+
+    let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x1C);
+    assert!(
+        segment >= 0xFD80,
+        "INT 1Ch segment should be in BIOS ROM (got {segment:#06X}:{offset:#06X})"
+    );
+}
+
+#[test]
 fn int1ch_vector_vm() {
     let mut machine = create_machine_vm();
     let _cycles = boot_to_halt!(machine);
@@ -142,6 +156,25 @@ fn int1ch_vector_ra() {
 
 // The VM uses a µPD1990A calendar LSI which has no year register. The VM BIOS
 // reads the year from Memory Switch 8 (text VRAM at A000:3FFEh) instead.
+#[test]
+fn get_datetime_reads_calendar_f() {
+    let mut machine = create_machine_f();
+    boot_to_halt!(machine);
+    machine.bus.set_host_local_time_fn(test_local_time);
+    write_bytes(&mut machine.bus, TEST_CODE, GET_DATETIME_CODE);
+    machine.cpu.load_state(&{
+        let mut s = cpu::I8086State {
+            ip: TEST_CODE as u16,
+            ..Default::default()
+        };
+        s.set_sp(0x4000);
+        s
+    });
+    machine.run_for(INT1CH_BUDGET);
+
+    verify_datetime_buffer(&mut machine.bus, RESULT);
+}
+
 #[test]
 fn get_datetime_reads_calendar_vm() {
     let mut machine = create_machine_vm();
@@ -263,6 +296,29 @@ fn get_datetime_uses_segment_base_in_protected_mode_ra() {
 // ============================================================================
 
 #[test]
+fn set_datetime_completes_f() {
+    let mut machine = create_machine_f();
+    boot_to_halt!(machine);
+    write_bytes(&mut machine.bus, RESULT, &SET_DATE);
+    write_bytes(&mut machine.bus, TEST_CODE, SET_DATETIME_CODE);
+    machine.cpu.load_state(&{
+        let mut s = cpu::I8086State {
+            ip: TEST_CODE as u16,
+            ..Default::default()
+        };
+        s.set_sp(0x4000);
+        s
+    });
+    machine.run_for(INT1CH_BUDGET);
+
+    assert_eq!(
+        machine.bus.read_byte(MARKER),
+        0xAA,
+        "AH=01h should complete and execution should continue"
+    );
+}
+
+#[test]
 fn set_datetime_completes_vm() {
     let mut machine = create_machine_vm();
     boot_to_halt!(machine);
@@ -336,6 +392,19 @@ fn set_datetime_completes_ra() {
 // ============================================================================
 
 #[test]
+fn setup_timer_stores_ivt_callback_f() {
+    let (machine, _cycles) = boot_and_run_f(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
+    let state = machine.save_state();
+
+    let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x07);
+    assert_eq!(segment, 0x0000, "Callback segment should be 0x0000 (ES=0)");
+    assert_eq!(
+        offset, TEST_CALLBACK as u16,
+        "Callback offset should be TEST_CALLBACK (0x2000)"
+    );
+}
+
+#[test]
 fn setup_timer_stores_ivt_callback_vm() {
     let (machine, _cycles) = boot_and_run_vm(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
     let state = machine.save_state();
@@ -379,6 +448,15 @@ fn setup_timer_stores_ivt_callback_ra() {
 // ============================================================================
 
 #[test]
+fn setup_timer_stores_counter_f() {
+    let code = make_setup_counter_code(5);
+    let (mut machine, _cycles) = boot_and_run_f(&code, CALLBACK_IRET, INT1CH_BUDGET);
+
+    let count = machine.bus.read_word(RESULT);
+    assert_eq!(count, 5, "CA_TIM_CNT should be 5 (CX=5)");
+}
+
+#[test]
 fn setup_timer_stores_counter_vm() {
     let code = make_setup_counter_code(5);
     let (mut machine, _cycles) = boot_and_run_vm(&code, CALLBACK_IRET, INT1CH_BUDGET);
@@ -408,6 +486,21 @@ fn setup_timer_stores_counter_ra() {
 // ============================================================================
 // §13 AH=02h - Set Interval Timer: PIT Configuration
 // ============================================================================
+
+#[test]
+fn setup_timer_programs_pit_f() {
+    let (machine, _cycles) = boot_and_run_f(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
+    let state = machine.save_state();
+
+    assert_eq!(
+        state.pit.channels[0].ctrl, 0x36,
+        "PIT ch0 ctrl should be 0x36 (mode 3) after INT 1Ch AH=02h"
+    );
+    assert_eq!(
+        state.pit.channels[0].value, 0x4E00,
+        "PIT ch0 value should be 0x4E00 (8MHz-lineage 10ms divider)"
+    );
+}
 
 #[test]
 fn setup_timer_programs_pit_vm() {
@@ -457,6 +550,30 @@ fn setup_timer_programs_pit_ra() {
 // ============================================================================
 // §13 AH=01h - Set Date/Time: MSW8 Year Byte
 // ============================================================================
+
+#[test]
+fn set_datetime_stores_year_in_msw8_f() {
+    let mut machine = create_machine_f();
+    boot_to_halt!(machine);
+    write_bytes(&mut machine.bus, RESULT, &SET_DATE);
+    write_bytes(&mut machine.bus, TEST_CODE, SET_DATETIME_CODE);
+    machine.cpu.load_state(&{
+        let mut s = cpu::I8086State {
+            ip: TEST_CODE as u16,
+            ..Default::default()
+        };
+        s.set_sp(0x4000);
+        s
+    });
+    machine.run_for(INT1CH_BUDGET);
+
+    let state = machine.save_state();
+    assert_eq!(
+        state.memory.text_vram[0x3FFE], SET_DATE[0],
+        "AH=01h should store year byte ({:#04X}) in MSW8 (text VRAM 0x3FFE)",
+        SET_DATE[0]
+    );
+}
 
 #[test]
 fn set_datetime_stores_year_in_msw8_vm() {
@@ -540,6 +657,34 @@ fn set_datetime_stores_year_in_msw8_ra() {
 const SET_DATE_DISTINCT: [u8; 6] = [0x99, 0xC7, 0x31, 0x23, 0x59, 0x58];
 
 #[test]
+fn set_datetime_distinct_bytes_completes_f() {
+    let mut machine = create_machine_f();
+    boot_to_halt!(machine);
+    write_bytes(&mut machine.bus, RESULT, &SET_DATE_DISTINCT);
+    write_bytes(&mut machine.bus, TEST_CODE, SET_DATETIME_CODE);
+    machine.cpu.load_state(&{
+        let mut s = cpu::I8086State {
+            ip: TEST_CODE as u16,
+            ..Default::default()
+        };
+        s.set_sp(0x4000);
+        s
+    });
+    machine.run_for(INT1CH_BUDGET);
+
+    let state = machine.save_state();
+    assert_eq!(
+        machine.bus.read_byte(MARKER),
+        0xAA,
+        "AH=01h with distinct BCD bytes should complete"
+    );
+    assert_eq!(
+        state.memory.text_vram[0x3FFE], SET_DATE_DISTINCT[0],
+        "AH=01h should store year byte 0x99 in MSW8"
+    );
+}
+
+#[test]
 fn set_datetime_distinct_bytes_completes_vm() {
     let mut machine = create_machine_vm();
     boot_to_halt!(machine);
@@ -616,6 +761,19 @@ fn set_datetime_distinct_bytes_completes_ra() {
 // After INT 1Ch AH=02h programs the PIT, FLAG_I (0x20) must be set so that
 // on_timer0_event fires IRQ 0 when the counter reaches zero.
 #[test]
+fn setup_timer_sets_pit_flag_i_f() {
+    let (machine, _cycles) = boot_and_run_f(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
+    let state = machine.save_state();
+
+    assert_ne!(
+        state.pit.channels[0].flag & 0x20,
+        0,
+        "PIT ch0 FLAG_I (0x20) should be set after INT 1Ch AH=02h (flag={:#04X})",
+        state.pit.channels[0].flag
+    );
+}
+
+#[test]
 fn setup_timer_sets_pit_flag_i_vm() {
     let (machine, _cycles) = boot_and_run_vm(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
     let state = machine.save_state();
@@ -659,6 +817,19 @@ fn setup_timer_sets_pit_flag_i_ra() {
 // ============================================================================
 
 // After INT 1Ch AH=02h, IRQ 0 must be unmasked in the master PIC IMR.
+#[test]
+fn setup_timer_unmasks_irq0_f() {
+    let (machine, _cycles) = boot_and_run_f(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);
+    let state = machine.save_state();
+
+    assert_eq!(
+        state.pic.chips[0].imr & 0x01,
+        0,
+        "IRQ 0 should be unmasked after INT 1Ch AH=02h (IMR={:#04X})",
+        state.pic.chips[0].imr
+    );
+}
+
 #[test]
 fn setup_timer_unmasks_irq0_vm() {
     let (machine, _cycles) = boot_and_run_vm(SETUP_TIMER_CODE, CALLBACK_IRET, INT1CH_BUDGET);

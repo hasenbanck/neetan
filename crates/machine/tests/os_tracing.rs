@@ -1,4 +1,4 @@
-use common::{MachineModel, OsBootStage, Tracing};
+use common::{CpuMode, MachineModel, OsBootStage, Tracing};
 
 static FONT_ROM_DATA: &[u8] = include_bytes!("../../../utils/font/font.rom");
 
@@ -32,7 +32,7 @@ impl Tracing for RecordingTracer {
 fn machine_owned_tracer_receives_hle_os_trace_callbacks() {
     let mut machine = machine::Machine::<cpu::I386, RecordingTracer>::new(
         cpu::I386::new(),
-        machine::Pc9801Bus::<RecordingTracer>::new(MachineModel::PC9801RA, 48_000),
+        machine::Pc9801Bus::<RecordingTracer>::new(MachineModel::PC9801RA, CpuMode::High, 48_000),
     );
     machine.bus.load_font_rom(FONT_ROM_DATA);
     machine.bus.set_xms_32_enabled(true);

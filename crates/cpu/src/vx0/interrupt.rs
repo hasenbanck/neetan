@@ -183,8 +183,7 @@ impl<const MODEL: u8> VX0<MODEL> {
             self.biu_fetch_suspend_after_pending_fetch(bus);
             if cold_entry && cold_prefetch_count > 0 {
                 for _ in 0..cold_prefetch_count {
-                    self.biu_complete_code_fetch_for_eu();
-                    self.biu_start_code_fetch_for_eu();
+                    self.biu_complete_code_fetch_and_start_for_eu(bus);
                     self.biu_fetch_suspend(bus);
                 }
             } else {

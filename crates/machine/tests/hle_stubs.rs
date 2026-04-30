@@ -1,4 +1,4 @@
-use common::{Bus, MachineModel};
+use common::{Bus, CpuMode, MachineModel};
 use device::floppy::FloppyImage;
 use machine::{Pc9801Bus, Pc9801Ra, Pc9801Vm, Pc9801Vx};
 
@@ -69,7 +69,7 @@ macro_rules! boot_to_halt {
 fn create_vm() -> Pc9801Vm {
     let mut machine = Pc9801Vm::new(
         cpu::V30::new(),
-        Pc9801Bus::new(MachineModel::PC9801VM, 48000),
+        Pc9801Bus::new(MachineModel::PC9801VM, CpuMode::High, 48000),
     );
     machine.bus.load_font_rom(FONT_ROM_DATA);
     machine
@@ -78,7 +78,7 @@ fn create_vm() -> Pc9801Vm {
 fn create_vx() -> Pc9801Vx {
     let mut machine = Pc9801Vx::new(
         cpu::I286::new(),
-        Pc9801Bus::new(MachineModel::PC9801VX, 48000),
+        Pc9801Bus::new(MachineModel::PC9801VX, CpuMode::High, 48000),
     );
     machine.bus.load_font_rom(FONT_ROM_DATA);
     machine
@@ -87,7 +87,7 @@ fn create_vx() -> Pc9801Vx {
 fn create_ra() -> Pc9801Ra {
     let mut machine = Pc9801Ra::new(
         cpu::I386::new(),
-        Pc9801Bus::new(MachineModel::PC9801RA, 48000),
+        Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48000),
     );
     machine.bus.load_font_rom(FONT_ROM_DATA);
     machine

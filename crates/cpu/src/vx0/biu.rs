@@ -890,6 +890,14 @@ impl<const MODEL: u8> VX0<MODEL> {
         self.biu_start_code_fetch_inner();
     }
 
+    pub(super) fn biu_complete_code_fetch_and_start_for_eu(&mut self, bus: &mut impl Bus) {
+        if self.bus_status_latch == BusStatus::CodeFetch {
+            self.biu_bus_wait_finish(bus);
+            self.biu_complete_code_fetch_for_eu();
+        }
+        self.biu_start_code_fetch_for_eu();
+    }
+
     pub(super) fn biu_queue_flush_and_start_code_fetch_for_eu(&mut self) {
         self.queue_flush();
         self.fetch_state = FetchState::Normal;

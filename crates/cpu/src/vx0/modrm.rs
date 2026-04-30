@@ -196,8 +196,7 @@ impl<const MODEL: u8> VX0<MODEL> {
             self.clk(bus, 2);
             self.biu_ready_memory_read();
         } else if self.seg_prefix && entry_queue_len == queue_size_for(MODEL) && mode == 1 {
-            self.biu_complete_code_fetch_for_eu();
-            self.biu_start_code_fetch_for_eu();
+            self.biu_complete_code_fetch_and_start_for_eu(bus);
             self.biu_fetch_suspend(bus);
             self.biu_complete_code_fetch_for_eu();
             self.biu_ready_memory_read();

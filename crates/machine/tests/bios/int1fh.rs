@@ -1,8 +1,8 @@
 use common::Bus;
 
 use super::{
-    TEST_CODE, boot_and_run_ra, boot_and_run_vm, boot_and_run_vx, create_machine_ra,
-    create_machine_vm, create_machine_vx, read_ivt_vector, write_bytes,
+    TEST_CODE, boot_and_run_f, boot_and_run_ra, boot_and_run_vm, boot_and_run_vx, create_machine_f,
+    create_machine_ra, create_machine_vm, create_machine_vx, read_ivt_vector, write_bytes,
 };
 
 const RESULT: u32 = 0x0600;
@@ -80,6 +80,19 @@ fn write_test_pattern(bus: &mut impl Bus, addr: u32, count: usize) {
 /// The VM BIOS maps INT 1Fh to an expansion ROM (segment 0xD800), not the
 /// main BIOS ROM area. VX and RA map it to the BIOS ROM (>= 0xFD80).
 #[test]
+fn int1fh_vector_f() {
+    let mut machine = create_machine_f();
+    let _cycles = boot_to_halt!(machine);
+    let state = machine.save_state();
+
+    let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x1F);
+    assert!(
+        segment != 0 || offset != 0,
+        "INT 1Fh vector should be non-zero (got {segment:#06X}:{offset:#06X})"
+    );
+}
+
+#[test]
 fn int1fh_vector_vm() {
     let mut machine = create_machine_vm();
     let _cycles = boot_to_halt!(machine);
@@ -123,6 +136,17 @@ fn int1fh_vector_ra() {
 /// The VM BIOS handler (expansion ROM at 0xD800) clears CF even for AH < 0x80.
 /// VX and RA preserve CF (handler returns without modifying flags on stack).
 #[test]
+fn int1fh_ah_below_80h_clears_cf_f() {
+    let code = make_int1fh_call_with_cf_set(0x00);
+    let (mut machine, _) = boot_and_run_f(&code, &[], INT1FH_BUDGET);
+    assert_eq!(
+        machine.bus.read_word(RESULT),
+        0,
+        "F: CF should be 0 (VM handler clears CF for all calls)"
+    );
+}
+
+#[test]
 fn int1fh_ah_below_80h_clears_cf_vm() {
     let code = make_int1fh_call_with_cf_set(0x00);
     let (mut machine, _) = boot_and_run_vm(&code, &[], INT1FH_BUDGET);
@@ -156,6 +180,17 @@ fn int1fh_ah_below_80h_preserves_cf_ra() {
 }
 
 /// §14 INT 1Fh - Dispatch: AH=0x80 Clears CF
+#[test]
+fn int1fh_ah_80h_clears_cf_f() {
+    let code = make_int1fh_call_with_cf_set(0x80);
+    let (mut machine, _) = boot_and_run_f(&code, &[], INT1FH_BUDGET);
+    assert_eq!(
+        machine.bus.read_word(RESULT),
+        0,
+        "CF should be cleared when AH=0x80 (bit 7 set, bit 4 clear)"
+    );
+}
+
 #[test]
 fn int1fh_ah_80h_clears_cf_vm() {
     let code = make_int1fh_call_with_cf_set(0x80);

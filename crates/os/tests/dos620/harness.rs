@@ -3,7 +3,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use common::{Bus, JisChar, Machine as _, MachineModel, Tracing};
+use common::{Bus, CpuMode, JisChar, Machine as _, MachineModel, Tracing};
 use device::{
     disk::{HddFormat, HddGeometry, HddImage},
     floppy::d88::{D88Disk, D88MediaType, D88Sector},
@@ -118,7 +118,7 @@ fn initialize_hle_bus(bus: &mut machine::Pc9801Bus, xms_32_enabled: bool) {
 fn create_ra_machine(xms_32_enabled: bool) -> machine::Pc9801Ra {
     let mut machine = machine::Pc9801Ra::new(
         cpu::I386::new(),
-        machine::Pc9801Bus::new(MachineModel::PC9801RA, 48000),
+        machine::Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48000),
     );
     initialize_hle_bus(&mut machine.bus, xms_32_enabled);
     machine
@@ -127,7 +127,7 @@ fn create_ra_machine(xms_32_enabled: bool) -> machine::Pc9801Ra {
 fn create_hle_machine_ap() -> machine::Pc9821Ap {
     let mut machine = machine::Pc9821Ap::new(
         cpu::I386::<{ cpu::CPU_MODEL_486 }>::new(),
-        machine::Pc9801Bus::new(MachineModel::PC9821AP, 48000),
+        machine::Pc9801Bus::new(MachineModel::PC9821AP, CpuMode::High, 48000),
     );
     initialize_hle_bus(&mut machine.bus, false);
     machine

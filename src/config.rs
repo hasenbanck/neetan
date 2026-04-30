@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use common::{Context, MachineModel, StringError, bail, info, warn};
+use common::{Context, CpuMode, MachineModel, StringError, bail, info, warn};
 
 use crate::keyboard::{KeyMap, parse_key_binding};
 
@@ -34,7 +34,8 @@ Commands:
 
 Options:
   -c, --config <PATH>           Load configuration from file
-      --machine <TYPE>          Machine type: PC9801VM, PC9801VX, PC9801RA, PC9821AS, PC9821AP
+      --machine <TYPE>          Machine type: PC9801F, PC9801VM, PC9801VX, PC9801RA, PC9821AS, PC9821AP
+      --cpu-mode <MODE>         CPU speed mode: low or high (default: high; only affects PC9801F)
       --fdd1 <PATH>             Floppy disk image for drive 1 (repeatable)
       --fdd2 <PATH>             Floppy disk image for drive 2 (repeatable)
       --hdd1 <PATH>             Hard disk image for drive 1 (SASI or IDE)
@@ -390,6 +391,10 @@ fn parse_args_from(
                 let val = value(&flag)?;
                 config.machine = val.parse::<MachineModel>().map_err(StringError)?;
             }
+            "--cpu-mode" => {
+                let val = value(&flag)?;
+                config.cpu_mode = val.parse::<CpuMode>().map_err(StringError)?;
+            }
             "--fdd1" => config.fdd1.push(PathBuf::from(value(&flag)?)),
             "--fdd2" => config.fdd2.push(PathBuf::from(value(&flag)?)),
             "--hdd1" => config.hdd1 = Some(PathBuf::from(value(&flag)?)),
@@ -486,6 +491,7 @@ fn validate_paths(config: &EmulatorConfig) -> crate::Result<()> {
 
 pub struct EmulatorConfig {
     pub machine: MachineModel,
+    pub cpu_mode: CpuMode,
     pub fdd1: Vec<PathBuf>,
     pub fdd2: Vec<PathBuf>,
     pub hdd1: Option<PathBuf>,
@@ -513,7 +519,8 @@ pub struct EmulatorConfig {
 impl Default for EmulatorConfig {
     fn default() -> Self {
         Self {
-            machine: MachineModel::PC9801VX,
+            machine: MachineModel::PC9801RA,
+            cpu_mode: CpuMode::High,
             fdd1: Vec::new(),
             fdd2: Vec::new(),
             hdd1: None,
@@ -564,6 +571,10 @@ fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<
             "machine" => match val.parse::<MachineModel>() {
                 Ok(mt) => config.machine = mt,
                 Err(_) => warn!("Unknown machine type in config: {val}"),
+            },
+            "cpu-mode" => match val.parse::<CpuMode>() {
+                Ok(mode) => config.cpu_mode = mode,
+                Err(_) => warn!("Unknown CPU mode in config: {val}"),
             },
             "fdd1" => config.fdd1.push(PathBuf::from(val)),
             "fdd2" => config.fdd2.push(PathBuf::from(val)),

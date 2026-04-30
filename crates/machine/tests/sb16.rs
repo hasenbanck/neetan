@@ -1,6 +1,6 @@
 use std::f64::consts::PI;
 
-use common::{Bus, MachineModel};
+use common::{Bus, CpuMode, MachineModel};
 use machine::{NoTracing, Pc9801Bus};
 use resampler::{Complex32, Forward, Radix, RadixFFT};
 
@@ -29,7 +29,8 @@ const SKIP: usize = 256;
 const FFT_SIZE: usize = 4096;
 
 fn setup_sb16_bus() -> Pc9801Bus<NoTracing> {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, OUTPUT_SAMPLE_RATE);
+    let mut bus =
+        Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, OUTPUT_SAMPLE_RATE);
     bus.install_sound_blaster_16();
     bus
 }
@@ -816,7 +817,8 @@ fn sb16_opl3_timer_detection_20mhz() {
 
 #[test]
 fn sb16_opl3_timer_detection_66mhz() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AP, OUTPUT_SAMPLE_RATE);
+    let mut bus =
+        Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AP, CpuMode::Low, OUTPUT_SAMPLE_RATE);
     bus.install_sound_blaster_16();
     opl3_timer_detection(&mut bus);
 }

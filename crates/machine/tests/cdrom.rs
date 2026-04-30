@@ -3,7 +3,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use common::{Bus, Machine, MachineModel};
+use common::{Bus, CpuMode, Machine, MachineModel};
 use device::cdrom::CdImage;
 use machine::{NoTracing, Pc9801Bus};
 
@@ -30,14 +30,14 @@ fn make_multi_track_cdimage() -> CdImage {
 
 /// Creates a PC-9821AS bus (IDE-equipped).
 fn make_ide_bus() -> Pc9801Bus<NoTracing> {
-    Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000)
+    Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, CpuMode::High, 48000)
 }
 
 /// Creates a PC-9821AP machine.
 fn create_machine_ap() -> machine::Pc9821Ap {
     machine::Pc9821Ap::new(
         cpu::I386::new(),
-        Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AP, 48000),
+        Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AP, CpuMode::High, 48000),
     )
 }
 

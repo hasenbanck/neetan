@@ -18,6 +18,7 @@ Currently, we aim to support all 16-bit era DOS games and emulate them accuratel
 
 | Machine   | CPU      | CPU Speed | FPU (x87) | RAM     | Extended RAM | Graphics | Interface | CD-ROM |
 |-----------|----------|-----------|-----------|---------|--------------|----------|-----------|--------|
+| PC-9801F  | 8086     | 5 / 8 Mhz | No        | 640 KiB | None         | GDC      | SASI      | No     |
 | PC-9801VM | V30      | 10 Mhz    | No        | 640 KiB | None         | GRCG     | SASI      | No     |
 | PC-9801VX | 80286    | 10 Mhz    | No        | 640 KiB | 4 MiB        | ECG      | SASI      | No     |
 | PC-9801RA | 80386DX  | 20 Mhz    | Yes       | 640 KiB | 12 MiB       | ECG      | SASI      | No     |
@@ -36,11 +37,7 @@ We also support the following sound cards:
 * Roland MT-32 using the MPU-PC98II interface
 * Roland SC-55 using the MPU-PC98II interface
 
-The default for the CLI is the PC-9801VX machine with the PC-9801-86 + PC-9801-26k combo soundboards.
-
-This machine was release 1986, and it was well-supported until around 1996.
-For older games, or games that targeted the VM standard, we included the V30 based VM machine.
-For newer games, or games that were very resource intensive, we included the RA, AS and AP machines.
+The default for the CLI is the PC-9801RA machine with the PC-9801-86 + PC-9801-26k combo soundboards.
 
 ## Usage
 
@@ -51,30 +48,31 @@ neetan <COMMAND>
 
 ### Options
 
-| Option                       | Description                                                              | Default    |
-|------------------------------|--------------------------------------------------------------------------|------------|
-| `-c, --config <PATH>`        | Load configuration from file                                             | -          |
-| `--machine <TYPE>`           | Machine type: `PC9801VM`, `PC9801VX`, `PC9801RA`, `PC9821AS`, `PC9821AP` | `PC9801VX` |
-| `--fdd1 <PATH>`              | Floppy disk image for drive 1 (repeatable)                               | -          |
-| `--fdd2 <PATH>`              | Floppy disk image for drive 2 (repeatable)                               | -          |
-| `--hdd1 <PATH>`              | Hard disk image for hard disk drive 1                                    | -          |
-| `--hdd2 <PATH>`              | Hard disk image for hard disk drive 2                                    | -          |
-| `--cdrom <PATH>`             | CD-ROM disc image CUE file (repeatable, PC-9821 only)                    | -          |
-| `--audio-volume <FLOAT>`     | Audio volume 0.0–1.0                                                     | `1.0`      |
-| `--aspect-mode <MODE>`       | Display aspect mode: `4:3` or `1:1`                                      | `4:3`      |
-| `--crt <on\|off>`            | Enable the CRT effect                                                    | `on`       |
-| `--window-mode <MODE>`       | Window mode: `windowed` or `fullscreen`                                  | `windowed` |
-| `--force-gdc-clock <2.5\|5>` | Force GDC clock to 2.5 or 5 MHz. VX and later only                       | auto       |
-| `--bios-rom <PATH>`          | Path to BIOS ROM file                                                    | HLE BIOS   |
-| `--font-rom <PATH>`          | Path to font ROM file                                                    | Built-in   |
-| `--soundboard <TYPE>`        | Sound board: `none`, `14`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`     | `86+26k`   |
-| `--midi <DEVICE>`            | MIDI device: `none`, `mt32`, `sc55`                                      | `none`     |
-| `--mt32-roms <PATH>`         | Path to MT-32 ROM directory (requires `mt32` feature)                    | -          |
-| `--sc55-roms <PATH>`         | Path to SC-55 ROM directory (requires `sc55` feature)                    | -          |
-| `--boot-device <DEVICE>`     | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2`, `os`                | `auto`     |
-| `--printer <PATH>`           | Output file for printer (must exist)                                     | -          |
-| `-h, --help`                 | Print help                                                               | -          |
-| `-V, --version`              | Print version                                                            | -          |
+| Option                       | Description                                                                         | Default    |
+|------------------------------|-------------------------------------------------------------------------------------|------------|
+| `-c, --config <PATH>`        | Load configuration from file                                                        | -          |
+| `--machine <TYPE>`           | Machine type: `PC9801F`, `PC9801VM`, `PC9801VX`, `PC9801RA`, `PC9821AS`, `PC9821AP` | `PC9801RA` |
+| `--cpu-mode <MODE>`          | CPU speed mode: low or high (default: high; only affects PC9801F)                   | high       |
+| `--fdd1 <PATH>`              | Floppy disk image for drive 1 (repeatable)                                          | -          |
+| `--fdd2 <PATH>`              | Floppy disk image for drive 2 (repeatable)                                          | -          |
+| `--hdd1 <PATH>`              | Hard disk image for hard disk drive 1                                               | -          |
+| `--hdd2 <PATH>`              | Hard disk image for hard disk drive 2                                               | -          |
+| `--cdrom <PATH>`             | CD-ROM disc image CUE file (repeatable, PC-9821 only)                               | -          |
+| `--audio-volume <FLOAT>`     | Audio volume 0.0–1.0                                                                | `1.0`      |
+| `--aspect-mode <MODE>`       | Display aspect mode: `4:3` or `1:1`                                                 | `4:3`      |
+| `--crt <on\|off>`            | Enable the CRT effect                                                               | `on`       |
+| `--window-mode <MODE>`       | Window mode: `windowed` or `fullscreen`                                             | `windowed` |
+| `--force-gdc-clock <2.5\|5>` | Force GDC clock to 2.5 or 5 MHz. VX and later only                                  | auto       |
+| `--bios-rom <PATH>`          | Path to BIOS ROM file                                                               | HLE BIOS   |
+| `--font-rom <PATH>`          | Path to font ROM file                                                               | Built-in   |
+| `--soundboard <TYPE>`        | Sound board: `none`, `14`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`                | `86+26k`   |
+| `--midi <DEVICE>`            | MIDI device: `none`, `mt32`, `sc55`                                                 | `none`     |
+| `--mt32-roms <PATH>`         | Path to MT-32 ROM directory (requires `mt32` feature)                               | -          |
+| `--sc55-roms <PATH>`         | Path to SC-55 ROM directory (requires `sc55` feature)                               | -          |
+| `--boot-device <DEVICE>`     | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2`, `os`                           | `auto`     |
+| `--printer <PATH>`           | Output file for printer (must exist)                                                | -          |
+| `-h, --help`                 | Print help                                                                          | -          |
+| `-V, --version`              | Print version                                                                       | -          |
 
 ### Commands
 

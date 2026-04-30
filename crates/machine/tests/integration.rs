@@ -1,11 +1,11 @@
-use common::{Bus, Cpu, Machine as _, MachineModel};
+use common::{Bus, Cpu, CpuMode, Machine as _, MachineModel};
 use machine::{Pc9801Bus, Pc9801Ra, Pc9801Vm, Pc9801Vx};
 
 #[test]
 fn pit_timer_interrupt_fires() {
     let mut machine = Pc9801Vm::new(
         cpu::V30::new(),
-        Pc9801Bus::new(MachineModel::PC9801VM, 48000),
+        Pc9801Bus::new(MachineModel::PC9801VM, CpuMode::High, 48000),
     );
 
     // Set up PIC: unmask all IRQs.
@@ -79,7 +79,7 @@ fn pit_timer_interrupt_fires() {
 fn pit_timer_multiple_interrupts() {
     let mut machine = Pc9801Vm::new(
         cpu::V30::new(),
-        Pc9801Bus::new(MachineModel::PC9801VM, 48000),
+        Pc9801Bus::new(MachineModel::PC9801VM, CpuMode::High, 48000),
     );
 
     // Set up PIC.
@@ -205,7 +205,7 @@ fn pit_timer_single_interrupt_test<C: Cpu>(
 fn pit_timer_eoi_in_handler_allows_repeated_refire() {
     let mut machine = Pc9801Vm::new(
         cpu::V30::new(),
-        Pc9801Bus::new(MachineModel::PC9801VM, 48000),
+        Pc9801Bus::new(MachineModel::PC9801VM, CpuMode::High, 48000),
     );
     machine.bus.write_word(0x00500, 0x0000);
 
@@ -243,7 +243,7 @@ fn pit_timer_interrupt_fires_i286() {
     pit_timer_single_interrupt_test(
         Pc9801Vx::new(
             cpu::I286::new(),
-            Pc9801Bus::new(MachineModel::PC9801VX, 48000),
+            Pc9801Bus::new(MachineModel::PC9801VX, CpuMode::High, 48000),
         ),
         |cpu| {
             cpu.load_state(&{
@@ -261,7 +261,7 @@ fn pit_timer_interrupt_fires_i386() {
     pit_timer_single_interrupt_test(
         Pc9801Ra::new(
             cpu::I386::new(),
-            Pc9801Bus::new(MachineModel::PC9801RA, 48000),
+            Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48000),
         ),
         |cpu| {
             cpu.load_state(&{
@@ -285,7 +285,7 @@ fn place_code(bus: &mut Pc9801Bus, base: u32, code: &[u8]) {
 fn hle_cold_reset_reinitialises_devices() {
     let mut machine = Pc9801Vx::new(
         cpu::I286::new(),
-        Pc9801Bus::new(MachineModel::PC9801VX, 48000),
+        Pc9801Bus::new(MachineModel::PC9801VX, CpuMode::High, 48000),
     );
 
     // Clobber PIC master IMR so we can detect that
@@ -344,7 +344,7 @@ fn hle_cold_reset_reinitialises_devices() {
 fn hle_warm_reset_resumes_execution() {
     let mut machine = Pc9801Vx::new(
         cpu::I286::new(),
-        Pc9801Bus::new(MachineModel::PC9801VX, 48000),
+        Pc9801Bus::new(MachineModel::PC9801VX, CpuMode::High, 48000),
     );
 
     // Warm-reset resume target: code at 0000:2000 that increments [0x0500].
@@ -402,7 +402,7 @@ fn hle_warm_reset_resumes_execution() {
 fn hle_shutdown_stops_machine() {
     let mut machine = Pc9801Vx::new(
         cpu::I286::new(),
-        Pc9801Bus::new(MachineModel::PC9801VX, 48000),
+        Pc9801Bus::new(MachineModel::PC9801VX, CpuMode::High, 48000),
     );
 
     // Guest code at 0000:0100:
