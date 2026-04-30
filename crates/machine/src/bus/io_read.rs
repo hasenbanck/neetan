@@ -112,6 +112,10 @@ impl<T: Tracing> Pc9801Bus<T> {
             // Printer i8255 PPI Port C - printer control (read).
             0x44 => self.printer.read_port_c(),
 
+            // PC-9801F 320KB FDD PPI host interface.
+            0x0051 if self.machine_model.has_fdd320_ppi() => self.fdd320_ppi.read_port_a(),
+            0x0055 if self.machine_model.has_fdd320_ppi() => self.fdd320_ppi.read_port_c(),
+
             // Keyboard µPD8251A data register (port 0x41 read).
             0x41 => {
                 let (data, clear_irq, retrigger_irq) = self.keyboard.read_data();
@@ -147,7 +151,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             // GRCG mode register read.
             // undoc98 io_disp.txt line 1118 says "READ: なし" (write-only).
             // MAME returns 0xFF. NP21W returns the actual mode register value.
-            0x7C => self.grcg.state.mode,
+            0x7C if self.machine_model.has_grcg() => self.grcg.state.mode,
 
             // PIT
             0x71 | 0x3FD9 => self.pit.read_counter(
@@ -843,13 +847,29 @@ impl<T: Tracing> Pc9801Bus<T> {
 
 #[cfg(test)]
 mod tests {
-    use common::{Bus, MachineModel};
+    use common::{Bus, CpuMode, MachineModel, Tracing};
 
     use crate::bus::{NoTracing, Pc9801Bus};
 
+    #[derive(Default)]
+    struct UnhandledTrace {
+        reads: Vec<u16>,
+        writes: Vec<(u16, u8)>,
+    }
+
+    impl Tracing for UnhandledTrace {
+        fn trace_io_unhandled_read(&mut self, port: u16) {
+            self.reads.push(port);
+        }
+
+        fn trace_io_unhandled_write(&mut self, port: u16, value: u8) {
+            self.writes.push((port, value));
+        }
+    }
+
     #[test]
     fn port_7c_read_returns_grcg_mode_register() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
 
         bus.grcg.write_mode(0xCA);
         let value = bus.io_read_byte(0x7C);
@@ -862,7 +882,7 @@ mod tests {
 
     #[test]
     fn port_a6_read_returns_access_page() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
 
         assert_eq!(bus.io_read_byte(0xA6), 0x00);
 
@@ -876,13 +896,13 @@ mod tests {
 
     #[test]
     fn port_0cc4_returns_ff() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         assert_eq!(bus.io_read_byte(0x0CC4), 0xFF);
     }
 
     #[test]
     fn sound_ports_0288_and_0388_do_not_alias_low_bank() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.install_soundboard_86(None, true);
 
         // Primary base 0x0188 works: reg 0xFF returns chip ID 0x01.
@@ -892,5 +912,29 @@ mod tests {
         // Ports 0x0288 and 0x0388 must not reach the sound board.
         assert_eq!(bus.io_read_byte(0x028A), 0xFF);
         assert_eq!(bus.io_read_byte(0x038A), 0xFF);
+    }
+
+    #[test]
+    fn pc9801f_fdd320_ppi_shim_reads_are_handled() {
+        let mut bus = Pc9801Bus::<UnhandledTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+
+        assert_eq!(bus.io_read_byte(0x0051), 0x00);
+        assert_eq!(bus.io_read_byte(0x0055), 0x00);
+        assert_eq!(bus.io_read_byte(0x0055), 0xFF);
+
+        assert_eq!(bus.tracer().reads, Vec::<u16>::new());
+        assert_eq!(bus.tracer().writes, Vec::<(u16, u8)>::new());
+    }
+
+    #[test]
+    fn fdd320_ppi_is_not_exposed_on_later_models() {
+        let mut bus =
+            Pc9801Bus::<UnhandledTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+
+        assert_eq!(bus.io_read_byte(0x0055), 0xFF);
+        bus.io_write_byte(0x0053, 0x22);
+
+        assert_eq!(bus.tracer().reads, vec![0x0055]);
+        assert_eq!(bus.tracer().writes, vec![(0x0053, 0x22)]);
     }
 }

@@ -1,8 +1,8 @@
 use common::Bus;
 
 use super::{
-    CALLBACK_IRET, boot_and_run_ra, boot_and_run_vm, boot_and_run_vx, create_machine_ra,
-    create_machine_vm, create_machine_vx, read_ivt_vector,
+    CALLBACK_IRET, boot_and_run_f, boot_and_run_ra, boot_and_run_vm, boot_and_run_vx,
+    create_machine_f, create_machine_ra, create_machine_vm, create_machine_vx, read_ivt_vector,
 };
 
 const RESULT: u32 = 0x0600;
@@ -68,6 +68,19 @@ fn make_multi_tick_code(tick_count: u8) -> Vec<u8> {
 // ============================================================================
 
 #[test]
+fn int08h_vector_f() {
+    let mut machine = create_machine_f();
+    let _cycles = boot_to_halt!(machine);
+    let state = machine.save_state();
+
+    let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x08);
+    assert!(
+        segment >= 0xFD80,
+        "INT 08h segment should be in BIOS ROM (got {segment:#06X}:{offset:#06X})"
+    );
+}
+
+#[test]
 fn int08h_vector_vm() {
     let mut machine = create_machine_vm();
     let _cycles = boot_to_halt!(machine);
@@ -111,6 +124,15 @@ fn int08h_vector_ra() {
 // ============================================================================
 
 #[test]
+fn timer_tick_decrements_count_f() {
+    let code = make_single_tick_code(5);
+    let (mut machine, _cycles) = boot_and_run_f(&code, CALLBACK_IRET, TIMER_BUDGET);
+
+    let count = machine.bus.read_word(RESULT);
+    assert_eq!(count, 4, "CA_TIM_CNT should be 5-1=4 after one tick");
+}
+
+#[test]
 fn timer_tick_decrements_count_vm() {
     let code = make_single_tick_code(5);
     let (mut machine, _cycles) = boot_and_run_vm(&code, CALLBACK_IRET, TIMER_BUDGET);
@@ -142,6 +164,15 @@ fn timer_tick_decrements_count_ra() {
 // ============================================================================
 
 #[test]
+fn timer_tick_counts_down_to_zero_f() {
+    let code = make_multi_tick_code(3);
+    let (mut machine, _cycles) = boot_and_run_f(&code, CALLBACK_IRET, TIMER_BUDGET);
+
+    let count = machine.bus.read_word(RESULT);
+    assert_eq!(count, 0, "CA_TIM_CNT should be 0 after 3 ticks with CX=3");
+}
+
+#[test]
 fn timer_tick_counts_down_to_zero_vm() {
     let code = make_multi_tick_code(3);
     let (mut machine, _cycles) = boot_and_run_vm(&code, CALLBACK_IRET, TIMER_BUDGET);
@@ -171,6 +202,18 @@ fn timer_tick_counts_down_to_zero_ra() {
 // ============================================================================
 // §5 Timer Tick - Callback Invocation
 // ============================================================================
+
+#[test]
+fn timer_tick_fires_callback_at_zero_f() {
+    let code = make_multi_tick_code(1);
+    let (mut machine, _cycles) = boot_and_run_f(&code, CALLBACK_MARKER, TIMER_BUDGET);
+
+    let count = machine.bus.read_word(RESULT);
+    assert_eq!(count, 0, "CA_TIM_CNT should be 0 after callback");
+
+    let marker = machine.bus.read_byte(RESULT + 2);
+    assert_eq!(marker, 0xAA, "Callback should have written marker 0xAA");
+}
 
 #[test]
 fn timer_tick_fires_callback_at_zero_vm() {
@@ -211,6 +254,19 @@ fn timer_tick_fires_callback_at_zero_ra() {
 // ============================================================================
 // §5 Timer Tick - EOI
 // ============================================================================
+
+#[test]
+fn timer_tick_sends_eoi_f() {
+    let code = make_single_tick_code(5);
+    let (machine, _cycles) = boot_and_run_f(&code, CALLBACK_IRET, TIMER_BUDGET);
+    let state = machine.save_state();
+
+    assert_eq!(
+        state.pic.chips[0].isr & 0x01,
+        0,
+        "IRQ 0 should not be in-service after INT 08h (EOI was sent)"
+    );
+}
 
 #[test]
 fn timer_tick_sends_eoi_vm() {
@@ -254,6 +310,23 @@ fn timer_tick_sends_eoi_ra() {
 // ============================================================================
 // §5 Timer Tick - PIT Reload
 // ============================================================================
+
+#[test]
+fn timer_tick_reloads_pit_f() {
+    let code = make_single_tick_code(5);
+    let (machine, _cycles) = boot_and_run_f(&code, CALLBACK_IRET, TIMER_BUDGET);
+    let state = machine.save_state();
+
+    assert_eq!(
+        state.pit.channels[0].ctrl, 0x36,
+        "PIT ch0 ctrl should be 0x36 (mode 3) after INT 08h reload"
+    );
+    // F BIOS uses 8MHz PIT clock lineage -> divider 0x4E00.
+    assert_eq!(
+        state.pit.channels[0].value, 0x4E00,
+        "PIT ch0 value should be 0x4E00 (8MHz-lineage 10ms divider)"
+    );
+}
 
 #[test]
 fn timer_tick_reloads_pit_vm() {
@@ -346,6 +419,23 @@ fn make_pit_preserve_code(custom_divider: u16) -> Vec<u8> {
 }
 
 #[test]
+fn int08h_preserves_custom_pit_rate_f() {
+    let code = make_pit_preserve_code(0x2800);
+    let (machine, _cycles) = boot_and_run_f(&code, CALLBACK_IRET, PIT_PRESERVE_BUDGET);
+    let state = machine.save_state();
+
+    assert_eq!(
+        state.pit.channels[0].value, 0x2800,
+        "INT 08H must preserve custom PIT ch0 divider on expiry (got {:#06X})",
+        state.pit.channels[0].value
+    );
+    assert_eq!(
+        state.pit.channels[0].ctrl, 0x36,
+        "PIT ch0 ctrl should remain 0x36 (mode 3)"
+    );
+}
+
+#[test]
 fn int08h_preserves_custom_pit_rate_vm() {
     let code = make_pit_preserve_code(0x2800);
     let (machine, _cycles) = boot_and_run_vm(&code, CALLBACK_IRET, PIT_PRESERVE_BUDGET);
@@ -406,6 +496,19 @@ fn make_irq0_mask_on_expiry_code() -> Vec<u8> {
 }
 
 #[test]
+fn int08h_masks_irq0_on_expiry_f() {
+    let code = make_irq0_mask_on_expiry_code();
+    let (mut machine, _cycles) = boot_and_run_f(&code, CALLBACK_IRET, PIT_PRESERVE_BUDGET);
+
+    let imr = machine.bus.read_byte(RESULT);
+    assert_ne!(
+        imr & 0x01,
+        0,
+        "IRQ 0 should be masked in PIC IMR after interval timer expired (IMR={imr:#04X})"
+    );
+}
+
+#[test]
 fn int08h_masks_irq0_on_expiry_vm() {
     let code = make_irq0_mask_on_expiry_code();
     let (mut machine, _cycles) = boot_and_run_vm(&code, CALLBACK_IRET, PIT_PRESERVE_BUDGET);
@@ -437,6 +540,20 @@ fn int08h_masks_irq0_on_expiry_vx() {
 
 // After a non-expired tick (count > 1), the INT 08H handler reloads PIT ch0 and
 // must set FLAG_I so that the PIT continues to fire IRQ 0.
+#[test]
+fn int08h_pit_flag_i_after_tick_f() {
+    let code = make_single_tick_code(5);
+    let (machine, _cycles) = boot_and_run_f(&code, CALLBACK_IRET, TIMER_BUDGET);
+    let state = machine.save_state();
+
+    assert_ne!(
+        state.pit.channels[0].flag & 0x20,
+        0,
+        "PIT ch0 FLAG_I (0x20) should be set after non-expired tick (flag={:#04X})",
+        state.pit.channels[0].flag
+    );
+}
+
 #[test]
 fn int08h_pit_flag_i_after_tick_vm() {
     let code = make_single_tick_code(5);
@@ -489,8 +606,10 @@ fn int08h_pit_flag_i_after_tick_ra() {
 fn make_callback_stack_preserve_code() -> Vec<u8> {
     vec![
         // Push sentinel values onto the stack.
-        0x68, 0xBE, 0xBA,                  // PUSH 0xBABE
-        0x68, 0xFE, 0xCA,                  // PUSH 0xCAFE
+        0xB8, 0xBE, 0xBA,                  // MOV AX, 0xBABE
+        0x50,                              // PUSH AX
+        0xB8, 0xFE, 0xCA,                  // MOV AX, 0xCAFE
+        0x50,                              // PUSH AX
 
         // Mask all IRQs except IRQ0 (timer) so HLT only wakes on timer tick.
         0xB0, 0xFE,                         // MOV AL, 0xFE
@@ -516,6 +635,26 @@ fn make_callback_stack_preserve_code() -> Vec<u8> {
         0xA3, 0x02, 0x06,                   // MOV [RESULT+2], AX
         0xF4,                               // HLT
     ]
+}
+
+#[test]
+fn int08h_callback_preserves_caller_stack_f() {
+    let code = make_callback_stack_preserve_code();
+    let (mut machine, _cycles) = boot_and_run_f(&code, CALLBACK_MARKER, PIT_PRESERVE_BUDGET);
+
+    let marker = machine.bus.read_byte(0x0700);
+    assert_eq!(marker, 0xAA, "Callback should have fired (marker=0xAA)");
+
+    let val1 = machine.bus.read_word(RESULT);
+    let val2 = machine.bus.read_word(RESULT + 2);
+    assert_eq!(
+        val1, 0xCAFE,
+        "First popped value should be 0xCAFE (got {val1:#06X})"
+    );
+    assert_eq!(
+        val2, 0xBABE,
+        "Second popped value should be 0xBABE (got {val2:#06X})"
+    );
 }
 
 #[test]

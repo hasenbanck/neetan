@@ -25,6 +25,7 @@ use device::{
     disk::HddImage,
     display_control::DisplayControl,
     egc::Egc,
+    fdd320_ppi::Fdd320Ppi,
     floppy::FloppyImage,
     grcg::Grcg,
     i8237_dma::I8237Dma,
@@ -115,6 +116,12 @@ const MOUSE_TIMER_IRQ_LINE: u8 = 13;
 
 /// MPU timer IRQ line.
 const MPU_IRQ_LINE: u8 = 3;
+
+/// Keyboard shift/code table offset within the BIOS code segment (FD80h).
+///
+/// PC-9801F uses an earlier table layout than the VM and later models.
+const KEYBOARD_ROM_OFFSET_F: usize = 0x0A58;
+const KEYBOARD_ROM_OFFSET_VM: usize = 0x0B28;
 
 /// Default host local time function: returns advancing BCD time from the system clock.
 fn default_local_time() -> [u8; 6] {
@@ -254,6 +261,7 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     gdc_slave: Gdc,
     /// PC-98 floppy controller (both FDC interfaces + drive storage).
     floppy: FloppyController,
+    fdd320_ppi: Fdd320Ppi,
     system_ppi: I8255SystemPpi,
     printer: Printer,
     display_control: DisplayControl,
@@ -508,7 +516,10 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// Inserts a hard disk image into the specified drive (0-1).
     pub fn insert_hdd(&mut self, drive: usize, image: HddImage, path: Option<PathBuf>) {
         match self.machine_model {
-            MachineModel::PC9801VM | MachineModel::PC9801VX | MachineModel::PC9801RA => {
+            MachineModel::PC9801F
+            | MachineModel::PC9801VM
+            | MachineModel::PC9801VX
+            | MachineModel::PC9801RA => {
                 self.sasi.insert_drive(drive, image, path);
             }
             MachineModel::PC9821AS | MachineModel::PC9821AP => {
@@ -531,7 +542,10 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// Writes the HDD image back to its file if it has been modified.
     pub fn flush_hdd(&mut self, drive: usize) {
         match self.machine_model {
-            MachineModel::PC9801VM | MachineModel::PC9801VX | MachineModel::PC9801RA => {
+            MachineModel::PC9801F
+            | MachineModel::PC9801VM
+            | MachineModel::PC9801VX
+            | MachineModel::PC9801RA => {
                 self.sasi.flush_drive(drive);
             }
             MachineModel::PC9821AS | MachineModel::PC9821AP => {
@@ -543,7 +557,10 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// Flushes all dirty HDD images to disk.
     pub fn flush_all_hdds(&mut self) {
         match self.machine_model {
-            MachineModel::PC9801VM | MachineModel::PC9801VX | MachineModel::PC9801RA => {
+            MachineModel::PC9801F
+            | MachineModel::PC9801VM
+            | MachineModel::PC9801VX
+            | MachineModel::PC9801RA => {
                 self.sasi.flush_all_drives();
             }
             MachineModel::PC9821AS | MachineModel::PC9821AP => {
@@ -682,6 +699,11 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// Returns the CPU type configured for this bus.
     pub fn cpu_type(&self) -> CpuType {
         self.machine_model.cpu_type()
+    }
+
+    /// Returns the machine model configured for this bus.
+    pub fn machine_model(&self) -> MachineModel {
+        self.machine_model
     }
 
     /// Enables CG RAM mode (VX+). All character codes become writable.
@@ -1390,6 +1412,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             fdc_1mb: self.floppy.fdc_1mb().state.clone(),
             fdc_640k: self.floppy.fdc_640k().state.clone(),
             fdc_media: self.floppy.fdc_media(),
+            fdd320_ppi: self.fdd320_ppi.state.clone(),
             vram_ems_bank: self.vram_ems_bank,
             ram_window: self.ram_window,
             system_ppi: self.system_ppi.state.clone(),
@@ -1436,6 +1459,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.floppy.fdc_1mb_mut().state = state.fdc_1mb.clone();
         self.floppy.fdc_640k_mut().state = state.fdc_640k.clone();
         self.floppy.set_fdc_media(state.fdc_media);
+        self.fdd320_ppi.state = state.fdd320_ppi.clone();
         self.vram_ems_bank = state.vram_ems_bank;
         self.ram_window = state.ram_window;
         self.system_ppi.state = state.system_ppi.clone();
@@ -2340,7 +2364,7 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
 
 #[cfg(test)]
 mod tests {
-    use common::{Bus, MachineModel};
+    use common::{Bus, CpuMode, MachineModel};
 
     use super::{NoTracing, Pc9801Bus};
 
@@ -2372,7 +2396,7 @@ mod tests {
 
     #[test]
     fn capture_vsync_snapshot_populates_typed_fields() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
 
         bus.palette.state.analog[1] = [0x0A, 0x02, 0x0F];
         bus.gdc_master.state.pitch = 80;
@@ -2427,7 +2451,7 @@ mod tests {
 
     #[test]
     fn capture_vsync_snapshot_sets_kanji_high_mask_from_kac_mode() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
 
         bus.capture_vsync_snapshot();
         assert_eq!(bus.vsync_snapshot().gdc_text_kanji_high_mask, 0xFF);
@@ -2483,7 +2507,7 @@ mod tests {
 
     #[test]
     fn e_plane_read_charges_vram_wait() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
         bus.set_graphics_extension_enabled(true);
 
         bus.pending_wait_cycles = 0;
@@ -2496,7 +2520,7 @@ mod tests {
 
     #[test]
     fn e_plane_write_charges_vram_wait() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
         bus.set_graphics_extension_enabled(true);
 
         bus.pending_wait_cycles = 0;
@@ -2509,7 +2533,7 @@ mod tests {
 
     #[test]
     fn access_page_selects_vram_bank_for_cpu_writes() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
 
         // Write to page 0 (default).
         bus.write_byte(0xA8000, 0xAA);
@@ -2527,7 +2551,7 @@ mod tests {
 
     #[test]
     fn access_page_selects_vram_bank_for_cpu_reads() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
 
         let page1_base = super::GRAPHICS_PAGE_SIZE_BYTES;
         bus.memory.state.graphics_vram[0] = 0x11;
@@ -2544,7 +2568,7 @@ mod tests {
 
     #[test]
     fn access_page_selects_e_plane_bank() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
         bus.display_control.state.mode2 |= 0x01;
         bus.set_graphics_extension_enabled(true);
 
@@ -2564,7 +2588,7 @@ mod tests {
 
     #[test]
     fn display_page_selects_snapshot_bank() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
 
         let page1_base = super::GRAPHICS_PAGE_SIZE_BYTES;
         bus.memory.state.graphics_vram[0] = 0xAA; // page 0 B-plane
@@ -2582,13 +2606,13 @@ mod tests {
 
     #[test]
     fn ram_window_default_identity() {
-        let bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         assert_eq!(bus.ram_window, 0x08);
     }
 
     #[test]
     fn ram_window_remaps_to_extended_ram() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         // Set RAM window to 0x10 -> physical base 0x100000 (1 MB).
         bus.ram_window = 0x10;
         // Write via remapped window.
@@ -2602,7 +2626,7 @@ mod tests {
     }
 
     fn create_pc9821_bus() -> Pc9801Bus<NoTracing> {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, CpuMode::Low, 48000);
         bus.display_control.state.mode2 |= 0x01 | 0x08;
         bus.set_graphics_extension_enabled(true);
         bus
@@ -2650,7 +2674,7 @@ mod tests {
 
     #[test]
     fn pegc_port_6a_ignored_on_non_9821() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.io_write_byte(0x6A, 0x21);
         assert!(!bus.pegc.is_256_color_active());
     }
@@ -2856,7 +2880,7 @@ mod tests {
 
     #[test]
     fn pegc_port_6a_0x21_blocked_without_mode2_bit3() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, CpuMode::Low, 48000);
         bus.display_control.state.mode2 |= 0x01;
         bus.set_graphics_extension_enabled(true);
         bus.io_write_byte(0x6A, 0x21);
@@ -3010,7 +3034,7 @@ mod tests {
 
     #[test]
     fn pegc_port_6a_0x62_0x63_ignored_on_non_9821() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.io_write_byte(0x6A, 0x62);
         assert!(bus.pegc.is_packed_pixel_mode());
     }

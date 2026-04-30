@@ -1,6 +1,6 @@
 use super::{
-    boot_and_run_ra, boot_and_run_vm, boot_and_run_vx, create_machine_ra, create_machine_vm,
-    create_machine_vx, read_ivt_vector,
+    boot_and_run_f, boot_and_run_ra, boot_and_run_vm, boot_and_run_vx, create_machine_f,
+    create_machine_ra, create_machine_vm, create_machine_vx, read_ivt_vector,
 };
 
 const FDC_BUDGET: u64 = 500_000;
@@ -46,6 +46,19 @@ const RECALIBRATE_640K_CODE: &[u8] = &[
 // ============================================================================
 
 #[test]
+fn int13h_vector_f() {
+    let mut machine = create_machine_f();
+    let _cycles = boot_to_halt!(machine);
+    let state = machine.save_state();
+
+    let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x13);
+    assert!(
+        segment >= 0xFD80,
+        "INT 13h segment should be in BIOS ROM (got {segment:#06X}:{offset:#06X})"
+    );
+}
+
+#[test]
 fn int13h_vector_vm() {
     let mut machine = create_machine_vm();
     let _cycles = boot_to_halt!(machine);
@@ -89,6 +102,18 @@ fn int13h_vector_ra() {
 // ============================================================================
 
 #[test]
+fn fdc_1mb_recalibrate_sets_intl_flag_f() {
+    let (machine, _cycles) = boot_and_run_f(RECALIBRATE_1MB_CODE, &[], FDC_BUDGET);
+    let state = machine.save_state();
+
+    assert_eq!(
+        state.memory.ram[DISK_INTL] & 0x01,
+        0,
+        "F BIOS leaves DISK_INTL bit 0 clear after direct 1MB FDC RECALIBRATE"
+    );
+}
+
+#[test]
 fn fdc_1mb_recalibrate_sets_intl_flag_vm() {
     let (machine, _cycles) = boot_and_run_vm(RECALIBRATE_1MB_CODE, &[], FDC_BUDGET);
     let state = machine.save_state();
@@ -127,6 +152,19 @@ fn fdc_1mb_recalibrate_sets_intl_flag_ra() {
 // ============================================================================
 // §8.2 INT 13h - 1MB FDC RECALIBRATE Stores Result
 // ============================================================================
+
+#[test]
+fn fdc_1mb_recalibrate_stores_result_f() {
+    let (machine, _cycles) = boot_and_run_f(RECALIBRATE_1MB_CODE, &[], FDC_BUDGET);
+    let state = machine.save_state();
+
+    assert_eq!(state.memory.ram[DISK_RESULT_1MB], 0x00, "ST0");
+    assert_eq!(
+        state.memory.ram[DISK_RESULT_1MB + 1],
+        0x00,
+        "PCN should be 0x00 (track 0)"
+    );
+}
 
 #[test]
 fn fdc_1mb_recalibrate_stores_result_vm() {
@@ -181,6 +219,18 @@ fn fdc_1mb_recalibrate_stores_result_ra() {
 // ============================================================================
 
 #[test]
+fn fdc_1mb_recalibrate_sends_eoi_f() {
+    let (machine, _cycles) = boot_and_run_f(RECALIBRATE_1MB_CODE, &[], FDC_BUDGET);
+    let state = machine.save_state();
+
+    assert_eq!(
+        state.pic.chips[1].isr & 0x08,
+        0,
+        "Slave IR3 should not be in-service after INT 13h (EOI was sent)"
+    );
+}
+
+#[test]
 fn fdc_1mb_recalibrate_sends_eoi_vm() {
     let (machine, _cycles) = boot_and_run_vm(RECALIBRATE_1MB_CODE, &[], FDC_BUDGET);
     let state = machine.save_state();
@@ -219,6 +269,19 @@ fn fdc_1mb_recalibrate_sends_eoi_ra() {
 // ============================================================================
 // §8.1 INT 12h - 640KB FDC Vector Setup
 // ============================================================================
+
+#[test]
+fn int12h_vector_f() {
+    let mut machine = create_machine_f();
+    let _cycles = boot_to_halt!(machine);
+    let state = machine.save_state();
+
+    let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x12);
+    assert!(
+        segment >= 0xFD80,
+        "INT 12h segment should be in BIOS ROM (got {segment:#06X}:{offset:#06X})"
+    );
+}
 
 #[test]
 fn int12h_vector_vm() {
@@ -264,6 +327,18 @@ fn int12h_vector_ra() {
 // ============================================================================
 
 #[test]
+fn fdc_640k_recalibrate_sets_inth_flag_f() {
+    let (machine, _cycles) = boot_and_run_f(RECALIBRATE_640K_CODE, &[], FDC_BUDGET);
+    let state = machine.save_state();
+
+    assert_eq!(
+        state.memory.ram[DISK_INTH] & 0x10,
+        0,
+        "F BIOS leaves DISK_INTH bit 4 clear after direct 640KB FDC RECALIBRATE"
+    );
+}
+
+#[test]
 fn fdc_640k_recalibrate_sets_inth_flag_vm() {
     let (machine, _cycles) = boot_and_run_vm(RECALIBRATE_640K_CODE, &[], FDC_BUDGET);
     let state = machine.save_state();
@@ -304,6 +379,14 @@ fn fdc_640k_recalibrate_sets_inth_flag_ra() {
 // ============================================================================
 
 #[test]
+fn fdc_640k_recalibrate_stores_result_f() {
+    let (machine, _cycles) = boot_and_run_f(RECALIBRATE_640K_CODE, &[], FDC_BUDGET);
+    let state = machine.save_state();
+
+    assert_eq!(state.memory.ram[DISK_RESULT_640K], 0x00, "ST0");
+}
+
+#[test]
 fn fdc_640k_recalibrate_stores_result_vm() {
     let (machine, _cycles) = boot_and_run_vm(RECALIBRATE_640K_CODE, &[], FDC_BUDGET);
     let state = machine.save_state();
@@ -339,6 +422,18 @@ fn fdc_640k_recalibrate_stores_result_ra() {
 // ============================================================================
 // §8.1 INT 12h - 640KB FDC RECALIBRATE Sends EOI
 // ============================================================================
+
+#[test]
+fn fdc_640k_recalibrate_sends_eoi_f() {
+    let (machine, _cycles) = boot_and_run_f(RECALIBRATE_640K_CODE, &[], FDC_BUDGET);
+    let state = machine.save_state();
+
+    assert_eq!(
+        state.pic.chips[1].isr & 0x04,
+        0,
+        "Slave IR2 should not be in-service after INT 12h (EOI was sent)"
+    );
+}
 
 #[test]
 fn fdc_640k_recalibrate_sends_eoi_vm() {

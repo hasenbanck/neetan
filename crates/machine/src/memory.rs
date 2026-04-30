@@ -124,6 +124,10 @@ const SOUND_ROM_STUB: [u8; 9] = [0x01, 0x00, 0x00, 0x00, 0xD2, 0x00, 0x08, 0x00,
 /// Stub BIOS ROM (96 KB) embedded at compile time.
 static STUB_BIOS_ROM: &[u8; BIOS_ROM_SIZE] = include_bytes!("../../../utils/bios/bios.rom");
 
+const NEC_COPYRIGHT: &[u8] = b"Copyright (C) 1983 by NEC Corporation";
+const NEC_COPYRIGHT_OFFSET_F: usize = 0x0DE2;
+const NEC_COPYRIGHT_OFFSET_VM: usize = 0x0DD8;
+
 /// V98 font ROM file size in bytes.
 const V98_FONT_ROM_SIZE: usize = 0x46800;
 
@@ -289,7 +293,10 @@ impl Pc9801Memory {
     /// addresses backed by RAM return the pattern, unmapped addresses read 0xFF.
     /// The detected size is stored at 0x0401 (EXPMMSZ) in 128 KB units.
     pub(crate) fn new(machine_model: MachineModel, extended_ram_size: usize) -> Self {
-        let extended_ram_size = if machine_model == MachineModel::PC9801VM {
+        let extended_ram_size = if matches!(
+            machine_model,
+            MachineModel::PC9801F | MachineModel::PC9801VM
+        ) {
             0
         } else {
             extended_ram_size
@@ -354,6 +361,19 @@ impl Pc9801Memory {
         self.bios_bank_is_bank1 = false;
     }
 
+    /// Installs the NEC copyright marker at the model-specific BIOS offset.
+    pub(crate) fn install_nec_copyright(&mut self, machine_model: MachineModel) {
+        let offset = match machine_model {
+            MachineModel::PC9801F => NEC_COPYRIGHT_OFFSET_F,
+            MachineModel::PC9801VM
+            | MachineModel::PC9801VX
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => NEC_COPYRIGHT_OFFSET_VM,
+        };
+        self.rom[offset..offset + NEC_COPYRIGHT.len()].copy_from_slice(NEC_COPYRIGHT);
+    }
+
     /// Reads a byte directly from the ROM buffer at the given ROM-relative offset.
     pub(crate) fn rom_byte(&self, offset: usize) -> u8 {
         self.rom[offset]
@@ -365,11 +385,20 @@ impl Pc9801Memory {
     }
 
     /// Writes keyboard translation tables into the ROM at the BIOS code segment.
-    pub(crate) fn install_keyboard_tables(&mut self, tables: &[[u8; 0x60]; 8], offset: usize) {
+    pub(crate) fn install_keyboard_tables(
+        &mut self,
+        tables: &[[u8; 0x60]; 8],
+        offset: usize,
+        machine_model: MachineModel,
+    ) {
         let rom_offset = 0xFD800 + offset - 0xE8000;
         for (i, table) in tables.iter().enumerate() {
             let dest = rom_offset + i * 0x60;
             self.rom[dest..dest + 0x60].copy_from_slice(table);
+        }
+        if machine_model == MachineModel::PC9801F {
+            self.rom[rom_offset + 0x51] = 0xFF;
+            self.rom[rom_offset + 0x60 + 0x51] = 0xFF;
         }
     }
 
@@ -411,12 +440,48 @@ impl Pc9801Memory {
         };
 
         // Format table offsets differ between BIOS generations (RA vs others).
+        if machine_model == MachineModel::PC9801F {
+            #[rustfmt::skip]
+            const F_BIOS_BYTES_1AB4: [u8; 8] = [
+                0x00, 0xB1, 0x05, 0xD2, 0xE4, 0xE8, 0x7D, 0x02,
+            ];
+            #[rustfmt::skip]
+            const F_BIOS_BYTES_1ABC: [u8; 32] = [
+                0xB4, 0x00, 0xB2, 0x04, 0xE8, 0x76, 0x02, 0xFE,
+                0xCA, 0x75, 0xF9, 0xE8, 0x9A, 0x02, 0xF6, 0xC4,
+                0xF0, 0x75, 0x08, 0xE8, 0xF6, 0x01, 0x2E, 0x0A,
+                0xA7, 0x14, 0x00, 0xC3, 0xB8, 0x40, 0x08, 0xE8,
+            ];
+            #[rustfmt::skip]
+            const F_BIOS_BYTES_1ADC: [u8; 8] = [
+                0x6D, 0x00, 0x80, 0xFC, 0x08, 0x75, 0x09, 0xF6,
+            ];
+            #[rustfmt::skip]
+            const F_BIOS_BYTES_1AE4: [u8; 32] = [
+                0x46, 0x01, 0x20, 0x74, 0x19, 0x80, 0xCC, 0xB0,
+                0xC3, 0xB8, 0x44, 0x08, 0xE8, 0x58, 0x00, 0x80,
+                0xFC, 0x08, 0x75, 0x09, 0xF6, 0x46, 0x01, 0x20,
+                0x74, 0x04, 0x80, 0xCC, 0xB0, 0xC3, 0xB4, 0x40,
+            ];
+
+            let dest = BIOS_SEG_PHYS + 0x1AB4 - ROM_BASE;
+            self.rom[dest..dest + F_BIOS_BYTES_1AB4.len()].copy_from_slice(&F_BIOS_BYTES_1AB4);
+            let dest = BIOS_SEG_PHYS + 0x1ABC - ROM_BASE;
+            self.rom[dest..dest + F_BIOS_BYTES_1ABC.len()].copy_from_slice(&F_BIOS_BYTES_1ABC);
+            let dest = BIOS_SEG_PHYS + 0x1ADC - ROM_BASE;
+            self.rom[dest..dest + F_BIOS_BYTES_1ADC.len()].copy_from_slice(&F_BIOS_BYTES_1ADC);
+            let dest = BIOS_SEG_PHYS + 0x1AE4 - ROM_BASE;
+            self.rom[dest..dest + F_BIOS_BYTES_1AE4.len()].copy_from_slice(&F_BIOS_BYTES_1AE4);
+            return;
+        }
+
         let (f2hd_ind, f2hd_data, f2dd_ind, f2dd_data): (usize, usize, usize, usize) =
             match machine_model {
                 MachineModel::PC9801RA | MachineModel::PC9821AS | MachineModel::PC9821AP => {
                     (0x1AAF, 0x1AB7, 0x1AD7, 0x1ADF)
                 }
                 MachineModel::PC9801VM | MachineModel::PC9801VX => (0x1AB4, 0x1ABC, 0x1ADC, 0x1AE4),
+                MachineModel::PC9801F => unreachable!(),
             };
 
         let dest = BIOS_SEG_PHYS + f2hd_data - ROM_BASE;

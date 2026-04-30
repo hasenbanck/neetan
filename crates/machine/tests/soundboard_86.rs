@@ -1,4 +1,4 @@
-use common::{Bus, MachineModel};
+use common::{Bus, CpuMode, MachineModel};
 use machine::{NoTracing, Pc9801Bus};
 
 const OUTPUT_SAMPLE_RATE: u32 = 48_000;
@@ -9,13 +9,13 @@ const OPNA_ADDR_HI: u16 = 0x018C;
 const OPNA_DATA_HI: u16 = 0x018E;
 
 fn setup_86_bus(model: MachineModel) -> Pc9801Bus<NoTracing> {
-    let mut bus = Pc9801Bus::<NoTracing>::new(model, OUTPUT_SAMPLE_RATE);
+    let mut bus = Pc9801Bus::<NoTracing>::new(model, CpuMode::High, OUTPUT_SAMPLE_RATE);
     bus.install_soundboard_86(None, true);
     bus
 }
 
 fn expected_wait(model: MachineModel) -> i64 {
-    let cbus = (u64::from(model.cpu_clock_hz()) * 6).div_ceil(10_000_000) as i64;
+    let cbus = (u64::from(model.cpu_clock_hz(CpuMode::High)) * 6).div_ceil(10_000_000) as i64;
     1 + cbus
 }
 

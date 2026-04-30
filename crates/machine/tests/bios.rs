@@ -1,9 +1,13 @@
-use common::MachineModel;
+use common::{CpuMode, MachineModel};
 
 macro_rules! boot_to_halt {
     ($machine:expr) => {{
         use common::Cpu as _;
-        let disk = $crate::make_halt_boot_disk();
+        let disk = if $machine.bus.machine_model() == common::MachineModel::PC9801F {
+            $crate::make_halt_boot_disk_2dd()
+        } else {
+            $crate::make_halt_boot_disk()
+        };
         $machine.bus.insert_floppy(0, disk, None);
 
         const MAX_CYCLES: u64 = 500_000_000;
@@ -54,7 +58,7 @@ use device::{
     disk::{HddFormat, HddGeometry, HddImage},
     floppy::FloppyImage,
 };
-use machine::{Pc9801Ra, Pc9801Vm, Pc9801Vx, Pc9821As};
+use machine::{Pc9801F, Pc9801Ra, Pc9801Vm, Pc9801Vx, Pc9821As};
 
 type TrackList<'a> = [(u8, u8, &'a [(u8, &'a [u8])])];
 
@@ -296,10 +300,19 @@ mod post_bios_state;
 
 static FONT_ROM_DATA: &[u8] = include_bytes!("../../../utils/font/font.rom");
 
+fn create_machine_f() -> Pc9801F {
+    let mut machine = Pc9801F::new(
+        cpu::I8086::new(),
+        machine::Pc9801Bus::new(MachineModel::PC9801F, CpuMode::High, 48000),
+    );
+    machine.bus.load_font_rom(FONT_ROM_DATA);
+    machine
+}
+
 fn create_machine_vm() -> Pc9801Vm {
     let mut machine = Pc9801Vm::new(
         cpu::V30::new(),
-        machine::Pc9801Bus::new(MachineModel::PC9801VM, 48000),
+        machine::Pc9801Bus::new(MachineModel::PC9801VM, CpuMode::High, 48000),
     );
     machine.bus.load_font_rom(FONT_ROM_DATA);
     machine
@@ -308,7 +321,7 @@ fn create_machine_vm() -> Pc9801Vm {
 fn create_machine_vx() -> Pc9801Vx {
     let mut machine = Pc9801Vx::new(
         cpu::I286::new(),
-        machine::Pc9801Bus::new(MachineModel::PC9801VX, 48000),
+        machine::Pc9801Bus::new(MachineModel::PC9801VX, CpuMode::High, 48000),
     );
     machine.bus.load_font_rom(FONT_ROM_DATA);
     machine
@@ -317,7 +330,7 @@ fn create_machine_vx() -> Pc9801Vx {
 fn create_machine_ra() -> Pc9801Ra {
     let mut machine = Pc9801Ra::new(
         cpu::I386::new(),
-        machine::Pc9801Bus::new(MachineModel::PC9801RA, 48000),
+        machine::Pc9801Bus::new(MachineModel::PC9801RA, CpuMode::High, 48000),
     );
     machine.bus.load_font_rom(FONT_ROM_DATA);
     machine
@@ -326,7 +339,7 @@ fn create_machine_ra() -> Pc9801Ra {
 fn create_machine_pc9821as() -> Pc9821As {
     let mut machine = Pc9821As::new(
         cpu::I386::<{ cpu::CPU_MODEL_486 }>::new(),
-        machine::Pc9801Bus::new(MachineModel::PC9821AS, 48000),
+        machine::Pc9801Bus::new(MachineModel::PC9821AS, CpuMode::High, 48000),
     );
     // TODO: We haven't verified our implementation yet against a real 9821 BIOS.
     machine.bus.load_font_rom(FONT_ROM_DATA);
@@ -335,6 +348,12 @@ fn create_machine_pc9821as() -> Pc9821As {
 
 fn create_machine_vm_hdd() -> Pc9801Vm {
     let mut machine = create_machine_vm();
+    machine.bus.insert_hdd(0, make_halt_boot_hdd(), None);
+    machine
+}
+
+fn create_machine_f_hdd() -> Pc9801F {
+    let mut machine = create_machine_f();
     machine.bus.insert_hdd(0, make_halt_boot_hdd(), None);
     machine
 }
@@ -419,6 +438,19 @@ fn run_vm(machine: &mut Pc9801Vm, code: &[u8], budget: u64) -> u64 {
     machine.cpu.run_for(budget, &mut machine.bus)
 }
 
+fn run_f(machine: &mut Pc9801F, code: &[u8], budget: u64) -> u64 {
+    write_bytes(&mut machine.bus, 0x100, code);
+    machine.cpu.load_state(&{
+        let mut s = cpu::I8086State {
+            ip: 0x0100,
+            ..Default::default()
+        };
+        s.set_sp(0x1000);
+        s
+    });
+    machine.cpu.run_for(budget, &mut machine.bus)
+}
+
 fn boot_and_run_vm(main_code: &[u8], callback: &[u8], budget: u64) -> (Pc9801Vm, u64) {
     let mut machine = create_machine_vm();
     boot_to_halt!(machine);
@@ -428,6 +460,25 @@ fn boot_and_run_vm(main_code: &[u8], callback: &[u8], budget: u64) -> (Pc9801Vm,
     }
     machine.cpu.load_state(&{
         let mut s = cpu::V30State {
+            ip: TEST_CODE as u16,
+            ..Default::default()
+        };
+        s.set_sp(0x4000);
+        s
+    });
+    let cycles = machine.run_for(budget);
+    (machine, cycles)
+}
+
+fn boot_and_run_f(main_code: &[u8], callback: &[u8], budget: u64) -> (Pc9801F, u64) {
+    let mut machine = create_machine_f();
+    boot_to_halt!(machine);
+    write_bytes(&mut machine.bus, TEST_CODE, main_code);
+    if !callback.is_empty() {
+        write_bytes(&mut machine.bus, TEST_CALLBACK, callback);
+    }
+    machine.cpu.load_state(&{
+        let mut s = cpu::I8086State {
             ip: TEST_CODE as u16,
             ..Default::default()
         };
@@ -485,6 +536,25 @@ fn boot_inject_run_vm(scancodes: &[u8], code: &[u8], budget: u64) -> Pc9801Vm {
     write_bytes(&mut machine.bus, TEST_CODE, code);
     machine.cpu.load_state(&{
         let mut s = cpu::V30State {
+            ip: TEST_CODE as u16,
+            ..Default::default()
+        };
+        s.set_sp(0x4000);
+        s
+    });
+    machine.run_for(budget);
+    machine
+}
+
+fn boot_inject_run_f(scancodes: &[u8], code: &[u8], budget: u64) -> Pc9801F {
+    let mut machine = create_machine_f();
+    boot_to_halt!(machine);
+    for &sc in scancodes {
+        machine.bus.push_keyboard_scancode(sc);
+    }
+    write_bytes(&mut machine.bus, TEST_CODE, code);
+    machine.cpu.load_state(&{
+        let mut s = cpu::I8086State {
             ip: TEST_CODE as u16,
             ..Default::default()
         };

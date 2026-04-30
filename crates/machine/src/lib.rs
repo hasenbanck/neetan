@@ -15,14 +15,14 @@ use common::MachineModel;
 pub use common::{NoTracing, OsBootStage, SchedulerState, Tracing};
 use device::{
     beeper::BeeperState, cgrom::CgromState, display_control::DisplayControlState, egc::EgcState,
-    grcg::GrcgState, i8251_keyboard::I8251KeyboardState, i8251_serial::I8251SerialState,
-    i8253_pit::I8253PitState, i8255_mouse_ppi::I8255MousePpiState,
+    fdd320_ppi::Fdd320PpiState, grcg::GrcgState, i8251_keyboard::I8251KeyboardState,
+    i8251_serial::I8251SerialState, i8253_pit::I8253PitState, i8255_mouse_ppi::I8255MousePpiState,
     i8255_system_ppi::I8255SystemPpiState, i8259a_pic::I8259aPicState, palette::PaletteState,
     printer::PrinterState, sound_blaster_16::SoundBlaster16State, soundboard_14::Soundboard14State,
     soundboard_26k::Soundboard26kState, soundboard_86::Soundboard86State,
     upd765a_fdc::Upd765aFdcState, upd7220_gdc::GdcState, upd52611_crtc::Upd52611CrtcState,
 };
-pub use machine::{Machine, Pc9801Ra, Pc9801Vm, Pc9801Vx, Pc9821Ap, Pc9821As};
+pub use machine::{Machine, Pc9801F, Pc9801Ra, Pc9801Vm, Pc9801Vx, Pc9821Ap, Pc9821As};
 
 pub use crate::{
     bus::{BootDevice, Pc9801Bus},
@@ -34,6 +34,8 @@ pub use crate::{
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CpuState {
+    /// 8086 CPU state.
+    I8086(cpu::I8086State),
     /// V30 CPU state.
     V30(cpu::V30State),
     /// 80286 CPU state.
@@ -81,6 +83,8 @@ pub struct MachineState {
     pub fdc_640k: Upd765aFdcState,
     /// Dual-mode FDC interface control.
     pub fdc_media: u8,
+    /// PC-9801 320KB FDD PPI snapshot.
+    pub fdd320_ppi: Fdd320PpiState,
     /// VRAM/EMS bank register.
     pub vram_ems_bank: u8,
     /// RAM window register.

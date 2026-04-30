@@ -5,9 +5,9 @@ use device::{
 };
 
 use super::{
-    TEST_CODE, boot_and_run_ra, boot_and_run_vm, boot_and_run_vx, build_2hd_d88,
-    create_machine_pc9821as, create_machine_ra, create_machine_vm, create_machine_vx,
-    read_ivt_vector, read_ram_u16, write_bytes,
+    TEST_CODE, boot_and_run_f, boot_and_run_ra, boot_and_run_vm, boot_and_run_vx, build_2hd_d88,
+    create_machine_f, create_machine_pc9821as, create_machine_ra, create_machine_vm,
+    create_machine_vx, read_ivt_vector, read_ram_u16, write_bytes,
 };
 
 const RESULT: u32 = 0x0600;
@@ -217,6 +217,30 @@ fn make_int1bh_sasi_sense_new(al: u8) -> Vec<u8> {
     ]
 }
 
+fn boot_and_run_fdd_f(
+    code: &[u8],
+    disk: Option<(usize, FloppyImage)>,
+    budget: u64,
+) -> machine::Pc9801F {
+    let mut machine = create_machine_f();
+    boot_to_halt!(machine);
+    machine.bus.eject_floppy(0);
+    if let Some((drive, image)) = disk {
+        machine.bus.insert_floppy(drive, image, None);
+    }
+    write_bytes(&mut machine.bus, TEST_CODE, code);
+    machine.cpu.load_state(&{
+        let mut s = cpu::I8086State {
+            ip: TEST_CODE as u16,
+            ..Default::default()
+        };
+        s.set_sp(0x4000);
+        s
+    });
+    machine.run_for(budget);
+    machine
+}
+
 fn boot_and_run_fdd_vm(
     code: &[u8],
     disk: Option<(usize, FloppyImage)>,
@@ -283,6 +307,29 @@ fn boot_and_run_fdd_ra(
             ..Default::default()
         };
         s.set_esp(0x4000);
+        s
+    });
+    machine.run_for(budget);
+    machine
+}
+
+fn boot_and_run_sasi_f(
+    code: &[u8],
+    hdd: Option<(usize, HddImage)>,
+    budget: u64,
+) -> machine::Pc9801F {
+    let mut machine = create_machine_f();
+    if let Some((drive, image)) = hdd {
+        machine.bus.insert_hdd(drive, image, None);
+    }
+    boot_to_halt!(machine);
+    write_bytes(&mut machine.bus, TEST_CODE, code);
+    machine.cpu.load_state(&{
+        let mut s = cpu::I8086State {
+            ip: TEST_CODE as u16,
+            ..Default::default()
+        };
+        s.set_sp(0x4000);
         s
     });
     machine.run_for(budget);
@@ -372,6 +419,18 @@ fn assert_result_ah(ram: &[u8; 0xA0000], expected: u8, label: &str) {
 // ============================================================================
 
 #[test]
+fn int1bh_vector_f() {
+    let mut machine = create_machine_f();
+    boot_to_halt!(machine);
+    let state = machine.save_state();
+    let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x1B);
+    assert!(
+        segment >= 0xFD80,
+        "INT 1Bh segment should be in BIOS ROM (got {segment:#06X}:{offset:#06X})"
+    );
+}
+
+#[test]
 fn int1bh_vector_vm() {
     let mut machine = create_machine_vm();
     boot_to_halt!(machine);
@@ -412,6 +471,14 @@ fn int1bh_vector_ra() {
 // ============================================================================
 
 #[test]
+fn int1bh_fdd_noop_valid_da_f() {
+    let code = make_int1bh_simple(0x00, DA_FDD_1MB_DRIVE0);
+    let (machine, _) = boot_and_run_f(&code, &[], INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x40, "FDD no-op DA=0x90");
+}
+
+#[test]
 fn int1bh_fdd_noop_valid_da_vm() {
     let code = make_int1bh_simple(0x00, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_vm(&code, &[], INT1BH_BUDGET);
@@ -438,6 +505,14 @@ fn int1bh_fdd_noop_valid_da_ra() {
 // ============================================================================
 // §12.2 FDD No-Op (AH=0x00) - Invalid DA
 // ============================================================================
+
+#[test]
+fn int1bh_fdd_noop_invalid_da_f() {
+    let code = make_int1bh_simple(0x00, DA_INVALID);
+    let (machine, _) = boot_and_run_f(&code, &[], INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x40, "FDD no-op invalid DA");
+}
 
 #[test]
 fn int1bh_fdd_noop_invalid_da_vm() {
@@ -468,6 +543,14 @@ fn int1bh_fdd_noop_invalid_da_ra() {
 // ============================================================================
 
 #[test]
+fn int1bh_fdd_initialize_f() {
+    let code = make_int1bh_simple(0x03, DA_FDD_1MB_DRIVE0);
+    let (machine, _) = boot_and_run_f(&code, &[], INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x40, "FDD initialize");
+}
+
+#[test]
 fn int1bh_fdd_initialize_vm() {
     let code = make_int1bh_simple(0x03, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_vm(&code, &[], INT1BH_BUDGET);
@@ -496,6 +579,14 @@ fn int1bh_fdd_initialize_ra() {
 // ============================================================================
 
 #[test]
+fn int1bh_fdd_set_density_f() {
+    let code = make_int1bh_simple(0x4E, DA_FDD_1MB_DRIVE0);
+    let (machine, _) = boot_and_run_f(&code, &[], INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x40, "FDD set density");
+}
+
+#[test]
 fn int1bh_fdd_set_density_vm() {
     let code = make_int1bh_simple(0x4E, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_vm(&code, &[], INT1BH_BUDGET);
@@ -522,6 +613,18 @@ fn int1bh_fdd_set_density_ra() {
 // ============================================================================
 // §12.2 FDD Recalibrate (AH=0x07) - With Disk
 // ============================================================================
+
+#[test]
+fn int1bh_fdd_recalibrate_with_disk_f() {
+    let code = make_int1bh_simple(0x07, DA_FDD_1MB_DRIVE0);
+    let machine = boot_and_run_fdd_f(
+        &code,
+        Some((0, make_standard_2hd_disk(false))),
+        INT1BH_BUDGET,
+    );
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x40, "FDD recalibrate with disk");
+}
 
 #[test]
 fn int1bh_fdd_recalibrate_with_disk_vm() {
@@ -564,6 +667,14 @@ fn int1bh_fdd_recalibrate_with_disk_ra() {
 // ============================================================================
 
 #[test]
+fn int1bh_fdd_recalibrate_no_disk_f() {
+    let code = make_int1bh_simple(0x07, DA_FDD_1MB_DRIVE0);
+    let machine = boot_and_run_fdd_f(&code, None, INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x40, "FDD recalibrate no disk");
+}
+
+#[test]
 fn int1bh_fdd_recalibrate_no_disk_vm() {
     let code = make_int1bh_simple(0x07, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_vm(&code, None, INT1BH_BUDGET);
@@ -590,6 +701,18 @@ fn int1bh_fdd_recalibrate_no_disk_ra() {
 // ============================================================================
 // §12.2 FDD Sense (AH=0x04) - With Disk
 // ============================================================================
+
+#[test]
+fn int1bh_fdd_sense_with_disk_f() {
+    let code = make_int1bh_simple(0x04, DA_FDD_1MB_DRIVE0);
+    let machine = boot_and_run_fdd_f(
+        &code,
+        Some((0, make_standard_2hd_disk(false))),
+        INT1BH_BUDGET,
+    );
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x40, "FDD sense with disk");
+}
 
 #[test]
 fn int1bh_fdd_sense_with_disk_vm() {
@@ -632,6 +755,14 @@ fn int1bh_fdd_sense_with_disk_ra() {
 // ============================================================================
 
 #[test]
+fn int1bh_fdd_sense_no_disk_f() {
+    let code = make_int1bh_simple(0x04, DA_FDD_1MB_DRIVE0);
+    let machine = boot_and_run_fdd_f(&code, None, INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x40, "FDD sense no disk");
+}
+
+#[test]
 fn int1bh_fdd_sense_no_disk_vm() {
     let code = make_int1bh_simple(0x04, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_vm(&code, None, INT1BH_BUDGET);
@@ -658,6 +789,18 @@ fn int1bh_fdd_sense_no_disk_ra() {
 // ============================================================================
 // §12.2 FDD Sense (AH=0x04) - Write Protected
 // ============================================================================
+
+#[test]
+fn int1bh_fdd_sense_write_protected_f() {
+    let code = make_int1bh_simple(0x04, DA_FDD_1MB_DRIVE0);
+    let machine = boot_and_run_fdd_f(
+        &code,
+        Some((0, make_standard_2hd_disk(true))),
+        INT1BH_BUDGET,
+    );
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x40, "FDD sense write protected");
+}
 
 #[test]
 fn int1bh_fdd_sense_write_protected_vm() {
@@ -698,6 +841,32 @@ fn int1bh_fdd_sense_write_protected_ra() {
 // ============================================================================
 // §12.2 FDD Diagnostic Read (AH=0x02 aliases AH=0x06)
 // ============================================================================
+
+#[test]
+fn int1bh_fdd_diagnostic_read_f() {
+    let code = make_int1bh_rw(
+        0x02,
+        DA_FDD_1MB_DRIVE0,
+        1024,
+        0,
+        0,
+        1,
+        3,
+        0x0000,
+        DATA_BUFFER as u16,
+    );
+    let machine = boot_and_run_fdd_f(
+        &code,
+        Some((0, make_standard_2hd_disk(false))),
+        INT1BH_BUDGET,
+    );
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x40, "FDD diagnostic read");
+    assert_eq!(
+        state.memory.ram[DATA_BUFFER as usize], 0x00,
+        "Diagnostic read buffer stays zero (DMA transfer does not complete during INT)"
+    );
+}
 
 #[test]
 fn int1bh_fdd_diagnostic_read_vm() {
@@ -743,6 +912,29 @@ fn assert_fdd_read_single_sector(ram: &[u8; 0xA0000]) {
         "Second byte of sector 1 should be 0xA5 (got {:#04X})",
         ram[buf_start + 1]
     );
+}
+
+#[test]
+fn int1bh_fdd_read_single_sector_f() {
+    // AH=0x56: MF(bit6) + SEEK(bit4) + Read(0x06)
+    let code = make_int1bh_rw(
+        0x56,
+        DA_FDD_1MB_DRIVE0,
+        1024,
+        0,
+        0,
+        1,
+        3,
+        0x0000,
+        DATA_BUFFER as u16,
+    );
+    let machine = boot_and_run_fdd_f(
+        &code,
+        Some((0, make_standard_2hd_disk(false))),
+        INT1BH_BUDGET,
+    );
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x40, "FDD read single sector");
 }
 
 #[test]
@@ -831,6 +1023,28 @@ fn assert_fdd_read_multiple_sectors(ram: &[u8; 0xA0000]) {
 }
 
 #[test]
+fn int1bh_fdd_read_multiple_sectors_f() {
+    let code = make_int1bh_rw(
+        0x56,
+        DA_FDD_1MB_DRIVE0,
+        2048,
+        0,
+        0,
+        1,
+        3,
+        0x0000,
+        DATA_BUFFER as u16,
+    );
+    let machine = boot_and_run_fdd_f(
+        &code,
+        Some((0, make_standard_2hd_disk(false))),
+        INT1BH_BUDGET,
+    );
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x40, "FDD read multiple sectors");
+}
+
+#[test]
 fn int1bh_fdd_read_multiple_sectors_vm() {
     let code = make_int1bh_rw(
         0x56,
@@ -901,6 +1115,24 @@ fn int1bh_fdd_read_multiple_sectors_ra() {
 // ============================================================================
 
 #[test]
+fn int1bh_fdd_read_no_disk_f() {
+    let code = make_int1bh_rw(
+        0x56,
+        DA_FDD_1MB_DRIVE0,
+        1024,
+        0,
+        0,
+        1,
+        3,
+        0x0000,
+        DATA_BUFFER as u16,
+    );
+    let machine = boot_and_run_fdd_f(&code, None, INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x40, "FDD read no disk");
+}
+
+#[test]
 fn int1bh_fdd_read_no_disk_vm() {
     let code = make_int1bh_rw(
         0x56,
@@ -959,6 +1191,24 @@ fn int1bh_fdd_read_no_disk_ra() {
 // ============================================================================
 
 #[test]
+fn int1bh_fdd_read_invalid_da_f() {
+    let code = make_int1bh_rw(
+        0x56,
+        DA_INVALID,
+        1024,
+        0,
+        0,
+        1,
+        3,
+        0x0000,
+        DATA_BUFFER as u16,
+    );
+    let (machine, _) = boot_and_run_f(&code, &[], INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x40, "FDD read invalid DA");
+}
+
+#[test]
 fn int1bh_fdd_read_invalid_da_vm() {
     let code = make_int1bh_rw(
         0x56,
@@ -1015,6 +1265,29 @@ fn int1bh_fdd_read_invalid_da_ra() {
 // ============================================================================
 // §12.2 FDD Read - Sector Not Found (AH=0x76: MF+no-retry+SEEK+Read)
 // ============================================================================
+
+#[test]
+fn int1bh_fdd_read_sector_not_found_f() {
+    // Sector 10 does not exist on an 8-sector track. bit5=1 disables retry.
+    let code = make_int1bh_rw(
+        0x76,
+        DA_FDD_1MB_DRIVE0,
+        1024,
+        0,
+        0,
+        10,
+        3,
+        0x0000,
+        DATA_BUFFER as u16,
+    );
+    let machine = boot_and_run_fdd_f(
+        &code,
+        Some((0, make_standard_2hd_disk(false))),
+        INT1BH_BUDGET,
+    );
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x40, "FDD read sector not found");
+}
 
 #[test]
 fn int1bh_fdd_read_sector_not_found_vm() {
@@ -1115,6 +1388,18 @@ fn make_fdd_write_code() -> Vec<u8> {
 }
 
 #[test]
+fn int1bh_fdd_write_single_sector_f() {
+    let code = make_fdd_write_code();
+    let machine = boot_and_run_fdd_f(
+        &code,
+        Some((0, make_standard_2hd_disk(false))),
+        INT1BH_BUDGET,
+    );
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x40, "FDD write single sector");
+}
+
+#[test]
 fn int1bh_fdd_write_single_sector_vm() {
     let code = make_fdd_write_code();
     let machine = boot_and_run_fdd_vm(
@@ -1180,6 +1465,28 @@ fn int1bh_fdd_write_single_sector_ra() {
 // ============================================================================
 // §12.2 FDD Write - Write Protected
 // ============================================================================
+
+#[test]
+fn int1bh_fdd_write_protected_f() {
+    let code = make_int1bh_rw(
+        0x55,
+        DA_FDD_1MB_DRIVE0,
+        1024,
+        0,
+        0,
+        1,
+        3,
+        0x0000,
+        DATA_BUFFER as u16,
+    );
+    let machine = boot_and_run_fdd_f(
+        &code,
+        Some((0, make_standard_2hd_disk(true))),
+        INT1BH_BUDGET,
+    );
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x40, "FDD write protected");
+}
 
 #[test]
 fn int1bh_fdd_write_protected_vm() {
@@ -1250,6 +1557,28 @@ fn int1bh_fdd_write_protected_ra() {
 // ============================================================================
 // §12.2 FDD Verify (AH=0x51 - MF+SEEK+Verify)
 // ============================================================================
+
+#[test]
+fn int1bh_fdd_verify_f() {
+    let code = make_int1bh_rw(
+        0x51,
+        DA_FDD_1MB_DRIVE0,
+        1024,
+        0,
+        0,
+        1,
+        3,
+        0x0000,
+        DATA_BUFFER as u16,
+    );
+    let machine = boot_and_run_fdd_f(
+        &code,
+        Some((0, make_standard_2hd_disk(false))),
+        INT1BH_BUDGET,
+    );
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x40, "FDD verify");
+}
 
 #[test]
 fn int1bh_fdd_verify_vm() {
@@ -1341,6 +1670,18 @@ fn make_int1bh_read_id(al: u8, cylinder: u8, head: u8) -> Vec<u8> {
 
 fn assert_fdd_read_id(ram: &[u8; 0xA0000]) {
     assert_result_ah(ram, 0x00, "FDD read ID");
+}
+
+#[test]
+fn int1bh_fdd_read_id_f() {
+    let code = make_int1bh_read_id(DA_FDD_1MB_DRIVE0, 0, 0);
+    let machine = boot_and_run_fdd_f(
+        &code,
+        Some((0, make_standard_2hd_disk(false))),
+        INT1BH_BUDGET,
+    );
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x40, "FDD read ID");
 }
 
 #[test]
@@ -1601,6 +1942,20 @@ fn int1bh_fdd_write_single_head_without_mt_vx() {
 // All BIOSes detect the SASI expansion ROM at 0xD7000 and dispatch to it.
 
 #[test]
+fn int1bh_sasi_initialize_f() {
+    let code = make_int1bh_simple(0x03, DA_SASI_CHS_DRIVE0);
+    let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x00, "SASI initialize");
+    let disk_equip = read_ram_u16(&state.memory.ram, DISK_EQUIP);
+    assert_ne!(
+        disk_equip & 0x0100,
+        0,
+        "DISK_EQUIP bit 8 should be set for SASI drive 0 (got {disk_equip:#06X})"
+    );
+}
+
+#[test]
 fn int1bh_sasi_initialize_vm() {
     let code = make_int1bh_simple(0x03, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_vm(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
@@ -1647,6 +2002,14 @@ fn int1bh_sasi_initialize_ra() {
 // ============================================================================
 
 #[test]
+fn int1bh_sasi_verify_f() {
+    let code = make_int1bh_simple(0x01, DA_SASI_CHS_DRIVE0);
+    let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x00, "SASI verify");
+}
+
+#[test]
 fn int1bh_sasi_verify_vm() {
     let code = make_int1bh_simple(0x01, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_vm(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
@@ -1673,6 +2036,15 @@ fn int1bh_sasi_verify_ra() {
 // ============================================================================
 // §12.3 SASI Sense Legacy (AH=0x04)
 // ============================================================================
+
+#[test]
+fn int1bh_sasi_sense_f() {
+    let code = make_int1bh_simple(0x04, DA_SASI_CHS_DRIVE0);
+    let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    // 5 MB drive = type index 0, legacy sense code 0x00.
+    assert_result_ah(&state.memory.ram, 0x00, "SASI sense legacy");
+}
 
 #[test]
 fn int1bh_sasi_sense_vm() {
@@ -1720,6 +2092,14 @@ fn assert_sasi_sense_new(ram: &[u8; 0xA0000]) {
 }
 
 #[test]
+fn int1bh_sasi_sense_new_f() {
+    let code = make_int1bh_sasi_sense_new(DA_SASI_CHS_DRIVE0);
+    let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_sasi_sense_new(&state.memory.ram);
+}
+
+#[test]
 fn int1bh_sasi_sense_new_vm() {
     let code = make_int1bh_sasi_sense_new(DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_vm(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
@@ -1746,6 +2126,15 @@ fn int1bh_sasi_sense_new_ra() {
 // ============================================================================
 // §12.3 SASI Sense - No Drive
 // ============================================================================
+
+#[test]
+fn int1bh_sasi_sense_no_drive_f() {
+    // Drive 1 (0x81) not present, only drive 0 inserted.
+    let code = make_int1bh_simple(0x04, 0x81);
+    let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x60, "SASI sense no drive");
+}
 
 #[test]
 fn int1bh_sasi_sense_no_drive_vm() {
@@ -1791,6 +2180,23 @@ fn assert_sasi_read_chs(ram: &[u8; 0xA0000]) {
         "LBA 0 byte 1 should be 0xF4 (HLT, got {:#04X})",
         ram[buf_start + 1]
     );
+}
+
+#[test]
+fn int1bh_sasi_read_chs_f() {
+    // CHS: C=0, H=0, S=0 -> LBA 0. Read 256 bytes.
+    let code = make_int1bh_sasi_rw(
+        0x06,
+        DA_SASI_CHS_DRIVE0,
+        256,
+        0x0000, // CX: cylinder = 0
+        0x0000, // DX: DH=head=0, DL=sector=0
+        0x0000,
+        DATA_BUFFER as u16,
+    );
+    let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_sasi_read_chs(&state.memory.ram);
 }
 
 #[test]
@@ -1864,6 +2270,23 @@ fn assert_sasi_read_lba(ram: &[u8; 0xA0000]) {
 }
 
 #[test]
+fn int1bh_sasi_read_lba_f() {
+    // LBA mode: AL=0x00, CX=LBA low word (42), DL=LBA high byte (0).
+    let code = make_int1bh_sasi_rw(
+        0x06,
+        DA_SASI_LBA_DRIVE0,
+        256,
+        42,     // CX: LBA low word
+        0x0000, // DX: DL=LBA high byte=0, DH=0
+        0x0000,
+        DATA_BUFFER as u16,
+    );
+    let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_sasi_read_lba(&state.memory.ram);
+}
+
+#[test]
 fn int1bh_sasi_read_lba_vm() {
     // LBA mode: AL=0x00, CX=LBA low word (42), DL=LBA high byte (0).
     let code = make_int1bh_sasi_rw(
@@ -1915,6 +2338,15 @@ fn int1bh_sasi_read_lba_ra() {
 // ============================================================================
 // §12.3 SASI Read - No Drive
 // ============================================================================
+
+#[test]
+fn int1bh_sasi_read_no_drive_f() {
+    // Drive 1 (0x81) not present.
+    let code = make_int1bh_sasi_rw(0x06, 0x81, 256, 0, 0, 0x0000, DATA_BUFFER as u16);
+    let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x60, "SASI read no drive");
+}
 
 #[test]
 fn int1bh_sasi_read_no_drive_vm() {
@@ -2029,6 +2461,14 @@ fn assert_sasi_write_and_readback(ram: &[u8; 0xA0000]) {
 }
 
 #[test]
+fn int1bh_sasi_write_chs_f() {
+    let code = make_sasi_write_and_readback_code();
+    let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_sasi_write_and_readback(&state.memory.ram);
+}
+
+#[test]
 fn int1bh_sasi_write_chs_vm() {
     let code = make_sasi_write_and_readback_code();
     let machine = boot_and_run_sasi_vm(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
@@ -2055,6 +2495,14 @@ fn int1bh_sasi_write_chs_ra() {
 // ============================================================================
 // §12.3 SASI Retract (AH=0x07) - No-op
 // ============================================================================
+
+#[test]
+fn int1bh_sasi_retract_f() {
+    let code = make_int1bh_simple(0x07, DA_SASI_CHS_DRIVE0);
+    let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x00, "SASI retract");
+}
 
 #[test]
 fn int1bh_sasi_retract_vm() {
@@ -2085,6 +2533,14 @@ fn int1bh_sasi_retract_ra() {
 // ============================================================================
 
 #[test]
+fn int1bh_sasi_mode_set_f() {
+    let code = make_int1bh_simple(0x0E, DA_SASI_CHS_DRIVE0);
+    let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x00, "SASI mode set");
+}
+
+#[test]
 fn int1bh_sasi_mode_set_vm() {
     let code = make_int1bh_simple(0x0E, DA_SASI_CHS_DRIVE0);
     let machine = boot_and_run_sasi_vm(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
@@ -2111,6 +2567,23 @@ fn int1bh_sasi_mode_set_ra() {
 // ============================================================================
 // §12.3 SASI Format (AH=0x0D)
 // ============================================================================
+
+#[test]
+fn int1bh_sasi_format_f() {
+    // Format track at C=1, H=0, S=0.
+    let code = make_int1bh_sasi_rw(
+        0x0D,
+        DA_SASI_CHS_DRIVE0,
+        0,      // BX not used for format
+        0x0001, // CX: cylinder=1
+        0x0000, // DX: head=0, sector=0
+        0x0000,
+        0x0000,
+    );
+    let machine = boot_and_run_sasi_f(&code, Some((0, make_sasi_test_drive())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x00, "SASI format");
+}
 
 #[test]
 fn int1bh_sasi_format_vm() {
@@ -2154,6 +2627,15 @@ fn int1bh_sasi_format_ra() {
 const DA_FDD_640KB_DRIVE0: u8 = 0x70;
 
 #[test]
+fn int1bh_fdd_640kb_sense_f() {
+    let disk = make_standard_2hd_disk(false);
+    let code = make_int1bh_simple(0x04, DA_FDD_640KB_DRIVE0);
+    let machine = boot_and_run_fdd_f(&code, Some((0, disk)), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x01, "DA=0x01 (640KB) sense");
+}
+
+#[test]
 fn int1bh_fdd_640kb_sense_vm() {
     let disk = make_standard_2hd_disk(false);
     let code = make_int1bh_simple(0x04, DA_FDD_640KB_DRIVE0);
@@ -2183,6 +2665,19 @@ fn int1bh_fdd_640kb_sense_ra() {
 // ============================================================================
 // §12.1 FDD Initialize (AH=0x03) - DISK_EQUIP Update
 // ============================================================================
+
+#[test]
+fn int1bh_fdd_init_updates_disk_equip_1mb_f() {
+    let code = make_int1bh_simple(0x03, DA_FDD_1MB_DRIVE0);
+    let (machine, _) = boot_and_run_f(&code, &[], INT1BH_BUDGET);
+    let state = machine.save_state();
+    let disk_equip = read_ram_u16(&state.memory.ram, DISK_EQUIP);
+    assert_eq!(
+        disk_equip & 0x000F,
+        0,
+        "AH=03h with 1MB DA should leave DISK_EQUIP low nibble clear (got {disk_equip:#06X})"
+    );
+}
 
 #[test]
 fn int1bh_fdd_init_updates_disk_equip_1mb_vm() {
@@ -2297,6 +2792,13 @@ fn assert_seek_then_read(ram: &[u8; 0xA0000]) {
 }
 
 #[test]
+fn int1bh_fdd_seek_then_read_uses_stored_cylinder_f() {
+    let code = make_seek_then_read_code(1, 1, DA_FDD_1MB_DRIVE0);
+    let machine = boot_and_run_fdd_f(&code, Some((0, make_seek_test_disk())), INT1BH_BUDGET);
+    assert_result_ah(&machine.save_state().memory.ram, 0x40, "SEEK then READ");
+}
+
+#[test]
 fn int1bh_fdd_seek_then_read_uses_stored_cylinder_vm() {
     let code = make_seek_then_read_code(1, 1, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_vm(&code, Some((0, make_seek_test_disk())), INT1BH_BUDGET);
@@ -2333,6 +2835,14 @@ fn make_read_with_seek_code(cylinder: u8, da: u8) -> Vec<u8> {
         0xA3, (RESULT & 0xFF) as u8, (RESULT >> 8) as u8,                   // MOV [RESULT], AX
         0xF4,                                                               // HLT
     ]
+}
+
+#[test]
+fn int1bh_fdd_read_with_seek_reads_correct_track_f() {
+    let code = make_read_with_seek_code(1, DA_FDD_1MB_DRIVE0);
+    let machine = boot_and_run_fdd_f(&code, Some((0, make_seek_test_disk())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x40, "READ with seek");
 }
 
 #[test]
@@ -2391,6 +2901,30 @@ fn make_seek_per_drive_code() -> Vec<u8> {
         0xA3, (RESULT & 0xFF) as u8, (RESULT >> 8) as u8,             // MOV [RESULT], AX
         0xF4,                                                          // HLT
     ]
+}
+
+#[test]
+fn int1bh_fdd_seek_per_drive_isolation_f() {
+    let mut machine = create_machine_f();
+    boot_to_halt!(machine);
+    machine.bus.eject_floppy(0);
+    machine.bus.insert_floppy(0, make_seek_test_disk(), None);
+    machine.bus.insert_floppy(1, make_seek_test_disk(), None);
+
+    let code = make_seek_per_drive_code();
+    write_bytes(&mut machine.bus, TEST_CODE, &code);
+    machine.cpu.load_state(&{
+        let mut s = cpu::I8086State {
+            ip: TEST_CODE as u16,
+            ..Default::default()
+        };
+        s.set_sp(0x4000);
+        s
+    });
+    machine.run_for(INT1BH_BUDGET);
+    let state = machine.save_state();
+
+    assert_result_ah(&state.memory.ram, 0x40, "Drive isolation read");
 }
 
 #[test]
@@ -2491,6 +3025,14 @@ fn make_seek_then_write_readback_code( write_cyl: u8) -> Vec<u8> {
         0x89, 0x06, 0x02, 0x06,                                        // MOV [RESULT+2], AX
         0xF4,                                                           // HLT
     ]
+}
+
+#[test]
+fn int1bh_fdd_write_uses_seek_cylinder_f() {
+    let code = make_seek_then_write_readback_code(1);
+    let machine = boot_and_run_fdd_f(&code, Some((0, make_seek_test_disk())), INT1BH_BUDGET);
+    let state = machine.save_state();
+    assert_result_ah(&state.memory.ram, 0x40, "WRITE with seek cylinder");
 }
 
 #[test]

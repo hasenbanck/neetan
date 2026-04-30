@@ -27,6 +27,7 @@ BIOS_BASE_OFF   equ 0x15800     ; Offset within ROM where BIOS code starts (phys
 VEC_ITF_ENTRY   equ 0xF0        ; ITF phase: hardware init, then bank switch to BIOS
 VEC_BIOS_INIT   equ 0xF1        ; BIOS init: memory clear, vector setup, BDA, boot
 VEC_BOOTSTRAP   equ 0xF2        ; Bootstrap: load and execute boot sector
+VEC_N88_BASIC   equ 0xF3        ; N88-BASIC ROM entry was invoked
 
 ; --- HLE interrupt stub macros ---
 ;
@@ -41,6 +42,18 @@ VEC_BOOTSTRAP   equ 0xF2        ; Bootstrap: load and execute boot sector
     mov  al, %1
     out  dx, al
     iret
+%endmacro
+
+%macro hle_entry_halt 1         ; %1 = pseudo-vector number
+    push ax
+    push dx
+    mov  dx, TRAP_PORT
+    mov  al, %1
+    out  dx, al
+    cli
+%%halt:
+    hlt
+    jmp  %%halt
 %endmacro
 
 ; Chainable variant: normal HLE stub padded to 25 bytes, followed by a
@@ -74,14 +87,24 @@ VEC_BOOTSTRAP   equ 0xF2        ; Bootstrap: load and execute boot sector
 %endmacro
 
 ; ===========================================================================
-; Section 1: NEC copyright string at offset 0x0DD8 (physical 0xE8DD8)
+; Section 0: HLE ROM entry traps
 ; ===========================================================================
-; Software checks for this marker to identify the machine.
+; BASIC boot sectors jump to E800:0002 for the N88-BASIC ROM cold entry.
+; HLE BIOS cannot run N88-BASIC programs, so trap that entry explicitly.
+
+basic_cold_entry:
+    jmp short basic_entry
+
+basic_entry:
+    hle_entry_halt VEC_N88_BASIC
+
+; ===========================================================================
+; Section 1: model-specific ROM data area
+; ===========================================================================
+; The Rust HLE BIOS setup installs the NEC copyright marker here. Its offset
+; differs between BIOS generations.
 
     times 0x0DD8 - ($ - $$) db 0xFF
-
-nec_copyright:
-    db "Copyright (C) 1983 by NEC Corporation"
 
 ; ===========================================================================
 ; Section 2: BIOS code region at offset 0x15800 (physical 0xFD800)

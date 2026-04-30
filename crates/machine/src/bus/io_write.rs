@@ -167,9 +167,9 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x77 | 0x3FDF => self.write_pit_control(value),
 
             // GRCG mode register - resets tile counter.
-            0x7C => self.grcg.write_mode(value),
+            0x7C if self.machine_model.has_grcg() => self.grcg.write_mode(value),
             // GRCG tile register - cycles through planes 0-3.
-            0x7E => self.grcg.write_tile(value),
+            0x7E if self.machine_model.has_grcg() => self.grcg.write_tile(value),
 
             // SASI hard disk controller
             0x80 if self.machine_model.has_sasi() => {
@@ -1249,7 +1249,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
 #[cfg(test)]
 mod tests {
-    use common::{Bus, MachineModel};
+    use common::{Bus, CpuMode, MachineModel};
     use device::upd7220_gdc::{DOT_CLOCK_200LINE, DOT_CLOCK_400LINE, VramOp};
 
     use crate::bus::{NoTracing, Pc9801Bus};
@@ -1261,7 +1261,7 @@ mod tests {
 
     #[test]
     fn mode2_and_line_count_update_both_gdc_dot_clocks() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
 
         // Boot state has display_line_count=0x01 (400-line dot clock).
         assert_eq!(bus.gdc_master.state.dot_clock_hz, DOT_CLOCK_400LINE);
@@ -1290,7 +1290,7 @@ mod tests {
 
     #[test]
     fn gdc_grcg_tdw_ignores_pattern_off_writes() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
 
         bus.grcg.write_mode(0x80);
         bus.grcg.state.tile = [0x5A, 0xA5, 0x3C, 0xC3];
@@ -1321,7 +1321,7 @@ mod tests {
 
     #[test]
     fn gdc_grcg_rmw_uses_active_mask_bits_only() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
 
         bus.grcg.write_mode(0xC0);
         bus.grcg.state.tile = [0xFF, 0x00, 0x00, 0x00];
@@ -1354,7 +1354,7 @@ mod tests {
 
     #[test]
     fn gdc_grcg_tdw_writes_all_planes_regardless_of_plane_enable() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
         // TDW mode with only planes 0,2 enabled (bits 1,3 set = planes 1,3 disabled).
         bus.grcg.write_mode(0x8A);
         bus.grcg.state.tile = [0x11, 0x22, 0x33, 0x44];
@@ -1374,7 +1374,7 @@ mod tests {
 
     #[test]
     fn gdc_egc_write_does_not_charge_cpu_wait() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
         enable_egc_mode(&mut bus);
         bus.grcg.write_mode(0x80);
 
@@ -1393,7 +1393,7 @@ mod tests {
 
     #[test]
     fn egc_io_write_word_sets_register_atomically() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
         enable_egc_mode(&mut bus);
         bus.grcg.write_mode(0x80); // activate GRCG
 
@@ -1406,7 +1406,7 @@ mod tests {
 
     #[test]
     fn egc_io_write_word_noop_when_egc_inactive() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
         let old_sft = bus.egc.state.sft;
         bus.io_write_word(0x04AC, 0x1033);
         assert_eq!(bus.egc.state.sft, old_sft);
@@ -1414,7 +1414,7 @@ mod tests {
 
     #[test]
     fn port_053d_shadow_ram_control() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.memory.set_shadow_control(0x00);
         assert_eq!(bus.memory.state.shadow_control, 0x00);
         bus.io_write_byte(0x053D, 0x82);
@@ -1423,7 +1423,7 @@ mod tests {
 
     #[test]
     fn port_053d_shadow_ram_boot_sequence() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.memory.set_shadow_control(0x00);
         let mut rom = vec![0xFFu8; 0x18000];
         rom[0] = 0xAA;
@@ -1454,7 +1454,7 @@ mod tests {
 
     #[test]
     fn port_043b_readback() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         assert_eq!(bus.hole_15m_control, 0x00);
         bus.io_write_byte(0x043B, 0x55);
         assert_eq!(bus.hole_15m_control, 0x55);
@@ -1463,7 +1463,7 @@ mod tests {
 
     #[test]
     fn ram_window_blocked_when_bios_access_disabled() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         // Shadow RAM read mode (bit 1) so we can read back writes to the BIOS range.
         bus.memory.set_shadow_control(0x02);
         // Map RAM window to E0000-FFFFF range (window value 0x0E -> physical base 0xE0000).
@@ -1487,7 +1487,7 @@ mod tests {
 
     #[test]
     fn port_00f6_a20_control() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.a20_enabled = false;
         // 0x02 = release A20 mask.
         bus.io_write_byte(0xF6, 0x02);
@@ -1503,7 +1503,7 @@ mod tests {
 
     #[test]
     fn port_00f2_a20_status_readback() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         // After reset A20 is masked: bit 0 = 1.
         assert_eq!(bus.io_read_byte(0xF2) & 1, 1, "A20 masked: bit 0 must be 1");
         // Write anything to 0xF2 to unmask A20.
@@ -1527,7 +1527,7 @@ mod tests {
 
     #[test]
     fn port_0567_readback() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         assert_eq!(bus.io_read_byte(0x0567), 0xE0);
         bus.io_write_byte(0x0567, 0x42);
         assert_eq!(bus.io_read_byte(0x0567), 0x42);
@@ -1535,7 +1535,7 @@ mod tests {
 
     #[test]
     fn port_a460_reports_86_id_and_mask_controls_opna() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.install_soundboard_86(None, true);
 
         assert_eq!(bus.io_read_byte(0xA460), 0x40);
@@ -1554,7 +1554,7 @@ mod tests {
 
     #[test]
     fn soundboard_86_adpcm_ram_disabled() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.install_soundboard_86(None, false);
 
         // Enable extended mode.
@@ -1630,7 +1630,7 @@ mod tests {
 
     #[test]
     fn port_f0_cold_reset_preserves_shut_bits() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
         // Set SHUT0=1 (bit 7) and SHUT1=1 (bit 5) via PPI control port.
         bus.io_write_byte(0x37, 0x0F); // set SHUT0
         bus.io_write_byte(0x37, 0x0B); // set SHUT1
@@ -1658,7 +1658,7 @@ mod tests {
 
     #[test]
     fn port_f0_warm_reset_captures_context() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
         // Clear SHUT0 (bit 7) - leaves warm-reset mode.
         bus.io_write_byte(0x37, 0x0E); // clear SHUT0
         assert_eq!(
@@ -1692,7 +1692,7 @@ mod tests {
 
     #[test]
     fn port_f0_shutdown_sets_flag() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
         // Set SHUT0=1 (bit 7), clear SHUT1 (bit 5) -> shutdown.
         bus.io_write_byte(0x37, 0x0F); // set SHUT0
         bus.io_write_byte(0x37, 0x0A); // clear SHUT1
@@ -1712,7 +1712,7 @@ mod tests {
 
     #[test]
     fn pcm86_mute_port_a66e_read_write() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.install_soundboard_86(None, true);
 
         // Board starts unmuted.
@@ -1733,7 +1733,7 @@ mod tests {
 
     #[test]
     fn pcm86_fifo_status_full_and_empty() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.install_soundboard_86(None, true);
 
         // Initially FIFO is empty - bit 6 should be set.
@@ -1760,7 +1760,7 @@ mod tests {
 
     #[test]
     fn pcm86_fifo_reset_clears_buffer() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.install_soundboard_86(None, true);
 
         // Write some data.
@@ -1783,7 +1783,7 @@ mod tests {
 
     #[test]
     fn pcm86_volume_register_stores_all_lines() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.install_soundboard_86(None, true);
 
         // Write volume to line 5 (PCM direct, bits 7-5 = 101).
@@ -1800,7 +1800,7 @@ mod tests {
 
     #[test]
     fn pcm86_irq_flag_set_when_buffer_below_threshold() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.install_soundboard_86(None, true);
 
         // Advance past data_write_irq_wait so IRQ reporting is not delayed.
@@ -1840,7 +1840,7 @@ mod tests {
 
     #[test]
     fn pcm86_buffer_overflow_discards_oldest() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.install_soundboard_86(None, true);
 
         // Write exactly 64 KB (the physical buffer size).
@@ -1861,7 +1861,7 @@ mod tests {
 
     #[test]
     fn pcm86_dactrl_modes_and_fifo_threshold_dual_purpose() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.install_soundboard_86(None, true);
 
         // Write dactrl when IRQ is disabled (fifo bit 5 = 0).
@@ -1883,7 +1883,7 @@ mod tests {
 
     #[test]
     fn sb16_dsp_reset_and_version_via_ports() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.install_sound_blaster_16();
 
         // DSP reset: write 1 then 0 to port base+0x2600
@@ -1903,7 +1903,7 @@ mod tests {
 
     #[test]
     fn sb16_mixer_write_read_via_ports() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.install_sound_blaster_16();
 
         // Write mixer address (base+0x2400), then data (base+0x2500)
@@ -1917,7 +1917,7 @@ mod tests {
 
     #[test]
     fn sb16_opl3_status_read() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.install_sound_blaster_16();
 
         // Read OPL3 status (base+0x2000) - should not panic and return a value
@@ -1928,7 +1928,7 @@ mod tests {
 
     #[test]
     fn sb16_ports_do_not_conflict_with_86_board() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, 48000);
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.install_soundboard_86(None, true);
         bus.install_sound_blaster_16();
 

@@ -1,5 +1,5 @@
 use common::{
-    CpuType, DisplaySnapshotUpload, EventKind, MachineModel, PegcSnapshotUpload, Scheduler,
+    CpuMode, CpuType, DisplaySnapshotUpload, EventKind, MachineModel, PegcSnapshotUpload, Scheduler,
 };
 use device::{
     beeper::Beeper,
@@ -29,13 +29,12 @@ use device::{
 use crate::{
     ClockConfig, Pc9801Bus, Tracing,
     bus::{
-        BootDevice, DMA_ACCESS_CTRL_20BIT, GRCG_WAIT_CYCLES, MOUSE_TIMER_DEFAULT_SETTING,
-        MOUSE_TIMER_IRQ_LINE, TRAM_WAIT_CYCLES, VRAM_WAIT_CYCLES, default_local_time,
+        BootDevice, DMA_ACCESS_CTRL_20BIT, GRCG_WAIT_CYCLES, KEYBOARD_ROM_OFFSET_F,
+        KEYBOARD_ROM_OFFSET_VM, MOUSE_TIMER_DEFAULT_SETTING, MOUSE_TIMER_IRQ_LINE,
+        TRAM_WAIT_CYCLES, VRAM_WAIT_CYCLES, default_local_time,
     },
     memory::Pc9801Memory,
 };
-
-const KEYBOARD_ROM_OFFSET: usize = 0x0B28;
 
 #[rustfmt::skip]
 const KEYBOARD_TABLES: [[u8; 0x60]; 8] = [
@@ -162,13 +161,17 @@ const KEYBOARD_TABLES: [[u8; 0x60]; 8] = [
 ];
 
 impl<T: Tracing> Pc9801Bus<T> {
-    /// Creates a new bus configured for the given machine model.
-    pub fn new(machine_model: MachineModel, sample_rate: u32) -> Self
+    /// Creates a new bus configured for the given machine model and CPU mode.
+    ///
+    /// `cpu_mode` selects between Low and High CPU clock for machines that
+    /// support speed switching (currently only the PC-9801F). Other models
+    /// ignore this value.
+    pub fn new(machine_model: MachineModel, cpu_mode: CpuMode, sample_rate: u32) -> Self
     where
         T: Default,
     {
         let clocks = ClockConfig {
-            cpu_clock_hz: machine_model.cpu_clock_hz(),
+            cpu_clock_hz: machine_model.cpu_clock_hz(cpu_mode),
             pit_clock_hz: machine_model.pit_clock_hz(),
             sample_rate,
         };
@@ -189,6 +192,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             gdc_master: Gdc::new_master(clocks.cpu_clock_hz),
             gdc_slave: Gdc::new_slave(clocks.cpu_clock_hz),
             floppy: FloppyController::new(),
+            fdd320_ppi: device::fdd320_ppi::Fdd320Ppi::new(),
             system_ppi: I8255SystemPpi::new(is_8mhz_lineage),
             printer: Printer::new(),
             display_control: DisplayControl::new(),
@@ -228,7 +232,9 @@ impl<T: Tracing> Pc9801Bus<T> {
             pegc_vsync_snapshot: Box::new(PegcSnapshotUpload::default()),
             pegc_mode_active: false,
             dma_access_ctrl: match machine_model {
-                MachineModel::PC9801VM | MachineModel::PC9801VX => DMA_ACCESS_CTRL_20BIT,
+                MachineModel::PC9801F | MachineModel::PC9801VM | MachineModel::PC9801VX => {
+                    DMA_ACCESS_CTRL_20BIT
+                }
                 MachineModel::PC9801RA | MachineModel::PC9821AS | MachineModel::PC9821AP => 0x00,
             },
             vram_ems_bank: 0x00,
@@ -265,8 +271,12 @@ impl<T: Tracing> Pc9801Bus<T> {
             xms_hmamin_kb: 0,
         };
 
-        if machine_model.has_cg_ram() {
-            bus.set_cg_ram(true);
+        match machine_model {
+            MachineModel::PC9801F | MachineModel::PC9801VM => {}
+            MachineModel::PC9801VX
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => bus.set_cg_ram(true),
         }
 
         // Emulate a machine with the analog 16-color graphics extension installed.
@@ -278,8 +288,14 @@ impl<T: Tracing> Pc9801Bus<T> {
         // Schedule the first VSYNC event after one display period.
         bus.scheduler
             .schedule(EventKind::GdcVsync, bus.gdc_master.state.display_period);
-        bus.system_ppi
-            .set_cpu_mode_bit(machine_model == MachineModel::PC9801VM);
+        bus.system_ppi.set_cpu_mode_bit(match machine_model {
+            MachineModel::PC9801F => false,
+            MachineModel::PC9801VM => true,
+            MachineModel::PC9801VX
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => false,
+        });
         bus.update_next_event_cycle();
         bus.initialize_post_boot_state();
         bus
@@ -327,28 +343,35 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// Populates BDA fields based on machine model and clock lineage.
     fn populate_bda(&mut self) {
         let cpu_type = self.machine_model.cpu_type();
-        // TODO: Most likely wrong for the 8086.
-        let is_v30 = matches!(cpu_type, CpuType::I8086 | CpuType::V30);
-
         // MSW3 from text VRAM memory switch area (stride 4, at offset 0x3FEA).
         let msw3 = self.memory.state.text_vram[0x3FEA];
 
-        // BIOS_FLAG0 (0x0500): 0x03 = base | 1MB FDD.
-        self.memory.state.ram[0x0500] = 0x03;
+        // BIOS_FLAG0 (0x0500): per undoc98/memsys.txt:
+        //   bit 0: machine identification (0 = PC-9801 F/E/M lineup, 1 = others)
+        //   bit 1: FDD generation (0 = 640KB, 1 = 1MB)
+        //   bit 5: keyboard buffer overflow beep (0 = beep, 1 = silent)
+        self.memory.state.ram[0x0500] = match self.machine_model {
+            MachineModel::PC9801F => 0x20,
+            MachineModel::PC9801VM
+            | MachineModel::PC9801VX
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => 0x03,
+        };
 
         // BIOS_FLAG1 (0x0501):
         //   bit 7 = 1 if 8MHz lineage
         //   bit 6 = 1 if V30 CPU
         //   bit 5 = 1 (always set)
         //   bits 0-2 = real-mode memory size from MSW3 (128KB units above base 128KB)
-        let bios_flag1 = 0x20u8
-            | if self.machine_model.is_8mhz_pit_lineage() {
-                0x80
-            } else {
-                0x00
+        let bios_flag1 = match self.machine_model {
+            MachineModel::PC9801F => 0xA0 | (msw3 & 0x07),
+            MachineModel::PC9801VM => 0x60 | (msw3 & 0x07),
+            MachineModel::PC9801VX => 0x20 | (msw3 & 0x07),
+            MachineModel::PC9801RA | MachineModel::PC9821AS | MachineModel::PC9821AP => {
+                0xA0 | (msw3 & 0x07)
             }
-            | if is_v30 { 0x40 } else { 0x00 }
-            | (msw3 & 0x07);
+        };
         self.memory.state.ram[0x0501] = bios_flag1;
 
         // BIOS_FLAG2 (0x0400): per undoc98/memsys.txt:
@@ -361,21 +384,22 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.memory.state.ram[0x0400] = 0x00;
 
         // SYS_TYPE (0x0480): CPU type + hardware detection flags.
-        //   bits 0-1: CPU type (V30=0x00, I286=0x01, I386=0x03)
+        //   bits 0-1: CPU type (8086/V30=0x00, I286=0x01, I386=0x03)
         //   bit 3: dual-use FDD present
         //   bit 6: EGC / protected mode test passed
         //   bit 7: IDE hard disk controller present
         let sys_type = match cpu_type {
-            // TODO: Most likely wrong for the 8086.
             CpuType::I8086 | CpuType::V30 => 0x00,
             CpuType::I286 => 0x01,
             CpuType::I386 | CpuType::I486DX => 0x4B,
         };
         let sys_type = sys_type
-            | if self.machine_model.has_ide() {
-                0x80
-            } else {
-                0x00
+            | match self.machine_model {
+                MachineModel::PC9801F
+                | MachineModel::PC9801VM
+                | MachineModel::PC9801VX
+                | MachineModel::PC9801RA => 0x00,
+                MachineModel::PC9821AS | MachineModel::PC9821AP => 0x80,
             };
         self.memory.state.ram[0x0480] = sys_type;
 
@@ -398,32 +422,64 @@ impl<T: Tracing> Pc9801Bus<T> {
             CpuType::I386 | CpuType::I486DX => 0x20,
         };
 
-        // F2HD_MODE (0x0493): all drives 2HD.
-        self.memory.state.ram[0x0493] = 0xFF;
+        // F2HD_MODE (0x0493): all drives 2HD on later machines.
+        self.memory.state.ram[0x0493] = match self.machine_model {
+            MachineModel::PC9801F => 0x00,
+            MachineModel::PC9801VM
+            | MachineModel::PC9801VX
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => 0xFF,
+        };
 
-        // F2DD_MODE (0x05CA): all drives normal density.
-        self.memory.state.ram[0x05CA] = 0xFF;
+        // F2DD_MODE (0x05CA): all drives normal density on later machines.
+        self.memory.state.ram[0x05CA] = match self.machine_model {
+            MachineModel::PC9801F => 0x00,
+            MachineModel::PC9801VM
+            | MachineModel::PC9801VX
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => 0xFF,
+        };
 
         // F2DD_POINTER (0x05CC) / F2HD_POINTER (0x05F8): far pointers to format
-        // tables in ROM. The offsets differ between BIOS generations (RA vs others).
-        let (f2hd_off, f2dd_off): (u16, u16) = match self.machine_model {
-            MachineModel::PC9801RA | MachineModel::PC9821AS | MachineModel::PC9821AP => {
-                (0x1AAF, 0x1AD7)
+        // tables in ROM. The offsets differ between BIOS generations.
+        match self.machine_model {
+            MachineModel::PC9801F => {
+                self.memory.state.ram[0x05CC..0x05D0].fill(0);
+                self.memory.state.ram[0x05F8..0x05FC].fill(0);
             }
-            MachineModel::PC9801VM | MachineModel::PC9801VX => (0x1AB4, 0x1ADC),
-        };
-        self.memory.state.ram[0x05CC..0x05D0].copy_from_slice(&[
-            f2dd_off as u8,
-            (f2dd_off >> 8) as u8,
-            0x80,
-            0xFD,
-        ]);
-        self.memory.state.ram[0x05F8..0x05FC].copy_from_slice(&[
-            f2hd_off as u8,
-            (f2hd_off >> 8) as u8,
-            0x80,
-            0xFD,
-        ]);
+            MachineModel::PC9801VM | MachineModel::PC9801VX => {
+                let (f2hd_off, f2dd_off): (u16, u16) = (0x1AB4, 0x1ADC);
+                self.memory.state.ram[0x05CC..0x05D0].copy_from_slice(&[
+                    f2dd_off as u8,
+                    (f2dd_off >> 8) as u8,
+                    0x80,
+                    0xFD,
+                ]);
+                self.memory.state.ram[0x05F8..0x05FC].copy_from_slice(&[
+                    f2hd_off as u8,
+                    (f2hd_off >> 8) as u8,
+                    0x80,
+                    0xFD,
+                ]);
+            }
+            MachineModel::PC9801RA | MachineModel::PC9821AS | MachineModel::PC9821AP => {
+                let (f2hd_off, f2dd_off): (u16, u16) = (0x1AAF, 0x1AD7);
+                self.memory.state.ram[0x05CC..0x05D0].copy_from_slice(&[
+                    f2dd_off as u8,
+                    (f2dd_off >> 8) as u8,
+                    0x80,
+                    0xFD,
+                ]);
+                self.memory.state.ram[0x05F8..0x05FC].copy_from_slice(&[
+                    f2hd_off as u8,
+                    (f2hd_off >> 8) as u8,
+                    0x80,
+                    0xFD,
+                ]);
+            }
+        }
 
         // CRT_RASTER (0x053B): raster count.
         self.memory.state.ram[0x053B] = 0x0F;
@@ -439,20 +495,41 @@ impl<T: Tracing> Pc9801Bus<T> {
         // PRXDUPD (0x054D): graphics mode / GRCG version.
         // Bit 4: EGC present. Bit 5: GDC 5 MHz capable (from DIP SW 2-8).
         let mut prxdupd: u8 = 0x00;
-        if self.machine_model.has_egc() {
-            prxdupd |= 0x50;
+        match self.machine_model {
+            MachineModel::PC9801F | MachineModel::PC9801VM => {}
+            MachineModel::PC9801VX
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => {
+                prxdupd |= 0x50;
+            }
         }
         if !gdc_2_5mhz {
             prxdupd |= 0x20;
         }
         self.memory.state.ram[0x054D] = prxdupd;
 
-        // DISK_EQUIP (0x055C): 2 built-in FDD drives present (drives 0 and 1).
-        self.memory.state.ram[0x055C] = 0x03;
+        // DISK_EQUIP (0x055C): 2 built-in 1MB FDD drives on later machines.
+        self.memory.state.ram[0x055C] = match self.machine_model {
+            MachineModel::PC9801F => 0x00,
+            MachineModel::PC9801VM
+            | MachineModel::PC9801VX
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => 0x03,
+        };
 
         // Keyboard shift table pointer -> ROM shift table at FD80:0B28.
-        self.memory.state.ram[0x0522] = 0x28; // KB_SHIFT_TBL low
-        self.memory.state.ram[0x0523] = 0x0B; // KB_SHIFT_TBL high
+        let keyboard_rom_offset = match self.machine_model {
+            MachineModel::PC9801F => KEYBOARD_ROM_OFFSET_F,
+            MachineModel::PC9801VM
+            | MachineModel::PC9801VX
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => KEYBOARD_ROM_OFFSET_VM,
+        };
+        self.memory.state.ram[0x0522] = keyboard_rom_offset as u8; // KB_SHIFT_TBL low
+        self.memory.state.ram[0x0523] = (keyboard_rom_offset >> 8) as u8; // KB_SHIFT_TBL high
 
         // Keyboard buffer pointers.
         self.memory.state.ram[0x0524] = 0x02; // KB_BUF_HEAD low
@@ -463,8 +540,8 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.memory.state.ram[0x0529] = 0x00; // KB_COUNT high
 
         // Keyboard code table pointer -> ROM code table at FD80:0B28.
-        self.memory.state.ram[0x05C6] = 0x28; // KB_CODE_OFF low
-        self.memory.state.ram[0x05C7] = 0x0B; // KB_CODE_OFF high
+        self.memory.state.ram[0x05C6] = keyboard_rom_offset as u8; // KB_CODE_OFF low
+        self.memory.state.ram[0x05C7] = (keyboard_rom_offset >> 8) as u8; // KB_CODE_OFF high
         self.memory.state.ram[0x05C8] = 0x80; // KB_CODE_SEG low
         self.memory.state.ram[0x05C9] = 0xFD; // KB_CODE_SEG high
 
@@ -479,8 +556,20 @@ impl<T: Tracing> Pc9801Bus<T> {
     pub(super) fn initialize_post_boot_state(&mut self) {
         // Load stub BIOS ROM, keyboard tables, and populate IVT.
         self.memory.load_stub_bios_rom();
-        self.memory
-            .install_keyboard_tables(&KEYBOARD_TABLES, KEYBOARD_ROM_OFFSET);
+        self.memory.install_nec_copyright(self.machine_model);
+        let keyboard_rom_offset = match self.machine_model {
+            MachineModel::PC9801F => KEYBOARD_ROM_OFFSET_F,
+            MachineModel::PC9801VM
+            | MachineModel::PC9801VX
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => KEYBOARD_ROM_OFFSET_VM,
+        };
+        self.memory.install_keyboard_tables(
+            &KEYBOARD_TABLES,
+            keyboard_rom_offset,
+            self.machine_model,
+        );
         self.memory.install_disk_format_tables(self.machine_model);
         self.populate_ivt_from_stub_bios();
 
@@ -491,12 +580,21 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.pic.state.chips[0].irr = 0;
         self.pic.state.chips[0].write_icw = 0;
         self.pic.state.chips[1].icw = [0x11, 0x10, 0x07, 0x09];
-        self.pic.state.chips[1].imr = 0xF7;
+        self.pic.state.chips[1].imr = match self.machine_model {
+            MachineModel::PC9801F => 0xFD,
+            MachineModel::PC9801VM
+            | MachineModel::PC9801VX
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => 0xF7,
+        };
         self.pic.state.chips[1].isr = 0;
         self.pic.state.chips[1].irr = 0;
         self.pic.state.chips[1].write_icw = 0;
         match self.machine_model {
-            MachineModel::PC9801VM => self.pic.state.chips[1].ocw3 = 0x0B,
+            MachineModel::PC9801F | MachineModel::PC9801VM => {
+                self.pic.state.chips[1].ocw3 = 0x0B;
+            }
             MachineModel::PC9801RA | MachineModel::PC9821AS | MachineModel::PC9821AP => {
                 self.pic.state.chips[0].ocw3 = 0x0B;
             }
@@ -522,7 +620,19 @@ impl<T: Tracing> Pc9801Bus<T> {
             self.clocks.pit_clock_hz,
             self.current_cycle,
         );
-        self.pit.state.channels[1].ctrl = 0x36;
+        match self.machine_model {
+            MachineModel::PC9801F => {
+                self.pit.state.channels[1].ctrl = 0x14;
+                self.pit.state.channels[1].value = 0x0039;
+            }
+            MachineModel::PC9801VM
+            | MachineModel::PC9801VX
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => {
+                self.pit.state.channels[1].ctrl = 0x36;
+            }
+        }
         self.pit.state.channels[2].ctrl = 0x76;
         self.pit.state.channels[2].value = 0;
 
@@ -538,7 +648,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         // System PPI: machine-specific port_c values.
         self.system_ppi.state.port_c = match self.machine_model {
-            MachineModel::PC9801VM => 0x18,
+            MachineModel::PC9801F | MachineModel::PC9801VM => 0x18,
             MachineModel::PC9801VX
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
@@ -569,10 +679,16 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.gdc_master.state.cursor_blink_rate = 12;
         self.gdc_master.state.lines_per_row = 16;
         self.gdc_master.state.draw_on_retrace = true;
-        if self.machine_model.has_egc() {
-            self.gdc_master.state.display_enabled = true;
-        } else {
-            self.gdc_master.state.pattern = 0;
+        match self.machine_model {
+            MachineModel::PC9801VX
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => {
+                self.gdc_master.state.display_enabled = true;
+            }
+            MachineModel::PC9801F | MachineModel::PC9801VM => {
+                self.gdc_master.state.pattern = 0;
+            }
         }
 
         // GDC slave (graphics): SYNC params, scroll areas, and mask.
@@ -600,26 +716,50 @@ impl<T: Tracing> Pc9801Bus<T> {
                 wd: false,
             };
         }
-        self.gdc_slave.state.mask = if self.machine_model.has_egc() { 1 } else { 0 };
+        self.gdc_slave.state.mask = match self.machine_model {
+            MachineModel::PC9801F | MachineModel::PC9801VM => 0,
+            MachineModel::PC9801VX
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => 1,
+        };
         self.gdc_slave.state.draw_on_retrace = true;
-        if !self.machine_model.has_egc() {
-            self.gdc_slave.state.display_mode = 2;
+        match self.machine_model {
+            MachineModel::PC9801F => {
+                self.gdc_slave.state.status = 0x44;
+            }
+            MachineModel::PC9801VM
+            | MachineModel::PC9801VX
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => {}
+        }
+        match self.machine_model {
+            MachineModel::PC9801F | MachineModel::PC9801VM => {
+                self.gdc_slave.state.display_mode = 2;
+            }
+            MachineModel::PC9801VX
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => {}
         }
 
         // Display control.
         self.display_control.state.video_mode = 0x99;
         self.display_control.state.mode2 = 0x0100;
-        self.display_control.state.display_line_count =
-            if self.machine_model == MachineModel::PC9801VX {
-                23
-            } else {
-                1
-            };
+        self.display_control.state.display_line_count = match self.machine_model {
+            MachineModel::PC9801VX => 23,
+            MachineModel::PC9801F
+            | MachineModel::PC9801VM
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => 1,
+        };
         self.display_control.state.vsync_irq_enabled = true;
 
         // Analog palette: indices 0-7 dim, 8 half-bright, 9-15 bright (0x0F).
         let (dim, half_bright) = match self.machine_model {
-            MachineModel::PC9801VM => (0x0Au8, [7u8, 7, 7]),
+            MachineModel::PC9801F | MachineModel::PC9801VM => (0x0Au8, [7u8, 7, 7]),
             MachineModel::PC9801VX
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
@@ -641,7 +781,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             self.palette.state.analog[i as usize] = [green, red, blue];
         }
         self.palette.state.index = match self.machine_model {
-            MachineModel::PC9801VM => 0x08,
+            MachineModel::PC9801F | MachineModel::PC9801VM => 0x08,
             MachineModel::PC9801VX
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
@@ -649,16 +789,30 @@ impl<T: Tracing> Pc9801Bus<T> {
         };
         self.palette.state.digital = [0x37, 0x15, 0x26, 0x04];
 
-        // GRCG: mode and tile registers.
-        if self.machine_model.has_egc() {
-            self.grcg.state.mode = 0x00;
-            self.grcg.state.tile = [51, 85, 0, 0];
-        } else {
-            self.grcg.state.mode = 0x0F;
+        // GRCG: mode and tile registers. PC-9801F has no GRCG hardware.
+        match self.machine_model {
+            MachineModel::PC9801F => {}
+            MachineModel::PC9801VM => {
+                self.grcg.state.mode = 0x0F;
+            }
+            MachineModel::PC9801VX
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => {
+                self.grcg.state.mode = 0x00;
+                self.grcg.state.tile = [51, 85, 0, 0];
+            }
         }
 
         // CGROM: last accessed character state.
-        self.cgrom.state.code = 0x7F57;
+        self.cgrom.state.code = match self.machine_model {
+            MachineModel::PC9801F => 0x5F56,
+            MachineModel::PC9801VM
+            | MachineModel::PC9801VX
+            | MachineModel::PC9801RA
+            | MachineModel::PC9821AS
+            | MachineModel::PC9821AP => 0x7F57,
+        };
         self.cgrom.state.line = 0x0F;
         self.cgrom.state.lr = 0x0000;
 
@@ -667,7 +821,9 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         // Printer port C.
         match self.machine_model {
-            MachineModel::PC9801VM => self.printer.state.port_c = 0x80,
+            MachineModel::PC9801F | MachineModel::PC9801VM => {
+                self.printer.state.port_c = 0x80;
+            }
             MachineModel::PC9801VX
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
@@ -689,7 +845,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.mouse_ppi.state.port_a = 0x00;
         self.mouse_ppi.state.port_b = 0x00;
         self.mouse_ppi.state.port_c = match self.machine_model {
-            MachineModel::PC9801VM => 0xF0,
+            MachineModel::PC9801F | MachineModel::PC9801VM => 0xF0,
             MachineModel::PC9801VX
             | MachineModel::PC9801RA
             | MachineModel::PC9821AS
@@ -748,11 +904,14 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.reschedule_gdc_events();
 
         // RA-specific registers.
-        if self.machine_model.has_shadow_ram() {
-            self.vram_ems_bank = 0x20;
-            self.protected_memory_max = 0xE0;
-            self.memory.copy_rom_to_shadow_ram();
-            self.memory.set_shadow_control(0x46);
+        match self.machine_model {
+            MachineModel::PC9801F | MachineModel::PC9801VM | MachineModel::PC9801VX => {}
+            MachineModel::PC9801RA | MachineModel::PC9821AS | MachineModel::PC9821AP => {
+                self.vram_ems_bank = 0x20;
+                self.protected_memory_max = 0xE0;
+                self.memory.copy_rom_to_shadow_ram();
+                self.memory.set_shadow_control(0x46);
+            }
         }
 
         // Ensure E-plane mapping is consistent with display mode.

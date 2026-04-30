@@ -1,8 +1,8 @@
-use common::{Bus, MachineModel};
+use common::{Bus, CpuMode, MachineModel};
 use machine::{NoTracing, Pc9801Bus};
 
 fn make_bus() -> Pc9801Bus<NoTracing> {
-    Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, 48000)
+    Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000)
 }
 
 /// Injects a mouse delta and flushes it into the accumulators by calling

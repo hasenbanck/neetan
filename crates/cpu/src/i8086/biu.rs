@@ -470,15 +470,27 @@ impl I8086 {
     }
 
     pub(super) fn biu_queue_flush(&mut self, bus: &mut impl Bus) {
-        let _ = bus;
+        self.biu_commit_pending_write_inline(bus);
         self.queue_flush();
+        self.bus_status = BusStatus::Passive;
+        self.bus_status_latch = BusStatus::Passive;
+        self.t_cycle = TCycle::Ti;
+        self.ta_cycle = TaCycle::Td;
+        self.pl_status = BusStatus::Passive;
+        self.bus_pending = BusPendingType::None;
         self.fetch_state = FetchState::Normal;
         self.biu_fetch_start();
     }
 
     pub(super) fn biu_queue_flush_early(&mut self, bus: &mut impl Bus) {
-        let _ = bus;
+        self.biu_commit_pending_write_inline(bus);
         self.queue_flush();
+        self.bus_status = BusStatus::Passive;
+        self.bus_status_latch = BusStatus::Passive;
+        self.t_cycle = TCycle::Ti;
+        self.ta_cycle = TaCycle::Td;
+        self.pl_status = BusStatus::Passive;
+        self.bus_pending = BusPendingType::None;
         self.fetch_state = FetchState::Normal;
         self.biu_fetch_start();
         if self.pl_status == BusStatus::CodeFetch && self.ta_cycle == TaCycle::Tr {

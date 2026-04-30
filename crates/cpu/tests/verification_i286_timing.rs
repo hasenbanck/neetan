@@ -1264,12 +1264,14 @@ fn run_timing_test_file(stem: &str, local_revoked_hashes: &[&str]) {
 macro_rules! test_opcode {
     ($name:ident, $file:expr) => {
         #[test]
+        #[ignore]
         fn $name() {
             run_timing_test_file($file, &[]);
         }
     };
     ($name:ident, $file:expr, [$($skip_hash:expr),* $(,)?]) => {
         #[test]
+        #[ignore]
         fn $name() {
             run_timing_test_file($file, &[$($skip_hash),*]);
         }

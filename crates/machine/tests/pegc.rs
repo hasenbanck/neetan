@@ -1,4 +1,4 @@
-use common::{Bus, MachineModel};
+use common::{Bus, CpuMode, MachineModel};
 use machine::{NoTracing, Pc9801Bus};
 
 const PEGC_VRAM_A: u32 = 0xA8000;
@@ -10,7 +10,7 @@ const CELL_WIDTH: u32 = 40;
 const LINES_PER_ROW_400: u32 = 25;
 
 fn create_pegc_bus() -> Pc9801Bus<NoTracing> {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9821AS, CpuMode::High, 48000);
     bus.io_write_byte(0x6A, 0x01); // analog mode (mode2 bit 0)
     bus.io_write_byte(0x6A, 0x07); // mode change permission (mode2 bit 3)
     bus.set_graphics_extension_enabled(true);

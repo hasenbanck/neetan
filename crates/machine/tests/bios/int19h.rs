@@ -1,6 +1,6 @@
 use super::{
-    TEST_CODE, create_machine_ra, create_machine_vm, create_machine_vx, read_ivt_vector,
-    read_ram_u16, write_bytes,
+    TEST_CODE, create_machine_f, create_machine_ra, create_machine_vm, create_machine_vx,
+    read_ivt_vector, read_ram_u16, write_bytes,
 };
 
 const INT19H_BUDGET: u64 = 500_000;
@@ -115,6 +115,39 @@ fn make_query_store(ah: u8, al: u8) -> Vec<u8> {
     ]
 }
 
+/// Two-phase test helper for F: Phase 1 receives serial bytes, Phase 2 runs query code.
+fn boot_serial_receive_then_query_f(serial_bytes: &[u8], query_code: &[u8]) -> machine::Pc9801F {
+    let mut machine = create_machine_f();
+    boot_to_halt!(machine);
+
+    let receive_code = make_serial_init_code(serial_bytes.len());
+    for &byte in serial_bytes {
+        machine.bus.push_serial_byte(byte);
+    }
+    write_bytes(&mut machine.bus, TEST_CODE, &receive_code);
+    machine.cpu.load_state(&{
+        let mut s = cpu::I8086State {
+            ip: TEST_CODE as u16,
+            ..Default::default()
+        };
+        s.set_sp(0x4000);
+        s
+    });
+    machine.run_for(INT19H_BUDGET);
+
+    write_bytes(&mut machine.bus, TEST_CODE, query_code);
+    machine.cpu.load_state(&{
+        let mut s = cpu::I8086State {
+            ip: TEST_CODE as u16,
+            ..Default::default()
+        };
+        s.set_sp(0x4000);
+        s
+    });
+    machine.run_for(INT19H_BUDGET);
+    machine
+}
+
 /// Two-phase test helper for VM: Phase 1 receives serial bytes, Phase 2 runs query code.
 fn boot_serial_receive_then_query_vm(serial_bytes: &[u8], query_code: &[u8]) -> machine::Pc9801Vm {
     let mut machine = create_machine_vm();
@@ -221,6 +254,18 @@ fn boot_serial_receive_then_query_ra(serial_bytes: &[u8], query_code: &[u8]) -> 
 // ============================================================================
 
 #[test]
+fn int19h_vector_f() {
+    let mut machine = create_machine_f();
+    boot_to_halt!(machine);
+    let state = machine.save_state();
+    let (segment, offset) = read_ivt_vector(&state.memory.ram, 0x19);
+    assert!(
+        segment >= 0xFD80,
+        "INT 19h segment should be in BIOS ROM (got {segment:#06X}:{offset:#06X})"
+    );
+}
+
+#[test]
 fn int19h_vector_vm() {
     let mut machine = create_machine_vm();
     boot_to_halt!(machine);
@@ -259,6 +304,20 @@ fn int19h_vector_ra() {
 // ============================================================================
 // AH=00h Initialize - Return Value
 // ============================================================================
+
+#[test]
+fn int19h_init_returns_ok_f() {
+    let code = make_init_and_store();
+    let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
+    let state = machine.save_state();
+    let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
+    assert_eq!(
+        ax >> 8,
+        0x00,
+        "AH should be 0x00 after init (got {:#04X})",
+        ax >> 8
+    );
+}
 
 #[test]
 fn int19h_init_returns_ok_vm() {
@@ -372,6 +431,14 @@ fn assert_init_buffer_fields(ram: &[u8; 0xA0000]) {
 }
 
 #[test]
+fn int19h_init_buffer_fields_f() {
+    let code = make_init_and_store();
+    let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
+    let state = machine.save_state();
+    assert_init_buffer_fields(&state.memory.ram);
+}
+
+#[test]
 fn int19h_init_buffer_fields_vm() {
     let code = make_init_and_store();
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
@@ -410,6 +477,14 @@ fn assert_init_clears_header(ram: &[u8; 0xA0000]) {
         r_bflg, 0x00,
         "R_BFLG should be 0x00 after init (got {r_bflg:#04X})"
     );
+}
+
+#[test]
+fn int19h_init_clears_header_f() {
+    let code = make_init_and_store();
+    let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
+    let state = machine.save_state();
+    assert_init_clears_header(&state.memory.ram);
 }
 
 #[test]
@@ -454,6 +529,14 @@ fn assert_bda_pointer(ram: &[u8; 0xA0000]) {
 }
 
 #[test]
+fn int19h_init_stores_bda_pointer_f() {
+    let code = make_init_and_store();
+    let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
+    let state = machine.save_state();
+    assert_bda_pointer(&state.memory.ram);
+}
+
+#[test]
 fn int19h_init_stores_bda_pointer_vm() {
     let code = make_init_and_store();
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
@@ -480,6 +563,18 @@ fn int19h_init_stores_bda_pointer_ra() {
 // ============================================================================
 // AH=01h Init with Flow Control
 // ============================================================================
+
+#[test]
+fn int19h_init_flow_flag_f() {
+    let code = make_init_flow_and_store();
+    let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
+    let state = machine.save_state();
+    let flag = state.memory.ram[RS_BUF + R_FLAG];
+    assert_eq!(
+        flag, 0x90,
+        "FLAG should be 0x90 (RFLAG_INIT | RFLAG_XON) (got {flag:#04X})"
+    );
+}
 
 #[test]
 fn int19h_init_flow_flag_vm() {
@@ -520,6 +615,20 @@ fn int19h_init_flow_flag_ra() {
 // ============================================================================
 // AH=02h RX Char Count - Not Initialized
 // ============================================================================
+
+#[test]
+fn int19h_rx_count_not_init_f() {
+    let code = make_no_init_call_store(0x02, 0x00);
+    let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
+    let state = machine.save_state();
+    let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
+    assert_eq!(
+        ax >> 8,
+        0x01,
+        "AH should be 0x01 (not init) (got {:#04X})",
+        ax >> 8
+    );
+}
 
 #[test]
 fn int19h_rx_count_not_init_vm() {
@@ -568,6 +677,17 @@ fn int19h_rx_count_not_init_ra() {
 // ============================================================================
 
 #[test]
+fn int19h_rx_count_zero_f() {
+    let code = make_init_then_call_store(0x02, 0x00);
+    let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
+    let state = machine.save_state();
+    let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
+    let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
+    assert_eq!(ax >> 8, 0x00, "AH should be 0x00 (got {:#04X})", ax >> 8);
+    assert_eq!(cx, 0x0000, "CX should be 0 (got {cx:#06X})");
+}
+
+#[test]
 fn int19h_rx_count_zero_vm() {
     let code = make_init_then_call_store(0x02, 0x00);
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
@@ -605,6 +725,17 @@ fn int19h_rx_count_zero_ra() {
 // ============================================================================
 
 #[test]
+fn int19h_rx_count_after_receive_f() {
+    let query = make_query_store(0x02, 0x00);
+    let machine = boot_serial_receive_then_query_f(&[0x41, 0x42], &query);
+    let state = machine.save_state();
+    let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
+    let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
+    assert_eq!(ax >> 8, 0x00, "AH should be 0x00 (got {:#04X})", ax >> 8);
+    assert_eq!(cx, 0x0002, "CX should be 2 (got {cx:#06X})");
+}
+
+#[test]
 fn int19h_rx_count_after_receive_vm() {
     let query = make_query_store(0x02, 0x00);
     let machine = boot_serial_receive_then_query_vm(&[0x41, 0x42], &query);
@@ -640,6 +771,20 @@ fn int19h_rx_count_after_receive_ra() {
 // ============================================================================
 // AH=03h Send Char - Not Initialized
 // ============================================================================
+
+#[test]
+fn int19h_send_not_init_f() {
+    let code = make_no_init_call_store(0x03, 0x41);
+    let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
+    let state = machine.save_state();
+    let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
+    assert_eq!(
+        ax >> 8,
+        0x01,
+        "AH should be 0x01 (not init) (got {:#04X})",
+        ax >> 8
+    );
+}
 
 #[test]
 fn int19h_send_not_init_vm() {
@@ -688,6 +833,20 @@ fn int19h_send_not_init_ra() {
 // ============================================================================
 
 #[test]
+fn int19h_send_char_f() {
+    let code = make_init_then_call_store(0x03, 0x41);
+    let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
+    let state = machine.save_state();
+    let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
+    assert_eq!(
+        ax >> 8,
+        0x00,
+        "AH should be 0x00 (success) (got {:#04X})",
+        ax >> 8
+    );
+}
+
+#[test]
 fn int19h_send_char_vm() {
     let code = make_init_then_call_store(0x03, 0x41);
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
@@ -734,6 +893,20 @@ fn int19h_send_char_ra() {
 // ============================================================================
 
 #[test]
+fn int19h_recv_not_init_f() {
+    let code = make_no_init_call_store(0x04, 0x00);
+    let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
+    let state = machine.save_state();
+    let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
+    assert_eq!(
+        ax >> 8,
+        0x01,
+        "AH should be 0x01 (not init) (got {:#04X})",
+        ax >> 8
+    );
+}
+
+#[test]
 fn int19h_recv_not_init_vm() {
     let code = make_no_init_call_store(0x04, 0x00);
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
@@ -778,6 +951,37 @@ fn int19h_recv_not_init_ra() {
 // ============================================================================
 // AH=04h Receive Char - Success (read back received byte)
 // ============================================================================
+
+#[test]
+fn int19h_recv_char_f() {
+    let query = make_query_store(0x04, 0x00);
+    let machine = boot_serial_receive_then_query_f(&[0x41], &query);
+    let state = machine.save_state();
+    let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
+    let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
+    assert_eq!(
+        ax >> 8,
+        0x00,
+        "AH should be 0x00 (success) (got {:#04X})",
+        ax >> 8
+    );
+    assert_eq!(
+        cx >> 8,
+        0x41,
+        "CH should be 0x41 (received byte) (got {:#04X})",
+        cx >> 8
+    );
+
+    let cnt = read_ram_u16(&state.memory.ram, RS_BUF + R_CNT);
+    assert_eq!(cnt, 0, "CNT should be 0 after reading the byte (got {cnt})");
+
+    let getp = read_ram_u16(&state.memory.ram, RS_BUF + R_GETP) as usize;
+    assert_eq!(
+        getp,
+        DATA_BUF_START + 2,
+        "GETP should advance by 2 (got {getp:#06X})"
+    );
+}
 
 #[test]
 fn int19h_recv_char_vm() {
@@ -877,6 +1081,20 @@ fn int19h_recv_char_ra() {
 // ============================================================================
 
 #[test]
+fn int19h_recv_timeout_f() {
+    let code = make_init_then_call_store(0x04, 0x00);
+    let (machine, _) = super::boot_and_run_f(&code, &[], 200_000_000);
+    let state = machine.save_state();
+    let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
+    assert_eq!(
+        ax >> 8,
+        0x03,
+        "AH should be 0x03 (timeout) (got {:#04X})",
+        ax >> 8
+    );
+}
+
+#[test]
 fn int19h_recv_timeout_vm() {
     let code = make_init_then_call_store(0x04, 0x00);
     let (machine, _) = super::boot_and_run_vm(&code, &[], 200_000_000);
@@ -923,6 +1141,20 @@ fn int19h_recv_timeout_ra() {
 // ============================================================================
 
 #[test]
+fn int19h_cmd_not_init_f() {
+    let code = make_no_init_call_store(0x05, 0x37);
+    let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
+    let state = machine.save_state();
+    let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
+    assert_eq!(
+        ax >> 8,
+        0x01,
+        "AH should be 0x01 (not init) (got {:#04X})",
+        ax >> 8
+    );
+}
+
+#[test]
 fn int19h_cmd_not_init_vm() {
     let code = make_no_init_call_store(0x05, 0x37);
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
@@ -967,6 +1199,25 @@ fn int19h_cmd_not_init_ra() {
 // ============================================================================
 // AH=05h Command Output - Success
 // ============================================================================
+
+#[test]
+fn int19h_cmd_output_f() {
+    let code = make_init_then_call_store(0x05, 0x37);
+    let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
+    let state = machine.save_state();
+    let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
+    assert_eq!(
+        ax >> 8,
+        0x00,
+        "AH should be 0x00 (success) (got {:#04X})",
+        ax >> 8
+    );
+    let cmd = state.memory.ram[RS_BUF + R_CMD];
+    assert_eq!(
+        cmd, 0x37,
+        "CMD field should be updated to 0x37 (got {cmd:#04X})"
+    );
+}
 
 #[test]
 fn int19h_cmd_output_vm() {
@@ -1030,6 +1281,20 @@ fn int19h_cmd_output_ra() {
 // ============================================================================
 
 #[test]
+fn int19h_status_not_init_f() {
+    let code = make_no_init_call_store(0x06, 0x00);
+    let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
+    let state = machine.save_state();
+    let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
+    assert_eq!(
+        ax >> 8,
+        0x01,
+        "AH should be 0x01 (not init) (got {:#04X})",
+        ax >> 8
+    );
+}
+
+#[test]
 fn int19h_status_not_init_vm() {
     let code = make_no_init_call_store(0x06, 0x00);
     let (machine, _) = super::boot_and_run_vm(&code, &[], INT19H_BUDGET);
@@ -1074,6 +1339,33 @@ fn int19h_status_not_init_ra() {
 // ============================================================================
 // AH=06h Status Read - Success
 // ============================================================================
+
+#[test]
+fn int19h_status_read_f() {
+    let code = make_init_then_call_store(0x06, 0x00);
+    let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
+    let state = machine.save_state();
+    let ax = read_ram_u16(&state.memory.ram, RESULT as usize);
+    let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
+    assert_eq!(
+        ax >> 8,
+        0x00,
+        "AH should be 0x00 (success) (got {:#04X})",
+        ax >> 8
+    );
+    let ch = (cx >> 8) as u8;
+    assert_eq!(
+        ch & 0x85,
+        0x85,
+        "CH should have TxRDY|TxEMPTY|DSR (0x85) set (got {ch:#04X})"
+    );
+    let cl = (cx & 0xFF) as u8;
+    assert_eq!(
+        cl & 0xE8,
+        0xE8,
+        "CL should have CI#|CS#|CD#|CRTT (0xE8) from port 0x33 (got {cl:#04X})"
+    );
+}
 
 #[test]
 fn int19h_status_read_vm() {
@@ -1176,6 +1468,21 @@ fn serial_init_preamble_cl(ah: u8, cl: u8) -> Vec<u8> {
 }
 
 #[test]
+fn int19h_init_with_ir_clears_init_flag_f() {
+    // CL=0x67: IR bit (0x40) set + RXE (0x04) set.
+    let mut code = serial_init_preamble_cl(0x00, 0x67);
+    code.extend_from_slice(&[0xF4]); // HLT
+    let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
+    let state = machine.save_state();
+    let flag = state.memory.ram[RS_BUF + R_FLAG];
+    assert_eq!(
+        flag & 0x80,
+        0,
+        "FLAG should NOT have RFLAG_INIT when IR bit is set in CL (got {flag:#04X})"
+    );
+}
+
+#[test]
 fn int19h_init_with_ir_clears_init_flag_vm() {
     // CL=0x67: IR bit (0x40) set + RXE (0x04) set.
     let mut code = serial_init_preamble_cl(0x00, 0x67);
@@ -1191,6 +1498,20 @@ fn int19h_init_with_ir_clears_init_flag_vm() {
 }
 
 #[test]
+fn int19h_init_without_rxe_does_not_unmask_irq4_f() {
+    // CL=0x23: no IR, no RXE - IRQ4 should remain masked.
+    let mut code = serial_init_preamble_cl(0x00, 0x23);
+    code.extend_from_slice(&[0xF4]); // HLT
+    let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
+    let state = machine.save_state();
+    assert_ne!(
+        state.pic.chips[0].imr & 0x10,
+        0,
+        "IRQ4 should remain masked when RXE is not set in CL"
+    );
+}
+
+#[test]
 fn int19h_init_without_rxe_does_not_unmask_irq4_vm() {
     // CL=0x23: no IR, no RXE - IRQ4 should remain masked.
     let mut code = serial_init_preamble_cl(0x00, 0x23);
@@ -1201,6 +1522,20 @@ fn int19h_init_without_rxe_does_not_unmask_irq4_vm() {
         state.pic.chips[0].imr & 0x10,
         0,
         "IRQ4 should remain masked when RXE is not set in CL"
+    );
+}
+
+#[test]
+fn int19h_init_with_rxe_unmasks_irq4_f() {
+    // CL=0x27: no IR, RXE set - IRQ4 should be unmasked.
+    let mut code = serial_init_preamble_cl(0x00, 0x27);
+    code.extend_from_slice(&[0xF4]); // HLT
+    let (machine, _) = super::boot_and_run_f(&code, &[], INT19H_BUDGET);
+    let state = machine.save_state();
+    assert_eq!(
+        state.pic.chips[0].imr & 0x10,
+        0,
+        "IRQ4 should be unmasked when RXE is set in CL"
     );
 }
 

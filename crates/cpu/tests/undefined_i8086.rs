@@ -6,13 +6,24 @@ const ADDRESS_MASK: u32 = 0x000F_FFFF;
 
 struct TestBus {
     ram: Vec<u8>,
+    irq_pending: bool,
+    irq_vector: u8,
+    current_cycle: u64,
 }
 
 impl TestBus {
     fn new() -> Self {
         Self {
             ram: vec![0u8; RAM_SIZE],
+            irq_pending: false,
+            irq_vector: 0,
+            current_cycle: 0,
         }
+    }
+
+    fn raise_irq(&mut self, vector: u8) {
+        self.irq_pending = true;
+        self.irq_vector = vector;
     }
 }
 
@@ -32,11 +43,12 @@ impl common::Bus for TestBus {
     fn io_write_byte(&mut self, _port: u16, _value: u8) {}
 
     fn has_irq(&self) -> bool {
-        false
+        self.irq_pending
     }
 
     fn acknowledge_irq(&mut self) -> u8 {
-        0
+        self.irq_pending = false;
+        self.irq_vector
     }
 
     fn has_nmi(&self) -> bool {
@@ -46,10 +58,12 @@ impl common::Bus for TestBus {
     fn acknowledge_nmi(&mut self) {}
 
     fn current_cycle(&self) -> u64 {
-        0
+        self.current_cycle
     }
 
-    fn set_current_cycle(&mut self, _cycle: u64) {}
+    fn set_current_cycle(&mut self, cycle: u64) {
+        self.current_cycle = cycle;
+    }
 }
 
 fn place_code(bus: &mut TestBus, cs: u16, ip: u16, code: &[u8]) {
@@ -57,6 +71,14 @@ fn place_code(bus: &mut TestBus, cs: u16, ip: u16, code: &[u8]) {
     for (index, &byte) in code.iter().enumerate() {
         bus.write_byte(base + ip as u32 + index as u32, byte);
     }
+}
+
+fn set_interrupt_vector(bus: &mut TestBus, vector: u8, target_segment: u16, target_offset: u16) {
+    let base = u32::from(vector) * 4;
+    bus.write_byte(base, (target_offset & 0x00FF) as u8);
+    bus.write_byte(base + 1, (target_offset >> 8) as u8);
+    bus.write_byte(base + 2, (target_segment & 0x00FF) as u8);
+    bus.write_byte(base + 3, (target_segment >> 8) as u8);
 }
 
 fn setup_state(cs: u16, ip: u16) -> I8086State {
@@ -198,6 +220,29 @@ fn i8086_ff_jmpf_register_uses_prefetch_dependent_ip_handoff() {
 
     assert_eq!(cpu.cs(), 0x1234);
     assert_eq!(cpu.ip(), 0x1230);
+    assert_eq!(cpu.sp(), 0x0100);
+}
+
+#[test]
+fn i8086_interrupt_entry_preserves_return_ip_when_flushing_queue() {
+    const IRQ_VECTOR: u8 = 0x20;
+
+    let mut cpu = I8086::new();
+    let mut bus = TestBus::new();
+
+    place_code(&mut bus, 0x1000, 0x0000, &[0xFB, 0x90, 0xF4]);
+    place_code(&mut bus, 0x2000, 0x0000, &[0xCF]);
+    set_interrupt_vector(&mut bus, IRQ_VECTOR, 0x2000, 0x0000);
+    bus.raise_irq(IRQ_VECTOR);
+
+    let state = setup_state(0x1000, 0x0000);
+    cpu.load_state(&state);
+
+    let _ = cpu.run_for(1_000, &mut bus);
+
+    assert!(cpu.halted(), "CPU should return from IRQ and execute HLT");
+    assert_eq!(cpu.cs(), 0x1000);
+    assert_eq!(cpu.ip(), 0x0003);
     assert_eq!(cpu.sp(), 0x0100);
 }
 
