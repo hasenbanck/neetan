@@ -943,14 +943,12 @@ fn initialize_machine(config: &EmulatorConfig, sample_rate: u32) -> Result<Box<d
         let bios_rom = std::fs::read(bios_path)
             .with_context(|| format!("Failed to read BIOS ROM from {}", bios_path.display()))?;
 
-        let expected = model.bios_rom_size();
         ensure!(
-            bios_rom.len() == expected,
-            "BIOS ROM is {} bytes, expected exactly {} bytes for {}: {}",
+            model.is_valid_bios_rom_size(bios_rom.len()),
+            "BIOS ROM is {} bytes, which is not a valid size for {}: {}",
             bios_rom.len(),
-            expected,
             model,
-            bios_path.display()
+            bios_path.display(),
         );
 
         info!(
