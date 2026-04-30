@@ -197,8 +197,7 @@ impl I286 {
         self.rep_active = false;
         self.rep_restart_ip = 0;
         self.seg_prefix = false;
-        self.timing
-            .reset(self.state.sregs[SegReg16::CS as usize], self.state.ip);
+        self.biu_reset_front_end();
     }
 
     /// Returns the AL register value.

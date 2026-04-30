@@ -6,6 +6,7 @@
 //! - MAME Intel i286 emulator (`devices/cpu/i86/i286.cpp`).
 
 mod alu;
+mod biu;
 mod execute;
 mod execute_0f;
 mod execute_group;
@@ -15,33 +16,24 @@ mod modrm;
 mod rep;
 mod state;
 mod string_ops;
-mod timing;
 
-use std::ops::{Deref, DerefMut};
+use std::{
+    collections::VecDeque,
+    ops::{Deref, DerefMut},
+};
 
+use biu::{BiuBusRequest, BiuCompletedBusCycle, BusStatus, MAX_QUEUE_SIZE, QueueType};
+pub use biu::{
+    I286AuStage, I286BusLane, I286BusPhase, I286CycleState, I286CycleTraceEntry, I286EuStage,
+    I286FlushState, I286PendingBusRequest, I286RepState, I286TraceBusStatus, I286WarmStartConfig,
+};
 use common::Cpu as _;
 pub use flags::I286Flags;
-pub use modrm::EaClass;
 pub use state::I286State;
-pub use timing::{
-    I286AuStage, I286BusPhase, I286CycleState, I286CycleTraceEntry, I286EuStage, I286FinishState,
-    I286FlushState, I286PendingBusRequest, I286RepState, I286TimingMilestones, I286TraceBusStatus,
-    I286WarmStartConfig,
-};
-use timing::{I286ColdStartPrefetchPolicy, I286Timing};
 
 use crate::{SegReg16, WordReg};
 
-/// 24-bit physical address mask.
-pub(super) const ADDRESS_MASK: u32 = 0x00FF_FFFF;
-
-/// Returns true when the low bit of the supplied bus address is set.
-/// The 286 has a 16-bit data bus, so an odd address forces an extra
-/// bus access for word transfers; many timing decisions branch on this.
-#[inline(always)]
-pub(super) const fn address_is_odd(address: u32) -> bool {
-    address & 1 == 1
-}
+pub(crate) const ADDRESS_MASK: u32 = 0x00FF_FFFF;
 
 #[derive(Clone, Copy)]
 struct SegmentDescriptor {
@@ -57,140 +49,6 @@ enum TaskType {
     Call,
 }
 
-#[derive(Clone, Copy)]
-struct I286OpcodeLookahead {
-    opcode: u8,
-    operand_offset: u16,
-}
-
-impl I286OpcodeLookahead {
-    #[inline(always)]
-    const fn is_segment_override(self) -> bool {
-        matches!(self.opcode, 0x26 | 0x2E | 0x36 | 0x3E)
-    }
-
-    #[inline(always)]
-    const fn is_string(self) -> bool {
-        matches!(self.opcode, 0x6C..=0x6F | 0xA4..=0xA7 | 0xAA..=0xAF)
-    }
-
-    #[inline(always)]
-    const fn is_xlat(self) -> bool {
-        self.opcode == 0xD7
-    }
-
-    #[inline(always)]
-    const fn is_leave(self) -> bool {
-        self.opcode == 0xC9
-    }
-
-    #[inline(always)]
-    const fn is_short_jump(self) -> bool {
-        self.opcode == 0xEB
-    }
-
-    #[inline(always)]
-    const fn is_fpu_escape(self) -> bool {
-        matches!(self.opcode, 0xD8..=0xDF)
-    }
-
-    #[inline(always)]
-    const fn is_group_ff(self) -> bool {
-        self.opcode == 0xFF
-    }
-
-    #[inline(always)]
-    const fn is_les_or_lds(self) -> bool {
-        matches!(self.opcode, 0xC4 | 0xC5)
-    }
-
-    #[inline(always)]
-    const fn is_lock_prefetch_candidate(self, after_segment_prefix: bool) -> bool {
-        if Self::binary_alu_opcode(self.opcode)
-            || matches!(
-                self.opcode,
-                0x62 | 0x68 | 0x69 | 0x6B | 0x80..=0x8D | 0x9A | 0xA0..=0xA3 | 0xC0..=0xC2 | 0xC4
-                    | 0xC5 | 0xD0..=0xD3 | 0xD8..=0xDF | 0xE4..=0xE7 | 0xEA | 0xF6 | 0xF7
-                    | 0xFE
-                    | 0xCA
-            )
-        {
-            return true;
-        }
-
-        !after_segment_prefix && matches!(self.opcode, 0xD4 | 0xD5 | 0xE8 | 0xE9)
-    }
-
-    #[inline(always)]
-    const fn binary_alu_opcode(opcode: u8) -> bool {
-        matches!(
-            opcode,
-            0x00..=0x05
-                | 0x08..=0x0D
-                | 0x10..=0x15
-                | 0x18..=0x1D
-                | 0x20..=0x25
-                | 0x28..=0x2D
-                | 0x30..=0x35
-                | 0x38..=0x3D
-        )
-    }
-}
-
-#[derive(Clone, Copy)]
-struct I286GroupFfLookahead {
-    modrm: u8,
-}
-
-impl I286GroupFfLookahead {
-    #[inline(always)]
-    const fn register_field(self) -> u8 {
-        (self.modrm >> 3) & 7
-    }
-
-    #[inline(always)]
-    const fn is_register_form(self) -> bool {
-        self.modrm >= 0xC0
-    }
-
-    #[inline(always)]
-    const fn is_memory_form(self) -> bool {
-        self.modrm < 0xC0
-    }
-
-    #[inline(always)]
-    const fn is_mode0_non_direct_memory_form(self) -> bool {
-        self.modrm < 0x40 && (self.modrm & 7) != 6
-    }
-
-    #[inline(always)]
-    const fn lock_prefetches_indirect_control_transfer(self) -> bool {
-        if !matches!(self.register_field(), 2..=5) || self.is_register_form() {
-            return false;
-        }
-
-        let mode = self.modrm >> 6;
-        mode != 0 || (self.modrm & 7) == 6
-    }
-
-    #[inline(always)]
-    const fn lock_prefetches_push(self, lock_prefix_after_prefix: bool) -> bool {
-        matches!(self.register_field(), 6 | 7)
-            && (!lock_prefix_after_prefix || self.is_memory_form())
-    }
-
-    #[inline(always)]
-    const fn segment_prefix_passivizes_indirect_control_transfer(self) -> bool {
-        matches!(self.register_field(), 2 | 4) && self.is_register_form()
-            || matches!(self.register_field(), 2..=5) && self.is_mode0_non_direct_memory_form()
-    }
-
-    #[inline(always)]
-    const fn segment_prefix_single_passivizes_indirect_control_transfer(self) -> bool {
-        self.register_field() == 4 && self.is_register_form()
-    }
-}
-
 /// Intel 80286 CPU emulator.
 pub struct I286 {
     /// Embedded state for save/restore.
@@ -199,6 +57,7 @@ pub struct I286 {
     prev_ip: u16,
     seg_prefix: bool,
     prefix_seg: SegReg16,
+    prefix_count_current: u8,
 
     halted: bool,
     pending_irq: u8,
@@ -220,12 +79,39 @@ pub struct I286 {
     ea: u32,
     eo: u16,
     ea_seg: SegReg16,
-    pub(crate) ea_class: EaClass,
-    pub(crate) finish_state: I286FinishState,
+    lock_prefix_active: bool,
+    lock_demand_gap_emitted: bool,
 
     trap_level: u8,
     shutdown: bool,
-    timing: I286Timing,
+
+    instruction_queue: [u8; MAX_QUEUE_SIZE],
+    instruction_queue_len: usize,
+    instruction_preload: Option<u8>,
+    prefetch_spill_queue: VecDeque<u8>,
+    instruction_entry_queue_bytes: u8,
+    instruction_entry_decoded_queue_bytes: u8,
+    instruction_entry_flush_state: I286FlushState,
+    decoded_queue_len: u8,
+    prefetch_ip: u16,
+    bus_status: BusStatus,
+    data_bus: u16,
+    flush_state: I286FlushState,
+    pending_bus_request: Option<BiuBusRequest>,
+    active_bus_request: Option<BiuBusRequest>,
+    completed_bus_cycle: Option<BiuCompletedBusCycle>,
+    delay_queue_room_fetch_once: bool,
+    decode_spill_fetch_gap_enabled: bool,
+    decode_spill_fetch_needs_gap: bool,
+    wrapped_queue_room_fetch_delayed: bool,
+    bus_phase: I286BusPhase,
+    bus_lane: I286BusLane,
+    bhe_asserted: bool,
+    au_stage: I286AuStage,
+    eu_stage: I286EuStage,
+    capture_enabled: bool,
+    cycle_counter: u64,
+    trace: Vec<I286CycleTraceEntry>,
 }
 
 impl Deref for I286 {
@@ -255,6 +141,7 @@ impl I286 {
             prev_ip: 0,
             seg_prefix: false,
             prefix_seg: SegReg16::DS,
+            prefix_count_current: 0,
             halted: false,
             pending_irq: 0,
             no_interrupt: 0,
@@ -272,424 +159,89 @@ impl I286 {
             ea: 0,
             eo: 0,
             ea_seg: SegReg16::DS,
-            ea_class: EaClass::Register,
-            finish_state: I286FinishState::Linear,
+            lock_prefix_active: false,
+            lock_demand_gap_emitted: false,
             trap_level: 0,
             shutdown: false,
-            timing: I286Timing::new(),
+            instruction_queue: [0; MAX_QUEUE_SIZE],
+            instruction_queue_len: 0,
+            instruction_preload: None,
+            prefetch_spill_queue: VecDeque::new(),
+            instruction_entry_queue_bytes: 0,
+            instruction_entry_decoded_queue_bytes: 0,
+            instruction_entry_flush_state: I286FlushState::ControlTransfer,
+            decoded_queue_len: 0,
+            prefetch_ip: 0,
+            bus_status: BusStatus::Passive,
+            data_bus: 0xFFFF,
+            flush_state: I286FlushState::ControlTransfer,
+            pending_bus_request: None,
+            active_bus_request: None,
+            completed_bus_cycle: None,
+            delay_queue_room_fetch_once: false,
+            decode_spill_fetch_gap_enabled: false,
+            decode_spill_fetch_needs_gap: false,
+            wrapped_queue_room_fetch_delayed: false,
+            bus_phase: I286BusPhase::Ti,
+            bus_lane: I286BusLane::None,
+            bhe_asserted: false,
+            au_stage: I286AuStage::Idle,
+            eu_stage: I286EuStage::Idle,
+            capture_enabled: false,
+            cycle_counter: 0,
+            trace: Vec::new(),
         };
         cpu.reset();
         cpu
     }
 
     #[inline(always)]
-    fn sync_timing_cycles(&mut self) {
-        self.cycles_remaining -= i64::from(self.timing.take_cycle_debt());
-    }
-
-    #[inline(always)]
     fn clk(&mut self, cycles: i32) {
-        self.timing.advance_internal_cycles(cycles);
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
-        } else {
-            self.cycles_remaining -= cycles as i64;
+        if cycles > 0 {
+            self.biu_internal_cycles(cycles as u32);
         }
     }
 
     #[inline(always)]
-    fn clk_visible(&mut self, cycles: u8) {
-        self.timing.advance_visible_internal_cycles(cycles);
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
-        } else {
-            self.cycles_remaining -= i64::from(cycles);
+    fn clk_bus(&mut self, bus: &mut impl common::Bus, cycles: i32) {
+        if cycles > 0 {
+            self.biu_bus_cycles(bus, cycles as u32);
         }
     }
 
     #[inline(always)]
-    fn clk_prefix(&mut self, bus: &mut impl common::Bus) {
-        let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        let visible_cycles = self
-            .timing
-            .advance_prefix_overlap_prefetch(bus, code_segment_base);
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
-        } else {
-            self.cycles_remaining -= i64::from(visible_cycles);
-        }
-    }
-
-    #[inline(always)]
-    fn clk_prefix_passive(&mut self) {
-        let visible_cycles = self.timing.advance_prefix_overlap_passive();
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
-        } else {
-            self.cycles_remaining -= i64::from(visible_cycles);
-        }
-    }
-
-    #[inline(always)]
-    fn clk_prefix_single_passive(&mut self) {
-        let visible_cycles = self.timing.advance_prefix_overlap_single_passive();
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
-        } else {
-            self.cycles_remaining -= i64::from(visible_cycles);
-        }
-    }
-
-    #[inline(always)]
-    fn clk_lock_prefix(
-        &mut self,
-        bus: &mut impl common::Bus,
-        next_opcode: u8,
-        prefix_count_before_lock: u8,
-        prefetches_during_lock_prefix: bool,
-    ) {
-        let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        let suppress_lock_prefix_cycle = (next_opcode == 0xC9 && prefix_count_before_lock == 1)
-            || (prefix_count_before_lock & 1 == 1 && Self::string_opcode(next_opcode))
-            || (prefix_count_before_lock != 0
-                && (Self::segment_override_prefix(next_opcode)
-                    || prefix_count_before_lock & 1 == 1)
-                && self.lock_prefix_followed_by_xlat(bus, next_opcode));
-        let visible_cycles = if prefetches_during_lock_prefix {
-            self.timing
-                .advance_lock_prefix_prefetch(bus, code_segment_base)
-        } else if suppress_lock_prefix_cycle {
-            self.timing.clear_lock_prefix_pending_cycle();
-            0
-        } else {
-            self.timing.advance_lock_prefix_passive_cycle()
-        };
-        if self.consumed_opcode_lookahead(next_opcode).is_les_or_lds()
-            && prefix_count_before_lock & 1 == 1
-        {
-            self.timing.suppress_next_demand_prefetch();
-        }
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
-        } else {
-            self.cycles_remaining -= i64::from(visible_cycles);
-        }
-    }
-
-    #[inline(always)]
-    fn segment_override_prefix(opcode: u8) -> bool {
-        matches!(opcode, 0x26 | 0x2E | 0x36 | 0x3E)
-    }
-
-    #[inline(always)]
-    const fn string_opcode(opcode: u8) -> bool {
-        I286OpcodeLookahead {
-            opcode,
-            operand_offset: 0,
-        }
-        .is_string()
-    }
-
-    fn code_byte_at(&self, bus: &mut impl common::Bus, offset: u16) -> u8 {
-        let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        bus.read_byte(code_segment_base.wrapping_add(u32::from(offset)) & ADDRESS_MASK)
-    }
-
-    fn consumed_opcode_lookahead(&self, opcode: u8) -> I286OpcodeLookahead {
-        I286OpcodeLookahead {
-            opcode,
-            operand_offset: self.ip,
-        }
-    }
-
-    fn next_opcode_lookahead(&self, bus: &mut impl common::Bus) -> I286OpcodeLookahead {
-        I286OpcodeLookahead {
-            opcode: self.code_byte_at(bus, self.ip),
-            operand_offset: self.ip.wrapping_add(1),
-        }
-    }
-
-    fn next_non_segment_opcode_lookahead(&self, bus: &mut impl common::Bus) -> I286OpcodeLookahead {
-        let mut lookahead = self.next_opcode_lookahead(bus);
-        while lookahead.is_segment_override() {
-            lookahead = I286OpcodeLookahead {
-                opcode: self.code_byte_at(bus, lookahead.operand_offset),
-                operand_offset: lookahead.operand_offset.wrapping_add(1),
-            };
-        }
-        lookahead
-    }
-
-    fn group_ff_lookahead(
-        &self,
-        bus: &mut impl common::Bus,
-        operand_offset: u16,
-    ) -> I286GroupFfLookahead {
-        I286GroupFfLookahead {
-            modrm: self.code_byte_at(bus, operand_offset),
-        }
-    }
-
-    fn lock_prefix_prefetches_for_next_opcode(
-        &self,
-        bus: &mut impl common::Bus,
-        opcode: u8,
-    ) -> bool {
-        let lookahead = self.consumed_opcode_lookahead(opcode);
-        if !lookahead.is_segment_override() {
-            if lookahead.is_fpu_escape() && self.timing.lock_prefix_after_prefix() {
-                let modrm = self.code_byte_at(bus, lookahead.operand_offset);
-                if modrm >= 0xC0 {
-                    return false;
-                }
-            }
-            if lookahead.is_lock_prefetch_candidate(false) {
-                return true;
-            }
-
-            if !lookahead.is_group_ff() {
-                return false;
-            }
-
-            let group_ff = self.group_ff_lookahead(bus, lookahead.operand_offset);
-            return matches!(group_ff.register_field(), 0 | 1)
-                || group_ff.lock_prefetches_indirect_control_transfer()
-                || (!self.timing.lock_prefix_after_prefix()
-                    && group_ff.lock_prefetches_push(self.timing.lock_prefix_after_prefix()));
-        }
-
-        let final_lookahead = self.next_non_segment_opcode_lookahead(bus);
-
-        if final_lookahead.is_xlat() {
-            return !self.timing.lock_prefix_after_prefix();
-        }
-
-        if final_lookahead.is_string() {
-            return !self.timing.lock_prefix_after_prefix();
-        }
-
-        if final_lookahead.is_short_jump() {
-            return true;
-        }
-
-        if final_lookahead.is_lock_prefetch_candidate(true) {
-            return true;
-        }
-
-        if final_lookahead.is_leave() {
-            return self.timing.prefix_count_at_most(3);
-        }
-
-        if !final_lookahead.is_group_ff() {
-            return false;
-        }
-
-        let group_ff = self.group_ff_lookahead(bus, final_lookahead.operand_offset);
-        let register_field = group_ff.register_field();
-        if matches!(register_field, 0 | 1) {
-            return true;
-        }
-
-        if register_field == 4 && group_ff.is_register_form() {
-            return !self.timing.lock_prefix_after_prefix();
-        }
-
-        if matches!(register_field, 6 | 7) {
-            return true;
-        }
-
-        matches!(register_field, 3..=5) && group_ff.is_memory_form()
-    }
-
-    fn lock_prefix_followed_by_xlat(&self, bus: &mut impl common::Bus, opcode: u8) -> bool {
-        let lookahead = self.consumed_opcode_lookahead(opcode);
-        if !lookahead.is_segment_override() {
-            return lookahead.is_xlat();
-        }
-
-        self.next_non_segment_opcode_lookahead(bus).is_xlat()
-    }
-
-    fn segment_prefix_passivizes_ff_indirect_control_transfer_prefetch(
-        &self,
-        lookahead: I286OpcodeLookahead,
-        bus: &mut impl common::Bus,
-    ) -> bool {
-        if !lookahead.is_group_ff() {
-            return false;
-        }
-
-        self.group_ff_lookahead(bus, lookahead.operand_offset)
-            .segment_prefix_passivizes_indirect_control_transfer()
-    }
-
-    fn segment_prefix_single_passivizes_ff_indirect_control_transfer_prefetch(
-        &self,
-        lookahead: I286OpcodeLookahead,
-        bus: &mut impl common::Bus,
-    ) -> bool {
-        if !self.timing.lock_active() || !self.timing.lock_prefix_after_prefix() {
-            return false;
-        }
-
-        if !lookahead.is_group_ff() {
-            return false;
-        }
-
-        self.group_ff_lookahead(bus, lookahead.operand_offset)
-            .segment_prefix_single_passivizes_indirect_control_transfer()
-    }
-
-    fn segment_prefix_skips_prefetch_after_lock(&self, lookahead: I286OpcodeLookahead) -> bool {
-        if !self.timing.lock_active()
-            || !self.timing.lock_prefix_after_prefix()
-            || !self.timing.lock_prefix_followed_by_prefix()
-        {
-            return false;
-        }
-
-        lookahead.is_leave() || lookahead.is_string()
-    }
-
-    fn clk_segment_override_prefix(&mut self, bus: &mut impl common::Bus) {
-        let lookahead = self.next_opcode_lookahead(bus);
-        if self.segment_prefix_skips_prefetch_after_lock(lookahead) {
-            return;
-        }
-        if lookahead.is_string() {
-            self.clk_prefix_single_passive();
-            return;
-        }
-        if lookahead.is_leave()
-            || lookahead.is_xlat()
-            || (lookahead.is_short_jump()
-                && (!self.timing.lock_active() || self.timing.lock_prefix_after_prefix()))
-            || self.segment_prefix_single_passivizes_ff_indirect_control_transfer_prefetch(
-                lookahead, bus,
-            )
-        {
-            self.clk_prefix_single_passive();
-        } else if self
-            .segment_prefix_passivizes_ff_indirect_control_transfer_prefetch(lookahead, bus)
-        {
-            self.clk_prefix_passive();
-        } else {
-            self.clk_prefix(bus);
-        }
-    }
-
-    #[inline(always)]
-    fn clk_prefetch(&mut self, bus: &mut impl common::Bus, cycles: i32) {
-        let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        self.timing.note_execution_cycles();
-        self.timing
-            .advance_internal_cycles_with_prefetch(bus, code_segment_base, cycles);
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
-        } else {
-            self.cycles_remaining -= cycles as i64;
-        }
-    }
-
-    #[inline(always)]
-    fn clk_forced_prefetch(&mut self, bus: &mut impl common::Bus) {
-        let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        self.timing.note_execution_cycles();
-        let visible_cycles = self
-            .timing
-            .advance_forced_prefetch_fetch(bus, code_segment_base);
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
-        } else {
-            self.cycles_remaining -= i64::from(visible_cycles);
-        }
-    }
-
-    #[inline(always)]
-    fn clk_control_transfer_restart(
-        &mut self,
-        bus: &mut impl common::Bus,
-        instruction_pointer: u16,
-        timing: timing::I286ControlTransferTimingTemplate,
-    ) {
-        self.finish_state = I286FinishState::ControlTransferRestart;
-        let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        self.timing
-            .arm_control_transfer_restart(instruction_pointer);
-        self.timing
-            .advance_control_transfer_restart(bus, code_segment_base, timing);
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
-        } else {
-            let visible_cycles = i64::from(
-                timing.initial_internal_cycles
-                    + timing.final_internal_cycles
-                    + timing.restart_prefetch_fetches.saturating_mul(2),
-            );
-            self.cycles_remaining -= visible_cycles;
-        }
-    }
-
-    #[inline(always)]
-    fn clk_control_transfer_restart_without_gap_credit(
-        &mut self,
-        bus: &mut impl common::Bus,
-        instruction_pointer: u16,
-        timing: timing::I286ControlTransferTimingTemplate,
-    ) {
-        self.finish_state = I286FinishState::ControlTransferRestart;
-        let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        self.timing
-            .arm_control_transfer_restart_without_gap_credit(instruction_pointer);
-        self.timing
-            .advance_control_transfer_restart(bus, code_segment_base, timing);
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
-        } else {
-            let visible_cycles = i64::from(
-                timing.initial_internal_cycles
-                    + timing.final_internal_cycles
-                    + timing.restart_prefetch_fetches.saturating_mul(2),
-            );
-            self.cycles_remaining -= visible_cycles;
-        }
-    }
-
-    #[inline(always)]
-    fn clk_modrm_prefetch(
+    fn clk_modrm(
         &mut self,
         bus: &mut impl common::Bus,
         modrm: u8,
         reg_cycles: i32,
-        mem_eu_base_cycles: i32,
+        mem_cycles: i32,
     ) {
-        if modrm::modrm_is_register(modrm) {
-            self.clk_prefetch(bus, reg_cycles);
+        if modrm >= 0xC0 {
+            self.clk_bus(bus, reg_cycles);
         } else {
-            let au_cycles = modrm::ea_class_au_cycles(self.ea_class);
-            self.clk_prefetch(bus, mem_eu_base_cycles + au_cycles);
+            self.clk(mem_cycles);
         }
     }
 
     #[inline(always)]
-    fn clk_modrm_word_prefetch(
+    fn clk_modrm_word(
         &mut self,
         bus: &mut impl common::Bus,
         modrm: u8,
         reg_cycles: i32,
-        mem_eu_base_cycles: i32,
+        mem_cycles: i32,
         word_accesses: i32,
     ) {
-        if modrm::modrm_is_register(modrm) {
-            self.clk_prefetch(bus, reg_cycles);
+        if modrm >= 0xC0 {
+            self.clk_bus(bus, reg_cycles);
         } else {
-            let au_cycles = modrm::ea_class_au_cycles(self.ea_class);
-            let odd_penalty = if address_is_odd(self.ea) {
+            let penalty = if self.ea & 1 == 1 {
                 4 * word_accesses
             } else {
                 0
             };
-            self.clk_prefetch(bus, mem_eu_base_cycles + au_cycles + odd_penalty);
+            self.clk(mem_cycles + penalty);
         }
     }
 
@@ -703,34 +255,18 @@ impl I286 {
     }
 
     #[inline(always)]
-    fn stack_push_tail_cycles(&self, even_tail_cycles: i32) -> i32 {
-        even_tail_cycles - i32::from(self.regs.word(WordReg::SP) & 1)
-    }
-
-    #[inline(always)]
     fn fetch(&mut self, bus: &mut impl common::Bus) -> u8 {
-        let addr =
-            self.seg_bases[SegReg16::CS as usize].wrapping_add(self.ip as u32) & ADDRESS_MASK;
-        let value = bus.read_byte(addr);
-        let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        self.timing.note_code_byte_consumed(
-            bus,
-            code_segment_base,
-            self.ip,
-            Self::opcode_cold_start_prefetch_policy(value),
-        );
-        self.sync_timing_cycles();
+        let value = self.biu_queue_read(bus, QueueType::Subsequent);
         self.ip = self.ip.wrapping_add(1);
         value
     }
 
     #[inline(always)]
-    fn opcode_cold_start_prefetch_policy(opcode: u8) -> I286ColdStartPrefetchPolicy {
-        match opcode {
-            0xC3 => I286ColdStartPrefetchPolicy::PassiveLastFetchWindow,
-            0xCB | 0xCF => I286ColdStartPrefetchPolicy::StopBeforeLastFetch,
-            _ => I286ColdStartPrefetchPolicy::Complete,
-        }
+    fn fetch_first(&mut self, bus: &mut impl common::Bus) -> u8 {
+        self.biu_latch_instruction_entry();
+        let value = self.biu_queue_read(bus, QueueType::First);
+        self.ip = self.ip.wrapping_add(1);
+        value
     }
 
     #[inline(always)]
@@ -738,6 +274,103 @@ impl I286 {
         let low = self.fetch(bus) as u16;
         let high = self.fetch(bus) as u16;
         low | (high << 8)
+    }
+
+    #[inline(always)]
+    fn fetchword_without_tick(&mut self, bus: &mut impl common::Bus) -> u16 {
+        let low = self.biu_queue_read_subsequent_without_tick(bus) as u16;
+        self.ip = self.ip.wrapping_add(1);
+        let high = self.biu_queue_read_subsequent_without_tick(bus) as u16;
+        self.ip = self.ip.wrapping_add(1);
+        low | (high << 8)
+    }
+
+    #[inline(always)]
+    fn is_prefix_opcode(opcode: u8) -> bool {
+        matches!(opcode, 0x26 | 0x2E | 0x36 | 0x3E | 0xF0)
+    }
+
+    fn is_direct_accumulator_memory_opcode(opcode: u8) -> bool {
+        matches!(opcode, 0xA0..=0xA3)
+    }
+
+    fn update_prefixed_decode_spill_fetch_gap(&mut self) {
+        let next_byte = self.biu_queue_byte_for_timing(0);
+        let next_is_lea_mode1 = next_byte == Some(0x8D)
+            && self
+                .biu_queue_byte_for_timing(1)
+                .is_some_and(|modrm| modrm >> 6 == 1);
+        let next_is_direct_accumulator_memory =
+            next_byte.is_some_and(Self::is_direct_accumulator_memory_opcode);
+        let next_is_prefix = next_byte.is_some_and(Self::is_prefix_opcode);
+        let next_prefix_is_before_direct_accumulator_memory = next_is_prefix
+            && self
+                .biu_queue_byte_for_timing(1)
+                .is_some_and(Self::is_direct_accumulator_memory_opcode);
+        let enabled = (matches!(self.prefix_count_current, 4..=6)
+            && (next_is_lea_mode1
+                || (self.prefix_count_current == 5 && next_is_direct_accumulator_memory)
+                || (self.prefix_count_current == 5
+                    && next_is_prefix
+                    && !next_prefix_is_before_direct_accumulator_memory)
+                || (self.prefix_count_current >= 6 && !next_is_direct_accumulator_memory)));
+        self.biu_set_decode_spill_fetch_gap(enabled);
+    }
+
+    fn fetch_after_prefix_delay(&mut self, bus: &mut impl common::Bus) -> u8 {
+        if self.prefix_count_current >= 3 && self.biu_queue_byte_for_timing(0) == Some(0xD7) {
+            if self.prefix_count_current == 3 {
+                self.biu_no_prefetch_cycle(bus);
+            }
+            let opcode = self.biu_queue_read_subsequent_without_tick(bus);
+            self.ip = self.ip.wrapping_add(1);
+            return opcode;
+        }
+
+        if self.prefix_count_current >= 4
+            && self
+                .biu_queue_byte_for_timing(0)
+                .is_some_and(Self::is_prefix_opcode)
+            && self.biu_queue_byte_for_timing(1) == Some(0xD7)
+        {
+            let opcode = self.biu_queue_read_subsequent_without_tick(bus);
+            self.ip = self.ip.wrapping_add(1);
+            return opcode;
+        }
+
+        let next_byte = self.biu_queue_byte_for_timing(0);
+        let next_is_bound = next_byte == Some(0x62);
+        let next_is_direct_accumulator_memory =
+            next_byte.is_some_and(Self::is_direct_accumulator_memory_opcode);
+        let prefix_delay_cycles = if (self.prefix_count_current >= 4 && next_is_bound)
+            || (self.prefix_count_current >= 6 && next_is_direct_accumulator_memory)
+        {
+            0
+        } else if self.prefix_count_current == 5 && next_is_direct_accumulator_memory {
+            1
+        } else {
+            2
+        };
+        self.clk_bus(bus, prefix_delay_cycles);
+        if self.prefix_count_current >= 4 {
+            let opcode = self.biu_queue_read_subsequent_without_tick(bus);
+            self.ip = self.ip.wrapping_add(1);
+            let skip_tick_after_opcode = self.prefix_count_current >= 5
+                && (Self::is_direct_accumulator_memory_opcode(opcode)
+                    || (Self::is_prefix_opcode(opcode)
+                        && self
+                            .biu_queue_byte_for_timing(0)
+                            .is_some_and(Self::is_direct_accumulator_memory_opcode)))
+                || (self.prefix_count_current == 4 && opcode == 0x62);
+            let skip_d7_prefix_tick =
+                Self::is_prefix_opcode(opcode) && self.biu_queue_byte_for_timing(0) == Some(0xD7);
+            if !(skip_tick_after_opcode || skip_d7_prefix_tick) {
+                self.biu_tick_after_subsequent_queue_read(bus);
+            }
+            opcode
+        } else {
+            self.fetch(bus)
+        }
     }
 
     #[inline(always)]
@@ -757,40 +390,6 @@ impl I286 {
     #[inline(always)]
     fn seg_base(&self, seg: SegReg16) -> u32 {
         self.seg_bases[seg as usize]
-    }
-
-    #[inline(always)]
-    fn read_io_byte(&mut self, bus: &mut impl common::Bus, port: u16) -> u8 {
-        let value = bus.io_read_byte(port);
-        self.timing
-            .note_io_read_byte(bus, self.seg_bases[SegReg16::CS as usize], port, value);
-        self.sync_timing_cycles();
-        value
-    }
-
-    #[inline(always)]
-    fn read_io_word(&mut self, bus: &mut impl common::Bus, port: u16) -> u16 {
-        let value = bus.io_read_word(port);
-        self.timing
-            .note_io_read_word(bus, self.seg_bases[SegReg16::CS as usize], port, value);
-        self.sync_timing_cycles();
-        value
-    }
-
-    #[inline(always)]
-    fn write_io_byte(&mut self, bus: &mut impl common::Bus, port: u16, value: u8) {
-        bus.io_write_byte(port, value);
-        self.timing
-            .note_io_write_byte(bus, self.seg_bases[SegReg16::CS as usize], port, value);
-        self.sync_timing_cycles();
-    }
-
-    #[inline(always)]
-    fn write_io_word(&mut self, bus: &mut impl common::Bus, port: u16, value: u16) {
-        bus.io_write_word(port, value);
-        self.timing
-            .note_io_write_word(bus, self.seg_bases[SegReg16::CS as usize], port, value);
-        self.sync_timing_cycles();
     }
 
     /// Computes the physical address for a byte at `eo + delta`, wrapping
@@ -846,22 +445,12 @@ impl I286 {
     }
 
     fn decode_descriptor(
-        &self,
+        &mut self,
         selector: u16,
         bus: &mut impl common::Bus,
     ) -> Option<SegmentDescriptor> {
         let addr = self.descriptor_addr_checked(selector)?;
-        let limit = bus.read_byte(addr & ADDRESS_MASK) as u16
-            | ((bus.read_byte(addr.wrapping_add(1) & ADDRESS_MASK) as u16) << 8);
-        let base = bus.read_byte(addr.wrapping_add(2) & ADDRESS_MASK) as u32
-            | ((bus.read_byte(addr.wrapping_add(3) & ADDRESS_MASK) as u32) << 8)
-            | ((bus.read_byte(addr.wrapping_add(4) & ADDRESS_MASK) as u32) << 16);
-        let rights = bus.read_byte(addr.wrapping_add(5) & ADDRESS_MASK);
-        Some(SegmentDescriptor {
-            base,
-            limit,
-            rights,
-        })
+        Some(self.read_descriptor_at(bus, addr))
     }
 
     fn descriptor_dpl(rights: u8) -> u16 {
@@ -1116,16 +705,7 @@ impl I286 {
         if !self.check_segment_access(self.ea_seg, offset, 1, false, bus) {
             return 0;
         }
-        let address = self.seg_addr(delta);
-        let value = bus.read_byte(address);
-        self.timing.note_memory_read_byte(
-            bus,
-            self.seg_bases[SegReg16::CS as usize],
-            address,
-            value,
-        );
-        self.sync_timing_cycles();
-        value
+        self.biu_read_u8_physical(bus, self.seg_addr(delta))
     }
 
     #[inline(always)]
@@ -1134,15 +714,7 @@ impl I286 {
         if !self.check_segment_access(self.ea_seg, offset, 1, true, bus) {
             return;
         }
-        let address = self.seg_addr(delta);
-        bus.write_byte(address, value);
-        self.timing.note_memory_write_byte(
-            bus,
-            self.seg_bases[SegReg16::CS as usize],
-            address,
-            value,
-        );
-        self.sync_timing_cycles();
+        self.biu_write_u8_physical(bus, self.seg_addr(delta), value);
     }
 
     /// Reads a word from memory at `ea + delta`, wrapping the offset
@@ -1155,18 +727,37 @@ impl I286 {
         }
         let low_address = self.seg_addr(delta);
         let high_address = self.seg_addr(delta.wrapping_add(1));
-        let low = bus.read_byte(low_address) as u16;
-        let high = bus.read_byte(high_address) as u16;
-        let value = low | (high << 8);
-        self.timing.note_memory_read_word(
-            bus,
-            self.seg_bases[SegReg16::CS as usize],
-            low_address,
-            high_address,
-            value,
-        );
-        self.sync_timing_cycles();
-        value
+        self.biu_read_u16_pair(bus, low_address, high_address)
+    }
+
+    #[inline(always)]
+    fn seg_read_word_at_after_prefetch_gap(
+        &mut self,
+        bus: &mut impl common::Bus,
+        delta: u16,
+    ) -> u16 {
+        let offset = self.eo.wrapping_add(delta);
+        if !self.check_segment_access(self.ea_seg, offset, 2, false, bus) {
+            return 0;
+        }
+        let low_address = self.seg_addr(delta);
+        let high_address = self.seg_addr(delta.wrapping_add(1));
+        self.biu_read_u16_pair_after_prefetch_gap(bus, low_address, high_address)
+    }
+
+    #[inline(always)]
+    fn seg_read_word_at_after_prefetch_and_au_gap(
+        &mut self,
+        bus: &mut impl common::Bus,
+        delta: u16,
+    ) -> u16 {
+        let offset = self.eo.wrapping_add(delta);
+        if !self.check_segment_access(self.ea_seg, offset, 2, false, bus) {
+            return 0;
+        }
+        let low_address = self.seg_addr(delta);
+        let high_address = self.seg_addr(delta.wrapping_add(1));
+        self.biu_read_u16_pair_after_prefetch_and_au_gap(bus, low_address, high_address)
     }
 
     /// Reads a word from memory at the current EA, wrapping the offset
@@ -1183,18 +774,7 @@ impl I286 {
         if !self.check_segment_access(self.ea_seg, self.eo, 2, true, bus) {
             return;
         }
-        let low_address = self.ea;
-        let high_address = self.seg_addr(1);
-        bus.write_byte(low_address, value as u8);
-        bus.write_byte(high_address, (value >> 8) as u8);
-        self.timing.note_memory_write_word(
-            bus,
-            self.seg_bases[SegReg16::CS as usize],
-            low_address,
-            high_address,
-            value,
-        );
-        self.sync_timing_cycles();
+        self.biu_write_u16_pair(bus, self.ea, self.seg_addr(1), value);
     }
 
     /// Reads a byte from `seg:offset`, wrapping the offset within 16 bits.
@@ -1204,16 +784,41 @@ impl I286 {
             return 0;
         }
         let base = self.seg_base(seg);
-        let address = base.wrapping_add(offset as u32) & ADDRESS_MASK;
-        let value = bus.read_byte(address);
-        self.timing.note_memory_read_byte(
+        self.biu_read_u8_physical(bus, base.wrapping_add(offset as u32) & ADDRESS_MASK)
+    }
+
+    #[inline(always)]
+    fn read_byte_seg_without_prefetch(
+        &mut self,
+        bus: &mut impl common::Bus,
+        seg: SegReg16,
+        offset: u16,
+    ) -> u8 {
+        if !self.check_segment_access(seg, offset, 1, false, bus) {
+            return 0;
+        }
+        let base = self.seg_base(seg);
+        self.biu_read_u8_physical_without_prefetch(
             bus,
-            self.seg_bases[SegReg16::CS as usize],
-            address,
-            value,
-        );
-        self.sync_timing_cycles();
-        value
+            base.wrapping_add(offset as u32) & ADDRESS_MASK,
+        )
+    }
+
+    #[inline(always)]
+    fn read_byte_seg_after_prefetch_gap(
+        &mut self,
+        bus: &mut impl common::Bus,
+        seg: SegReg16,
+        offset: u16,
+    ) -> u8 {
+        if !self.check_segment_access(seg, offset, 1, false, bus) {
+            return 0;
+        }
+        let base = self.seg_base(seg);
+        self.biu_read_u8_physical_after_prefetch_gap(
+            bus,
+            base.wrapping_add(offset as u32) & ADDRESS_MASK,
+        )
     }
 
     /// Writes a byte to `seg:offset`, wrapping the offset within 16 bits.
@@ -1229,15 +834,7 @@ impl I286 {
             return;
         }
         let base = self.seg_base(seg);
-        let address = base.wrapping_add(offset as u32) & ADDRESS_MASK;
-        bus.write_byte(address, value);
-        self.timing.note_memory_write_byte(
-            bus,
-            self.seg_bases[SegReg16::CS as usize],
-            address,
-            value,
-        );
-        self.sync_timing_cycles();
+        self.biu_write_u8_physical(bus, base.wrapping_add(offset as u32) & ADDRESS_MASK, value);
     }
 
     /// Reads a word from `seg:offset`, wrapping the offset within 16 bits.
@@ -1249,18 +846,7 @@ impl I286 {
         let base = self.seg_base(seg);
         let low_address = base.wrapping_add(offset as u32) & ADDRESS_MASK;
         let high_address = base.wrapping_add(offset.wrapping_add(1) as u32) & ADDRESS_MASK;
-        let low = bus.read_byte(low_address) as u16;
-        let high = bus.read_byte(high_address) as u16;
-        let value = low | (high << 8);
-        self.timing.note_memory_read_word(
-            bus,
-            self.seg_bases[SegReg16::CS as usize],
-            low_address,
-            high_address,
-            value,
-        );
-        self.sync_timing_cycles();
-        value
+        self.biu_read_u16_pair(bus, low_address, high_address)
     }
 
     /// Writes a word to `seg:offset`, wrapping the offset within 16 bits.
@@ -1278,16 +864,7 @@ impl I286 {
         let base = self.seg_base(seg);
         let low_address = base.wrapping_add(offset as u32) & ADDRESS_MASK;
         let high_address = base.wrapping_add(offset.wrapping_add(1) as u32) & ADDRESS_MASK;
-        bus.write_byte(low_address, value as u8);
-        bus.write_byte(high_address, (value >> 8) as u8);
-        self.timing.note_memory_write_word(
-            bus,
-            self.seg_bases[SegReg16::CS as usize],
-            low_address,
-            high_address,
-            value,
-        );
-        self.sync_timing_cycles();
+        self.biu_write_u16_pair(bus, low_address, high_address, value);
     }
 
     fn push(&mut self, bus: &mut impl common::Bus, value: u16) {
@@ -1299,17 +876,7 @@ impl I286 {
         let base = self.seg_base(SegReg16::SS);
         let low_address = base.wrapping_add(sp as u32) & ADDRESS_MASK;
         let high_address = base.wrapping_add(sp.wrapping_add(1) as u32) & ADDRESS_MASK;
-        bus.write_byte(low_address, value as u8);
-        bus.write_byte(high_address, (value >> 8) as u8);
-        self.timing.note_memory_write_word(
-            bus,
-            self.seg_bases[SegReg16::CS as usize],
-            low_address,
-            high_address,
-            value,
-        );
-        self.timing.borrow_internal_cycles(2);
-        self.sync_timing_cycles();
+        self.biu_write_u16_pair(bus, low_address, high_address, value);
     }
 
     fn pop(&mut self, bus: &mut impl common::Bus) -> u16 {
@@ -1320,27 +887,9 @@ impl I286 {
         let base = self.seg_base(SegReg16::SS);
         let low_address = base.wrapping_add(sp as u32) & ADDRESS_MASK;
         let high_address = base.wrapping_add(sp.wrapping_add(1) as u32) & ADDRESS_MASK;
-        let low = bus.read_byte(low_address) as u16;
-        let high = bus.read_byte(high_address) as u16;
-        let value = low | (high << 8);
-        self.timing.note_memory_read_word(
-            bus,
-            self.seg_bases[SegReg16::CS as usize],
-            low_address,
-            high_address,
-            value,
-        );
-        self.timing.borrow_internal_cycles(2);
-        self.sync_timing_cycles();
+        let value = self.biu_read_u16_pair(bus, low_address, high_address);
         self.regs.set_word(WordReg::SP, sp.wrapping_add(2));
         value
-    }
-
-    fn word_access_is_split(&self, seg: SegReg16, offset: u16) -> bool {
-        let base = self.seg_base(seg);
-        let low_address = base.wrapping_add(offset as u32) & ADDRESS_MASK;
-        let high_address = base.wrapping_add(offset.wrapping_add(1) as u32) & ADDRESS_MASK;
-        (low_address.wrapping_add(1) & ADDRESS_MASK) != high_address || low_address & 1 != 0
     }
 
     fn load_segment(&mut self, seg: SegReg16, selector: u16, bus: &mut impl common::Bus) -> bool {
@@ -1370,11 +919,11 @@ impl I286 {
         Some(table_base.wrapping_add(index))
     }
 
-    fn set_accessed_bit(&self, selector: u16, bus: &mut impl common::Bus) {
+    fn set_accessed_bit(&mut self, selector: u16, bus: &mut impl common::Bus) {
         if let Some(addr) = self.descriptor_addr_checked(selector) {
-            let rights = bus.read_byte(addr.wrapping_add(5) & ADDRESS_MASK);
+            let rights = self.biu_read_u8_physical(bus, addr.wrapping_add(5) & ADDRESS_MASK);
             if rights & 0x01 == 0 {
-                bus.write_byte(addr.wrapping_add(5) & ADDRESS_MASK, rights | 0x01);
+                self.biu_write_u8_physical(bus, addr.wrapping_add(5) & ADDRESS_MASK, rights | 0x01);
             }
         }
     }
@@ -1397,14 +946,35 @@ impl I286 {
         }
     }
 
-    fn read_word_phys(&self, bus: &mut impl common::Bus, addr: u32) -> u16 {
-        bus.read_byte(addr & ADDRESS_MASK) as u16
-            | ((bus.read_byte(addr.wrapping_add(1) & ADDRESS_MASK) as u16) << 8)
+    fn read_word_phys(&mut self, bus: &mut impl common::Bus, addr: u32) -> u16 {
+        self.biu_read_u16_pair(
+            bus,
+            addr & ADDRESS_MASK,
+            addr.wrapping_add(1) & ADDRESS_MASK,
+        )
     }
 
-    fn write_word_phys(&self, bus: &mut impl common::Bus, addr: u32, value: u16) {
-        bus.write_byte(addr & ADDRESS_MASK, value as u8);
-        bus.write_byte(addr.wrapping_add(1) & ADDRESS_MASK, (value >> 8) as u8);
+    fn write_word_phys(&mut self, bus: &mut impl common::Bus, addr: u32, value: u16) {
+        self.biu_write_u16_pair(
+            bus,
+            addr & ADDRESS_MASK,
+            addr.wrapping_add(1) & ADDRESS_MASK,
+            value,
+        );
+    }
+
+    fn read_descriptor_at(&mut self, bus: &mut impl common::Bus, addr: u32) -> SegmentDescriptor {
+        let limit = self.read_word_phys(bus, addr);
+        let base = u32::from(self.biu_read_u8_physical(bus, addr.wrapping_add(2) & ADDRESS_MASK))
+            | (u32::from(self.biu_read_u8_physical(bus, addr.wrapping_add(3) & ADDRESS_MASK)) << 8)
+            | (u32::from(self.biu_read_u8_physical(bus, addr.wrapping_add(4) & ADDRESS_MASK))
+                << 16);
+        let rights = self.biu_read_u8_physical(bus, addr.wrapping_add(5) & ADDRESS_MASK);
+        SegmentDescriptor {
+            base,
+            limit,
+            rights,
+        }
     }
 
     fn switch_task(&mut self, ntask: u16, task_type: TaskType, bus: &mut impl common::Bus) {
@@ -1418,13 +988,7 @@ impl I286 {
             return;
         };
 
-        let ndesc = SegmentDescriptor {
-            limit: self.read_word_phys(bus, naddr),
-            base: bus.read_byte(naddr.wrapping_add(2) & ADDRESS_MASK) as u32
-                | ((bus.read_byte(naddr.wrapping_add(3) & ADDRESS_MASK) as u32) << 8)
-                | ((bus.read_byte(naddr.wrapping_add(4) & ADDRESS_MASK) as u32) << 16),
-            rights: bus.read_byte(naddr.wrapping_add(5) & ADDRESS_MASK),
-        };
+        let ndesc = self.read_descriptor_at(bus, naddr);
 
         let r = ndesc.rights;
         if Self::descriptor_is_segment(r) || (r & 0x0D) != 0x01 {
@@ -1516,21 +1080,29 @@ impl I286 {
         if task_type != TaskType::Call
             && let Some(oaddr) = self.descriptor_addr_checked(self.tr)
         {
-            let old_rights = bus.read_byte(oaddr.wrapping_add(5) & ADDRESS_MASK);
-            bus.write_byte(oaddr.wrapping_add(5) & ADDRESS_MASK, old_rights & !0x02);
+            let old_rights = self.biu_read_u8_physical(bus, oaddr.wrapping_add(5) & ADDRESS_MASK);
+            self.biu_write_u8_physical(
+                bus,
+                oaddr.wrapping_add(5) & ADDRESS_MASK,
+                old_rights & !0x02,
+            );
         }
 
         // Mark new TSS busy (CALL/JMP).
         if task_type != TaskType::Iret {
-            let new_rights = bus.read_byte(naddr.wrapping_add(5) & ADDRESS_MASK);
-            bus.write_byte(naddr.wrapping_add(5) & ADDRESS_MASK, new_rights | 0x02);
+            let new_rights = self.biu_read_u8_physical(bus, naddr.wrapping_add(5) & ADDRESS_MASK);
+            self.biu_write_u8_physical(
+                bus,
+                naddr.wrapping_add(5) & ADDRESS_MASK,
+                new_rights | 0x02,
+            );
         }
 
         // Update TR.
         self.tr = ntask;
         self.tr_limit = ndesc.limit;
         self.tr_base = ndesc.base;
-        self.tr_rights = bus.read_byte(naddr.wrapping_add(5) & ADDRESS_MASK);
+        self.tr_rights = self.biu_read_u8_physical(bus, naddr.wrapping_add(5) & ADDRESS_MASK);
 
         // Load registers from new TSS.
         self.flags.expand(ntss_flags);
@@ -1553,13 +1125,7 @@ impl I286 {
                 self.raise_fault_with_code(10, Self::segment_error_code(ntss_ldt), bus);
                 return;
             };
-            let ldt_desc = SegmentDescriptor {
-                limit: self.read_word_phys(bus, ldtaddr),
-                base: bus.read_byte(ldtaddr.wrapping_add(2) & ADDRESS_MASK) as u32
-                    | ((bus.read_byte(ldtaddr.wrapping_add(3) & ADDRESS_MASK) as u32) << 8)
-                    | ((bus.read_byte(ldtaddr.wrapping_add(4) & ADDRESS_MASK) as u32) << 16),
-                rights: bus.read_byte(ldtaddr.wrapping_add(5) & ADDRESS_MASK),
-            };
+            let ldt_desc = self.read_descriptor_at(bus, ldtaddr);
             let lr = ldt_desc.rights;
             if Self::descriptor_is_segment(lr) || (lr & 0x0F) != 0x02 {
                 self.raise_fault_with_code(10, Self::segment_error_code(ntss_ldt), bus);
@@ -1685,13 +1251,7 @@ impl I286 {
             return false;
         };
 
-        let desc = SegmentDescriptor {
-            limit: self.read_word_phys(bus, addr),
-            base: bus.read_byte(addr.wrapping_add(2) & ADDRESS_MASK) as u32
-                | ((bus.read_byte(addr.wrapping_add(3) & ADDRESS_MASK) as u32) << 8)
-                | ((bus.read_byte(addr.wrapping_add(4) & ADDRESS_MASK) as u32) << 16),
-            rights: bus.read_byte(addr.wrapping_add(5) & ADDRESS_MASK),
-        };
+        let desc = self.read_descriptor_at(bus, addr);
         let r = desc.rights;
         let cpl = self.cpl();
         let rpl = selector & 3;
@@ -1752,14 +1312,7 @@ impl I286 {
                     self.raise_fault_with_code(13, Self::segment_error_code(gate_selector), bus);
                     return false;
                 };
-                let target_desc = SegmentDescriptor {
-                    limit: self.read_word_phys(bus, target_addr),
-                    base: bus.read_byte(target_addr.wrapping_add(2) & ADDRESS_MASK) as u32
-                        | ((bus.read_byte(target_addr.wrapping_add(3) & ADDRESS_MASK) as u32) << 8)
-                        | ((bus.read_byte(target_addr.wrapping_add(4) & ADDRESS_MASK) as u32)
-                            << 16),
-                    rights: bus.read_byte(target_addr.wrapping_add(5) & ADDRESS_MASK),
-                };
+                let target_desc = self.read_descriptor_at(bus, target_addr);
                 let tr = target_desc.rights;
                 if !Self::descriptor_is_code(tr) || !Self::descriptor_is_segment(tr) {
                     self.raise_fault_with_code(13, Self::segment_error_code(gate_selector), bus);
@@ -1857,11 +1410,10 @@ impl I286 {
 
     fn execute_one(&mut self, bus: &mut impl common::Bus) {
         self.prev_ip = self.ip;
-        self.timing
-            .begin_instruction(self.sregs[SegReg16::CS as usize], self.ip, self.rep_active);
 
         if self.pending_irq != 0 {
             self.check_interrupts(bus);
+            self.biu_realign_to_current_ip();
         }
         if self.no_interrupt > 0 {
             self.no_interrupt -= 1;
@@ -1871,66 +1423,52 @@ impl I286 {
         }
 
         self.seg_prefix = false;
-        self.ea_class = EaClass::Register;
-        self.finish_state = I286FinishState::Linear;
+        self.prefix_count_current = 0;
+        self.lock_prefix_active = false;
+        self.lock_demand_gap_emitted = false;
 
         if self.rep_active {
             self.continue_rep(bus);
         } else {
-            let mut opcode = self.fetch(bus);
-            let mut prefix_count = 0u8;
+            let mut opcode = self.fetch_first(bus);
             loop {
                 match opcode {
                     0x26 => {
+                        self.prefix_count_current = self.prefix_count_current.saturating_add(1);
                         self.seg_prefix = true;
                         self.prefix_seg = SegReg16::ES;
-                        self.timing.note_prefix();
-                        prefix_count = prefix_count.saturating_add(1);
-                        self.clk_segment_override_prefix(bus);
-                        opcode = self.fetch(bus);
+                        self.update_prefixed_decode_spill_fetch_gap();
+                        opcode = self.fetch_after_prefix_delay(bus);
                     }
                     0x2E => {
+                        self.prefix_count_current = self.prefix_count_current.saturating_add(1);
                         self.seg_prefix = true;
                         self.prefix_seg = SegReg16::CS;
-                        self.timing.note_prefix();
-                        prefix_count = prefix_count.saturating_add(1);
-                        self.clk_segment_override_prefix(bus);
-                        opcode = self.fetch(bus);
+                        self.update_prefixed_decode_spill_fetch_gap();
+                        opcode = self.fetch_after_prefix_delay(bus);
                     }
                     0x36 => {
+                        self.prefix_count_current = self.prefix_count_current.saturating_add(1);
                         self.seg_prefix = true;
                         self.prefix_seg = SegReg16::SS;
-                        self.timing.note_prefix();
-                        prefix_count = prefix_count.saturating_add(1);
-                        self.clk_segment_override_prefix(bus);
-                        opcode = self.fetch(bus);
+                        self.update_prefixed_decode_spill_fetch_gap();
+                        opcode = self.fetch_after_prefix_delay(bus);
                     }
                     0x3E => {
+                        self.prefix_count_current = self.prefix_count_current.saturating_add(1);
                         self.seg_prefix = true;
                         self.prefix_seg = SegReg16::DS;
-                        self.timing.note_prefix();
-                        prefix_count = prefix_count.saturating_add(1);
-                        self.clk_segment_override_prefix(bus);
-                        opcode = self.fetch(bus);
+                        self.update_prefixed_decode_spill_fetch_gap();
+                        opcode = self.fetch_after_prefix_delay(bus);
                     }
                     0xF0 => {
-                        let prefix_count_before_lock = prefix_count;
-                        self.timing.note_lock_prefix(prefix_count_before_lock);
-                        prefix_count = prefix_count.saturating_add(1);
-                        opcode = self.fetch(bus);
-                        self.timing.note_lock_prefix_followed_by_prefix(
-                            Self::segment_override_prefix(opcode),
-                        );
-                        let prefetches_during_lock_prefix =
-                            self.lock_prefix_prefetches_for_next_opcode(bus, opcode);
-                        self.clk_lock_prefix(
-                            bus,
-                            opcode,
-                            prefix_count_before_lock,
-                            prefetches_during_lock_prefix,
-                        );
+                        self.prefix_count_current = self.prefix_count_current.saturating_add(1);
+                        self.lock_prefix_active = true;
+                        self.update_prefixed_decode_spill_fetch_gap();
+                        opcode = self.fetch_after_prefix_delay(bus);
                     }
                     _ => {
+                        self.biu_start_execute();
                         self.dispatch(opcode, bus);
                         break;
                     }
@@ -1938,8 +1476,11 @@ impl I286 {
             }
         }
 
-        self.timing
-            .finish_instruction(self.ip, self.halted, self.shutdown, self.finish_state);
+        if !self.halted && !self.shutdown && !self.rep_active {
+            self.biu_realign_to_current_ip();
+            self.biu_fetch_next(bus);
+            self.biu_finish_instruction();
+        }
     }
 
     /// Executes exactly one logical instruction (should only be used in tests).
@@ -1959,90 +1500,9 @@ impl I286 {
         (i64::MAX - self.cycles_remaining) as u64
     }
 
-    /// Enables or disables cycle-trace capture for the current CPU state.
-    pub fn set_cycle_trace_capture(&mut self, capture_enabled: bool) {
-        self.timing.set_capture_enabled(
-            capture_enabled,
-            self.sregs[SegReg16::CS as usize],
-            self.ip,
-        );
-    }
-
-    /// Returns the currently exposed timing EFSM state.
-    pub fn timing_state(&self) -> I286CycleState {
-        self.timing.cycle_state()
-    }
-
-    /// Returns the current timing milestones snapshot.
-    pub fn timing_milestones(&self) -> I286TimingMilestones {
-        self.timing.milestones()
-    }
-
-    /// Returns and clears the accumulated timing trace.
-    pub fn drain_cycle_trace(&mut self) -> Vec<I286CycleTraceEntry> {
-        self.timing.drain_cycle_trace()
-    }
-
     /// Returns the last computed effective address (for alignment checks).
     pub fn last_ea(&self) -> u32 {
         self.ea
-    }
-
-    /// Returns the addressing-mode class of the current instruction's
-    /// ModR/M operand, or `EaClass::Register` for instructions without a
-    /// memory operand.
-    pub fn last_ea_class(&self) -> EaClass {
-        self.ea_class
-    }
-
-    /// Returns the finish state declared by the current instruction
-    /// handler. `Linear` is the default for instructions that just fall
-    /// through to the next one.
-    pub fn last_finish_state(&self) -> I286FinishState {
-        self.finish_state
-    }
-
-    /// Seeds the timing model with a warm front-end state so the next
-    /// instruction starts from an already-filled queue.
-    /// Calling this with empty bytes, zero decoded entries, and a pending
-    /// `ControlTransfer` flush preserves the post-reset defaults.
-    pub fn install_front_end_state(
-        &mut self,
-        bus: &mut impl common::Bus,
-        prefetch_bytes: &[u8],
-        decoded_entries: u8,
-        pending_flush: I286FlushState,
-    ) {
-        let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        self.timing.install_front_end_state(
-            bus,
-            code_segment_base,
-            self.ip,
-            prefetch_bytes,
-            decoded_entries,
-            pending_flush,
-        );
-    }
-
-    /// Diagnostic-only: seeds a synthetic warm front-end state from a
-    /// [`I286WarmStartConfig`] and the already-populated instruction bytes
-    /// at `CS:IP`. The caller is responsible for staging the instruction
-    /// bytes on the bus before calling this. Intended for analysis tools
-    /// comparing cold-start versus warm-start cycle counts; MUST NOT be
-    /// used as a substitute for corpus-driven correctness testing.
-    pub fn install_warm_start(
-        &mut self,
-        bus: &mut impl common::Bus,
-        config: I286WarmStartConfig,
-        instruction_bytes: &[u8],
-    ) {
-        let prefetch_len = (config.prefetch_bytes_before as usize).min(instruction_bytes.len());
-        self.install_front_end_state(
-            bus,
-            &instruction_bytes[..prefetch_len],
-            config.decoded_entries_before,
-            config.pending_flush,
-        );
     }
 
     /// Signals a maskable interrupt request (IRQ).
@@ -2106,12 +1566,13 @@ impl common::Cpu for I286 {
         self.ea = 0;
         self.eo = 0;
         self.ea_seg = SegReg16::DS;
-        self.ea_class = EaClass::Register;
-        self.finish_state = I286FinishState::Linear;
+        self.lock_prefix_active = false;
+        self.lock_demand_gap_emitted = false;
         self.trap_level = 0;
         self.shutdown = false;
-        self.timing
-            .reset(self.sregs[SegReg16::CS as usize], self.ip);
+        self.biu_reset_front_end();
+        self.trace.clear();
+        self.cycle_counter = 0;
     }
 
     fn halted(&self) -> bool {
@@ -2126,8 +1587,7 @@ impl common::Cpu for I286 {
         self.sregs[SegReg16::CS as usize] = cs;
         self.set_real_segment_cache(SegReg16::CS, cs);
         self.ip = ip;
-        self.timing
-            .reset(self.sregs[SegReg16::CS as usize], self.ip);
+        self.biu_reset_front_end();
     }
 
     fn ax(&self) -> u16 {
@@ -2208,6 +1668,7 @@ impl common::Cpu for I286 {
 
     fn set_cs(&mut self, v: u16) {
         self.state.set_cs(v);
+        self.biu_reset_front_end();
     }
 
     fn ss(&self) -> u16 {
@@ -2232,6 +1693,7 @@ impl common::Cpu for I286 {
 
     fn set_ip(&mut self, v: u16) {
         self.state.ip = v;
+        self.biu_reset_front_end();
     }
 
     fn flags(&self) -> u16 {

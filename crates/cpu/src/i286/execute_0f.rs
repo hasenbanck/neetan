@@ -22,12 +22,12 @@ impl I286 {
             0 => {
                 // SLDT - Store LDTR selector
                 self.put_rm_word(modrm, self.ldtr, bus);
-                self.clk_modrm_prefetch(bus, modrm, 2, 3);
+                self.clk_modrm(bus, modrm, 2, 3);
             }
             1 => {
                 // STR - Store Task Register selector
                 self.put_rm_word(modrm, self.tr, bus);
-                self.clk_modrm_prefetch(bus, modrm, 2, 3);
+                self.clk_modrm(bus, modrm, 2, 3);
             }
             2 => {
                 // LLDT - Load LDTR from GDT descriptor (Bug #4: CPL=0 required)
@@ -62,7 +62,7 @@ impl I286 {
                     self.ldtr_base = descriptor.base;
                     self.ldtr_limit = descriptor.limit;
                 }
-                self.clk_modrm_prefetch(bus, modrm, 17, 19);
+                self.clk_modrm(bus, modrm, 17, 19);
             }
             3 => {
                 // LTR - Load Task Register from GDT descriptor
@@ -102,24 +102,29 @@ impl I286 {
                 // Bug #5: Mark TSS as busy by setting bit 1 of type field.
                 self.tr_rights |= 0x02;
                 if let Some(addr) = self.descriptor_addr_checked(selector) {
-                    let r = bus.read_byte(addr.wrapping_add(5) & ADDRESS_MASK);
-                    bus.write_byte(addr.wrapping_add(5) & ADDRESS_MASK, r | 0x02);
+                    let rights =
+                        self.biu_read_u8_physical(bus, addr.wrapping_add(5) & ADDRESS_MASK);
+                    self.biu_write_u8_physical(
+                        bus,
+                        addr.wrapping_add(5) & ADDRESS_MASK,
+                        rights | 0x02,
+                    );
                 }
-                self.clk_modrm_prefetch(bus, modrm, 17, 19);
+                self.clk_modrm(bus, modrm, 17, 19);
             }
             4 => {
                 // VERR - Verify segment readable (Bug #11: conforming exemption)
                 let selector = self.get_rm_word(modrm, bus);
                 let readable = self.verr_accessible(selector, bus);
                 self.flags.zero_val = if readable { 0 } else { 1 };
-                self.clk_modrm_prefetch(bus, modrm, 14, 16);
+                self.clk_modrm(bus, modrm, 14, 16);
             }
             5 => {
                 // VERW - Verify segment writable
                 let selector = self.get_rm_word(modrm, bus);
                 let writable = self.selector_accessible(selector, true, bus);
                 self.flags.zero_val = if writable { 0 } else { 1 };
-                self.clk_modrm_prefetch(bus, modrm, 14, 16);
+                self.clk_modrm(bus, modrm, 14, 16);
             }
             _ => self.raise_fault(6, bus),
         }
@@ -135,12 +140,12 @@ impl I286 {
                     return;
                 }
                 self.calc_ea(modrm, bus);
-                bus.write_byte(self.ea, self.gdt_limit as u8);
-                bus.write_byte(self.seg_addr(1), (self.gdt_limit >> 8) as u8);
-                bus.write_byte(self.seg_addr(2), self.gdt_base as u8);
-                bus.write_byte(self.seg_addr(3), (self.gdt_base >> 8) as u8);
-                bus.write_byte(self.seg_addr(4), (self.gdt_base >> 16) as u8);
-                bus.write_byte(self.seg_addr(5), 0xFF);
+                self.biu_write_u8_physical(bus, self.ea, self.gdt_limit as u8);
+                self.biu_write_u8_physical(bus, self.seg_addr(1), (self.gdt_limit >> 8) as u8);
+                self.biu_write_u8_physical(bus, self.seg_addr(2), self.gdt_base as u8);
+                self.biu_write_u8_physical(bus, self.seg_addr(3), (self.gdt_base >> 8) as u8);
+                self.biu_write_u8_physical(bus, self.seg_addr(4), (self.gdt_base >> 16) as u8);
+                self.biu_write_u8_physical(bus, self.seg_addr(5), 0xFF);
                 self.clk(11);
             }
             1 => {
@@ -150,12 +155,12 @@ impl I286 {
                     return;
                 }
                 self.calc_ea(modrm, bus);
-                bus.write_byte(self.ea, self.idt_limit as u8);
-                bus.write_byte(self.seg_addr(1), (self.idt_limit >> 8) as u8);
-                bus.write_byte(self.seg_addr(2), self.idt_base as u8);
-                bus.write_byte(self.seg_addr(3), (self.idt_base >> 8) as u8);
-                bus.write_byte(self.seg_addr(4), (self.idt_base >> 16) as u8);
-                bus.write_byte(self.seg_addr(5), 0xFF);
+                self.biu_write_u8_physical(bus, self.ea, self.idt_limit as u8);
+                self.biu_write_u8_physical(bus, self.seg_addr(1), (self.idt_limit >> 8) as u8);
+                self.biu_write_u8_physical(bus, self.seg_addr(2), self.idt_base as u8);
+                self.biu_write_u8_physical(bus, self.seg_addr(3), (self.idt_base >> 8) as u8);
+                self.biu_write_u8_physical(bus, self.seg_addr(4), (self.idt_base >> 16) as u8);
+                self.biu_write_u8_physical(bus, self.seg_addr(5), 0xFF);
                 self.clk(12);
             }
             2 => {
@@ -169,11 +174,10 @@ impl I286 {
                     return;
                 }
                 self.calc_ea(modrm, bus);
-                let limit =
-                    bus.read_byte(self.ea) as u16 | ((bus.read_byte(self.seg_addr(1)) as u16) << 8);
-                let base = bus.read_byte(self.seg_addr(2)) as u32
-                    | ((bus.read_byte(self.seg_addr(3)) as u32) << 8)
-                    | ((bus.read_byte(self.seg_addr(4)) as u32) << 16);
+                let limit = self.biu_read_u16_pair(bus, self.ea, self.seg_addr(1));
+                let base = u32::from(self.biu_read_u8_physical(bus, self.seg_addr(2)))
+                    | (u32::from(self.biu_read_u8_physical(bus, self.seg_addr(3))) << 8)
+                    | (u32::from(self.biu_read_u8_physical(bus, self.seg_addr(4))) << 16);
                 self.gdt_base = base & ADDRESS_MASK;
                 self.gdt_limit = limit;
                 self.clk(11);
@@ -189,11 +193,10 @@ impl I286 {
                     return;
                 }
                 self.calc_ea(modrm, bus);
-                let limit =
-                    bus.read_byte(self.ea) as u16 | ((bus.read_byte(self.seg_addr(1)) as u16) << 8);
-                let base = bus.read_byte(self.seg_addr(2)) as u32
-                    | ((bus.read_byte(self.seg_addr(3)) as u32) << 8)
-                    | ((bus.read_byte(self.seg_addr(4)) as u32) << 16);
+                let limit = self.biu_read_u16_pair(bus, self.ea, self.seg_addr(1));
+                let base = u32::from(self.biu_read_u8_physical(bus, self.seg_addr(2)))
+                    | (u32::from(self.biu_read_u8_physical(bus, self.seg_addr(3))) << 8)
+                    | (u32::from(self.biu_read_u8_physical(bus, self.seg_addr(4))) << 16);
                 self.idt_base = base & ADDRESS_MASK;
                 self.idt_limit = limit;
                 self.clk(12);
@@ -201,7 +204,7 @@ impl I286 {
             4 => {
                 // SMSW - Store Machine Status Word
                 self.put_rm_word(modrm, self.msw, bus);
-                self.clk_modrm_prefetch(bus, modrm, 2, 3);
+                self.clk_modrm(bus, modrm, 2, 3);
             }
             6 => {
                 // LMSW - Load Machine Status Word (Bug #4: CPL=0 in PM)
@@ -213,7 +216,7 @@ impl I286 {
                 let value = self.get_rm_word(modrm, bus);
                 let old_pe = self.msw & 1;
                 self.msw = value | old_pe;
-                self.clk_modrm_prefetch(bus, modrm, 3, 6);
+                self.clk_modrm(bus, modrm, 3, 6);
             }
             _ => self.raise_fault(6, bus),
         }
@@ -255,7 +258,7 @@ impl I286 {
                 }
             }
         }
-        self.clk_modrm_prefetch(bus, modrm, 14, 16);
+        self.clk_modrm(bus, modrm, 14, 16);
     }
 
     fn lsl_instr(&mut self, bus: &mut impl common::Bus) {
@@ -294,10 +297,10 @@ impl I286 {
                 }
             }
         }
-        self.clk_modrm_prefetch(bus, modrm, 14, 16);
+        self.clk_modrm(bus, modrm, 14, 16);
     }
 
-    fn verr_accessible(&self, selector: u16, bus: &mut impl common::Bus) -> bool {
+    fn verr_accessible(&mut self, selector: u16, bus: &mut impl common::Bus) -> bool {
         if selector & 0xFFFC == 0 {
             return false;
         }
@@ -321,7 +324,12 @@ impl I286 {
         Self::descriptor_is_readable(rights)
     }
 
-    fn selector_accessible(&self, selector: u16, write: bool, bus: &mut impl common::Bus) -> bool {
+    fn selector_accessible(
+        &mut self,
+        selector: u16,
+        write: bool,
+        bus: &mut impl common::Bus,
+    ) -> bool {
         if selector & 0xFFFC == 0 {
             return false;
         }

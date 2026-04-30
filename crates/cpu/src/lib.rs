@@ -63,9 +63,9 @@ mod vx0;
 mod z80;
 
 pub use i286::{
-    EaClass, I286, I286AuStage, I286BusPhase, I286CycleState, I286CycleTraceEntry, I286EuStage,
-    I286FinishState, I286Flags, I286FlushState, I286PendingBusRequest, I286RepState, I286State,
-    I286TimingMilestones, I286TraceBusStatus, I286WarmStartConfig,
+    I286, I286AuStage, I286BusLane, I286BusPhase, I286CycleState, I286CycleTraceEntry, I286EuStage,
+    I286Flags, I286FlushState, I286PendingBusRequest, I286RepState, I286State, I286TraceBusStatus,
+    I286WarmStartConfig,
 };
 pub use i386::{CPU_MODEL_386, CPU_MODEL_486, I386, I386Flags, I386State};
 pub use i8086::{I8086, I8086Flags, I8086State, PC9801F_CPU_CLOCK_5MHZ, PC9801F_CPU_CLOCK_8MHZ};

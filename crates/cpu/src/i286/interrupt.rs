@@ -1,4 +1,4 @@
-use super::{ADDRESS_MASK, I286};
+use super::I286;
 use crate::{PENDING_IRQ, PENDING_NMI, SegReg16};
 
 const INTGATE: u8 = 6;
@@ -36,7 +36,6 @@ impl I286 {
         is_external: bool,
         bus: &mut impl common::Bus,
     ) {
-        self.finish_state = super::timing::I286FinishState::FaultRestart;
         self.rep_active = false;
         if self.msw & 1 == 0 {
             let flags_val = self.flags.compress();
@@ -49,8 +48,8 @@ impl I286 {
             self.push(bus, return_ip);
 
             let addr = (vector as u32) * 4;
-            let dest_ip = bus.read_word(addr);
-            let dest_cs = bus.read_word(addr + 2);
+            let dest_ip = self.read_word_phys(bus, addr);
+            let dest_cs = self.read_word_phys(bus, addr + 2);
             if !self.load_segment(SegReg16::CS, dest_cs, bus) {
                 return;
             }
@@ -84,12 +83,9 @@ impl I286 {
         }
 
         let gate_addr = self.idt_base.wrapping_add(gate_offset);
-        let w0 = bus.read_byte(gate_addr & ADDRESS_MASK) as u16
-            | ((bus.read_byte(gate_addr.wrapping_add(1) & ADDRESS_MASK) as u16) << 8);
-        let w1 = bus.read_byte(gate_addr.wrapping_add(2) & ADDRESS_MASK) as u16
-            | ((bus.read_byte(gate_addr.wrapping_add(3) & ADDRESS_MASK) as u16) << 8);
-        let w2 = bus.read_byte(gate_addr.wrapping_add(4) & ADDRESS_MASK) as u16
-            | ((bus.read_byte(gate_addr.wrapping_add(5) & ADDRESS_MASK) as u16) << 8);
+        let w0 = self.read_word_phys(bus, gate_addr);
+        let w1 = self.read_word_phys(bus, gate_addr.wrapping_add(2));
+        let w2 = self.read_word_phys(bus, gate_addr.wrapping_add(4));
 
         let gate_ip = w0;
         let gate_selector = w1;
@@ -183,24 +179,8 @@ impl I286 {
                 return;
             }
 
-            let new_sp = bus
-                .read_byte(self.tr_base.wrapping_add(tss_sp_offset as u32) & ADDRESS_MASK)
-                as u16
-                | ((bus.read_byte(
-                    self.tr_base
-                        .wrapping_add(tss_sp_offset.wrapping_add(1) as u32)
-                        & ADDRESS_MASK,
-                ) as u16)
-                    << 8);
-            let new_ss = bus
-                .read_byte(self.tr_base.wrapping_add(tss_ss_offset as u32) & ADDRESS_MASK)
-                as u16
-                | ((bus.read_byte(
-                    self.tr_base
-                        .wrapping_add(tss_ss_offset.wrapping_add(1) as u32)
-                        & ADDRESS_MASK,
-                ) as u16)
-                    << 8);
+            let new_sp = self.read_word_phys(bus, self.tr_base.wrapping_add(tss_sp_offset as u32));
+            let new_ss = self.read_word_phys(bus, self.tr_base.wrapping_add(tss_ss_offset as u32));
 
             let old_ss = self.sregs[SegReg16::SS as usize];
             let old_sp = self.regs.word(crate::WordReg::SP);
@@ -303,8 +283,6 @@ impl I286 {
         if self.shutdown {
             return;
         }
-        self.finish_state = super::timing::I286FinishState::FaultRestart;
-        self.timing.note_exception_entry();
         if self.is_protected_mode() {
             match self.check_double_fault(vector) {
                 DoubleFaultResult::Shutdown => return,
@@ -328,8 +306,6 @@ impl I286 {
         if self.shutdown {
             return;
         }
-        self.finish_state = super::timing::I286FinishState::FaultRestart;
-        self.timing.note_exception_entry();
         if self.is_protected_mode() {
             match self.check_double_fault(vector) {
                 DoubleFaultResult::Shutdown => return,

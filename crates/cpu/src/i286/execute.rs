@@ -1,310 +1,7 @@
-use super::{
-    ADDRESS_MASK, EaClass, I286, address_is_odd, modrm,
-    timing::{
-        I286ControlTransferTimingTemplate, I286DemandPrefetchPolicy, I286FinishState,
-        I286FpuEscapeTiming, LOCK_PREFIX_OVERLAP_CREDIT, MOFFS_PREFIX_OVERLAP_CREDIT,
-        STACK_WORD_OVERLAP_CREDIT,
-    },
-};
+use super::{ADDRESS_MASK, I286};
 use crate::{ByteReg, SegReg16, WordReg};
 
-#[derive(Clone, Copy)]
-struct I286BinaryAluTimingTemplate {
-    register_eu_cycles: i32,
-    memory_eu_base_cycles: i32,
-    odd_word_bus_accesses: i32,
-}
-
-#[derive(Clone, Copy)]
-struct I286MoveTimingTemplate {
-    register_eu_cycles: i32,
-    memory_eu_base_cycles: i32,
-    odd_word_bus_accesses: i32,
-}
-
-#[derive(Clone, Copy)]
-struct I286ShortBranchTimingTemplate {
-    not_taken_cycles: i32,
-    taken_control_transfer: I286ControlTransferTimingTemplate,
-}
-
-const BINARY_ALU_WRITE_BYTE_TIMING: I286BinaryAluTimingTemplate = I286BinaryAluTimingTemplate {
-    register_eu_cycles: 3,
-    memory_eu_base_cycles: 6,
-    odd_word_bus_accesses: 0,
-};
-const BINARY_ALU_RM_WRITE_WORD_TIMING: I286BinaryAluTimingTemplate = I286BinaryAluTimingTemplate {
-    register_eu_cycles: 3,
-    memory_eu_base_cycles: 6,
-    odd_word_bus_accesses: 0,
-};
-const BINARY_ALU_REG_WRITE_WORD_TIMING: I286BinaryAluTimingTemplate = I286BinaryAluTimingTemplate {
-    register_eu_cycles: 3,
-    memory_eu_base_cycles: 6,
-    odd_word_bus_accesses: 0,
-};
-const BINARY_ALU_COMPARE_RM_BYTE_TIMING: I286BinaryAluTimingTemplate =
-    I286BinaryAluTimingTemplate {
-        register_eu_cycles: 3,
-        memory_eu_base_cycles: 6,
-        odd_word_bus_accesses: 0,
-    };
-const BINARY_ALU_COMPARE_RM_WORD_TIMING: I286BinaryAluTimingTemplate =
-    I286BinaryAluTimingTemplate {
-        register_eu_cycles: 3,
-        memory_eu_base_cycles: 6,
-        odd_word_bus_accesses: 0,
-    };
-const BINARY_ALU_COMPARE_REG_BYTE_TIMING: I286BinaryAluTimingTemplate =
-    I286BinaryAluTimingTemplate {
-        register_eu_cycles: 3,
-        memory_eu_base_cycles: 5,
-        odd_word_bus_accesses: 0,
-    };
-const BINARY_ALU_COMPARE_REG_WORD_TIMING: I286BinaryAluTimingTemplate =
-    I286BinaryAluTimingTemplate {
-        register_eu_cycles: 3,
-        memory_eu_base_cycles: 5,
-        odd_word_bus_accesses: 0,
-    };
-const MOV_WRITE_BYTE_TIMING: I286MoveTimingTemplate = I286MoveTimingTemplate {
-    register_eu_cycles: 3,
-    memory_eu_base_cycles: 2,
-    odd_word_bus_accesses: 0,
-};
-const MOV_WRITE_WORD_TIMING: I286MoveTimingTemplate = I286MoveTimingTemplate {
-    register_eu_cycles: 3,
-    memory_eu_base_cycles: 1,
-    odd_word_bus_accesses: 0,
-};
-const MOV_READ_BYTE_TIMING: I286MoveTimingTemplate = I286MoveTimingTemplate {
-    register_eu_cycles: 3,
-    memory_eu_base_cycles: 4,
-    odd_word_bus_accesses: 0,
-};
-const MOV_READ_WORD_TIMING: I286MoveTimingTemplate = I286MoveTimingTemplate {
-    register_eu_cycles: 3,
-    memory_eu_base_cycles: 4,
-    odd_word_bus_accesses: 0,
-};
-
-const SHORT_JCC_TIMING: I286ShortBranchTimingTemplate = I286ShortBranchTimingTemplate {
-    not_taken_cycles: 5,
-    taken_control_transfer: I286ControlTransferTimingTemplate {
-        initial_internal_cycles: 2,
-        restart_prefetch_fetches: 3,
-        final_internal_cycles: 2,
-    },
-};
-
-pub(super) const NEAR_CONTROL_TRANSFER_TIMING: I286ControlTransferTimingTemplate =
-    I286ControlTransferTimingTemplate {
-        initial_internal_cycles: 2,
-        restart_prefetch_fetches: 3,
-        final_internal_cycles: 2,
-    };
-
-const LOCK_SHORT_JMP_CONTROL_TRANSFER_TIMING: I286ControlTransferTimingTemplate =
-    I286ControlTransferTimingTemplate {
-        initial_internal_cycles: 3,
-        restart_prefetch_fetches: 3,
-        final_internal_cycles: 2,
-    };
-
-const FAR_IMMEDIATE_CONTROL_TRANSFER_TIMING: I286ControlTransferTimingTemplate =
-    I286ControlTransferTimingTemplate {
-        initial_internal_cycles: 6,
-        restart_prefetch_fetches: 3,
-        final_internal_cycles: 2,
-    };
-
-const PREFIXED_FAR_IMMEDIATE_CONTROL_TRANSFER_TIMING: I286ControlTransferTimingTemplate =
-    I286ControlTransferTimingTemplate {
-        initial_internal_cycles: 5,
-        restart_prefetch_fetches: 3,
-        final_internal_cycles: 2,
-    };
-
-const LOCK_PREFIXED_FAR_IMMEDIATE_CONTROL_TRANSFER_TIMING: I286ControlTransferTimingTemplate =
-    I286ControlTransferTimingTemplate {
-        initial_internal_cycles: 7,
-        restart_prefetch_fetches: 3,
-        final_internal_cycles: 2,
-    };
-
-const LOOP_CONTROL_TRANSFER_TIMING: I286ControlTransferTimingTemplate =
-    I286ControlTransferTimingTemplate {
-        initial_internal_cycles: 3,
-        restart_prefetch_fetches: 3,
-        final_internal_cycles: 2,
-    };
-
-const IRET_CONTROL_TRANSFER_TIMING: I286ControlTransferTimingTemplate =
-    I286ControlTransferTimingTemplate {
-        initial_internal_cycles: 4,
-        restart_prefetch_fetches: 3,
-        final_internal_cycles: 2,
-    };
-
-const LOCK_IRET_CONTROL_TRANSFER_TIMING: I286ControlTransferTimingTemplate =
-    I286ControlTransferTimingTemplate {
-        initial_internal_cycles: 5,
-        restart_prefetch_fetches: 3,
-        final_internal_cycles: 2,
-    };
-
-const LOCK_LOOP_CONTROL_TRANSFER_TIMING: I286ControlTransferTimingTemplate =
-    I286ControlTransferTimingTemplate {
-        initial_internal_cycles: 4,
-        restart_prefetch_fetches: 3,
-        final_internal_cycles: 2,
-    };
-
-const LOCK_JCXZ_CONTROL_TRANSFER_TIMING: I286ControlTransferTimingTemplate =
-    I286ControlTransferTimingTemplate {
-        initial_internal_cycles: 1,
-        restart_prefetch_fetches: 3,
-        final_internal_cycles: 2,
-    };
-
 impl I286 {
-    #[inline(always)]
-    fn clk_accumulator_imm8_template(&mut self, bus: &mut impl common::Bus) {
-        self.clk_prefetch(bus, 4);
-    }
-
-    #[inline(always)]
-    fn clk_accumulator_imm16_template(&mut self, bus: &mut impl common::Bus) {
-        self.clk_prefetch(bus, 5);
-    }
-
-    #[inline(always)]
-    fn clk_binary_alu_byte_template(
-        &mut self,
-        bus: &mut impl common::Bus,
-        modrm: u8,
-        timing: I286BinaryAluTimingTemplate,
-    ) {
-        self.clk_modrm_prefetch(
-            bus,
-            modrm,
-            timing.register_eu_cycles,
-            timing.memory_eu_base_cycles,
-        );
-    }
-
-    #[inline(always)]
-    fn clk_binary_alu_word_template(
-        &mut self,
-        bus: &mut impl common::Bus,
-        modrm: u8,
-        timing: I286BinaryAluTimingTemplate,
-    ) {
-        self.clk_modrm_word_prefetch(
-            bus,
-            modrm,
-            timing.register_eu_cycles,
-            timing.memory_eu_base_cycles,
-            timing.odd_word_bus_accesses,
-        );
-    }
-
-    #[inline(always)]
-    fn clk_move_byte_template(
-        &mut self,
-        bus: &mut impl common::Bus,
-        modrm: u8,
-        timing: I286MoveTimingTemplate,
-    ) {
-        self.clk_modrm_prefetch(
-            bus,
-            modrm,
-            timing.register_eu_cycles,
-            timing.memory_eu_base_cycles,
-        );
-    }
-
-    #[inline(always)]
-    fn clk_move_word_template(
-        &mut self,
-        bus: &mut impl common::Bus,
-        modrm: u8,
-        timing: I286MoveTimingTemplate,
-    ) {
-        self.clk_modrm_word_prefetch(
-            bus,
-            modrm,
-            timing.register_eu_cycles,
-            timing.memory_eu_base_cycles,
-            timing.odd_word_bus_accesses,
-        );
-    }
-
-    fn prepare_imul_imm8_memory_operand(&mut self, modrm: u8) {
-        self.prepare_sign_extended_immediate_memory_operand(modrm);
-
-        let prefix_count = self.timing.prefix_count();
-        if prefix_count == 0 {
-            return;
-        }
-
-        match self.ea_class {
-            EaClass::Direct => {
-                if prefix_count & 1 == 0 {
-                    self.timing.note_demand_prefetch_policy(
-                        I286DemandPrefetchPolicy::BeforePrefetchGapThenPrefetch,
-                    );
-                    self.timing.note_demand_prefetch_limit(2);
-                } else {
-                    self.timing.note_demand_prefetch_policy(
-                        I286DemandPrefetchPolicy::BeforeAndAfterTurnaroundThenGap,
-                    );
-                }
-            }
-            EaClass::Disp16Double => {
-                self.timing.note_demand_prefetch_policy(
-                    I286DemandPrefetchPolicy::BeforeAndAfterTurnaroundThenGap,
-                );
-            }
-            EaClass::Disp8Single if prefix_count & 1 == 1 => {
-                self.timing.note_demand_prefetch_policy(
-                    I286DemandPrefetchPolicy::AfterTurnaroundAuThenGapThenPrefetch,
-                );
-            }
-            _ => {}
-        }
-    }
-
-    fn imul_imm8_memory_base_cycles(&self) -> i32 {
-        let prefix_count = self.timing.prefix_count();
-
-        if self.timing.lock_active() && self.ea_class == EaClass::DoubleRegister {
-            21
-        } else if prefix_count != 0 && self.ea_class == EaClass::Direct {
-            if prefix_count & 1 == 0 { 26 } else { 24 }
-        } else if prefix_count != 0 && self.ea_class == EaClass::Disp16Double {
-            if prefix_count & 1 == 1 { 23 } else { 25 }
-        } else {
-            24
-        }
-    }
-
-    #[inline(always)]
-    fn borrow_no_displacement_read_only_cycles(&mut self, modrm: u8) {
-        if modrm::modrm_is_register(modrm) {
-            return;
-        }
-
-        if self.ea_class.is_no_displacement_memory()
-            || self.timing.lock_active()
-                && !self.timing.lock_prefix_followed_by_prefix()
-                && self.ea_class.is_disp8()
-        {
-            self.timing
-                .borrow_internal_cycles(LOCK_PREFIX_OVERLAP_CREDIT);
-        }
-    }
-
     pub(super) fn dispatch(&mut self, opcode: u8, bus: &mut impl common::Bus) {
         match opcode {
             // ADD
@@ -391,24 +88,24 @@ impl I286 {
             0x3F => self.aas(bus),
 
             // INC word registers
-            0x40 => self.inc_word_reg(WordReg::AX),
-            0x41 => self.inc_word_reg(WordReg::CX),
-            0x42 => self.inc_word_reg(WordReg::DX),
-            0x43 => self.inc_word_reg(WordReg::BX),
-            0x44 => self.inc_word_reg(WordReg::SP),
-            0x45 => self.inc_word_reg(WordReg::BP),
-            0x46 => self.inc_word_reg(WordReg::SI),
-            0x47 => self.inc_word_reg(WordReg::DI),
+            0x40 => self.inc_word_reg(WordReg::AX, bus),
+            0x41 => self.inc_word_reg(WordReg::CX, bus),
+            0x42 => self.inc_word_reg(WordReg::DX, bus),
+            0x43 => self.inc_word_reg(WordReg::BX, bus),
+            0x44 => self.inc_word_reg(WordReg::SP, bus),
+            0x45 => self.inc_word_reg(WordReg::BP, bus),
+            0x46 => self.inc_word_reg(WordReg::SI, bus),
+            0x47 => self.inc_word_reg(WordReg::DI, bus),
 
             // DEC word registers
-            0x48 => self.dec_word_reg(WordReg::AX),
-            0x49 => self.dec_word_reg(WordReg::CX),
-            0x4A => self.dec_word_reg(WordReg::DX),
-            0x4B => self.dec_word_reg(WordReg::BX),
-            0x4C => self.dec_word_reg(WordReg::SP),
-            0x4D => self.dec_word_reg(WordReg::BP),
-            0x4E => self.dec_word_reg(WordReg::SI),
-            0x4F => self.dec_word_reg(WordReg::DI),
+            0x48 => self.dec_word_reg(WordReg::AX, bus),
+            0x49 => self.dec_word_reg(WordReg::CX, bus),
+            0x4A => self.dec_word_reg(WordReg::DX, bus),
+            0x4B => self.dec_word_reg(WordReg::BX, bus),
+            0x4C => self.dec_word_reg(WordReg::SP, bus),
+            0x4D => self.dec_word_reg(WordReg::BP, bus),
+            0x4E => self.dec_word_reg(WordReg::SI, bus),
+            0x4F => self.dec_word_reg(WordReg::DI, bus),
 
             // PUSH word registers
             0x50 => self.push_word_reg(WordReg::AX, bus),
@@ -449,29 +146,24 @@ impl I286 {
             0x6F => self.outsw(bus),
 
             // Jcc (short jumps)
-            0x70 => self.jcc(bus, self.flags.of(), SHORT_JCC_TIMING),
-            0x71 => self.jcc(bus, !self.flags.of(), SHORT_JCC_TIMING),
-            0x72 => self.jcc(bus, self.flags.cf(), SHORT_JCC_TIMING),
-            0x73 => self.jcc(bus, !self.flags.cf(), SHORT_JCC_TIMING),
-            0x74 => self.jcc(bus, self.flags.zf(), SHORT_JCC_TIMING),
-            0x75 => self.jcc(bus, !self.flags.zf(), SHORT_JCC_TIMING),
-            0x76 => self.jcc(bus, self.flags.cf() || self.flags.zf(), SHORT_JCC_TIMING),
-            0x77 => self.jcc(bus, !self.flags.cf() && !self.flags.zf(), SHORT_JCC_TIMING),
-            0x78 => self.jcc(bus, self.flags.sf(), SHORT_JCC_TIMING),
-            0x79 => self.jcc(bus, !self.flags.sf(), SHORT_JCC_TIMING),
-            0x7A => self.jcc(bus, self.flags.pf(), SHORT_JCC_TIMING),
-            0x7B => self.jcc(bus, !self.flags.pf(), SHORT_JCC_TIMING),
-            0x7C => self.jcc(bus, self.flags.sf() != self.flags.of(), SHORT_JCC_TIMING),
-            0x7D => self.jcc(bus, self.flags.sf() == self.flags.of(), SHORT_JCC_TIMING),
-            0x7E => self.jcc(
-                bus,
-                self.flags.zf() || (self.flags.sf() != self.flags.of()),
-                SHORT_JCC_TIMING,
-            ),
+            0x70 => self.jcc(bus, self.flags.of()),
+            0x71 => self.jcc(bus, !self.flags.of()),
+            0x72 => self.jcc(bus, self.flags.cf()),
+            0x73 => self.jcc(bus, !self.flags.cf()),
+            0x74 => self.jcc(bus, self.flags.zf()),
+            0x75 => self.jcc(bus, !self.flags.zf()),
+            0x76 => self.jcc(bus, self.flags.cf() || self.flags.zf()),
+            0x77 => self.jcc(bus, !self.flags.cf() && !self.flags.zf()),
+            0x78 => self.jcc(bus, self.flags.sf()),
+            0x79 => self.jcc(bus, !self.flags.sf()),
+            0x7A => self.jcc(bus, self.flags.pf()),
+            0x7B => self.jcc(bus, !self.flags.pf()),
+            0x7C => self.jcc(bus, self.flags.sf() != self.flags.of()),
+            0x7D => self.jcc(bus, self.flags.sf() == self.flags.of()),
+            0x7E => self.jcc(bus, self.flags.zf() || (self.flags.sf() != self.flags.of())),
             0x7F => self.jcc(
                 bus,
                 !self.flags.zf() && (self.flags.sf() == self.flags.of()),
-                SHORT_JCC_TIMING,
             ),
 
             // Group 1
@@ -501,26 +193,26 @@ impl I286 {
             0x8F => self.pop_rm(bus),
 
             // XCHG AX, reg / NOP
-            0x90 => self.clk(3),
-            0x91 => self.xchg_aw(WordReg::CX),
-            0x92 => self.xchg_aw(WordReg::DX),
-            0x93 => self.xchg_aw(WordReg::BX),
-            0x94 => self.xchg_aw(WordReg::SP),
-            0x95 => self.xchg_aw(WordReg::BP),
-            0x96 => self.xchg_aw(WordReg::SI),
-            0x97 => self.xchg_aw(WordReg::DI),
+            0x90 => self.clk_bus(bus, 3),
+            0x91 => self.xchg_aw(WordReg::CX, bus),
+            0x92 => self.xchg_aw(WordReg::DX, bus),
+            0x93 => self.xchg_aw(WordReg::BX, bus),
+            0x94 => self.xchg_aw(WordReg::SP, bus),
+            0x95 => self.xchg_aw(WordReg::BP, bus),
+            0x96 => self.xchg_aw(WordReg::SI, bus),
+            0x97 => self.xchg_aw(WordReg::DI, bus),
 
             // CBW, CWD
-            0x98 => self.cbw(),
-            0x99 => self.cwd(),
+            0x98 => self.cbw(bus),
+            0x99 => self.cwd(bus),
 
             // CALL far, WAIT
             0x9A => self.call_far(bus),
-            0x9B => self.clk(7), // WAIT
+            0x9B => self.wait(bus),
             0x9C => self.pushf(bus),
             0x9D => self.popf(bus),
-            0x9E => self.sahf(),
-            0x9F => self.lahf(),
+            0x9E => self.sahf(bus),
+            0x9F => self.lahf(bus),
 
             // MOV AL/AX, [addr] and [addr], AL/AX
             0xA0 => self.mov_al_moffs(bus),
@@ -607,7 +299,7 @@ impl I286 {
             0xD5 => self.aad(bus),
 
             // undocumented SALC
-            0xD6 => self.salc(),
+            0xD6 => self.salc(bus),
 
             // XLAT
             0xD7 => self.xlat(bus),
@@ -647,22 +339,22 @@ impl I286 {
             0xF3 => self.repe(bus),
 
             // HLT
-            0xF4 => self.hlt(),
+            0xF4 => self.hlt(bus),
 
             // CMC
-            0xF5 => self.cmc(),
+            0xF5 => self.cmc(bus),
 
             // Group 3 byte/word
             0xF6 => self.group_f6(bus),
             0xF7 => self.group_f7(bus),
 
             // CLC, STC, CLI, STI, CLD, STD
-            0xF8 => self.clc(),
-            0xF9 => self.stc(),
-            0xFA => self.cli(),
-            0xFB => self.sti(),
-            0xFC => self.cld(),
-            0xFD => self.std(),
+            0xF8 => self.clc(bus),
+            0xF9 => self.stc(bus),
+            0xFA => self.cli(bus),
+            0xFB => self.sti(bus),
+            0xFC => self.cld(bus),
+            0xFD => self.std(bus),
 
             // Group 4/5
             0xFE => self.group_fe(bus),
@@ -676,7 +368,7 @@ impl I286 {
         let dst = self.get_rm_byte(modrm, bus);
         let result = self.alu_add_byte(dst, src);
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_binary_alu_byte_template(bus, modrm, BINARY_ALU_WRITE_BYTE_TIMING);
+        self.clk_modrm(bus, modrm, 2, 7);
     }
 
     fn add_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -685,7 +377,7 @@ impl I286 {
         let dst = self.get_rm_word(modrm, bus);
         let result = self.alu_add_word(dst, src);
         self.putback_rm_word(modrm, result, bus);
-        self.clk_binary_alu_word_template(bus, modrm, BINARY_ALU_RM_WRITE_WORD_TIMING);
+        self.clk_modrm_word(bus, modrm, 2, 7, 2);
     }
 
     fn add_r8b(&mut self, bus: &mut impl common::Bus) {
@@ -695,7 +387,7 @@ impl I286 {
         let result = self.alu_add_byte(dst, src);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, result);
-        self.clk_binary_alu_byte_template(bus, modrm, BINARY_ALU_WRITE_BYTE_TIMING);
+        self.clk_modrm(bus, modrm, 2, 7);
     }
 
     fn add_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -705,7 +397,7 @@ impl I286 {
         let result = self.alu_add_word(dst, src);
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, result);
-        self.clk_binary_alu_word_template(bus, modrm, BINARY_ALU_REG_WRITE_WORD_TIMING);
+        self.clk_modrm_word(bus, modrm, 2, 7, 1);
     }
 
     fn add_ald8(&mut self, bus: &mut impl common::Bus) {
@@ -713,7 +405,7 @@ impl I286 {
         let dst = self.regs.byte(ByteReg::AL);
         let result = self.alu_add_byte(dst, src);
         self.regs.set_byte(ByteReg::AL, result);
-        self.clk_accumulator_imm8_template(bus);
+        self.clk_bus(bus, 3);
     }
 
     fn add_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -721,7 +413,7 @@ impl I286 {
         let dst = self.regs.word(WordReg::AX);
         let result = self.alu_add_word(dst, src);
         self.regs.set_word(WordReg::AX, result);
-        self.clk_accumulator_imm16_template(bus);
+        self.clk_bus(bus, 3);
     }
 
     fn or_br8(&mut self, bus: &mut impl common::Bus) {
@@ -730,7 +422,7 @@ impl I286 {
         let dst = self.get_rm_byte(modrm, bus);
         let result = self.alu_or_byte(dst, src);
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_binary_alu_byte_template(bus, modrm, BINARY_ALU_WRITE_BYTE_TIMING);
+        self.clk_modrm(bus, modrm, 2, 7);
     }
 
     fn or_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -739,7 +431,7 @@ impl I286 {
         let dst = self.get_rm_word(modrm, bus);
         let result = self.alu_or_word(dst, src);
         self.putback_rm_word(modrm, result, bus);
-        self.clk_binary_alu_word_template(bus, modrm, BINARY_ALU_RM_WRITE_WORD_TIMING);
+        self.clk_modrm_word(bus, modrm, 2, 7, 2);
     }
 
     fn or_r8b(&mut self, bus: &mut impl common::Bus) {
@@ -749,7 +441,7 @@ impl I286 {
         let result = self.alu_or_byte(dst, src);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, result);
-        self.clk_binary_alu_byte_template(bus, modrm, BINARY_ALU_WRITE_BYTE_TIMING);
+        self.clk_modrm(bus, modrm, 2, 7);
     }
 
     fn or_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -759,7 +451,7 @@ impl I286 {
         let result = self.alu_or_word(dst, src);
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, result);
-        self.clk_binary_alu_word_template(bus, modrm, BINARY_ALU_REG_WRITE_WORD_TIMING);
+        self.clk_modrm_word(bus, modrm, 2, 7, 1);
     }
 
     fn or_ald8(&mut self, bus: &mut impl common::Bus) {
@@ -767,7 +459,7 @@ impl I286 {
         let dst = self.regs.byte(ByteReg::AL);
         let result = self.alu_or_byte(dst, src);
         self.regs.set_byte(ByteReg::AL, result);
-        self.clk_accumulator_imm8_template(bus);
+        self.clk_bus(bus, 3);
     }
 
     fn or_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -775,7 +467,7 @@ impl I286 {
         let dst = self.regs.word(WordReg::AX);
         let result = self.alu_or_word(dst, src);
         self.regs.set_word(WordReg::AX, result);
-        self.clk_accumulator_imm16_template(bus);
+        self.clk_bus(bus, 3);
     }
 
     fn adc_br8(&mut self, bus: &mut impl common::Bus) {
@@ -785,7 +477,7 @@ impl I286 {
         let cf = self.flags.cf_val();
         let result = self.alu_adc_byte(dst, src, cf);
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_binary_alu_byte_template(bus, modrm, BINARY_ALU_WRITE_BYTE_TIMING);
+        self.clk_modrm(bus, modrm, 2, 7);
     }
 
     fn adc_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -795,7 +487,7 @@ impl I286 {
         let cf = self.flags.cf_val();
         let result = self.alu_adc_word(dst, src, cf);
         self.putback_rm_word(modrm, result, bus);
-        self.clk_binary_alu_word_template(bus, modrm, BINARY_ALU_RM_WRITE_WORD_TIMING);
+        self.clk_modrm_word(bus, modrm, 2, 7, 2);
     }
 
     fn adc_r8b(&mut self, bus: &mut impl common::Bus) {
@@ -806,7 +498,7 @@ impl I286 {
         let result = self.alu_adc_byte(dst, src, cf);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, result);
-        self.clk_binary_alu_byte_template(bus, modrm, BINARY_ALU_WRITE_BYTE_TIMING);
+        self.clk_modrm(bus, modrm, 2, 7);
     }
 
     fn adc_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -817,7 +509,7 @@ impl I286 {
         let result = self.alu_adc_word(dst, src, cf);
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, result);
-        self.clk_binary_alu_word_template(bus, modrm, BINARY_ALU_REG_WRITE_WORD_TIMING);
+        self.clk_modrm_word(bus, modrm, 2, 7, 1);
     }
 
     fn adc_ald8(&mut self, bus: &mut impl common::Bus) {
@@ -826,7 +518,7 @@ impl I286 {
         let cf = self.flags.cf_val();
         let result = self.alu_adc_byte(dst, src, cf);
         self.regs.set_byte(ByteReg::AL, result);
-        self.clk_accumulator_imm8_template(bus);
+        self.clk_bus(bus, 3);
     }
 
     fn adc_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -835,7 +527,7 @@ impl I286 {
         let cf = self.flags.cf_val();
         let result = self.alu_adc_word(dst, src, cf);
         self.regs.set_word(WordReg::AX, result);
-        self.clk_accumulator_imm16_template(bus);
+        self.clk_bus(bus, 3);
     }
 
     fn sbb_br8(&mut self, bus: &mut impl common::Bus) {
@@ -845,7 +537,7 @@ impl I286 {
         let cf = self.flags.cf_val();
         let result = self.alu_sbb_byte(dst, src, cf);
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_binary_alu_byte_template(bus, modrm, BINARY_ALU_WRITE_BYTE_TIMING);
+        self.clk_modrm(bus, modrm, 2, 7);
     }
 
     fn sbb_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -855,7 +547,7 @@ impl I286 {
         let cf = self.flags.cf_val();
         let result = self.alu_sbb_word(dst, src, cf);
         self.putback_rm_word(modrm, result, bus);
-        self.clk_binary_alu_word_template(bus, modrm, BINARY_ALU_RM_WRITE_WORD_TIMING);
+        self.clk_modrm_word(bus, modrm, 2, 7, 2);
     }
 
     fn sbb_r8b(&mut self, bus: &mut impl common::Bus) {
@@ -866,7 +558,7 @@ impl I286 {
         let result = self.alu_sbb_byte(dst, src, cf);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, result);
-        self.clk_binary_alu_byte_template(bus, modrm, BINARY_ALU_WRITE_BYTE_TIMING);
+        self.clk_modrm(bus, modrm, 2, 7);
     }
 
     fn sbb_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -877,7 +569,7 @@ impl I286 {
         let result = self.alu_sbb_word(dst, src, cf);
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, result);
-        self.clk_binary_alu_word_template(bus, modrm, BINARY_ALU_REG_WRITE_WORD_TIMING);
+        self.clk_modrm_word(bus, modrm, 2, 7, 1);
     }
 
     fn sbb_ald8(&mut self, bus: &mut impl common::Bus) {
@@ -886,7 +578,7 @@ impl I286 {
         let cf = self.flags.cf_val();
         let result = self.alu_sbb_byte(dst, src, cf);
         self.regs.set_byte(ByteReg::AL, result);
-        self.clk_accumulator_imm8_template(bus);
+        self.clk_bus(bus, 3);
     }
 
     fn sbb_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -895,7 +587,7 @@ impl I286 {
         let cf = self.flags.cf_val();
         let result = self.alu_sbb_word(dst, src, cf);
         self.regs.set_word(WordReg::AX, result);
-        self.clk_accumulator_imm16_template(bus);
+        self.clk_bus(bus, 3);
     }
 
     fn and_br8(&mut self, bus: &mut impl common::Bus) {
@@ -904,7 +596,7 @@ impl I286 {
         let dst = self.get_rm_byte(modrm, bus);
         let result = self.alu_and_byte(dst, src);
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_binary_alu_byte_template(bus, modrm, BINARY_ALU_WRITE_BYTE_TIMING);
+        self.clk_modrm(bus, modrm, 2, 7);
     }
 
     fn and_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -913,7 +605,7 @@ impl I286 {
         let dst = self.get_rm_word(modrm, bus);
         let result = self.alu_and_word(dst, src);
         self.putback_rm_word(modrm, result, bus);
-        self.clk_binary_alu_word_template(bus, modrm, BINARY_ALU_RM_WRITE_WORD_TIMING);
+        self.clk_modrm_word(bus, modrm, 2, 7, 2);
     }
 
     fn and_r8b(&mut self, bus: &mut impl common::Bus) {
@@ -923,7 +615,7 @@ impl I286 {
         let result = self.alu_and_byte(dst, src);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, result);
-        self.clk_binary_alu_byte_template(bus, modrm, BINARY_ALU_WRITE_BYTE_TIMING);
+        self.clk_modrm(bus, modrm, 2, 7);
     }
 
     fn and_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -933,7 +625,7 @@ impl I286 {
         let result = self.alu_and_word(dst, src);
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, result);
-        self.clk_binary_alu_word_template(bus, modrm, BINARY_ALU_REG_WRITE_WORD_TIMING);
+        self.clk_modrm_word(bus, modrm, 2, 7, 1);
     }
 
     fn and_ald8(&mut self, bus: &mut impl common::Bus) {
@@ -941,7 +633,7 @@ impl I286 {
         let dst = self.regs.byte(ByteReg::AL);
         let result = self.alu_and_byte(dst, src);
         self.regs.set_byte(ByteReg::AL, result);
-        self.clk_accumulator_imm8_template(bus);
+        self.clk_bus(bus, 3);
     }
 
     fn and_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -949,7 +641,7 @@ impl I286 {
         let dst = self.regs.word(WordReg::AX);
         let result = self.alu_and_word(dst, src);
         self.regs.set_word(WordReg::AX, result);
-        self.clk_accumulator_imm16_template(bus);
+        self.clk_bus(bus, 3);
     }
 
     fn sub_br8(&mut self, bus: &mut impl common::Bus) {
@@ -958,7 +650,7 @@ impl I286 {
         let dst = self.get_rm_byte(modrm, bus);
         let result = self.alu_sub_byte(dst, src);
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_binary_alu_byte_template(bus, modrm, BINARY_ALU_WRITE_BYTE_TIMING);
+        self.clk_modrm(bus, modrm, 2, 7);
     }
 
     fn sub_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -967,7 +659,7 @@ impl I286 {
         let dst = self.get_rm_word(modrm, bus);
         let result = self.alu_sub_word(dst, src);
         self.putback_rm_word(modrm, result, bus);
-        self.clk_binary_alu_word_template(bus, modrm, BINARY_ALU_RM_WRITE_WORD_TIMING);
+        self.clk_modrm_word(bus, modrm, 2, 7, 2);
     }
 
     fn sub_r8b(&mut self, bus: &mut impl common::Bus) {
@@ -977,7 +669,7 @@ impl I286 {
         let result = self.alu_sub_byte(dst, src);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, result);
-        self.clk_binary_alu_byte_template(bus, modrm, BINARY_ALU_WRITE_BYTE_TIMING);
+        self.clk_modrm(bus, modrm, 2, 7);
     }
 
     fn sub_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -987,7 +679,7 @@ impl I286 {
         let result = self.alu_sub_word(dst, src);
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, result);
-        self.clk_binary_alu_word_template(bus, modrm, BINARY_ALU_REG_WRITE_WORD_TIMING);
+        self.clk_modrm_word(bus, modrm, 2, 7, 1);
     }
 
     fn sub_ald8(&mut self, bus: &mut impl common::Bus) {
@@ -995,7 +687,7 @@ impl I286 {
         let dst = self.regs.byte(ByteReg::AL);
         let result = self.alu_sub_byte(dst, src);
         self.regs.set_byte(ByteReg::AL, result);
-        self.clk_accumulator_imm8_template(bus);
+        self.clk_bus(bus, 3);
     }
 
     fn sub_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -1003,7 +695,7 @@ impl I286 {
         let dst = self.regs.word(WordReg::AX);
         let result = self.alu_sub_word(dst, src);
         self.regs.set_word(WordReg::AX, result);
-        self.clk_accumulator_imm16_template(bus);
+        self.clk_bus(bus, 3);
     }
 
     fn xor_br8(&mut self, bus: &mut impl common::Bus) {
@@ -1012,7 +704,7 @@ impl I286 {
         let dst = self.get_rm_byte(modrm, bus);
         let result = self.alu_xor_byte(dst, src);
         self.putback_rm_byte(modrm, result, bus);
-        self.clk_binary_alu_byte_template(bus, modrm, BINARY_ALU_WRITE_BYTE_TIMING);
+        self.clk_modrm(bus, modrm, 2, 7);
     }
 
     fn xor_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -1021,7 +713,7 @@ impl I286 {
         let dst = self.get_rm_word(modrm, bus);
         let result = self.alu_xor_word(dst, src);
         self.putback_rm_word(modrm, result, bus);
-        self.clk_binary_alu_word_template(bus, modrm, BINARY_ALU_RM_WRITE_WORD_TIMING);
+        self.clk_modrm_word(bus, modrm, 2, 7, 2);
     }
 
     fn xor_r8b(&mut self, bus: &mut impl common::Bus) {
@@ -1031,7 +723,7 @@ impl I286 {
         let result = self.alu_xor_byte(dst, src);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, result);
-        self.clk_binary_alu_byte_template(bus, modrm, BINARY_ALU_WRITE_BYTE_TIMING);
+        self.clk_modrm(bus, modrm, 2, 7);
     }
 
     fn xor_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -1041,7 +733,7 @@ impl I286 {
         let result = self.alu_xor_word(dst, src);
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, result);
-        self.clk_binary_alu_word_template(bus, modrm, BINARY_ALU_REG_WRITE_WORD_TIMING);
+        self.clk_modrm_word(bus, modrm, 2, 7, 1);
     }
 
     fn xor_ald8(&mut self, bus: &mut impl common::Bus) {
@@ -1049,7 +741,7 @@ impl I286 {
         let dst = self.regs.byte(ByteReg::AL);
         let result = self.alu_xor_byte(dst, src);
         self.regs.set_byte(ByteReg::AL, result);
-        self.clk_accumulator_imm8_template(bus);
+        self.clk_bus(bus, 3);
     }
 
     fn xor_axd16(&mut self, bus: &mut impl common::Bus) {
@@ -1057,7 +749,7 @@ impl I286 {
         let dst = self.regs.word(WordReg::AX);
         let result = self.alu_xor_word(dst, src);
         self.regs.set_word(WordReg::AX, result);
-        self.clk_accumulator_imm16_template(bus);
+        self.clk_bus(bus, 3);
     }
 
     fn cmp_br8(&mut self, bus: &mut impl common::Bus) {
@@ -1065,8 +757,7 @@ impl I286 {
         let src = self.regs.byte(self.reg_byte(modrm));
         let dst = self.get_rm_byte(modrm, bus);
         self.alu_sub_byte(dst, src);
-        self.borrow_no_displacement_read_only_cycles(modrm);
-        self.clk_binary_alu_byte_template(bus, modrm, BINARY_ALU_COMPARE_RM_BYTE_TIMING);
+        self.clk_modrm(bus, modrm, 2, 7);
     }
 
     fn cmp_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -1074,8 +765,7 @@ impl I286 {
         let src = self.regs.word(self.reg_word(modrm));
         let dst = self.get_rm_word(modrm, bus);
         self.alu_sub_word(dst, src);
-        self.borrow_no_displacement_read_only_cycles(modrm);
-        self.clk_binary_alu_word_template(bus, modrm, BINARY_ALU_COMPARE_RM_WORD_TIMING);
+        self.clk_modrm_word(bus, modrm, 2, 7, 1);
     }
 
     fn cmp_r8b(&mut self, bus: &mut impl common::Bus) {
@@ -1083,7 +773,7 @@ impl I286 {
         let dst = self.regs.byte(self.reg_byte(modrm));
         let src = self.get_rm_byte(modrm, bus);
         self.alu_sub_byte(dst, src);
-        self.clk_binary_alu_byte_template(bus, modrm, BINARY_ALU_COMPARE_REG_BYTE_TIMING);
+        self.clk_modrm(bus, modrm, 2, 6);
     }
 
     fn cmp_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -1091,62 +781,56 @@ impl I286 {
         let dst = self.regs.word(self.reg_word(modrm));
         let src = self.get_rm_word(modrm, bus);
         self.alu_sub_word(dst, src);
-        self.clk_binary_alu_word_template(bus, modrm, BINARY_ALU_COMPARE_REG_WORD_TIMING);
+        self.clk_modrm_word(bus, modrm, 2, 6, 1);
     }
 
     fn cmp_ald8(&mut self, bus: &mut impl common::Bus) {
         let src = self.fetch(bus);
         let dst = self.regs.byte(ByteReg::AL);
         self.alu_sub_byte(dst, src);
-        self.clk_accumulator_imm8_template(bus);
+        self.clk_bus(bus, 3);
     }
 
     fn cmp_axd16(&mut self, bus: &mut impl common::Bus) {
         let src = self.fetchword(bus);
         let dst = self.regs.word(WordReg::AX);
         self.alu_sub_word(dst, src);
-        self.clk_accumulator_imm16_template(bus);
+        self.clk_bus(bus, 3);
     }
 
-    fn inc_word_reg(&mut self, reg: WordReg) {
+    fn inc_word_reg(&mut self, reg: WordReg, bus: &mut impl common::Bus) {
         let val = self.regs.word(reg);
         let result = self.alu_inc_word(val);
         self.regs.set_word(reg, result);
-        self.clk(2);
+        self.clk_bus(bus, 2);
     }
 
-    fn dec_word_reg(&mut self, reg: WordReg) {
+    fn dec_word_reg(&mut self, reg: WordReg, bus: &mut impl common::Bus) {
         let val = self.regs.word(reg);
         let result = self.alu_dec_word(val);
         self.regs.set_word(reg, result);
-        self.clk(2);
+        self.clk_bus(bus, 2);
     }
 
     fn push_word_reg(&mut self, reg: WordReg, bus: &mut impl common::Bus) {
-        let tail_cycles = self.stack_push_tail_cycles(3);
         let val = self.regs.word(reg);
         self.push(bus, val);
-        self.clk(tail_cycles);
     }
 
     pub(super) fn push_sp(&mut self, bus: &mut impl common::Bus) {
-        let tail_cycles = self.stack_push_tail_cycles(3);
         let sp = self.regs.word(WordReg::SP);
         self.push(bus, sp);
-        self.clk(tail_cycles);
     }
 
     fn pop_word_reg(&mut self, reg: WordReg, bus: &mut impl common::Bus) {
         let val = self.pop(bus);
         self.regs.set_word(reg, val);
-        self.clk(5);
+        self.clk(1);
     }
 
     fn push_seg(&mut self, seg: SegReg16, bus: &mut impl common::Bus) {
-        let tail_cycles = self.stack_push_tail_cycles(3);
         let val = self.sregs[seg as usize];
         self.push(bus, val);
-        self.clk(tail_cycles);
     }
 
     fn pop_seg(&mut self, seg: SegReg16, bus: &mut impl common::Bus) {
@@ -1154,86 +838,149 @@ impl I286 {
         if !self.load_segment(seg, val, bus) {
             return;
         }
-        self.clk(5);
+        self.clk(1);
     }
 
     fn pusha(&mut self, bus: &mut impl common::Bus) {
-        let sp = self.regs.word(WordReg::SP);
-        let tail_cycles = 17 - i32::from(sp & 1);
-        let final_sp = sp.wrapping_sub(16);
-        let values = [
-            self.regs.word(WordReg::DI),
-            self.regs.word(WordReg::SI),
-            self.regs.word(WordReg::BP),
-            sp,
-            self.regs.word(WordReg::BX),
-            self.regs.word(WordReg::DX),
-            self.regs.word(WordReg::CX),
-            self.regs.word(WordReg::AX),
-        ];
-        self.regs.set_word(WordReg::SP, final_sp);
-        for (index, value) in values.into_iter().enumerate() {
-            self.write_word_seg(
-                bus,
-                SegReg16::SS,
-                final_sp.wrapping_add((index * 2) as u16),
-                value,
-            );
-            self.timing
-                .borrow_internal_cycles(STACK_WORD_OVERLAP_CREDIT);
-        }
-        self.clk(tail_cycles);
+        let stack_pointer = self.regs.word(WordReg::SP);
+        let final_stack_pointer = stack_pointer.wrapping_sub(16);
+        let destination_index = self.regs.word(WordReg::DI);
+        let source_index = self.regs.word(WordReg::SI);
+        let base_pointer = self.regs.word(WordReg::BP);
+        let base = self.regs.word(WordReg::BX);
+        let data = self.regs.word(WordReg::DX);
+        let count = self.regs.word(WordReg::CX);
+        let accumulator = self.regs.word(WordReg::AX);
+        self.regs.set_word(WordReg::SP, final_stack_pointer);
+        self.write_word_seg(bus, SegReg16::SS, final_stack_pointer, destination_index);
+        self.write_word_seg(
+            bus,
+            SegReg16::SS,
+            final_stack_pointer.wrapping_add(2),
+            source_index,
+        );
+        self.write_word_seg(
+            bus,
+            SegReg16::SS,
+            final_stack_pointer.wrapping_add(4),
+            base_pointer,
+        );
+        self.write_word_seg(
+            bus,
+            SegReg16::SS,
+            final_stack_pointer.wrapping_add(6),
+            stack_pointer,
+        );
+        self.write_word_seg(bus, SegReg16::SS, final_stack_pointer.wrapping_add(8), base);
+        self.write_word_seg(
+            bus,
+            SegReg16::SS,
+            final_stack_pointer.wrapping_add(10),
+            data,
+        );
+        self.write_word_seg(
+            bus,
+            SegReg16::SS,
+            final_stack_pointer.wrapping_add(12),
+            count,
+        );
+        self.write_word_seg(
+            bus,
+            SegReg16::SS,
+            final_stack_pointer.wrapping_add(14),
+            accumulator,
+        );
     }
 
     fn popa(&mut self, bus: &mut impl common::Bus) {
-        // Read order matches real hardware: AX is fetched first from sp+14,
-        // then DI/SI/BP, the SP slot at sp+6 is discarded, and BX/DX/CX
-        // follow. Each read overlaps the next by STACK_WORD_OVERLAP_CREDIT.
-        const POPA_READS: [(u16, Option<WordReg>); 8] = [
-            (14, Some(WordReg::AX)),
-            (0, Some(WordReg::DI)),
-            (2, Some(WordReg::SI)),
-            (4, Some(WordReg::BP)),
-            (6, None),
-            (8, Some(WordReg::BX)),
-            (10, Some(WordReg::DX)),
-            (12, Some(WordReg::CX)),
-        ];
-
-        let sp = self.regs.word(WordReg::SP);
-        let mut pending_writes: [Option<(WordReg, u16)>; 8] = [None; 8];
-        for (index, (offset, destination)) in POPA_READS.iter().enumerate() {
-            let value = self.read_word_seg(bus, SegReg16::SS, sp.wrapping_add(*offset));
-            self.timing
-                .borrow_internal_cycles(STACK_WORD_OVERLAP_CREDIT);
-            if let Some(register) = destination {
-                pending_writes[index] = Some((*register, value));
-            }
-        }
-        for write in pending_writes.iter().flatten() {
-            self.regs.set_word(write.0, write.1);
-        }
-        self.regs.set_word(WordReg::SP, sp.wrapping_add(16));
-        self.clk(19);
+        let stack_pointer = self.regs.word(WordReg::SP);
+        let accumulator = self.read_word_seg(bus, SegReg16::SS, stack_pointer.wrapping_add(14));
+        let destination_index = self.read_word_seg(bus, SegReg16::SS, stack_pointer);
+        let source_index = self.read_word_seg(bus, SegReg16::SS, stack_pointer.wrapping_add(2));
+        let base_pointer = self.read_word_seg(bus, SegReg16::SS, stack_pointer.wrapping_add(4));
+        let _discarded_stack_pointer =
+            self.read_word_seg(bus, SegReg16::SS, stack_pointer.wrapping_add(6));
+        let base = self.read_word_seg(bus, SegReg16::SS, stack_pointer.wrapping_add(8));
+        let data = self.read_word_seg(bus, SegReg16::SS, stack_pointer.wrapping_add(10));
+        let count = self.read_word_seg(bus, SegReg16::SS, stack_pointer.wrapping_add(12));
+        self.regs.set_word(WordReg::DI, destination_index);
+        self.regs.set_word(WordReg::SI, source_index);
+        self.regs.set_word(WordReg::BP, base_pointer);
+        self.regs.set_word(WordReg::BX, base);
+        self.regs.set_word(WordReg::DX, data);
+        self.regs.set_word(WordReg::CX, count);
+        self.regs.set_word(WordReg::AX, accumulator);
+        self.regs
+            .set_word(WordReg::SP, stack_pointer.wrapping_add(16));
     }
 
     fn bound(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
         let val = self.regs.word(self.reg_word(modrm)) as i16;
-        if modrm::modrm_is_register(modrm) {
+        if modrm >= 0xC0 {
             return;
         }
-        self.calc_ea(modrm, bus);
-        let ea_pen = if address_is_odd(self.ea) { 8 } else { 0 };
-        let low = self.seg_read_word(bus) as i16;
-        self.timing.suppress_next_memory_read_window();
+        self.biu_set_decode_spill_fetch_gap(false);
+        let mode = modrm >> 6;
+        let rm = modrm & 7;
+        let prefixed_mode1_queue_delay =
+            self.seg_prefix && self.prefix_count_current >= 2 && mode == 1;
+        if prefixed_mode1_queue_delay {
+            self.calc_ea_bus(modrm, bus);
+        } else {
+            self.calc_ea_bus_without_queue_delay(modrm, bus);
+        }
+        let prefixed_memory = self.seg_prefix || self.lock_prefix_active;
+        if self.seg_prefix && (mode != 1 || (matches!(self.prefix_count_current, 2 | 4) && rm >= 4))
+        {
+            self.biu_clear_au_address_ready();
+        }
+
+        let mut pre_read_delay = 0;
+        if self.seg_prefix {
+            pre_read_delay += match (self.prefix_count_current, mode, rm) {
+                (1, 1, 4) if self.prefix_seg == SegReg16::SS => 1,
+                (1, 1, _) => 3,
+                (2, 0, _) => 1,
+                (2, 1, 1 | 3) => 1,
+                (2, 2, 4..=7) => 1,
+                (3, 1, 1 | 2 | 7) => 1,
+                (4, 0, _) => 1,
+                (4, 2, 4 | 5 | 7) => 1,
+                (5, 1, _) => 1,
+                _ => 0,
+            };
+        }
+        if self.lock_prefix_active && mode == 1 && rm <= 3 {
+            pre_read_delay += 2;
+        }
+        self.clk_bus(bus, pre_read_delay);
+
+        if self.lock_prefix_active {
+            self.lock_demand_gap_emitted = true;
+        }
+        if self.lock_prefix_active && mode != 1 {
+            self.biu_clear_au_address_ready();
+        }
+        let low = if self.lock_prefix_active && mode == 1 {
+            self.seg_read_word_at_after_prefetch_and_au_gap(bus, 0)
+        } else if self.lock_prefix_active && mode == 2 && rm <= 3 {
+            self.seg_read_word_at_after_prefetch_gap(bus, 0)
+        } else if !self.lock_prefix_active && !prefixed_memory && mode == 2 && rm <= 3 {
+            self.seg_read_word_at_after_prefetch_and_au_gap(bus, 0)
+        } else if (mode == 1 && rm <= 3) || (self.seg_prefix && mode == 2 && rm <= 3) {
+            self.seg_read_word_at_after_prefetch_gap(bus, 0)
+        } else {
+            self.seg_read_word(bus)
+        } as i16;
         let high = self.seg_read_word_at(bus, 2) as i16;
         if val < low || val > high {
             let sp_pen = self.sp_penalty(3);
             self.raise_fault(5, bus);
+            let ea_pen = if self.ea & 1 == 1 { 8 } else { 0 };
             self.clk(56 + ea_pen + sp_pen);
         } else {
-            self.clk(11);
+            self.clk(7);
         }
     }
 
@@ -1253,49 +1000,32 @@ impl I286 {
         } else {
             self.flags.zero_val = 1; // ZF=0
         }
-        self.clk_modrm_prefetch(bus, modrm, 10, 11);
+        self.clk_modrm(bus, modrm, 10, 11);
     }
 
     fn push_imm16(&mut self, bus: &mut impl common::Bus) {
-        let tail_cycles = self.stack_push_tail_cycles(3);
         let val = self.fetchword(bus);
-        if self.timing.lock_active() {
-            self.clk_visible(1);
-        } else if self.timing.prefetch_wrapped_before_instruction_start() {
-            self.clk_visible(2);
-        } else {
-            self.clk_forced_prefetch(bus);
-        }
         self.push(bus, val);
-        self.clk(tail_cycles);
     }
 
     fn push_imm8(&mut self, bus: &mut impl common::Bus) {
-        let tail_cycles = self.stack_push_tail_cycles(3);
         let val = self.fetch(bus) as i8 as u16;
-        if self.timing.lock_active() {
-            self.clk_forced_prefetch(bus);
+        if self.lock_prefix_active {
+            self.clk_bus(bus, 1);
+            self.clk(1);
+            self.clk_bus(bus, 2);
+            self.lock_demand_gap_emitted = true;
         } else {
-            self.clk_visible(2);
+            self.clk_bus(bus, 4);
+            self.clk(2);
         }
         self.push(bus, val);
-        self.clk(tail_cycles);
     }
 
     fn imul_r16w_imm16(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
-        let src;
-        let imm;
-        if modrm::modrm_is_register(modrm) {
-            imm = self.fetchword(bus) as i16 as i32;
-            src = self.regs.word(self.rm_word(modrm)) as i16 as i32;
-        } else {
-            self.calc_ea(modrm, bus);
-            self.prepare_immediate_memory_operand(modrm);
-            imm = self.fetchword(bus) as i16 as i32;
-            src = self.seg_read_word(bus) as i16 as i32;
-            self.timing.note_au_idle();
-        }
+        let src = self.get_rm_word(modrm, bus) as i16 as i32;
+        let imm = self.fetchword(bus) as i16 as i32;
         let result = src * imm;
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, result as u16);
@@ -1305,23 +1035,13 @@ impl I286 {
             0
         };
         self.flags.overflow_val = self.flags.carry_val;
-        self.clk_modrm_word_prefetch(bus, modrm, 24, 24, 0);
+        self.clk_modrm_word(bus, modrm, 21, 24, 1);
     }
 
     fn imul_r16w_imm8(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
-        let src;
-        let imm;
-        if modrm::modrm_is_register(modrm) {
-            imm = self.fetch(bus) as i8 as i32;
-            src = self.regs.word(self.rm_word(modrm)) as i16 as i32;
-        } else {
-            self.calc_ea(modrm, bus);
-            self.prepare_imul_imm8_memory_operand(modrm);
-            imm = self.fetch(bus) as i8 as i32;
-            src = self.seg_read_word(bus) as i16 as i32;
-            self.timing.note_au_idle();
-        }
+        let src = self.get_rm_word(modrm, bus) as i16 as i32;
+        let imm = self.fetch(bus) as i8 as i32;
         let result = src * imm;
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, result as u16);
@@ -1331,26 +1051,38 @@ impl I286 {
             0
         };
         self.flags.overflow_val = self.flags.carry_val;
-        if modrm::modrm_is_register(modrm) {
-            self.clk_visible(1);
-            self.clk_prefetch(bus, 23);
-        } else {
-            self.clk_modrm_word_prefetch(bus, modrm, 24, self.imul_imm8_memory_base_cycles(), 0);
-        }
+        self.clk_modrm_word(bus, modrm, 21, 24, 1);
     }
 
-    fn jcc(
-        &mut self,
-        bus: &mut impl common::Bus,
-        condition: bool,
-        timing: I286ShortBranchTimingTemplate,
-    ) {
+    fn jcc(&mut self, bus: &mut impl common::Bus, condition: bool) {
         let disp = self.fetch(bus) as i8;
         if condition {
             self.ip = self.ip.wrapping_add(disp as u16);
-            self.clk_control_transfer_restart(bus, self.ip, timing.taken_control_transfer);
+            self.clk_bus(bus, 6);
+            self.biu_flush_for_control_transfer();
         } else {
-            self.clk(timing.not_taken_cycles);
+            self.clk_bus(bus, 4);
+            self.clk(3);
+        }
+    }
+
+    fn loop_finish(&mut self, bus: &mut impl common::Bus, taken: bool) {
+        if taken {
+            if self.lock_prefix_active {
+                self.clk_bus(bus, 1);
+                self.clk(4);
+            } else {
+                self.clk_bus(bus, 7);
+            }
+            self.biu_flush_for_control_transfer();
+        } else if self.lock_prefix_active {
+            self.clk_bus(bus, 1);
+            self.clk(1);
+            self.clk_bus(bus, 2);
+            self.clk(2);
+        } else {
+            self.clk_bus(bus, 4);
+            self.clk(4);
         }
     }
 
@@ -1359,8 +1091,7 @@ impl I286 {
         let src = self.regs.byte(self.reg_byte(modrm));
         let dst = self.get_rm_byte(modrm, bus);
         self.alu_and_byte(dst, src);
-        self.borrow_no_displacement_read_only_cycles(modrm);
-        self.clk_modrm_prefetch(bus, modrm, 2, 6);
+        self.clk_modrm(bus, modrm, 2, 6);
     }
 
     fn test_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -1368,22 +1099,21 @@ impl I286 {
         let src = self.regs.word(self.reg_word(modrm));
         let dst = self.get_rm_word(modrm, bus);
         self.alu_and_word(dst, src);
-        self.borrow_no_displacement_read_only_cycles(modrm);
-        self.clk_modrm_word_prefetch(bus, modrm, 2, 6, 0);
+        self.clk_modrm_word(bus, modrm, 2, 6, 1);
     }
 
     fn test_al_imm8(&mut self, bus: &mut impl common::Bus) {
         let src = self.fetch(bus);
         let dst = self.regs.byte(ByteReg::AL);
         self.alu_and_byte(dst, src);
-        self.clk_accumulator_imm8_template(bus);
+        self.clk_bus(bus, 3);
     }
 
     fn test_aw_imm16(&mut self, bus: &mut impl common::Bus) {
         let src = self.fetchword(bus);
         let dst = self.regs.word(WordReg::AX);
         self.alu_and_word(dst, src);
-        self.clk_accumulator_imm16_template(bus);
+        self.clk_bus(bus, 3);
     }
 
     fn xchg_br8(&mut self, bus: &mut impl common::Bus) {
@@ -1392,14 +1122,8 @@ impl I286 {
         let reg_val = self.regs.byte(reg);
         let rm_val = self.get_rm_byte(modrm, bus);
         self.regs.set_byte(reg, rm_val);
-        if modrm::modrm_is_register(modrm) {
-            self.putback_rm_byte(modrm, reg_val, bus);
-            self.clk_modrm_prefetch(bus, modrm, 3, 4);
-        } else {
-            self.timing.suppress_next_read_writeback_gap();
-            self.putback_rm_byte(modrm, reg_val, bus);
-            self.clk_visible(1);
-        }
+        self.putback_rm_byte(modrm, reg_val, bus);
+        self.clk_modrm(bus, modrm, 3, 5);
     }
 
     fn xchg_wr16(&mut self, bus: &mut impl common::Bus) {
@@ -1408,39 +1132,30 @@ impl I286 {
         let reg_val = self.regs.word(reg);
         let rm_val = self.get_rm_word(modrm, bus);
         self.regs.set_word(reg, rm_val);
-        if modrm::modrm_is_register(modrm) {
-            self.putback_rm_word(modrm, reg_val, bus);
-            self.clk_modrm_word_prefetch(bus, modrm, 3, 4, 0);
-        } else {
-            let write_splits = self.word_access_is_split(self.ea_seg, self.eo);
-            self.timing.suppress_next_read_writeback_gap();
-            self.putback_rm_word(modrm, reg_val, bus);
-            if !write_splits {
-                self.clk_visible(1);
-            }
-        }
+        self.putback_rm_word(modrm, reg_val, bus);
+        self.clk_modrm_word(bus, modrm, 3, 5, 2);
     }
 
-    fn xchg_aw(&mut self, reg: WordReg) {
+    fn xchg_aw(&mut self, reg: WordReg, bus: &mut impl common::Bus) {
         let aw = self.regs.word(WordReg::AX);
         let val = self.regs.word(reg);
         self.regs.set_word(WordReg::AX, val);
         self.regs.set_word(reg, aw);
-        self.clk(3);
+        self.clk_bus(bus, 3);
     }
 
     fn mov_br8(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
         let val = self.regs.byte(self.reg_byte(modrm));
         self.put_rm_byte(modrm, val, bus);
-        self.clk_move_byte_template(bus, modrm, MOV_WRITE_BYTE_TIMING);
+        self.clk_modrm(bus, modrm, 2, 3);
     }
 
     fn mov_wr16(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
         let val = self.regs.word(self.reg_word(modrm));
         self.put_rm_word(modrm, val, bus);
-        self.clk_move_word_template(bus, modrm, MOV_WRITE_WORD_TIMING);
+        self.clk_modrm_word(bus, modrm, 2, 3, 1);
     }
 
     fn mov_r8b(&mut self, bus: &mut impl common::Bus) {
@@ -1448,7 +1163,7 @@ impl I286 {
         let val = self.get_rm_byte(modrm, bus);
         let reg = self.reg_byte(modrm);
         self.regs.set_byte(reg, val);
-        self.clk_move_byte_template(bus, modrm, MOV_READ_BYTE_TIMING);
+        self.clk_modrm(bus, modrm, 2, 5);
     }
 
     fn mov_r16w(&mut self, bus: &mut impl common::Bus) {
@@ -1456,7 +1171,7 @@ impl I286 {
         let val = self.get_rm_word(modrm, bus);
         let reg = self.reg_word(modrm);
         self.regs.set_word(reg, val);
-        self.clk_move_word_template(bus, modrm, MOV_READ_WORD_TIMING);
+        self.clk_modrm_word(bus, modrm, 2, 5, 1);
     }
 
     fn mov_rm_sreg(&mut self, bus: &mut impl common::Bus) {
@@ -1464,7 +1179,7 @@ impl I286 {
         let seg = SegReg16::from_index((modrm >> 3) & 3);
         let val = self.sregs[seg as usize];
         self.put_rm_word(modrm, val, bus);
-        self.clk_move_word_template(bus, modrm, MOV_WRITE_WORD_TIMING);
+        self.clk_modrm_word(bus, modrm, 2, 3, 1);
     }
 
     fn mov_sreg_rm(&mut self, bus: &mut impl common::Bus) {
@@ -1477,24 +1192,34 @@ impl I286 {
         if seg == SegReg16::SS {
             self.inhibit_all = 1;
         }
-        self.clk_move_word_template(bus, modrm, MOV_READ_WORD_TIMING);
+        self.clk_modrm_word(bus, modrm, 2, 5, 1);
     }
 
     fn lea(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
-        self.calc_ea(modrm, bus);
         let reg = self.reg_word(modrm);
-        let val = self.eo;
-        self.regs.set_word(reg, val);
-        if modrm::modrm_is_disp8_memory(modrm) {
-            let au_cycles = modrm::ea_class_au_cycles(self.ea_class);
-            self.clk_visible(1);
-            self.clk_prefetch(bus, 5 + au_cycles);
-        } else if modrm::modrm_is_disp16_memory(modrm) || modrm::modrm_is_direct_memory(modrm) {
-            let au_cycles = modrm::ea_class_au_cycles(self.ea_class);
-            self.clk_prefetch(bus, 6 + au_cycles);
+        if modrm >= 0xC0 {
+            let offset = self.eo;
+            self.regs.set_word(reg, offset);
+            self.clk(1);
         } else {
-            self.clk(3);
+            self.calc_ea_bus(modrm, bus);
+            let offset = self.eo;
+            self.regs.set_word(reg, offset);
+            let mode = modrm >> 6;
+            let rm = modrm & 7;
+            let prefix_reduces_finish =
+                self.prefix_count_current == 3 && ((mode == 0 && rm == 6) || mode == 2);
+            let finish_cycles = if mode == 1 && (self.seg_prefix || self.lock_prefix_active) {
+                3
+            } else if prefix_reduces_finish
+                || self.front_end_resident_len() >= super::biu::MAX_QUEUE_SIZE
+            {
+                2
+            } else {
+                6
+            };
+            self.clk_bus(bus, finish_cycles);
         }
     }
 
@@ -1503,29 +1228,28 @@ impl I286 {
         let sp_pen = self.sp_penalty(1);
         let val = self.pop(bus);
         self.put_rm_word(modrm, val, bus);
-        if modrm::modrm_is_register(modrm) {
+        if modrm >= 0xC0 {
             self.clk(5 + sp_pen);
         } else {
-            let ea_pen = if address_is_odd(self.ea) { 4 } else { 0 };
+            let ea_pen = if self.ea & 1 == 1 { 4 } else { 0 };
             self.clk(5 + sp_pen + ea_pen);
         }
     }
 
-    fn cbw(&mut self) {
+    fn cbw(&mut self, bus: &mut impl common::Bus) {
         let al = self.regs.byte(ByteReg::AL) as i8 as i16 as u16;
         self.regs.set_word(WordReg::AX, al);
-        self.clk(2);
+        self.clk_bus(bus, 2);
     }
 
-    fn cwd(&mut self) {
+    fn cwd(&mut self, bus: &mut impl common::Bus) {
         let aw = self.regs.word(WordReg::AX) as i16;
         self.regs
             .set_word(WordReg::DX, if aw < 0 { 0xFFFF } else { 0 });
-        self.clk(2);
+        self.clk_bus(bus, 2);
     }
 
     fn call_far(&mut self, bus: &mut impl common::Bus) {
-        self.finish_state = I286FinishState::ControlTransferRestart;
         let penalty = self.sp_penalty(2);
         let offset = self.fetchword(bus);
         let segment = self.fetchword(bus);
@@ -1534,106 +1258,42 @@ impl I286 {
         if self.is_protected_mode() {
             self.code_descriptor(segment, offset, super::TaskType::Call, cs, ip, bus);
         } else {
-            let prefix_count = self.timing.prefix_count();
-            let suppress_fallthrough_prefetch =
-                self.timing.lock_prefix_suppresses_fallthrough_prefetch();
-            if !suppress_fallthrough_prefetch {
-                self.clk_forced_prefetch(bus);
-            }
-            if prefix_count & 1 == 1 {
-                self.clk_visible(3);
-            } else {
-                self.clk_visible(4);
-            }
-            self.push(bus, cs);
-            self.clk_visible(2);
             if !self.load_segment(SegReg16::CS, segment, bus) {
                 return;
             }
-            self.ip = offset;
-            self.timing.arm_control_transfer_restart(self.ip);
-            let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-            self.timing
-                .advance_control_transfer_fetches(bus, code_segment_base, 1);
-            self.sync_timing_cycles();
-            if address_is_odd(code_segment_base.wrapping_add(u32::from(self.ip)) & ADDRESS_MASK) {
-                self.timing.drive_next_write_low_byte_on_ts();
-            }
+            self.push(bus, cs);
             self.push(bus, ip);
-            self.timing
-                .advance_control_transfer_fetches(bus, code_segment_base, 1);
-            self.timing.complete_control_transfer_restart(2);
-            self.sync_timing_cycles();
-            return;
+            self.ip = offset;
         }
         self.clk(13 + penalty);
     }
 
     fn call_near(&mut self, bus: &mut impl common::Bus) {
-        self.finish_state = I286FinishState::ControlTransferRestart;
+        let penalty = self.sp_penalty(1);
         let disp = self.fetchword(bus);
-        let return_instruction_pointer = self.ip;
+        self.push(bus, self.ip);
         self.ip = self.ip.wrapping_add(disp);
-
-        self.timing.arm_control_transfer_restart(self.ip);
-        let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        let initial_cycles = if self.timing.lock_active() { 1 } else { 2 };
-        self.timing
-            .advance_control_transfer_internal_cycles(initial_cycles);
-        self.timing
-            .advance_control_transfer_fetches(bus, code_segment_base, 1);
-
-        let stack_write_even = self.regs.word(WordReg::SP) & 1 == 0;
-        let target_odd = self.ip & 1 != 0;
-        if target_odd && stack_write_even {
-            self.timing.drive_next_write_low_byte_on_ts();
-        }
-        self.push(bus, return_instruction_pointer);
-
-        if stack_write_even {
-            self.timing
-                .advance_control_transfer_fetches(bus, code_segment_base, 1);
-        }
-        self.timing.complete_control_transfer_restart(2);
-        self.sync_timing_cycles();
+        self.clk(7 + penalty);
     }
 
     fn jmp_near(&mut self, bus: &mut impl common::Bus) {
         let disp = self.fetchword(bus);
         self.ip = self.ip.wrapping_add(disp);
-        self.clk_control_transfer_restart(bus, self.ip, NEAR_CONTROL_TRANSFER_TIMING);
+        self.biu_flush_for_control_transfer();
+        self.clk(7);
     }
 
     fn jmp_far(&mut self, bus: &mut impl common::Bus) {
         let offset = self.fetchword(bus);
         let segment = self.fetchword(bus);
         if self.is_protected_mode() {
-            self.finish_state = I286FinishState::ControlTransferRestart;
             self.code_descriptor(segment, offset, super::TaskType::Jmp, 0, 0, bus);
         } else {
-            let prefix_count = self.timing.prefix_count();
-            let suppress_fallthrough_prefetch =
-                self.timing.lock_prefix_suppresses_fallthrough_prefetch() && prefix_count & 1 == 0;
-            if !suppress_fallthrough_prefetch {
-                if self.timing.prefetch_wrapped_before_instruction_start() {
-                    self.clk_prefetch(bus, 2);
-                } else {
-                    self.clk_forced_prefetch(bus);
-                }
-            }
             if !self.load_segment(SegReg16::CS, segment, bus) {
                 return;
             }
             self.ip = offset;
-            let timing = if self.timing.lock_active() && prefix_count > 1 && prefix_count & 1 == 0 {
-                LOCK_PREFIXED_FAR_IMMEDIATE_CONTROL_TRANSFER_TIMING
-            } else if !self.timing.lock_active() && prefix_count & 1 == 1 {
-                PREFIXED_FAR_IMMEDIATE_CONTROL_TRANSFER_TIMING
-            } else {
-                FAR_IMMEDIATE_CONTROL_TRANSFER_TIMING
-            };
-            self.clk_control_transfer_restart(bus, self.ip, timing);
-            return;
+            self.biu_flush_for_control_transfer();
         }
         self.clk(11);
     }
@@ -1641,105 +1301,51 @@ impl I286 {
     fn jmp_short(&mut self, bus: &mut impl common::Bus) {
         let disp = self.fetch(bus) as i8 as u16;
         self.ip = self.ip.wrapping_add(disp);
-        let timing = if self.timing.leading_lock_prefix() {
-            LOCK_SHORT_JMP_CONTROL_TRANSFER_TIMING
-        } else {
-            NEAR_CONTROL_TRANSFER_TIMING
-        };
-        self.clk_control_transfer_restart(bus, self.ip, timing);
+        self.biu_flush_for_control_transfer();
+        self.clk(7);
     }
 
     fn ret_near(&mut self, bus: &mut impl common::Bus) {
-        self.finish_state = I286FinishState::ControlTransferRestart;
         let penalty = self.sp_penalty(1);
         self.ip = self.pop(bus);
-        if !self.timing.capture_enabled() {
-            self.cycles_remaining -= i64::from(11 + penalty);
-            return;
-        }
-
-        self.timing.arm_control_transfer_restart(self.ip);
-        let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        self.timing.advance_control_transfer_internal_cycles(3);
-        self.timing
-            .advance_control_transfer_fetches(bus, code_segment_base, 3);
-        self.timing.complete_control_transfer_restart(2);
-        self.sync_timing_cycles();
+        self.clk(11 + penalty);
     }
 
     fn ret_near_imm(&mut self, bus: &mut impl common::Bus) {
-        self.finish_state = I286FinishState::ControlTransferRestart;
+        let penalty = self.sp_penalty(1);
         let imm = self.fetchword(bus);
-        if self.timing.lock_active() {
-            self.clk_visible(1);
-        } else {
-            self.clk_visible(2);
-        }
         self.ip = self.pop(bus);
         let sp = self.regs.word(WordReg::SP).wrapping_add(imm);
         self.regs.set_word(WordReg::SP, sp);
-        self.timing.arm_control_transfer_restart(self.ip);
-        let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        self.timing.advance_control_transfer_internal_cycles(3);
-        self.timing
-            .advance_control_transfer_fetches(bus, code_segment_base, 3);
-        self.timing.complete_control_transfer_restart(2);
-        self.sync_timing_cycles();
+        self.clk(11 + penalty);
     }
 
     fn ret_far(&mut self, bus: &mut impl common::Bus) {
-        self.finish_state = I286FinishState::ControlTransferRestart;
         let penalty = self.sp_penalty(2);
 
         if !self.is_protected_mode() {
-            if !self.timing.lock_active() {
-                self.clk_visible(2);
-            }
             self.ip = self.pop(bus);
             let cs = self.pop(bus);
             if !self.load_segment(SegReg16::CS, cs, bus) {
                 return;
             }
-            self.timing.arm_control_transfer_restart(self.ip);
-            let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-            self.timing.advance_control_transfer_internal_cycles(4);
-            self.timing
-                .advance_control_transfer_fetches(bus, code_segment_base, 3);
-            self.timing.complete_control_transfer_restart(2);
-            self.sync_timing_cycles();
+            self.clk(15 + penalty);
             return;
         }
 
         // Read new IP and CS from stack without modifying SP yet.
         let sp = self.regs.word(WordReg::SP);
         let ss_base = self.seg_base(SegReg16::SS);
-        let new_ip = bus.read_byte(ss_base.wrapping_add(sp as u32) & ADDRESS_MASK) as u16
-            | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(1) as u32) & ADDRESS_MASK)
-                as u16)
-                << 8);
-        let new_cs = bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(2) as u32) & ADDRESS_MASK)
-            as u16
-            | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(3) as u32) & ADDRESS_MASK)
-                as u16)
-                << 8);
+        let new_ip = self.read_word_phys(bus, ss_base.wrapping_add(sp as u32));
+        let new_cs = self.read_word_phys(bus, ss_base.wrapping_add(sp.wrapping_add(2) as u32));
 
         let new_rpl = new_cs & 3;
         let old_cpl = self.cpl();
 
         if new_rpl > old_cpl {
             // Inter-privilege return: also read new SP and SS.
-            let new_sp = bus
-                .read_byte(ss_base.wrapping_add(sp.wrapping_add(4) as u32) & ADDRESS_MASK)
-                as u16
-                | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(5) as u32) & ADDRESS_MASK)
-                    as u16)
-                    << 8);
-            let new_ss = bus
-                .read_byte(ss_base.wrapping_add(sp.wrapping_add(6) as u32) & ADDRESS_MASK)
-                as u16
-                | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(7) as u32) & ADDRESS_MASK)
-                    as u16)
-                    << 8);
+            let new_sp = self.read_word_phys(bus, ss_base.wrapping_add(sp.wrapping_add(4) as u32));
+            let new_ss = self.read_word_phys(bus, ss_base.wrapping_add(sp.wrapping_add(6) as u32));
 
             if !self.load_cs_for_return(new_cs, new_ip, bus) {
                 return;
@@ -1767,16 +1373,10 @@ impl I286 {
     }
 
     fn ret_far_imm(&mut self, bus: &mut impl common::Bus) {
-        self.finish_state = I286FinishState::ControlTransferRestart;
         let penalty = self.sp_penalty(2);
         let imm = self.fetchword(bus);
 
         if !self.is_protected_mode() {
-            if self.timing.lock_active() {
-                self.clk_visible(1);
-            } else {
-                self.clk_visible(2);
-            }
             self.ip = self.pop(bus);
             let cs = self.pop(bus);
             if !self.load_segment(SegReg16::CS, cs, bus) {
@@ -1784,46 +1384,23 @@ impl I286 {
             }
             let sp = self.regs.word(WordReg::SP).wrapping_add(imm);
             self.regs.set_word(WordReg::SP, sp);
-            self.timing.arm_control_transfer_restart(self.ip);
-            let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-            self.timing.advance_control_transfer_internal_cycles(4);
-            self.timing
-                .advance_control_transfer_fetches(bus, code_segment_base, 3);
-            self.timing.complete_control_transfer_restart(2);
-            self.sync_timing_cycles();
+            self.clk(15 + penalty);
             return;
         }
 
         let sp = self.regs.word(WordReg::SP);
         let ss_base = self.seg_base(SegReg16::SS);
-        let new_ip = bus.read_byte(ss_base.wrapping_add(sp as u32) & ADDRESS_MASK) as u16
-            | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(1) as u32) & ADDRESS_MASK)
-                as u16)
-                << 8);
-        let new_cs = bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(2) as u32) & ADDRESS_MASK)
-            as u16
-            | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(3) as u32) & ADDRESS_MASK)
-                as u16)
-                << 8);
+        let new_ip = self.read_word_phys(bus, ss_base.wrapping_add(sp as u32));
+        let new_cs = self.read_word_phys(bus, ss_base.wrapping_add(sp.wrapping_add(2) as u32));
 
         let new_rpl = new_cs & 3;
         let old_cpl = self.cpl();
 
         if new_rpl > old_cpl {
             let sp_ss_base = sp.wrapping_add(4).wrapping_add(imm);
-            let new_sp = bus.read_byte(ss_base.wrapping_add(sp_ss_base as u32) & ADDRESS_MASK)
-                as u16
-                | ((bus.read_byte(
-                    ss_base.wrapping_add(sp_ss_base.wrapping_add(1) as u32) & ADDRESS_MASK,
-                ) as u16)
-                    << 8);
-            let new_ss = bus
-                .read_byte(ss_base.wrapping_add(sp_ss_base.wrapping_add(2) as u32) & ADDRESS_MASK)
-                as u16
-                | ((bus.read_byte(
-                    ss_base.wrapping_add(sp_ss_base.wrapping_add(3) as u32) & ADDRESS_MASK,
-                ) as u16)
-                    << 8);
+            let new_sp = self.read_word_phys(bus, ss_base.wrapping_add(sp_ss_base as u32));
+            let new_ss =
+                self.read_word_phys(bus, ss_base.wrapping_add(sp_ss_base.wrapping_add(2) as u32));
 
             if !self.load_cs_for_return(new_cs, new_ip, bus) {
                 return;
@@ -1851,13 +1428,11 @@ impl I286 {
     }
 
     fn pushf(&mut self, bus: &mut impl common::Bus) {
-        let tail_cycles = self.stack_push_tail_cycles(3);
         let mut flags_val = self.flags.compress();
         if !self.is_protected_mode() {
             flags_val &= !0xF000;
         }
         self.push(bus, flags_val);
-        self.clk(tail_cycles);
     }
 
     fn popf(&mut self, bus: &mut impl common::Bus) {
@@ -1865,32 +1440,53 @@ impl I286 {
         let cpl = self.cpl();
         let pm = self.is_protected_mode();
         self.flags.load_flags(val, cpl, pm);
-        self.clk(5);
+        self.clk(2);
     }
 
-    fn sahf(&mut self) {
+    fn sahf(&mut self, bus: &mut impl common::Bus) {
         let ah = self.regs.byte(ByteReg::AH);
         self.flags.carry_val = (ah & 0x01) as u32;
         self.flags.parity_val = if ah & 0x04 != 0 { 0 } else { 1 };
         self.flags.aux_val = (ah & 0x10) as u32;
         self.flags.zero_val = if ah & 0x40 != 0 { 0 } else { 1 };
         self.flags.sign_val = if ah & 0x80 != 0 { -1 } else { 0 };
-        self.clk(2);
+        self.clk_bus(bus, 2);
     }
 
-    fn lahf(&mut self) {
+    fn lahf(&mut self, bus: &mut impl common::Bus) {
         let flags_val = self.flags.compress() as u8;
         self.regs.set_byte(ByteReg::AH, flags_val);
-        self.clk(2);
+        self.clk_bus(bus, 2);
     }
 
     fn mov_al_moffs(&mut self, bus: &mut impl common::Bus) {
-        let offset = self.fetchword(bus);
+        let offset = if self.seg_prefix && self.prefix_count_current >= 5 {
+            self.fetchword_without_tick(bus)
+        } else {
+            self.fetchword(bus)
+        };
         let seg = self.default_seg(SegReg16::DS);
-        self.prepare_moffs_access(offset);
-        let val = self.read_byte_seg(bus, seg, offset);
+        if self.seg_prefix && self.lock_prefix_active {
+            self.lock_demand_gap_emitted = true;
+        }
+        let physical_address = self.seg_base(seg).wrapping_add(offset as u32) & ADDRESS_MASK;
+        let single_prefix_zero_high_accumulator = self.prefix_count_current == 1
+            && self.prefix_seg == SegReg16::SS
+            && self.regs.byte(ByteReg::AH) == 0
+            && physical_address < 0x000C_0000;
+        let val = match self.prefix_count_current {
+            1 if self.seg_prefix && single_prefix_zero_high_accumulator => {
+                self.read_byte_seg(bus, seg, offset)
+            }
+            1 | 3 if self.seg_prefix => {
+                self.biu_mark_au_address_ready();
+                self.read_byte_seg_after_prefetch_gap(bus, seg, offset)
+            }
+            5.. if self.seg_prefix => self.read_byte_seg_without_prefetch(bus, seg, offset),
+            _ => self.read_byte_seg(bus, seg, offset),
+        };
         self.regs.set_byte(ByteReg::AL, val);
-        self.clk(5);
+        self.clk(1);
     }
 
     fn mov_aw_moffs(&mut self, bus: &mut impl common::Bus) {
@@ -1899,19 +1495,45 @@ impl I286 {
         let base = self.seg_base(self.ea_seg);
         self.eo = offset;
         self.ea = base.wrapping_add(offset as u32) & ADDRESS_MASK;
-        self.prepare_moffs_access(offset);
+        if self.seg_prefix && self.lock_prefix_active {
+            self.lock_demand_gap_emitted = true;
+        }
+        let next_instruction_at_paragraph_tail = self.ip & 0x000F == 0x000C;
+        let single_prefix_ss_paragraph_tail = self.prefix_count_current == 1
+            && self.prefix_seg == SegReg16::SS
+            && self.regs.byte(ByteReg::AH) == 0
+            && next_instruction_at_paragraph_tail;
+        if self.seg_prefix
+            && !single_prefix_ss_paragraph_tail
+            && (self.prefix_count_current == 1 || self.prefix_count_current == 3)
+        {
+            self.biu_mark_au_address_ready();
+        }
         let val = self.seg_read_word(bus);
         self.regs.set_word(WordReg::AX, val);
-        self.clk(5);
+        self.clk(1);
     }
 
     fn mov_moffs_al(&mut self, bus: &mut impl common::Bus) {
         let offset = self.fetchword(bus);
         let seg = self.default_seg(SegReg16::DS);
         let val = self.regs.byte(ByteReg::AL);
-        self.prepare_moffs_access(offset);
+        let physical_address = self.seg_base(seg).wrapping_add(offset as u32) & ADDRESS_MASK;
+        if self.seg_prefix {
+            if self.lock_prefix_active {
+                if self.prefix_count_current != 3 {
+                    self.lock_demand_gap_emitted = true;
+                }
+            } else if self.prefix_count_current == 3
+                || (self.prefix_count_current == 1
+                    && (self.prefix_seg != SegReg16::SS
+                        || self.regs.byte(ByteReg::AH) != 0
+                        || physical_address >= 0x000C_0000))
+            {
+                self.biu_mark_au_address_ready();
+            }
+        }
         self.write_byte_seg(bus, seg, offset, val);
-        self.clk(3);
     }
 
     fn mov_moffs_aw(&mut self, bus: &mut impl common::Bus) {
@@ -1920,53 +1542,33 @@ impl I286 {
         let base = self.seg_base(self.ea_seg);
         self.eo = offset;
         self.ea = base.wrapping_add(offset as u32) & ADDRESS_MASK;
-        self.prepare_moffs_access(offset);
-        self.seg_write_word(bus, self.regs.word(WordReg::AX));
-        let tail_cycles = if address_is_odd(self.ea) { 2 } else { 3 };
-        self.clk(tail_cycles);
-    }
-
-    fn prepare_moffs_access(&mut self, _offset: u16) {
-        match self.timing.prefix_count() {
-            0 => {
-                self.timing.note_au_ready();
-                self.timing
-                    .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
-            }
-            count
-                if self.timing.lock_prefix_suppresses_fallthrough_prefetch() && count & 1 == 0 =>
-            {
-                self.timing
-                    .borrow_internal_cycles(MOFFS_PREFIX_OVERLAP_CREDIT);
-            }
-            count if count & 1 == 1 => {
-                self.clk_visible(1);
-                self.timing
-                    .borrow_internal_cycles(MOFFS_PREFIX_OVERLAP_CREDIT);
-            }
-            _ => {
-                self.timing.note_au_ready();
-                self.timing
-                    .note_demand_prefetch_policy(I286DemandPrefetchPolicy::BeforeNoTurnaround);
+        if self.seg_prefix {
+            if self.lock_prefix_active {
+                if self.prefix_count_current != 3 {
+                    self.lock_demand_gap_emitted = true;
+                }
+            } else if self.prefix_count_current == 3 || self.prefix_count_current == 1 {
+                self.biu_mark_au_address_ready();
             }
         }
+        self.seg_write_word(bus, self.regs.word(WordReg::AX));
     }
 
     fn mov_byte_reg_imm(&mut self, reg: ByteReg, bus: &mut impl common::Bus) {
         let val = self.fetch(bus);
         self.regs.set_byte(reg, val);
-        self.clk_prefetch(bus, 3);
+        self.clk_bus(bus, 2);
     }
 
     fn mov_word_reg_imm(&mut self, reg: WordReg, bus: &mut impl common::Bus) {
         let val = self.fetchword(bus);
         self.regs.set_word(reg, val);
-        self.clk_prefetch(bus, 4);
+        self.clk_bus(bus, 2);
     }
 
     fn mov_rm_imm8(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
-        if modrm::modrm_is_register(modrm) {
+        if modrm >= 0xC0 {
             let val = self.fetch(bus);
             let reg = self.rm_byte(modrm);
             self.regs.set_byte(reg, val);
@@ -1975,12 +1577,12 @@ impl I286 {
             let val = self.fetch(bus);
             self.seg_write_byte_at(bus, 0, val);
         }
-        self.clk_modrm_prefetch(bus, modrm, 2, 3);
+        self.clk_modrm(bus, modrm, 2, 3);
     }
 
     fn mov_rm_imm16(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
-        if modrm::modrm_is_register(modrm) {
+        if modrm >= 0xC0 {
             let val = self.fetchword(bus);
             let reg = self.rm_word(modrm);
             self.regs.set_word(reg, val);
@@ -1989,64 +1591,62 @@ impl I286 {
             let val = self.fetchword(bus);
             self.seg_write_word(bus, val);
         }
-        self.clk_modrm_word_prefetch(bus, modrm, 2, 3, 1);
+        self.clk_modrm_word(bus, modrm, 2, 3, 1);
     }
 
     fn les(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
+        let reg = self.reg_word(modrm);
+        if modrm >= 0xC0 {
+            let offset = self.eo;
+            self.regs.set_word(reg, offset);
+            self.clk(3);
+            return;
+        }
         self.calc_ea(modrm, bus);
         let offset = self.seg_read_word(bus);
-        self.timing.suppress_next_memory_read_window();
         let segment = self.seg_read_word_at(bus, 2);
-        let reg = self.reg_word(modrm);
         self.regs.set_word(reg, offset);
         if !self.load_segment(SegReg16::ES, segment, bus) {
             return;
         }
-        self.clk_visible(3);
+        let penalty = if self.ea & 1 == 1 { 8 } else { 0 };
+        self.clk(7 + penalty);
     }
 
     fn lds(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
+        let reg = self.reg_word(modrm);
+        if modrm >= 0xC0 {
+            let offset = self.eo;
+            self.regs.set_word(reg, offset);
+            self.clk(3);
+            return;
+        }
         self.calc_ea(modrm, bus);
         let offset = self.seg_read_word(bus);
-        self.timing.suppress_next_memory_read_window();
         let segment = self.seg_read_word_at(bus, 2);
-        let reg = self.reg_word(modrm);
         self.regs.set_word(reg, offset);
         if !self.load_segment(SegReg16::DS, segment, bus) {
             return;
         }
-        self.clk_visible(3);
+        let penalty = if self.ea & 1 == 1 { 8 } else { 0 };
+        self.clk(7 + penalty);
     }
 
     fn enter(&mut self, bus: &mut impl common::Bus) {
         let alloc = self.fetchword(bus);
         let level = self.fetch(bus) & 0x1F;
+        let sp_pen = self.sp_penalty(if level == 0 { 1 } else { 2 * level as i32 - 1 });
         let bp = self.regs.word(WordReg::BP);
-        let stack_write_split =
-            self.word_access_is_split(SegReg16::SS, self.regs.word(WordReg::SP).wrapping_sub(2));
-        let frame_read_split = level > 1
-            && self.word_access_is_split(SegReg16::SS, self.regs.word(WordReg::BP).wrapping_sub(2));
-        self.clk_prefetch(bus, 4);
         self.push(bus, bp);
         let frame_ptr = self.regs.word(WordReg::SP);
         if level > 0 {
-            if stack_write_split {
-                self.clk(2);
-            } else {
-                self.clk(4);
-            }
             for _ in 1..level {
                 let bp_val = self.regs.word(WordReg::BP).wrapping_sub(2);
                 self.regs.set_word(WordReg::BP, bp_val);
                 let val = self.read_word_seg(bus, SegReg16::SS, bp_val);
-                self.timing.suppress_next_read_writeback_gap();
                 self.push(bus, val);
-            }
-            if level > 1 {
-                self.timing.advance_visible_internal_cycles(2);
-                self.sync_timing_cycles();
             }
             self.push(bus, frame_ptr);
         }
@@ -2054,32 +1654,31 @@ impl I286 {
         let sp = self.regs.word(WordReg::SP).wrapping_sub(alloc);
         self.regs.set_word(WordReg::SP, sp);
         if level == 0 {
-            self.clk(9);
+            self.clk(11 + sp_pen);
         } else if level == 1 {
-            self.clk(8);
+            self.clk(15 + sp_pen);
         } else {
-            let tail_cycles = if frame_read_split { 6 } else { 4 };
-            self.clk(2 * i32::from(level) + tail_cycles);
+            let l = level as i32;
+            self.clk(12 + 4 * l + sp_pen);
         }
     }
 
     fn leave(&mut self, bus: &mut impl common::Bus) {
         let bp = self.regs.word(WordReg::BP);
         self.regs.set_word(WordReg::SP, bp);
+        let penalty = self.sp_penalty(1);
         let val = self.pop(bus);
         self.regs.set_word(WordReg::BP, val);
-        self.clk(5);
+        self.clk(5 + penalty);
     }
 
     fn int3(&mut self, bus: &mut impl common::Bus) {
-        self.finish_state = I286FinishState::FaultRestart;
         let penalty = self.sp_penalty(3);
         self.raise_software_interrupt(3, bus);
         self.clk(23 + penalty);
     }
 
     fn int_imm(&mut self, bus: &mut impl common::Bus) {
-        self.finish_state = I286FinishState::FaultRestart;
         let penalty = self.sp_penalty(3);
         let vector = self.fetch(bus);
         self.raise_software_interrupt(vector, bus);
@@ -2088,44 +1687,31 @@ impl I286 {
 
     fn into(&mut self, bus: &mut impl common::Bus) {
         if self.flags.of() {
-            self.finish_state = I286FinishState::FaultRestart;
             let penalty = self.sp_penalty(3);
             self.raise_software_interrupt(4, bus);
             self.clk(24 + penalty);
         } else {
-            self.clk(3);
+            self.clk_bus(bus, 3);
         }
     }
 
     fn iret(&mut self, bus: &mut impl common::Bus) {
-        self.finish_state = I286FinishState::ControlTransferRestart;
         let penalty = self.sp_penalty(3);
 
         if !self.is_protected_mode() {
-            let sp = self.regs.word(WordReg::SP);
-            let startup_cycles = if self.timing.lock_active() { 1 } else { 3 };
-            self.clk_visible(startup_cycles);
-            let flags_val = self.read_word_seg(bus, SegReg16::SS, sp.wrapping_add(4));
-            let instruction_pointer = self.read_word_seg(bus, SegReg16::SS, sp);
-            let cs = self.read_word_seg(bus, SegReg16::SS, sp.wrapping_add(2));
-            self.regs.set_word(WordReg::SP, sp.wrapping_add(6));
+            self.ip = self.pop(bus);
+            let cs = self.pop(bus);
             if !self.load_segment(SegReg16::CS, cs, bus) {
                 return;
             }
-            self.ip = instruction_pointer;
+            let flags_val = self.pop(bus);
             self.flags.load_flags(flags_val, 0, false);
-            let timing = if self.timing.lock_active() {
-                LOCK_IRET_CONTROL_TRANSFER_TIMING
-            } else {
-                IRET_CONTROL_TRANSFER_TIMING
-            };
-            self.clk_control_transfer_restart(bus, self.ip, timing);
+            self.clk(17 + penalty);
             return;
         }
 
         if self.flags.nt {
-            let backlink = bus.read_byte(self.tr_base & ADDRESS_MASK) as u16
-                | ((bus.read_byte(self.tr_base.wrapping_add(1) & ADDRESS_MASK) as u16) << 8);
+            let backlink = self.read_word_phys(bus, self.tr_base);
             self.switch_task(backlink, super::TaskType::Iret, bus);
             let flags_val = self.flags.compress();
             let cpl = self.cpl();
@@ -2139,37 +1725,16 @@ impl I286 {
         // Read values from stack without modifying SP yet.
         let sp = self.regs.word(WordReg::SP);
         let ss_base = self.seg_base(SegReg16::SS);
-        let new_ip = bus.read_byte(ss_base.wrapping_add(sp as u32) & ADDRESS_MASK) as u16
-            | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(1) as u32) & ADDRESS_MASK)
-                as u16)
-                << 8);
-        let new_cs = bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(2) as u32) & ADDRESS_MASK)
-            as u16
-            | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(3) as u32) & ADDRESS_MASK)
-                as u16)
-                << 8);
-        let new_flags =
-            bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(4) as u32) & ADDRESS_MASK) as u16
-                | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(5) as u32) & ADDRESS_MASK)
-                    as u16)
-                    << 8);
+        let new_ip = self.read_word_phys(bus, ss_base.wrapping_add(sp as u32));
+        let new_cs = self.read_word_phys(bus, ss_base.wrapping_add(sp.wrapping_add(2) as u32));
+        let new_flags = self.read_word_phys(bus, ss_base.wrapping_add(sp.wrapping_add(4) as u32));
 
         let new_rpl = new_cs & 3;
 
         if new_rpl > old_cpl {
             // Inter-privilege return: also read SP and SS from stack.
-            let new_sp = bus
-                .read_byte(ss_base.wrapping_add(sp.wrapping_add(6) as u32) & ADDRESS_MASK)
-                as u16
-                | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(7) as u32) & ADDRESS_MASK)
-                    as u16)
-                    << 8);
-            let new_ss = bus
-                .read_byte(ss_base.wrapping_add(sp.wrapping_add(8) as u32) & ADDRESS_MASK)
-                as u16
-                | ((bus.read_byte(ss_base.wrapping_add(sp.wrapping_add(9) as u32) & ADDRESS_MASK)
-                    as u16)
-                    << 8);
+            let new_sp = self.read_word_phys(bus, ss_base.wrapping_add(sp.wrapping_add(6) as u32));
+            let new_ss = self.read_word_phys(bus, ss_base.wrapping_add(sp.wrapping_add(8) as u32));
 
             if !self.load_cs_for_return(new_cs, new_ip, bus) {
                 return;
@@ -2202,144 +1767,130 @@ impl I286 {
         let disp = self.fetch(bus) as i8 as u16;
         let cw = self.regs.word(WordReg::CX).wrapping_sub(1);
         self.regs.set_word(WordReg::CX, cw);
-        if cw != 0 && !self.flags.zf() {
+        let taken = cw != 0 && !self.flags.zf();
+        if taken {
             self.ip = self.ip.wrapping_add(disp);
-            let timing = if self.timing.cycle_state().lock_active {
-                LOCK_LOOP_CONTROL_TRANSFER_TIMING
-            } else {
-                LOOP_CONTROL_TRANSFER_TIMING
-            };
-            self.clk_control_transfer_restart(bus, self.ip, timing);
-        } else {
-            self.clk(6);
         }
+        self.loop_finish(bus, taken);
     }
 
     fn loope(&mut self, bus: &mut impl common::Bus) {
         let disp = self.fetch(bus) as i8 as u16;
         let cw = self.regs.word(WordReg::CX).wrapping_sub(1);
         self.regs.set_word(WordReg::CX, cw);
-        if cw != 0 && self.flags.zf() {
+        let taken = cw != 0 && self.flags.zf();
+        if taken {
             self.ip = self.ip.wrapping_add(disp);
-            let timing = if self.timing.cycle_state().lock_active {
-                LOCK_LOOP_CONTROL_TRANSFER_TIMING
-            } else {
-                LOOP_CONTROL_TRANSFER_TIMING
-            };
-            self.clk_control_transfer_restart(bus, self.ip, timing);
-        } else {
-            self.clk(6);
         }
+        self.loop_finish(bus, taken);
     }
 
     fn loop_(&mut self, bus: &mut impl common::Bus) {
         let disp = self.fetch(bus) as i8 as u16;
         let cw = self.regs.word(WordReg::CX).wrapping_sub(1);
         self.regs.set_word(WordReg::CX, cw);
-        if cw != 0 {
+        let taken = cw != 0;
+        if taken {
             self.ip = self.ip.wrapping_add(disp);
-            let timing = if self.timing.cycle_state().lock_active {
-                LOCK_LOOP_CONTROL_TRANSFER_TIMING
-            } else {
-                LOOP_CONTROL_TRANSFER_TIMING
-            };
-            self.clk_control_transfer_restart(bus, self.ip, timing);
-        } else {
-            self.clk(6);
         }
+        self.loop_finish(bus, taken);
     }
 
     fn jcxz(&mut self, bus: &mut impl common::Bus) {
         let disp = self.fetch(bus) as i8 as u16;
-        if self.regs.word(WordReg::CX) == 0 {
-            let target = self.ip.wrapping_add(disp);
-            let lock_active = self.timing.cycle_state().lock_active;
-            if lock_active {
-                self.clk_prefetch(bus, 3);
-            }
-            self.ip = target;
-            let timing = if lock_active {
-                LOCK_JCXZ_CONTROL_TRANSFER_TIMING
-            } else {
-                LOOP_CONTROL_TRANSFER_TIMING
-            };
-            self.clk_control_transfer_restart(bus, self.ip, timing);
-        } else if self.timing.cycle_state().lock_active {
-            self.clk_prefetch(bus, 6);
+        let taken = self.regs.word(WordReg::CX) == 0;
+        if taken {
+            self.ip = self.ip.wrapping_add(disp);
+        }
+        if taken && self.lock_prefix_active {
+            self.clk_bus(bus, 1);
+            self.clk(1);
+            self.clk_bus(bus, 2);
+            self.clk(1);
+            self.biu_flush_for_control_transfer();
         } else {
-            self.clk(6);
+            self.loop_finish(bus, taken);
         }
     }
 
     fn in_al_imm(&mut self, bus: &mut impl common::Bus) {
         let port = self.fetch(bus) as u16;
-        if port != 0 && !self.timing.lock_active() {
-            self.clk_visible(1);
+        if self.lock_prefix_active {
+            self.lock_demand_gap_emitted = true;
+        } else {
+            self.clk_bus(bus, 4);
+            self.clk(1);
         }
-        let val = self.read_io_byte(bus, port);
+        let val = self.biu_io_read_u8(bus, port);
         self.regs.set_byte(ByteReg::AL, val);
-        self.clk(3);
+        self.clk(1);
     }
 
     fn in_aw_imm(&mut self, bus: &mut impl common::Bus) {
         let port = self.fetch(bus) as u16;
-        if port != 0 && !self.timing.lock_active() {
-            self.clk_visible(1);
+        if self.lock_prefix_active {
+            self.lock_demand_gap_emitted = true;
+        } else {
+            self.clk_bus(bus, 4);
+            self.clk(1);
         }
-        let val = self.read_io_word(bus, port);
+        let val = self.biu_io_read_u16(bus, port);
         self.regs.set_word(WordReg::AX, val);
-        self.clk(3);
+        self.clk(1);
     }
 
     fn out_imm_al(&mut self, bus: &mut impl common::Bus) {
         let port = self.fetch(bus) as u16;
         let val = self.regs.byte(ByteReg::AL);
-        if port != 0 && !self.timing.lock_active() {
-            self.clk_visible(1);
+        if self.lock_prefix_active {
+            self.lock_demand_gap_emitted = true;
+            self.biu_io_write_u8(bus, port, val);
+        } else {
+            self.biu_io_write_u8_after_prefetch_gap(bus, port, val);
         }
-        self.write_io_byte(bus, port, val);
-        self.clk(1);
     }
 
     fn out_imm_aw(&mut self, bus: &mut impl common::Bus) {
         let port = self.fetch(bus) as u16;
         let val = self.regs.word(WordReg::AX);
-        if !self.timing.lock_active() {
-            self.clk_visible(1);
+        if self.lock_prefix_active {
+            self.lock_demand_gap_emitted = true;
+            self.biu_io_write_u16(bus, port, val);
+        } else {
+            self.biu_io_write_u16_after_prefetch_gap(bus, port, val);
         }
-        self.write_io_word(bus, port, val);
-        let tail_cycles = if port & 1 == 0 { 1 } else { 0 };
-        self.clk(tail_cycles);
     }
 
     fn in_al_dw(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
-        let val = self.read_io_byte(bus, port);
+        let val = self.biu_io_read_u8(bus, port);
         self.regs.set_byte(ByteReg::AL, val);
-        self.clk(5);
+        self.clk(1);
     }
 
     fn in_aw_dw(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
-        let val = self.read_io_word(bus, port);
+        let val = self.biu_io_read_u16(bus, port);
         self.regs.set_word(WordReg::AX, val);
-        self.clk(5);
+        self.clk(1);
     }
 
     fn out_dw_al(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
         let val = self.regs.byte(ByteReg::AL);
-        self.write_io_byte(bus, port, val);
-        let tail_cycles = if port == 0 { 0 } else { 1 };
-        self.clk(tail_cycles);
+        if self.lock_prefix_active {
+            self.lock_demand_gap_emitted = port == 0;
+        }
+        self.biu_io_write_u8(bus, port, val);
     }
 
     fn out_dw_aw(&mut self, bus: &mut impl common::Bus) {
         let port = self.regs.word(WordReg::DX);
         let val = self.regs.word(WordReg::AX);
-        self.write_io_word(bus, port, val);
-        let tail_cycles = if port & 1 == 0 { 1 } else { 0 };
-        self.clk(tail_cycles);
+        if self.lock_prefix_active {
+            self.lock_demand_gap_emitted = port == 0;
+        }
+        self.biu_io_write_u16(bus, port, val);
     }
 
     fn xlat(&mut self, bus: &mut impl common::Bus) {
@@ -2347,12 +1898,37 @@ impl I286 {
         let bw = self.regs.word(WordReg::BX);
         let offset = bw.wrapping_add(al);
         let seg = self.default_seg(SegReg16::DS);
-        let val = self.read_byte_seg(bus, seg, offset);
+        let val = if self.seg_prefix {
+            match self.prefix_count_current {
+                1 => self.read_byte_seg_after_prefetch_gap(bus, seg, offset),
+                4 => {
+                    if self.lock_prefix_active {
+                        self.lock_demand_gap_emitted = true;
+                    }
+                    self.read_byte_seg_without_prefetch(bus, seg, offset)
+                }
+                6.. => {
+                    if self.lock_prefix_active {
+                        self.lock_demand_gap_emitted = true;
+                    }
+                    self.read_byte_seg_without_prefetch(bus, seg, offset)
+                }
+                _ => {
+                    if self.lock_prefix_active {
+                        self.lock_demand_gap_emitted = true;
+                    }
+                    self.biu_no_prefetch_cycle(bus);
+                    self.read_byte_seg_without_prefetch(bus, seg, offset)
+                }
+            }
+        } else {
+            self.read_byte_seg(bus, seg, offset)
+        };
         self.regs.set_byte(ByteReg::AL, val);
-        self.clk(5);
+        self.clk(1);
     }
 
-    fn daa(&mut self, _bus: &mut impl common::Bus) {
+    fn daa(&mut self, bus: &mut impl common::Bus) {
         let old_al = self.regs.byte(ByteReg::AL);
         let old_cf = self.flags.cf();
         let old_af = self.flags.af();
@@ -2373,10 +1949,10 @@ impl I286 {
         self.flags.carry_val = u32::from(carry);
         self.regs.set_byte(ByteReg::AL, al);
         self.flags.set_szpf_byte(al as u32);
-        self.clk(3);
+        self.clk_bus(bus, 3);
     }
 
-    fn das(&mut self, _bus: &mut impl common::Bus) {
+    fn das(&mut self, bus: &mut impl common::Bus) {
         let old_al = self.regs.byte(ByteReg::AL);
         let old_cf = self.flags.cf();
         let old_af = self.flags.af();
@@ -2397,10 +1973,10 @@ impl I286 {
         self.flags.carry_val = u32::from(carry);
         self.regs.set_byte(ByteReg::AL, al);
         self.flags.set_szpf_byte(al as u32);
-        self.clk(3);
+        self.clk_bus(bus, 3);
     }
 
-    fn aaa(&mut self, _bus: &mut impl common::Bus) {
+    fn aaa(&mut self, bus: &mut impl common::Bus) {
         if (self.regs.byte(ByteReg::AL) & 0x0F) > 9 || self.flags.af() {
             let ax = self.regs.word(WordReg::AX).wrapping_add(0x0106);
             self.regs.set_word(WordReg::AX, ax);
@@ -2414,10 +1990,10 @@ impl I286 {
             self.flags.aux_val = 0;
             self.flags.carry_val = 0;
         }
-        self.clk(3);
+        self.clk_bus(bus, 3);
     }
 
-    fn aas(&mut self, _bus: &mut impl common::Bus) {
+    fn aas(&mut self, bus: &mut impl common::Bus) {
         if (self.regs.byte(ByteReg::AL) & 0x0F) > 9 || self.flags.af() {
             let ax = self.regs.word(WordReg::AX).wrapping_sub(0x0106);
             self.regs.set_word(WordReg::AX, ax);
@@ -2431,21 +2007,16 @@ impl I286 {
             self.flags.aux_val = 0;
             self.flags.carry_val = 0;
         }
-        self.clk(3);
+        self.clk_bus(bus, 3);
     }
 
     fn aam(&mut self, bus: &mut impl common::Bus) {
         let base = self.fetch(bus);
-        let cycles = if self.timing.cycle_state().lock_active {
-            16
-        } else {
-            17
-        };
         if base == 0 {
             self.regs.set_byte(ByteReg::AH, 0xFF);
             let val = self.regs.byte(ByteReg::AL) as u32;
             self.flags.set_szpf_byte(val);
-            self.clk(cycles);
+            self.clk_bus(bus, 19);
             return;
         }
         let al = self.regs.byte(ByteReg::AL);
@@ -2453,7 +2024,7 @@ impl I286 {
         self.regs.set_byte(ByteReg::AL, al % base);
         let val = self.regs.byte(ByteReg::AL) as u32;
         self.flags.set_szpf_byte(val);
-        self.clk(cycles);
+        self.clk_bus(bus, 19);
     }
 
     fn aad(&mut self, bus: &mut impl common::Bus) {
@@ -2464,128 +2035,74 @@ impl I286 {
         self.regs.set_byte(ByteReg::AL, result);
         self.regs.set_byte(ByteReg::AH, 0);
         self.flags.set_szpf_byte(result as u32);
-        let cycles = if self.timing.cycle_state().lock_active {
-            14
-        } else {
-            15
-        };
-        self.clk(cycles);
+        self.clk_bus(bus, 17);
     }
 
-    fn salc(&mut self) {
-        let carry = self.flags.cf();
-        let val = if carry { 0xFF } else { 0x00 };
+    fn salc(&mut self, bus: &mut impl common::Bus) {
+        let val = if self.flags.cf() { 0xFF } else { 0x00 };
         self.regs.set_byte(ByteReg::AL, val);
-        let cycles = if carry { 3 } else { 4 };
-        self.clk(cycles);
+        self.clk_bus(bus, 2);
+        if self.lock_prefix_active {
+            self.clk(3);
+        }
+    }
+
+    fn wait(&mut self, bus: &mut impl common::Bus) {
+        self.clk_bus(bus, 5);
+        self.clk(5);
     }
 
     fn fpu_escape(&mut self, bus: &mut impl common::Bus) {
-        let instruction_pointer = self.prev_ip;
-        let code_segment = self.sregs[SegReg16::CS as usize];
         let modrm = self.fetch(bus);
-        let mut operand_pointer = None;
-        if modrm::modrm_is_memory(modrm) {
+        if modrm < 0xC0 {
             self.calc_ea(modrm, bus);
-            operand_pointer = Some((self.eo, self.sregs[self.ea_seg as usize]));
-        }
-
-        let (mut pre_io_cycles, mut prefetch_lead_cycles): (u8, Option<u8>) = match self.ea_class {
-            EaClass::Register => (6, None),
-            EaClass::SingleRegister | EaClass::DoubleRegister => (14, None),
-            EaClass::Direct | EaClass::Disp16Single => (16, Some(0)),
-            EaClass::Disp16Double => (17, Some(0)),
-            EaClass::Disp8Single => (16, Some(1)),
-            EaClass::Disp8Double => (17, Some(1)),
-        };
-        if self.timing.prefix_count_is_odd() {
-            pre_io_cycles = pre_io_cycles.saturating_sub(1);
-            match self.ea_class {
-                EaClass::Disp8Single | EaClass::Disp8Double => {
-                    prefetch_lead_cycles = None;
-                }
-                EaClass::Register
-                | EaClass::Direct
-                | EaClass::SingleRegister
-                | EaClass::DoubleRegister
-                | EaClass::Disp16Single
-                | EaClass::Disp16Double => {}
-            }
-        }
-        if self.ea_class.is_register() && self.timing.lock_prefix_suppresses_fallthrough_prefetch()
-        {
-            pre_io_cycles = pre_io_cycles.saturating_sub(1);
-        }
-        if self.ea_class.is_memory()
-            && self.timing.lock_prefix_suppresses_fallthrough_prefetch()
-            && self.timing.prefix_count() == 2
-        {
-            pre_io_cycles = pre_io_cycles.saturating_sub(2);
-            prefetch_lead_cycles = None;
-        }
-        let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        self.timing.advance_fpu_escape(
-            bus,
-            code_segment_base,
-            I286FpuEscapeTiming {
-                pre_io_cycles,
-                prefetch_lead_cycles,
-                instruction_pointer,
-                code_segment,
-                operand_pointer,
-            },
-        );
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
+            let penalty = if self.ea & 1 == 1 { 4 } else { 0 };
+            self.clk(11 + penalty);
         } else {
-            let io_cycles = if operand_pointer.is_some() { 11 } else { 6 };
-            self.cycles_remaining -= i64::from(pre_io_cycles) + i64::from(io_cycles) + i64::from(4);
-        }
-    }
-
-    fn clc(&mut self) {
-        self.flags.carry_val = 0;
-        self.clk(2);
-    }
-
-    fn stc(&mut self) {
-        self.flags.carry_val = 1;
-        self.clk(2);
-    }
-
-    fn cli(&mut self) {
-        self.flags.if_flag = false;
-        self.clk(3);
-    }
-
-    fn sti(&mut self) {
-        self.flags.if_flag = true;
-        self.no_interrupt = 1;
-        self.clk(2);
-    }
-
-    fn cld(&mut self) {
-        self.flags.df = false;
-        self.clk(2);
-    }
-
-    fn std(&mut self) {
-        self.flags.df = true;
-        self.clk(2);
-    }
-
-    fn cmc(&mut self) {
-        self.flags.carry_val = if self.flags.cf() { 0 } else { 1 };
-        self.clk(2);
-    }
-
-    fn hlt(&mut self) {
-        self.halted = true;
-        self.timing.note_halt();
-        self.sync_timing_cycles();
-        if !self.timing.capture_enabled() {
             self.clk(2);
         }
+    }
+
+    fn clc(&mut self, bus: &mut impl common::Bus) {
+        self.flags.carry_val = 0;
+        self.clk_bus(bus, 2);
+    }
+
+    fn stc(&mut self, bus: &mut impl common::Bus) {
+        self.flags.carry_val = 1;
+        self.clk_bus(bus, 2);
+    }
+
+    fn cli(&mut self, bus: &mut impl common::Bus) {
+        self.flags.if_flag = false;
+        self.clk_bus(bus, 3);
+    }
+
+    fn sti(&mut self, bus: &mut impl common::Bus) {
+        self.flags.if_flag = true;
+        self.no_interrupt = 1;
+        self.clk_bus(bus, 2);
+    }
+
+    fn cld(&mut self, bus: &mut impl common::Bus) {
+        self.flags.df = false;
+        self.clk_bus(bus, 2);
+    }
+
+    fn std(&mut self, bus: &mut impl common::Bus) {
+        self.flags.df = true;
+        self.clk_bus(bus, 2);
+    }
+
+    fn cmc(&mut self, bus: &mut impl common::Bus) {
+        self.flags.carry_val = if self.flags.cf() { 0 } else { 1 };
+        self.clk_bus(bus, 2);
+    }
+
+    fn hlt(&mut self, bus: &mut impl common::Bus) {
+        self.biu_halt_preamble(bus);
+        self.halted = true;
+        self.biu_halt_marker();
     }
 
     fn invalid(&mut self, bus: &mut impl common::Bus) {
