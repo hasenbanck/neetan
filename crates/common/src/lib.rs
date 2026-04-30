@@ -47,6 +47,19 @@ pub enum CpuType {
     I486DX,
 }
 
+/// Single-bank BIOS ROM file size in bytes (96 KB).
+///
+/// Layout: a flat 96 KB image mapped at E8000-FFFFF.
+pub const BIOS_ROM_SIZE_SINGLE_BANK: usize = 0x18000;
+
+/// Dual-bank BIOS ROM file size in bytes (192 KB).
+///
+/// Layout: two 96 KB banks concatenated. Bank 0 is the ITF window
+/// (upper 32 KB visible at F8000-FFFFF when ITF is selected); bank 1 is the
+/// BIOS window (lower 64 KB always visible at E8000-F7FFF, full 96 KB
+/// visible at E8000-FFFFF when BIOS is selected).
+pub const BIOS_ROM_SIZE_DUAL_BANK: usize = 0x30000;
+
 /// PC-98 machine model.
 ///
 /// Encodes the full hardware profile of a specific PC-98 variant:
@@ -204,11 +217,13 @@ impl MachineModel {
         }
     }
 
-    /// Returns the expected BIOS ROM file size in bytes.
-    pub const fn bios_rom_size(self) -> usize {
+    /// Returns whether the given BIOS ROM file size is valid for this machine.
+    pub const fn is_valid_bios_rom_size(self, size: usize) -> bool {
         match self {
-            Self::PC9801VM => 0x18000,
-            Self::PC9801VX | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => 0x30000,
+            Self::PC9801VM => size == BIOS_ROM_SIZE_SINGLE_BANK || size == BIOS_ROM_SIZE_DUAL_BANK,
+            Self::PC9801VX | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => {
+                size == BIOS_ROM_SIZE_DUAL_BANK
+            }
         }
     }
 
