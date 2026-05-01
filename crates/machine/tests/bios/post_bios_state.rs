@@ -652,8 +652,13 @@ fn post_bios_state_f() {
     );
 
     // === Beeper ===
+    // PC-9801F has a fixed-frequency 2400 Hz hardware beeper (BeeperKind::Fixed).
+    // PIT ch1 is the memory-refresh generator and writes to it must not affect
+    // the audible tone, so the beeper's `pit_reload` is pinned at
+    // pit_clock_hz / 2400 = 1996800 / 2400 = 832 regardless of what the BIOS
+    // programs into PIT ch1 for memory refresh.
     check_false!(f, state.beeper.buzzer_enabled, "Beeper disabled");
-    check!(f, state.beeper.pit_reload, 57, "Beeper PIT reload");
+    check!(f, state.beeper.pit_reload, 832, "Beeper PIT reload");
 
     // === Mouse PPI ===
     check!(f, state.mouse_ppi.mode, 0x93, "Mouse PPI mode");

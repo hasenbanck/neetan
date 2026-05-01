@@ -1,5 +1,6 @@
 use common::{
-    CpuMode, CpuType, DisplaySnapshotUpload, EventKind, MachineModel, PegcSnapshotUpload, Scheduler,
+    BeeperKind, CpuMode, CpuType, DisplaySnapshotUpload, EventKind, MachineModel,
+    PegcSnapshotUpload, Scheduler,
 };
 use device::{
     beeper::Beeper,
@@ -207,7 +208,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             soundboard_26k: None,
             soundboard_86: None,
             sound_blaster_16: None,
-            beeper: Beeper::new(),
+            beeper: Beeper::new(machine_model.beeper_kind(), clocks.pit_clock_hz),
             rtc: Upd4990aRtc::new(),
             host_local_time_fn: default_local_time,
             mpu_pc98ii: MpuPc98ii::new(),
@@ -838,8 +839,24 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         // Beeper: muted at boot (port C bit 3 = 1 means buzzer off).
         self.beeper.state.buzzer_enabled = (self.system_ppi.state.port_c & 0x08) == 0;
-        self.beeper.state.pit_reload = self.pit.state.channels[1].value;
-        self.beeper.state.pit_last_load_cycle = self.pit.state.channels[1].last_load_cycle;
+        // For PIT-driven beepers (VM and later) the audible tone follows PIT ch1.
+        // For Fixed-frequency beepers (PC-9801F) PIT ch1 is the memory-refresh
+        // generator and must not affect the tone, so we keep the boot reload
+        // computed by Beeper::new from BeeperKind::Fixed { hz }.
+        match self.machine_model.beeper_kind() {
+            BeeperKind::PitDriven => {
+                self.beeper.state.pit_reload = self.pit.state.channels[1].value;
+                self.beeper.state.pit_last_load_cycle = self.pit.state.channels[1].last_load_cycle;
+            }
+            BeeperKind::Fixed { hz } if hz > 0 => {
+                self.beeper.state.pit_reload = (self.clocks.pit_clock_hz / hz) as u16;
+                self.beeper.state.pit_last_load_cycle = 0;
+            }
+            BeeperKind::Fixed { .. } => {
+                self.beeper.state.pit_reload = 0;
+                self.beeper.state.pit_last_load_cycle = 0;
+            }
+        }
 
         // Mouse PPI: reset to defaults.
         self.mouse_ppi.state.mode = 0x93;

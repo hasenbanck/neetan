@@ -856,6 +856,17 @@ impl<T: Tracing> Pc9801Bus<T> {
         (ch.ctrl, ch.value, ch.flag)
     }
 
+    /// Returns a reference to the beeper's saveable state (buzzer enable,
+    /// pit reload, etc.).
+    pub fn beeper_state(&self) -> &device::beeper::BeeperState {
+        &self.beeper.state
+    }
+
+    /// Returns the beeper hardware architecture variant for this machine.
+    pub fn beeper_kind(&self) -> common::BeeperKind {
+        self.beeper.kind()
+    }
+
     /// Returns the next scheduled event cycle (if any).
     pub fn next_event_debug(&self) -> Option<u64> {
         self.scheduler.next_event_cycle()
