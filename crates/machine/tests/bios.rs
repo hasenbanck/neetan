@@ -3,11 +3,7 @@ use common::{CpuMode, MachineModel};
 macro_rules! boot_to_halt {
     ($machine:expr) => {{
         use common::Cpu as _;
-        let disk = if $machine.bus.machine_model() == common::MachineModel::PC9801F {
-            $crate::make_halt_boot_disk_2dd()
-        } else {
-            $crate::make_halt_boot_disk()
-        };
+        let disk = $crate::make_halt_boot_disk();
         $machine.bus.insert_floppy(0, disk, None);
 
         const MAX_CYCLES: u64 = 500_000_000;
@@ -264,6 +260,9 @@ mod sasi_boot;
 
 #[path = "bios/ide_boot.rs"]
 mod ide_boot;
+
+#[path = "bios/fdd_boot.rs"]
+mod fdd_boot;
 
 #[path = "bios/cdrom_boot.rs"]
 mod cdrom_boot;

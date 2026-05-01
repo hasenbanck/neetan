@@ -28,7 +28,7 @@ use device::{
     egc::Egc,
     fdd320_ppi::Fdd320Ppi,
     fdd640k_hle::Fdd640kHle,
-    floppy::{D88MediaType, FloppyImage},
+    floppy::FloppyImage,
     grcg::Grcg,
     i8237_dma::I8237Dma,
     i8251_keyboard::I8251Keyboard,
@@ -481,8 +481,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
     /// Inserts a floppy disk image into the specified drive (0-3).
     pub fn insert_floppy(&mut self, drive: usize, image: FloppyImage, path: Option<PathBuf>) {
-        let install_fdd640k_hle = self.machine_model == MachineModel::PC9801F
-            && image.media_type == D88MediaType::Disk2DD;
+        let install_fdd640k_hle = self.machine_model == MachineModel::PC9801F;
         self.floppy.insert_drive(drive, image, path);
         if install_fdd640k_hle {
             self.fdd640k_hle.install_rom();

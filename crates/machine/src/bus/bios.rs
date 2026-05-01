@@ -1971,8 +1971,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         );
 
         let devtype = cpu.al() & 0xF0;
-        // Reject 1MB-style device types on PC-9801F.
-        if self.machine_model == MachineModel::PC9801F && !matches!(devtype, 0x50 | 0x70) {
+        if self.machine_model == MachineModel::PC9801F && !matches!(devtype, 0x50 | 0x70 | 0x90) {
             return 0x40;
         }
 

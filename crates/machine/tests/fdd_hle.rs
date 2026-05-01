@@ -11,6 +11,18 @@ type FddHleCallTrace = (u8, u8, u8, u16, u16, u16, u16, u16);
 /// 512-byte sectors). The first three bytes of each sector are the sector
 /// CHR markers (cylinder, head, record) followed by 0x00 fill.
 fn build_test_2dd_d88(sectors: &[(u8, u8, u8, u8, &[u8])], write_protected: bool) -> Vec<u8> {
+    build_test_d88(0x10, sectors, write_protected)
+}
+
+fn build_test_2hd_d88(sectors: &[(u8, u8, u8, u8, &[u8])], write_protected: bool) -> Vec<u8> {
+    build_test_d88(0x20, sectors, write_protected)
+}
+
+fn build_test_d88(
+    media_type: u8,
+    sectors: &[(u8, u8, u8, u8, &[u8])],
+    write_protected: bool,
+) -> Vec<u8> {
     const HEADER_SIZE: usize = 0x2B0;
     const SECTOR_HEADER_SIZE: usize = 16;
 
@@ -19,8 +31,7 @@ fn build_test_2dd_d88(sectors: &[(u8, u8, u8, u8, &[u8])], write_protected: bool
     if write_protected {
         image[0x1A] = 0x10;
     }
-    // Media type code 0x10 = 2DD (high nibble = 1).
-    image[0x1B] = 0x10;
+    image[0x1B] = media_type;
 
     let track_offset = HEADER_SIZE as u32;
     image[0x20..0x24].copy_from_slice(&track_offset.to_le_bytes());
@@ -63,6 +74,13 @@ fn make_test_2dd_floppy_write_protected() -> FloppyImage {
     sector[2] = 1;
     let bytes = build_test_2dd_d88(&[(0, 0, 1, 2, &sector)], true);
     FloppyImage::from_d88_bytes(&bytes).expect("2DD WP parse")
+}
+
+fn make_xanadu_style_2hd_floppy() -> FloppyImage {
+    let sector1 = vec![0x11u8; 128];
+    let sector2 = vec![0x22u8; 128];
+    let bytes = build_test_2hd_d88(&[(0, 0, 1, 0, &sector1), (0, 0, 2, 0, &sector2)], false);
+    FloppyImage::from_d88_bytes(&bytes).expect("2HD 128-byte sector parse")
 }
 
 /// Stack frame helper for FDD HLE tests.
@@ -125,6 +143,12 @@ impl Fdd640kTestFrame {
     }
 }
 
+fn initialize_fdd640k_hle<T: Tracing>(bus: &mut Pc9801Bus<T>) {
+    let frame = Fdd640kTestFrame::new(bus, 0x0370, 0, 0, 0, 0, 0);
+    bus.execute_fdd640k_hle(frame.ss_base, frame.sp);
+    assert_eq!(frame.result_ah(bus), 0x00, "FDD HLE init");
+}
+
 #[test]
 fn fdd_hle_rom_mapped_at_d6000_when_2dd_inserted_on_pc9801f() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
@@ -139,6 +163,18 @@ fn fdd_hle_rom_mapped_at_d6000_when_2dd_inserted_on_pc9801f() {
     assert_eq!(bus.read_byte(0xD600A), 0xAA);
     // Past the FDD ROM (0xD7000+) should still be unmapped on PC-9801F.
     assert_eq!(bus.read_byte(0xD7000), 0xFF);
+}
+
+#[test]
+fn fdd_hle_rom_mapped_at_d6000_when_2hd_inserted_on_pc9801f() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+
+    assert_eq!(bus.read_byte(0xD6009), 0xFF);
+
+    bus.insert_floppy(0, make_xanadu_style_2hd_floppy(), None);
+
+    assert_eq!(bus.read_byte(0xD6009), 0x55);
+    assert_eq!(bus.read_byte(0xD600A), 0xAA);
 }
 
 #[test]
@@ -259,6 +295,7 @@ fn fdd_hle_sense_no_drive_returns_0x60() {
 fn fdd_hle_sense_present_drive_sets_status_bits() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy(), None);
+    initialize_fdd640k_hle(&mut bus);
 
     let frame = Fdd640kTestFrame::new(&mut bus, 0x0470, 0, 0, 0, 0, 0);
     bus.execute_fdd640k_hle(frame.ss_base, frame.sp);
@@ -273,6 +310,7 @@ fn fdd_hle_sense_present_drive_sets_status_bits() {
 fn fdd_hle_sense_320kb_device_sets_double_sided_bits() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy(), None);
+    initialize_fdd640k_hle(&mut bus);
 
     let frame = Fdd640kTestFrame::new(&mut bus, 0x0450, 0, 0, 0, 0, 0);
     bus.execute_fdd640k_hle(frame.ss_base, frame.sp);
@@ -285,6 +323,7 @@ fn fdd_hle_sense_320kb_device_sets_double_sided_bits() {
 fn fdd_hle_sense_write_protected_sets_bit_4() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy_write_protected(), None);
+    initialize_fdd640k_hle(&mut bus);
 
     let frame = Fdd640kTestFrame::new(&mut bus, 0x0470, 0, 0, 0, 0, 0);
     bus.execute_fdd640k_hle(frame.ss_base, frame.sp);
@@ -292,6 +331,29 @@ fn fdd_hle_sense_write_protected_sets_bit_4() {
     let result = frame.result_ah(&mut bus);
     assert_eq!(result, 0x15);
     assert!(!frame.result_cf(&mut bus));
+}
+
+#[test]
+fn fdd_hle_set_operation_mode_updates_sense_bits() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    bus.insert_floppy(0, make_test_2dd_floppy(), None);
+    initialize_fdd640k_hle(&mut bus);
+
+    let side_frame = Fdd640kTestFrame::new(&mut bus, 0x0E70, 0, 0, 0, 0, 0);
+    bus.execute_fdd640k_hle(side_frame.ss_base, side_frame.sp);
+    assert_eq!(side_frame.result_ah(&mut bus), 0x00);
+
+    let sense_frame = Fdd640kTestFrame::new(&mut bus, 0x0470, 0, 0, 0, 0, 0);
+    bus.execute_fdd640k_hle(sense_frame.ss_base, sense_frame.sp);
+    assert_eq!(sense_frame.result_ah(&mut bus), 0x04);
+
+    let cylinder_frame = Fdd640kTestFrame::new(&mut bus, 0x8E70, 0, 0, 0, 0, 0);
+    bus.execute_fdd640k_hle(cylinder_frame.ss_base, cylinder_frame.sp);
+    assert_eq!(cylinder_frame.result_ah(&mut bus), 0x00);
+
+    let sense_frame = Fdd640kTestFrame::new(&mut bus, 0x0470, 0, 0, 0, 0, 0);
+    bus.execute_fdd640k_hle(sense_frame.ss_base, sense_frame.sp);
+    assert_eq!(sense_frame.result_ah(&mut bus), 0x00);
 }
 
 #[test]
@@ -315,6 +377,44 @@ fn fdd_hle_read_single_sector_copies_to_buffer() {
     assert_eq!(bus.read_byte(0x20000), 0x00, "cyl marker");
     assert_eq!(bus.read_byte(0x20001), 0x00, "head marker");
     assert_eq!(bus.read_byte(0x20002), 0x01, "record marker");
+}
+
+#[test]
+fn fdd_hle_read_90h_rejects_2dd_image_for_boot_fallback() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    bus.insert_floppy(0, make_test_2dd_floppy(), None);
+
+    let frame = Fdd640kTestFrame::new(&mut bus, 0x0690, 0x0200, 0x0200, 0x0001, 0x0000, 0x2000);
+    bus.execute_fdd640k_hle(frame.ss_base, frame.sp);
+
+    assert_eq!(
+        frame.result_ah(&mut bus),
+        0xE0,
+        "2HD access should miss on a 2DD image"
+    );
+    assert!(frame.result_cf(&mut bus));
+}
+
+#[test]
+fn fdd_hle_read_90h_uses_actual_128_byte_sectors_for_2hd_image() {
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+    bus.insert_floppy(0, make_xanadu_style_2hd_floppy(), None);
+
+    for index in 0..0x100u32 {
+        bus.write_byte(0x20000 + index, 0x00);
+    }
+
+    // The PC-9801F extension asks for one 256-byte sector (N=1), but this
+    // disk stores two 128-byte sectors (N=0), like Xanadu's IPL track.
+    let frame = Fdd640kTestFrame::new(&mut bus, 0x0690, 0x0100, 0x0100, 0x0001, 0x0000, 0x2000);
+    bus.execute_fdd640k_hle(frame.ss_base, frame.sp);
+
+    assert_eq!(frame.result_ah(&mut bus), 0x00, "read should succeed");
+    assert!(!frame.result_cf(&mut bus));
+    assert_eq!(bus.read_byte(0x20000), 0x11, "first sector copied");
+    assert_eq!(bus.read_byte(0x2007F), 0x11, "end of first sector");
+    assert_eq!(bus.read_byte(0x20080), 0x22, "second sector copied");
+    assert_eq!(bus.read_byte(0x200FF), 0x22, "end of second sector");
 }
 
 #[test]

@@ -475,7 +475,7 @@ fn int1bh_fdd_noop_valid_da_f() {
     let code = make_int1bh_simple(0x00, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_f(&code, &[], INT1BH_BUDGET);
     let state = machine.save_state();
-    assert_result_ah(&state.memory.ram, 0x40, "FDD no-op DA=0x90");
+    assert_result_ah(&state.memory.ram, 0x00, "FDD no-op valid DA");
 }
 
 #[test]
@@ -547,7 +547,7 @@ fn int1bh_fdd_initialize_f() {
     let code = make_int1bh_simple(0x03, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_f(&code, &[], INT1BH_BUDGET);
     let state = machine.save_state();
-    assert_result_ah(&state.memory.ram, 0x40, "FDD initialize");
+    assert_result_ah(&state.memory.ram, 0x00, "FDD initialize");
 }
 
 #[test]
@@ -583,7 +583,7 @@ fn int1bh_fdd_set_density_f() {
     let code = make_int1bh_simple(0x4E, DA_FDD_1MB_DRIVE0);
     let (machine, _) = boot_and_run_f(&code, &[], INT1BH_BUDGET);
     let state = machine.save_state();
-    assert_result_ah(&state.memory.ram, 0x40, "FDD set density");
+    assert_result_ah(&state.memory.ram, 0x00, "FDD set density");
 }
 
 #[test]
@@ -623,7 +623,7 @@ fn int1bh_fdd_recalibrate_with_disk_f() {
         INT1BH_BUDGET,
     );
     let state = machine.save_state();
-    assert_result_ah(&state.memory.ram, 0x40, "FDD recalibrate with disk");
+    assert_result_ah(&state.memory.ram, 0x00, "FDD recalibrate with disk");
 }
 
 #[test]
@@ -671,7 +671,7 @@ fn int1bh_fdd_recalibrate_no_disk_f() {
     let code = make_int1bh_simple(0x07, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_f(&code, None, INT1BH_BUDGET);
     let state = machine.save_state();
-    assert_result_ah(&state.memory.ram, 0x40, "FDD recalibrate no disk");
+    assert_result_ah(&state.memory.ram, 0x00, "FDD recalibrate no disk");
 }
 
 #[test]
@@ -711,7 +711,7 @@ fn int1bh_fdd_sense_with_disk_f() {
         INT1BH_BUDGET,
     );
     let state = machine.save_state();
-    assert_result_ah(&state.memory.ram, 0x40, "FDD sense with disk");
+    assert_result_ah(&state.memory.ram, 0x01, "FDD sense with disk");
 }
 
 #[test]
@@ -759,7 +759,7 @@ fn int1bh_fdd_sense_no_disk_f() {
     let code = make_int1bh_simple(0x04, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_f(&code, None, INT1BH_BUDGET);
     let state = machine.save_state();
-    assert_result_ah(&state.memory.ram, 0x40, "FDD sense no disk");
+    assert_result_ah(&state.memory.ram, 0x60, "FDD sense no disk");
 }
 
 #[test]
@@ -799,7 +799,7 @@ fn int1bh_fdd_sense_write_protected_f() {
         INT1BH_BUDGET,
     );
     let state = machine.save_state();
-    assert_result_ah(&state.memory.ram, 0x40, "FDD sense write protected");
+    assert_result_ah(&state.memory.ram, 0x11, "FDD sense write protected");
 }
 
 #[test]
@@ -861,7 +861,7 @@ fn int1bh_fdd_diagnostic_read_f() {
         INT1BH_BUDGET,
     );
     let state = machine.save_state();
-    assert_result_ah(&state.memory.ram, 0x40, "FDD diagnostic read");
+    assert_result_ah(&state.memory.ram, 0x00, "FDD diagnostic read");
     assert_eq!(
         state.memory.ram[DATA_BUFFER as usize], 0x00,
         "Diagnostic read buffer stays zero (DMA transfer does not complete during INT)"
@@ -934,7 +934,7 @@ fn int1bh_fdd_read_single_sector_f() {
         INT1BH_BUDGET,
     );
     let state = machine.save_state();
-    assert_result_ah(&state.memory.ram, 0x40, "FDD read single sector");
+    assert_fdd_read_single_sector(&state.memory.ram);
 }
 
 #[test]
@@ -1041,7 +1041,7 @@ fn int1bh_fdd_read_multiple_sectors_f() {
         INT1BH_BUDGET,
     );
     let state = machine.save_state();
-    assert_result_ah(&state.memory.ram, 0x40, "FDD read multiple sectors");
+    assert_fdd_read_multiple_sectors(&state.memory.ram);
 }
 
 #[test]
@@ -1129,7 +1129,7 @@ fn int1bh_fdd_read_no_disk_f() {
     );
     let machine = boot_and_run_fdd_f(&code, None, INT1BH_BUDGET);
     let state = machine.save_state();
-    assert_result_ah(&state.memory.ram, 0x40, "FDD read no disk");
+    assert_result_ah(&state.memory.ram, 0x60, "FDD read no disk");
 }
 
 #[test]
@@ -1286,7 +1286,7 @@ fn int1bh_fdd_read_sector_not_found_f() {
         INT1BH_BUDGET,
     );
     let state = machine.save_state();
-    assert_result_ah(&state.memory.ram, 0x40, "FDD read sector not found");
+    assert_result_ah(&state.memory.ram, 0xE0, "FDD read sector not found");
 }
 
 #[test]
@@ -1396,7 +1396,16 @@ fn int1bh_fdd_write_single_sector_f() {
         INT1BH_BUDGET,
     );
     let state = machine.save_state();
-    assert_result_ah(&state.memory.ram, 0x40, "FDD write single sector");
+    assert_result_ah(&state.memory.ram, 0x00, "FDD write single sector");
+
+    let disk = machine.bus.floppy_disk(0).expect("disk should be inserted");
+    let sector = disk
+        .find_sector_near_track_index(0, 0, 0, 1, 3)
+        .expect("sector 1 should exist");
+    assert!(
+        sector.data.iter().all(|&b| b == 0xBB),
+        "sector 1 data should be all 0xBB after write"
+    );
 }
 
 #[test]
@@ -1485,7 +1494,7 @@ fn int1bh_fdd_write_protected_f() {
         INT1BH_BUDGET,
     );
     let state = machine.save_state();
-    assert_result_ah(&state.memory.ram, 0x40, "FDD write protected");
+    assert_result_ah(&state.memory.ram, 0x70, "FDD write protected");
 }
 
 #[test]
@@ -1577,7 +1586,7 @@ fn int1bh_fdd_verify_f() {
         INT1BH_BUDGET,
     );
     let state = machine.save_state();
-    assert_result_ah(&state.memory.ram, 0x40, "FDD verify");
+    assert_result_ah(&state.memory.ram, 0x00, "FDD verify");
 }
 
 #[test]
@@ -1681,7 +1690,7 @@ fn int1bh_fdd_read_id_f() {
         INT1BH_BUDGET,
     );
     let state = machine.save_state();
-    assert_result_ah(&state.memory.ram, 0x40, "FDD read ID");
+    assert_fdd_read_id(&state.memory.ram);
 }
 
 #[test]
@@ -2672,10 +2681,11 @@ fn int1bh_fdd_init_updates_disk_equip_1mb_f() {
     let (machine, _) = boot_and_run_f(&code, &[], INT1BH_BUDGET);
     let state = machine.save_state();
     let disk_equip = read_ram_u16(&state.memory.ram, DISK_EQUIP);
-    assert_eq!(
+    // 1MB FDD init writes drive_equipped bits into the low nibble of DISK_EQUIP.
+    assert_ne!(
         disk_equip & 0x000F,
         0,
-        "AH=03h with 1MB DA should leave DISK_EQUIP low nibble clear (got {disk_equip:#06X})"
+        "AH=03h with 1MB DA should update DISK_EQUIP low nibble (got {disk_equip:#06X})"
     );
 }
 
@@ -2795,7 +2805,7 @@ fn assert_seek_then_read(ram: &[u8; 0xA0000]) {
 fn int1bh_fdd_seek_then_read_uses_stored_cylinder_f() {
     let code = make_seek_then_read_code(1, 1, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_f(&code, Some((0, make_seek_test_disk())), INT1BH_BUDGET);
-    assert_result_ah(&machine.save_state().memory.ram, 0x40, "SEEK then READ");
+    assert_seek_then_read(&machine.save_state().memory.ram);
 }
 
 #[test]
@@ -2842,7 +2852,11 @@ fn int1bh_fdd_read_with_seek_reads_correct_track_f() {
     let code = make_read_with_seek_code(1, DA_FDD_1MB_DRIVE0);
     let machine = boot_and_run_fdd_f(&code, Some((0, make_seek_test_disk())), INT1BH_BUDGET);
     let state = machine.save_state();
-    assert_result_ah(&state.memory.ram, 0x40, "READ with seek");
+    assert_result_ah(&state.memory.ram, 0x00, "READ with seek");
+    assert_eq!(
+        state.memory.ram[DATA_BUFFER as usize], 0xBB,
+        "READ with seek CL=1 should access track_index=2 (data=0xBB)"
+    );
 }
 
 #[test]
@@ -2924,7 +2938,11 @@ fn int1bh_fdd_seek_per_drive_isolation_f() {
     machine.run_for(INT1BH_BUDGET);
     let state = machine.save_state();
 
-    assert_result_ah(&state.memory.ram, 0x40, "Drive isolation read");
+    assert_result_ah(&state.memory.ram, 0x00, "Drive isolation read");
+    assert_eq!(
+        state.memory.ram[DATA_BUFFER as usize], 0xAA,
+        "Drive 1 should read from track_index=0 (data=0xAA) since only drive 0 was seeked"
+    );
 }
 
 #[test]
@@ -3032,7 +3050,11 @@ fn int1bh_fdd_write_uses_seek_cylinder_f() {
     let code = make_seek_then_write_readback_code(1);
     let machine = boot_and_run_fdd_f(&code, Some((0, make_seek_test_disk())), INT1BH_BUDGET);
     let state = machine.save_state();
-    assert_result_ah(&state.memory.ram, 0x40, "WRITE with seek cylinder");
+    assert_result_ah(&state.memory.ram, 0x00, "WRITE with seek cylinder");
+    assert_eq!(
+        state.memory.ram[DATA_BUFFER as usize], 0xCC,
+        "Readback after WRITE should return written pattern 0xCC"
+    );
 }
 
 #[test]

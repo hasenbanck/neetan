@@ -17,6 +17,7 @@ SLAVE_PIC_CMD           equ 0x08
 
 IPL_SEGMENT             equ 0x1FC0
 IPL_SIZE                equ 0x0100
+FDD_1M_DEVICE_BASE      equ 0x90
 FDD_640K_DEVICE_BASE    equ 0x70
 
 ; --- Expansion ROM entry point vector table (offsets 0x00-0x2F) ---
@@ -105,6 +106,8 @@ int1b_direct_handler:
     je .handle_fdd
     cmp al, 0x50
     je .handle_fdd
+    cmp al, 0x90
+    je .handle_fdd
     pop ax
     jmp far [cs:old_int1b_vector]
 .handle_fdd:
@@ -135,6 +138,7 @@ setup_vectors:
     mov word [0x0048], irq_handler
     mov [0x004A], ax
     or byte [0x0480], 0x08
+    or byte [0x055C], 0x03
     or byte [0x055D], 0x30
     mov byte [0x0494], 0xC0
     mov byte [0x05CA], 0xFF
@@ -145,7 +149,32 @@ setup_vectors:
 boot_fdd:
     mov bl, al
     and bl, 0x03
-    or bl, FDD_640K_DEVICE_BASE
+    jz .try_boot
+    push bx
+    xor bl, bl
+    call boot_fdd_unit
+    pop bx
+    jnc .booted
+.try_boot:
+    call boot_fdd_unit
+.booted:
+    retf
+
+boot_fdd_unit:
+    push bx
+    mov bh, FDD_1M_DEVICE_BASE
+    call boot_fdd_unit_with_base
+    pop bx
+    jnc .booted
+    mov bh, FDD_640K_DEVICE_BASE
+    call boot_fdd_unit_with_base
+    ret
+.booted:
+    clc
+    ret
+
+boot_fdd_unit_with_base:
+    or bl, bh
     mov ax, 0x0600
     mov al, bl
     push bx
@@ -161,8 +190,11 @@ boot_fdd:
     jc .not_present
     mov [0x0584], bl
     call far IPL_SEGMENT:0x0000
+    clc
+    ret
 .not_present:
-    retf
+    stc
+    ret
 
 irq_handler:
     push ax
