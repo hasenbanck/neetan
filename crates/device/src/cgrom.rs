@@ -155,16 +155,17 @@ impl Cgrom {
     /// Only meaningful on VX+ machines (GRCG chip >= 2). On VM, the caller should
     /// not route through this path.
     ///
-    /// `font_7x13_mode`: true when mode1 bit 3 (font select) is set. Affects
-    /// the half-width character offset (+0x2000 when false).
-    pub fn compute_window(&self, font_7x13_mode: bool) -> CgWindow {
+    /// `font_8x16_mode`: true when mode1 bit 3 (font select) is set, which
+    /// selects the 8x16-cell font (7x13-dot font in 400-line). Affects the
+    /// half-width character offset (+0x2000 when false, i.e. 6x8 mode).
+    pub fn compute_window(&self, font_8x16_mode: bool) -> CgWindow {
         let code = self.state.code;
         let low_byte = (code & 0x007F) as u8;
 
         if code & 0xFF00 == 0 {
             // Half-width (ANK) character.
             let mut high = HALFWIDTH_BASE + ((code as usize) << 4);
-            if !font_7x13_mode {
+            if !font_8x16_mode {
                 high += 0x2000;
             }
             CgWindow {

@@ -17,7 +17,8 @@ use std::path::PathBuf;
 
 use common::{
     CpuType, DISPLAY_FLAG_PEGC_256_COLOR, DisplaySnapshotUpload, EventKind, MachineModel,
-    PegcSnapshotUpload, Scheduler, StackVec, cast_u32_slice_as_bytes_mut,
+    PegcSnapshotUpload, Scheduler, StackVec, TextNormalizerInputs, cast_u32_slice_as_bytes_mut,
+    normalize_text_plane,
 };
 use device::{
     beeper::Beeper,
@@ -937,7 +938,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             0xA4000..=0xA4FFF if self.grcg.state.chip >= 2 => {
                 let window = self
                     .cgrom
-                    .compute_window(self.display_control.is_font_7x13_mode());
+                    .compute_window(self.display_control.is_font_8x16_mode());
                 let line = ((address >> 1) & 0x0F) as usize;
                 if address & 1 != 0 {
                     self.memory.font_read(window.high + line)
@@ -1045,7 +1046,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             0xA4000..=0xA4FFF if self.grcg.state.chip >= 2 => {
                 let window = self
                     .cgrom
-                    .compute_window(self.display_control.is_font_7x13_mode());
+                    .compute_window(self.display_control.is_font_8x16_mode());
                 if (address & 1 != 0) && window.writable {
                     let line = ((address >> 1) & 0x0F) as usize;
                     self.memory.font_write(window.high + line, value);
@@ -1240,12 +1241,9 @@ impl<T: Tracing> Pc9801Bus<T> {
             snapshot.gdc_graphics_scroll[i] = area.start_address | (u32::from(line_count) << 16);
         }
 
-        // Text VRAM.
-        let text_vram_words = cast_u32_slice_as_bytes_mut(&mut snapshot.text_vram_words);
-        text_vram_words.copy_from_slice(&*self.memory.state.text_vram);
-
-        // KAC-mode-derived mask for kanji high-byte detection in compose.
-        snapshot.gdc_text_kanji_high_mask = if is_kac_dot_access_mode { 0x00 } else { 0xFF };
+        // KAC-mode-derived mask for kanji high-byte detection.
+        let kanji_high_mask: u8 = if is_kac_dot_access_mode { 0x00 } else { 0xFF };
+        snapshot.gdc_text_kanji_high_mask = u32::from(kanji_high_mask);
 
         // CRTC registers.
         snapshot.crtc_pl_bl =
@@ -1271,6 +1269,19 @@ impl<T: Tracing> Pc9801Bus<T> {
         } else {
             0
         };
+
+        // Normalize the text plane into self-contained per-cell descriptors.
+        let normalizer_inputs = TextNormalizerInputs {
+            text_vram: &self.memory.state.text_vram,
+            pitch: u32::from(self.gdc_master.state.pitch),
+            kanji_high_mask,
+            attr_semigraphics_mode: self.display_control.is_attr_semigraphics_enabled(),
+            fontsel_8x16: self.display_control.is_font_8x16_mode(),
+            blink_visible: text_blink_visible,
+            cursor_visible: cursor_enabled,
+            cursor_addr,
+        };
+        normalize_text_plane(&normalizer_inputs, &mut snapshot.text_cells);
 
         // Graphics GDC active display lines.
         snapshot.gdc_graphics_al = u32::from(self.gdc_slave.state.al);
@@ -2431,10 +2442,6 @@ mod tests {
         bus.gdc_master.state.blink_counter = 64;
         bus.gdc_master.state.scroll[0].start_address = 0x1234;
         bus.gdc_master.state.scroll[0].line_count = 0x00AB;
-        bus.memory.state.text_vram[0..8].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
-        bus.memory.state.text_vram[0x1234..0x1238].copy_from_slice(&[9, 10, 11, 12]);
-        bus.memory.state.text_vram[0x3FFC..0x4000].copy_from_slice(&[13, 14, 15, 16]);
-
         bus.gdc_slave.state.scroll[0].start_address = 0x5678;
         bus.gdc_slave.state.scroll[0].line_count = 0x00CD;
         bus.gdc_slave.state.pitch = 40;
@@ -2455,22 +2462,6 @@ mod tests {
         assert_eq!(snapshot.gdc_graphics_scroll[0], 0x00CD_5678);
         assert_eq!(snapshot.gdc_graphics_pitch, 80);
         assert_eq!(snapshot.video_mode, 0x1C);
-        assert_eq!(
-            snapshot.text_vram_words[0],
-            u32::from_le_bytes([1, 2, 3, 4])
-        );
-        assert_eq!(
-            snapshot.text_vram_words[1],
-            u32::from_le_bytes([5, 6, 7, 8])
-        );
-        assert_eq!(
-            snapshot.text_vram_words[0x1234 / 4],
-            u32::from_le_bytes([9, 10, 11, 12])
-        );
-        assert_eq!(
-            snapshot.text_vram_words[0x3FFC / 4],
-            u32::from_le_bytes([13, 14, 15, 16])
-        );
         assert_eq!(snapshot.graphics_b_plane[0] & 0xFF, 0xAA);
         assert_eq!(snapshot.graphics_r_plane[0] & 0xFF, 0xBB);
         assert_eq!(snapshot.graphics_g_plane[0] & 0xFF, 0xCC);

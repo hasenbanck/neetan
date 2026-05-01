@@ -22,7 +22,7 @@ struct DisplaySnapshotUpload {
     uint text_cursor;
     uint gdc_graphics_al;
     uint reserved_header_words[26];
-    uint text_vram_words[4096];
+    uint text_cells[4096];
     uint graphics_b_plane[8192];
     uint graphics_r_plane[8192];
     uint graphics_g_plane[8192];
@@ -232,8 +232,6 @@ func compute_text_pixel(x: uint, y: uint, out pixel_on: bool, out color_index: u
     let video_mode = upload_buffer[0].video_mode;
     let width40_mode = (video_mode & 0x04) != 0;
     let fontsel_8x16 = (video_mode & 0x08) != 0;
-    let attr_semigraphics_mode = (video_mode & 0x01) != 0;
-    let kanji_high_mask = upload_buffer[0].gdc_text_kanji_high_mask;
 
     // CRTC register extraction (all registers are 5-bit, 0-31).
     let crtc_pl_bl = upload_buffer[0].crtc_pl_bl;
@@ -333,110 +331,29 @@ func compute_text_pixel(x: uint, y: uint, out pixel_on: bool, out color_index: u
     let glyph_x = width40_mode ? ((x / 2) % 8) : (x % 8);
     let memory_col = width40_mode ? ((x / 16) * 2) : (x / 8);
 
-    let char_byte_offset = (scroll_start + row * pitch + memory_col) * 2;
-    let attr_byte_offset = char_byte_offset + 0x2000;
+    // The text plane is pre-normalized on the CPU: each cell carries its own
+    // font ROM offset, color, and rendering flags so this shader does not need
+    // any neighbor lookups.
+    let cell_index = scroll_start + row * pitch + memory_col;
+    let cell = upload_buffer[0].text_cells[cell_index & 0xFFF];
+    let font_offset    = cell & 0xFFFFF;
+    color_index        = (cell >> 20) & 0x07;
+    let blank          = ((cell >> 23) & 1) != 0;
+    let is_reverse     = ((cell >> 24) & 1) != 0;
+    let is_underline   = ((cell >> 25) & 1) != 0;
+    let underline_left = ((cell >> 26) & 1) != 0;
+    let is_vline       = ((cell >> 27) & 1) != 0;
+    let cursor_cell    = ((cell >> 28) & 1) != 0;
 
-    let char_low = read_text_vram_byte(char_byte_offset);
-    let char_high = read_text_vram_byte(char_byte_offset + 1);
-    let attr_byte = read_text_vram_byte(attr_byte_offset);
-
-    let semigraphics = attr_semigraphics_mode && ((attr_byte & 0x10) != 0);
-    let is_kanji = (char_high & kanji_high_mask) != 0;
-    let char_row_code = char_low & 0x7F;
-    let is_gaiji = is_kanji && ((char_row_code == 0x56) || (char_row_code == 0x57));
-    let character_step = width40_mode ? 2u : 1u;
-
-    var previous_char_low = 0u;
-    var previous_char_high = 0u;
-    var previous_is_kanji = false;
-    var previous_is_gaiji = false;
-    var previous_is_trail_code = false;
-    var previous_is_normal_doublewidth = false;
-    if (memory_col >= character_step) {
-        let previous_byte_offset = (scroll_start + row * pitch + memory_col - character_step) * 2;
-        previous_char_low = read_text_vram_byte(previous_byte_offset);
-        previous_char_high = read_text_vram_byte(previous_byte_offset + 1);
-        previous_is_kanji = (previous_char_high & kanji_high_mask) != 0;
-
-        if (previous_is_kanji) {
-            let previous_row_code = previous_char_low & 0x7F;
-            // Trail bytes (kanji right-half cells) have bit 7 set in at least one byte.
-            // Some programs set it in char_low, others in char_high. A genuine kanji
-            // left half never has bit 7 in either byte (row 0x01-0x5D, ten 0x21-0x7E).
-            previous_is_trail_code = ((previous_char_low | previous_char_high) & 0x80) != 0;
-            previous_is_gaiji = (previous_row_code == 0x56) || (previous_row_code == 0x57);
-            previous_is_normal_doublewidth =
-                !previous_is_trail_code &&
-                !previous_is_gaiji &&
-                ((previous_row_code < 0x09) || (previous_row_code >= 0x0C));
-        }
-    }
-
-    let gaiji_matches_previous =
-        is_gaiji &&
-        previous_is_gaiji &&
-        !previous_is_trail_code &&
-        (((char_high << 8) | char_low) & 0x7F7F) == (((previous_char_high << 8) | previous_char_low) & 0x7F7F);
-    let is_right_half = previous_is_normal_doublewidth || gaiji_matches_previous;
     var on: bool;
-
-    if (!font_visible) {
-        // Outside CL range or negative font_line: render blank (background only).
+    if (!font_visible || blank) {
         on = false;
-    } else if (is_right_half || is_kanji) {
-        // Kanji (double-byte): 16x16 glyph from the kanji font ROM.
-        var kanji_low: uint;
-        var kanji_high: uint;
-        if (previous_is_normal_doublewidth) {
-            kanji_low = previous_char_low;
-            kanji_high = previous_char_high;
-        } else {
-            kanji_low = char_low;
-            kanji_high = char_high;
-        }
-
-        let kanji_code = (kanji_high << 8) | kanji_low;
-        var font_addr: uint = ((kanji_code & 0x7F7F) << 4) + font_rom_line;
-        if (is_right_half) {
-            font_addr += 0x800;
-        }
-
-        let font_byte = read_font_rom_byte(font_addr);
-        on = ((font_byte >> (7u - glyph_x)) & 1u) != 0;
-    } else if (fontsel_8x16) {
-        // 8x16 mode: ANK16 at 0x80000, chargraph16 at 0x81000.
-        var font_base: uint = 0x80000 + char_low * 16 + font_rom_line;
-        if (semigraphics) {
-            font_base += 0x1000;
-        }
-        let font_byte = read_font_rom_byte(font_base);
-        on = ((font_byte >> (7u - glyph_x)) & 1u) != 0;
     } else {
-        // 6x8 mode: ANK8 at 0x82000, chargraph8 at 0x82000+8.
-        // Line number is halved (display rows -> font rows).
-        let half_line = font_rom_line / 2;
-        var font_base: uint = 0x82000 + char_low * 16 + half_line;
-        if (semigraphics) {
-            font_base += 8;
-        }
-        let font_byte = read_font_rom_byte(font_base);
+        // In 6x8 mode the font line is halved for both ANK and kanji glyphs.
+        let is_6x8_mode = !fontsel_8x16;
+        let font_byte_offset = is_6x8_mode ? font_offset + (font_rom_line / 2) : font_offset + font_rom_line;
+        let font_byte = read_font_rom_byte(font_byte_offset);
         on = ((font_byte >> (7u - glyph_x)) & 1u) != 0;
-    }
-
-    let is_secret    = (attr_byte & 0x01) == 0;
-    let is_blink     = (attr_byte & 0x02) != 0;
-    let is_reverse   = (attr_byte & 0x04) != 0;
-    let is_underline = (attr_byte & 0x08) != 0;
-    let is_vline     = !attr_semigraphics_mode && ((attr_byte & 0x10) != 0);
-    color_index      = (attr_byte >> 5) & 0x07;
-
-    if (is_secret) {
-        on = false;
-    }
-
-    let blink_visible = (upload_buffer[0].display_flags & 0x02) != 0;
-    if (is_blink && !blink_visible) {
-        on = false;
     }
 
     if (is_reverse) {
@@ -444,22 +361,14 @@ func compute_text_pixel(x: uint, y: uint, out pixel_on: bool, out color_index: u
     }
 
     // Text cursor overlay: XOR between cursor_top and cursor_bottom scanlines.
-    // Applied before underline/vline so those overlays cannot be punched through.
-    // For kanji characters, the cursor spans both the left and right halves.
-    let text_cursor = upload_buffer[0].text_cursor;
-    let cursor_visible = (text_cursor & 0x80000000) != 0;
-    if (cursor_visible) {
-        let cursor_addr = text_cursor & 0x3FFFF;
-        let char_addr = scroll_start + row * pitch + memory_col;
-        let cursor_hit = (char_addr == cursor_addr)
-            || (is_right_half && memory_col >= character_step
-                && (scroll_start + row * pitch + memory_col - character_step) == cursor_addr);
-        if (cursor_hit) {
-            let cursor_top = int((text_cursor >> 18) & 0x1F);
-            let cursor_bottom = int((text_cursor >> 23) & 0x1F);
-            if (font_line >= cursor_top && font_line <= cursor_bottom) {
-                on = !on;
-            }
+    // The CPU pre-marks cursor cells (including the right half of kanji pairs);
+    // only the raster line range check remains here.
+    if (cursor_cell) {
+        let text_cursor = upload_buffer[0].text_cursor;
+        let cursor_top = int((text_cursor >> 18) & 0x1F);
+        let cursor_bottom = int((text_cursor >> 23) & 0x1F);
+        if (font_line >= cursor_top && font_line <= cursor_bottom) {
+            on = !on;
         }
     }
 
@@ -470,12 +379,8 @@ func compute_text_pixel(x: uint, y: uint, out pixel_on: bool, out color_index: u
         if (is_underline && glyph_x >= 4u) {
             on = true;
         }
-        if (glyph_x < 4u && memory_col >= character_step) {
-            let prev_attr_offset = (scroll_start + row * pitch + memory_col - character_step) * 2u + 0x2000u;
-            let prev_attr = read_text_vram_byte(prev_attr_offset);
-            if ((prev_attr & 0x08) != 0) {
-                on = true;
-            }
+        if (underline_left && glyph_x < 4u) {
+            on = true;
         }
     }
 
@@ -503,14 +408,6 @@ func unpack_low_u16(uint packed_value) -> uint {
 [ForceInline]
 func unpack_high_u16(uint packed_value) -> uint {
     return (packed_value >> 16) & 0xFFFF;
-}
-
-[ForceInline]
-func read_text_vram_byte(uint byte_offset) -> uint {
-    let word_index = byte_offset / 4;
-    let byte_position = byte_offset % 4;
-    let word = upload_buffer[0].text_vram_words[word_index];
-    return (word >> (byte_position * 8)) & 0xFF;
 }
 
 [ForceInline]
