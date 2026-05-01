@@ -671,7 +671,7 @@ fn post_bios_state_f() {
     check!(f, state.memory.ram[0x0493], 0x00, "BDA F2HD_MODE");
     check!(f, state.memory.ram[0x053C], 0x84, "BDA CRT_STS_FLAG");
     check!(f, state.memory.ram[0x055C], 0x00, "BDA DISK_EQUIP");
-    check!(f, state.memory.ram[0x0584], 0x70, "BDA BOOT_DEVICE");
+    check!(f, state.memory.ram[0x0584], 0x90, "BDA BOOT_DEVICE");
     check!(
         f,
         read_ram_u16(&state.memory.ram, 0x0522),

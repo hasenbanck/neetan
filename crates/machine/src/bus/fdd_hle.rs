@@ -1,3 +1,5 @@
+use device::floppy::{D88MediaType, FloppyImage};
+
 use crate::{Pc9801Bus, Tracing, bus::bios};
 
 impl<T: Tracing> Pc9801Bus<T> {
@@ -31,7 +33,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         let drive = (device_select & 0x03) as usize;
         let device_type = device_select & 0xF0;
 
-        let result_ah = if !matches!(device_type, 0x50 | 0x70) {
+        let result_ah = if !matches!(device_type, 0x50 | 0x70 | 0x90) {
             0x40
         } else {
             self.tracer.trace_int1bh_fdd_params(
@@ -77,7 +79,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 0x0D => {
                     self.execute_fdd640k_format(function_code, device_select, bx, cx, dx, bp, es)
                 }
-                0x0E => 0x00,
+                0x0E => self.execute_fdd640k_set_operation_mode(function_code, device_select),
                 _ => 0x40,
             }
         };
@@ -126,7 +128,22 @@ impl<T: Tracing> Pc9801Bus<T> {
         }
 
         let device_type = (ax as u8) & 0xF0;
-        let mut result = if device_type == 0x50 { 0x03 } else { 0x05 };
+        let drive_mask = 1u8 << drive;
+        let mode_address = if device_type == 0x90 { 0x0493 } else { 0x05CA };
+        let mode = self.read_byte_with_access_page(mode_address);
+        let side_mode = u8::from(mode & drive_mask != 0);
+        let cylinder_mode = if mode & (drive_mask << 4) != 0 {
+            0x04
+        } else {
+            0x00
+        };
+        let mut result = if device_type == 0x50 {
+            0x02 | side_mode
+        } else if device_type == 0x70 {
+            side_mode | cylinder_mode
+        } else {
+            0x01
+        };
         if self.floppy.is_write_protected(drive) {
             result |= 0x10;
         }
@@ -134,6 +151,24 @@ impl<T: Tracing> Pc9801Bus<T> {
             result |= 0x08;
         }
         result
+    }
+
+    fn execute_fdd640k_set_operation_mode(&mut self, function_code: u8, device_select: u8) -> u8 {
+        let device_type = device_select & 0xF0;
+        let mode_address = match device_type {
+            0x10 | 0x90 => 0x0493,
+            0x50 | 0x70 => 0x05CA,
+            _ => return 0x40,
+        };
+
+        let mut mode = self.read_byte_with_access_page(mode_address);
+        if function_code & 0x80 != 0 {
+            mode = (mode & 0x0F) | ((device_select & 0x0F) << 4);
+        } else {
+            mode = (mode & 0xF0) | (device_select & 0x0F);
+        }
+        self.write_byte_with_access_page(mode_address, mode);
+        0x00
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -149,8 +184,12 @@ impl<T: Tracing> Pc9801Bus<T> {
         diagnostic: bool,
     ) -> u8 {
         let drive = (device_select & 0x03) as usize;
+        let device_type = device_select & 0xF0;
         if !self.floppy.has_drive(drive) {
             return 0x60;
+        }
+        if !Self::fdd640k_device_matches_media(device_type, self.floppy.drive(drive)) {
+            return if diagnostic { 0x00 } else { 0xE0 };
         }
 
         let c = cx as u8;
@@ -158,9 +197,13 @@ impl<T: Tracing> Pc9801Bus<T> {
         let mut hd = (h ^ (device_select >> 2)) & 1;
         let r = dx as u8;
         let n = (cx >> 8) as u8;
-        let sector_size = 128usize << n;
+        let requested_sector_size = 128usize << n;
         let buffer_address = self.fdd640k_buffer_address(es, bp, 0);
-        let transfer_bytes = if bx == 0 { sector_size } else { bx as usize };
+        let transfer_bytes = if bx == 0 {
+            requested_sector_size
+        } else {
+            bx as usize
+        };
 
         if Self::fdd640k_segment_wraps(bp, transfer_bytes) {
             return if diagnostic { 0x00 } else { 0x20 };
@@ -169,43 +212,43 @@ impl<T: Tracing> Pc9801Bus<T> {
             self.fdd_seek_cylinder[drive] = c;
         }
 
-        let sector_count = transfer_bytes / sector_size;
         let multi_track = function_code & 0x80 != 0;
         let mut track_index = (self.fdd_seek_cylinder[drive] as usize) * 2 + hd as usize;
-        let mut offset = 0u32;
+        let mut offset = 0usize;
         let mut current_record = r;
+        let mut sectors_read = 0usize;
 
-        for _ in 0..sector_count {
-            if let Some(data) = self
-                .floppy
-                .read_sector_data(drive, track_index, c, h, current_record, n)
-                .map(<[u8]>::to_vec)
+        while offset < transfer_bytes {
+            if let Some(data) =
+                self.read_fdd_hle_sector_data(drive, track_index, c, h, current_record, n)
             {
                 if !diagnostic {
-                    for (index, &byte) in data.iter().enumerate() {
-                        let address = self.fdd640k_buffer_address(es, bp, offset + index as u32);
+                    let copy_len = data.len().min(transfer_bytes - offset);
+                    for (index, &byte) in data.iter().take(copy_len).enumerate() {
+                        let address = self.fdd640k_buffer_address(es, bp, (offset + index) as u32);
                         self.memory.write_byte(address, byte);
                     }
                 }
-                offset += data.len() as u32;
+                offset += data.len().min(transfer_bytes - offset);
+                sectors_read += 1;
             } else if multi_track && hd == 0 {
                 hd = 1;
                 h = 1;
                 track_index = (self.fdd_seek_cylinder[drive] as usize) * 2 + 1;
                 current_record = 1;
-                if let Some(data) = self
-                    .floppy
-                    .read_sector_data(drive, track_index, c, h, current_record, n)
-                    .map(<[u8]>::to_vec)
+                if let Some(data) =
+                    self.read_fdd_hle_sector_data(drive, track_index, c, h, current_record, n)
                 {
                     if !diagnostic {
-                        for (index, &byte) in data.iter().enumerate() {
+                        let copy_len = data.len().min(transfer_bytes - offset);
+                        for (index, &byte) in data.iter().take(copy_len).enumerate() {
                             let address =
-                                self.fdd640k_buffer_address(es, bp, offset + index as u32);
+                                self.fdd640k_buffer_address(es, bp, (offset + index) as u32);
                             self.memory.write_byte(address, byte);
                         }
                     }
-                    offset += data.len() as u32;
+                    offset += data.len().min(transfer_bytes - offset);
+                    sectors_read += 1;
                 } else {
                     self.tracer.trace_int1bh_fdd_read(
                         drive,
@@ -213,7 +256,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                         h,
                         current_record,
                         n,
-                        sector_count,
+                        sectors_read,
                         buffer_address,
                         0xE0,
                     );
@@ -226,7 +269,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                     h,
                     current_record,
                     n,
-                    sector_count,
+                    sectors_read,
                     buffer_address,
                     0xE0,
                 );
@@ -236,8 +279,36 @@ impl<T: Tracing> Pc9801Bus<T> {
         }
 
         self.tracer
-            .trace_int1bh_fdd_read(drive, c, h, r, n, sector_count, buffer_address, 0x00);
+            .trace_int1bh_fdd_read(drive, c, h, r, n, sectors_read, buffer_address, 0x00);
         0x00
+    }
+
+    fn read_fdd_hle_sector_data(
+        &self,
+        drive: usize,
+        track_index: usize,
+        c: u8,
+        h: u8,
+        r: u8,
+        n: u8,
+    ) -> Option<Vec<u8>> {
+        if let Some(data) = self.floppy.read_sector_data(drive, track_index, c, h, r, n) {
+            return Some(data.to_vec());
+        }
+
+        for size_code in 0..=7 {
+            if size_code == n {
+                continue;
+            }
+            if let Some(data) = self
+                .floppy
+                .read_sector_data(drive, track_index, c, h, r, size_code)
+            {
+                return Some(data.to_vec());
+            }
+        }
+
+        None
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -440,5 +511,17 @@ impl<T: Tracing> Pc9801Bus<T> {
         let start = u32::from(bp);
         let end = start.wrapping_add(length as u32 - 1);
         (start & 0xFFFF) > (end & 0xFFFF)
+    }
+
+    fn fdd640k_device_matches_media(device_type: u8, image: Option<&FloppyImage>) -> bool {
+        let Some(image) = image else {
+            return true;
+        };
+
+        match device_type {
+            0x90 => image.media_type == D88MediaType::Disk2HD,
+            0x50 | 0x70 => image.media_type != D88MediaType::Disk2HD,
+            _ => true,
+        }
     }
 }
