@@ -95,6 +95,28 @@ impl std::str::FromStr for CpuMode {
     }
 }
 
+/// Beeper hardware architecture.
+///
+/// PC-98 models split into two families with very different beeper hardware,
+/// per undoc98 `io_tcu.txt`:
+///
+/// * The PC-9801 first generation, E, F, and M use a fixed-frequency hardware
+///   beeper gated by PPI Port C bit 3. PIT channel 1 on these machines is the
+///   memory-refresh generator and writes to it must not change the audible
+///   tone.
+/// * PC-9801U, VM, and later use PIT channel 1 to drive a 1-bit DAC speaker,
+///   so the beep frequency follows the PIT ch1 reload value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeeperKind {
+    /// Fixed-frequency hardware beeper at `hz` Hz, gated by PPI Port C bit 3.
+    Fixed {
+        /// Beeper output frequency in Hz.
+        hz: u32,
+    },
+    /// PIT channel 1 drives a 1-bit DAC speaker. Frequency follows PIT ch1.
+    PitDriven,
+}
+
 /// PC-98 machine model.
 ///
 /// Encodes the full hardware profile of a specific PC-98 variant:
@@ -169,6 +191,18 @@ impl MachineModel {
         match self {
             Self::PC9801F | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => true,
             Self::PC9801VM | Self::PC9801VX => false,
+        }
+    }
+
+    /// Returns the beeper hardware architecture for this machine.
+    ///
+    /// See [`BeeperKind`] for the full split.
+    pub const fn beeper_kind(self) -> BeeperKind {
+        match self {
+            Self::PC9801F => BeeperKind::Fixed { hz: 2400 },
+            Self::PC9801VM | Self::PC9801VX | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => {
+                BeeperKind::PitDriven
+            }
         }
     }
 

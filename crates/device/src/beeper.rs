@@ -1,10 +1,24 @@
-//! PC-98 beeper: PIT channel 1 square wave gated by PPI port C bit 3.
+//! PC-98 beeper.
 //!
-//! Generates audio samples analytically without scheduler events. Mid-frame
-//! state changes (PPI gate toggles and PIT counter reloads) are logged and
-//! replayed during sample generation for cycle-accurate output.
+//! Two hardware variants exist (per undoc98 `io_tcu.txt`):
+//!
+//! * [`BeeperKind::Fixed`] - PC-9801 first generation, E, F, M: a
+//!   fixed-frequency hardware oscillator (~2 kHz) gated by PPI Port C bit 3.
+//!   PIT channel 1 on these machines is the memory-refresh generator and is
+//!   not allowed to alter the audible tone, so [`Beeper::set_pit_reload`]
+//!   no-ops in this mode.
+//! * [`BeeperKind::PitDriven`] - PC-9801U, VM, and later: PIT channel 1
+//!   drives a 1-bit DAC speaker, so the beep frequency follows the PIT ch1
+//!   reload value.
+//!
+//! In both cases samples are generated analytically without scheduler events.
+//! Mid-frame state changes (PPI gate toggles and PIT counter reloads on
+//! PIT-driven machines) are logged and replayed during sample generation for
+//! cycle-accurate output.
 
 use std::ops::{Deref, DerefMut};
+
+use common::BeeperKind;
 
 /// Base amplitude for the beeper square wave.
 const BEEPER_BASE_AMPLITUDE: f32 = 0.5;
@@ -64,6 +78,8 @@ struct PitTransition {
 pub struct Beeper {
     /// Embedded state for save/restore.
     pub state: BeeperState,
+    /// Hardware architecture variant. Set at construction; not part of save state.
+    kind: BeeperKind,
     /// Buzzer state at the start of the current frame (before any transitions).
     pre_frame_buzzer: bool,
     /// PIT reload at the start of the current frame.
@@ -87,29 +103,37 @@ impl DerefMut for Beeper {
     }
 }
 
-impl Default for Beeper {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Beeper {
-    /// Creates a new beeper in the muted state.
-    pub fn new() -> Self {
+    /// Creates a new beeper in the muted state for the given hardware variant.
+    ///
+    /// `pit_clock_hz` is needed up front so that [`BeeperKind::Fixed`] can
+    /// translate its target frequency into the equivalent PIT-tick reload value
+    /// used by the analytical sample generator.
+    pub fn new(kind: BeeperKind, pit_clock_hz: u32) -> Self {
+        let pit_reload = match kind {
+            BeeperKind::Fixed { hz } if hz > 0 => (pit_clock_hz / hz) as u16,
+            BeeperKind::Fixed { .. } | BeeperKind::PitDriven => 0,
+        };
         Self {
             state: BeeperState {
                 buzzer_enabled: false,
-                pit_reload: 0,
+                pit_reload,
                 pit_last_load_cycle: 0,
                 frame_start_cycle: 0,
                 sample_remainder: SampleRemainder::default(),
             },
+            kind,
             pre_frame_buzzer: false,
-            pre_frame_pit_reload: 0,
+            pre_frame_pit_reload: pit_reload,
             pre_frame_pit_last_load: 0,
             buzzer_transitions: Vec::new(),
             pit_transitions: Vec::new(),
         }
+    }
+
+    /// Returns the hardware architecture variant of this beeper.
+    pub fn kind(&self) -> BeeperKind {
+        self.kind
     }
 
     /// Records a buzzer gate change. Called when PPI port C bit 3 changes.
@@ -122,7 +146,14 @@ impl Beeper {
     }
 
     /// Records a PIT channel 1 reload. Called when PIT ch1 counter is loaded.
+    ///
+    /// On [`BeeperKind::Fixed`] machines (PC-9801 first/E/F/M) PIT ch1 is the
+    /// memory-refresh generator and writes must not change the audible tone -
+    /// this function is a no-op in that case.
     pub fn set_pit_reload(&mut self, reload: u16, last_load_cycle: u64) {
+        if matches!(self.kind, BeeperKind::Fixed { .. }) {
+            return;
+        }
         self.pit_transitions.push(PitTransition {
             cycle: last_load_cycle,
             reload,
