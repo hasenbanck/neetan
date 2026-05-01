@@ -16,9 +16,9 @@ version = "1.0.0"
 
 [[package]]
 name = "cc"
-version = "1.2.60"
+version = "1.2.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43c5703da9466b66a946814e1adf53ea2c90f10063b86290cc9eb67ce3478a20"
+checksum = "d16d90359e986641506914ba71350897565610e87ce0ad9e6f28569db3dd5c6d"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -159,15 +159,15 @@ dependencies = [
 
 [[package]]
 name = "sdl3-src"
-version = "3.4.4"
+version = "3.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d98f1cdcc5eb877ad663216c3133bfa5af469628c9573b3d2364e584efe19ab0"
+checksum = "7d25f7fa90b9df6e049c5972065e26f2af3a547bc6acf633dc31037f8234385c"
 
 [[package]]
 name = "sdl3-sys"
-version = "0.6.3+SDL-3.4.4"
+version = "0.6.4+SDL-3.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7adc59563535710602c8e7035297fd73d2506c0c61677f40aeb8917c0e86a01"
+checksum = "b6a5898a64973b5f5b350b3d55aa9da8c8f36e4e1d145209871ba17fe6942c56"
 dependencies = [
  "cc",
  "cmake",
