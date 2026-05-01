@@ -1,6 +1,13 @@
 #[cfg(not(target_endian = "little"))]
 compile_error!("DisplaySnapshotUpload requires a little-endian target");
 
+/// Total byte size of the PC-98 text VRAM image (16 KiB).
+///
+/// Bytes 0x0000-0x1FFF hold character codes (low and high byte interleaved
+/// per cell); bytes 0x2000-0x3FFF hold attribute bytes with the same cell
+/// layout.
+pub const TEXT_VRAM_BYTES: usize = 0x4000;
+
 /// Typed display snapshot uploaded from CPU emulation to the GPU compose pass.
 ///
 /// The binary layout of this struct is stable and shared with shader code.
@@ -43,10 +50,24 @@ pub struct DisplaySnapshotUpload {
     pub text_cursor: u32,
     /// Graphics GDC active display lines (AL from SYNC command, 0-1023).
     pub gdc_graphics_al: u32,
-    /// Reserved header words so text VRAM starts at byte offset 0x100.
+    /// Reserved header words so the text plane starts at byte offset 0x100.
     pub reserved_header_words: [u32; 26],
-    /// Text VRAM bytes as 32-bit little-endian words.
-    pub text_vram_words: [u32; 0x4000 / 4],
+    /// Normalized text plane: one packed `u32` per cell, indexed by TVRAM
+    /// character word address (`memory_addr / 2`).
+    ///
+    /// Layout (LSB-first):
+    /// - bits  0..19: font ROM byte offset for raster line 0 (kanji right
+    ///   half is encoded as left-half offset + 0x800).
+    /// - bits 20..22: foreground color (BRG, attr bits 7..5).
+    /// - bit  23: blank cell (secret bit clear, or blink phase suppresses).
+    /// - bit  24: reverse (XOR final pixel color).
+    /// - bit  25: underline_this (this cell has the underline attribute).
+    /// - bit  26: underline_left (previous cell on this row had underline).
+    /// - bit  27: vertical line at glyph_x == 4.
+    /// - bit  28: cursor cell (EAD address matches; inherited to right half
+    ///   of a kanji pair).
+    /// - bits 29..31: reserved.
+    pub text_cells: [u32; 4096],
     /// Graphics VRAM B-plane (32 KB) as 32-bit little-endian words.
     pub graphics_b_plane: [u32; 0x8000 / 4],
     /// Graphics VRAM R-plane (32 KB) as 32-bit little-endian words.
@@ -213,7 +234,7 @@ mod tests {
             offset_of!(DisplaySnapshotUpload, reserved_header_words),
             0x098
         );
-        assert_eq!(offset_of!(DisplaySnapshotUpload, text_vram_words), 0x100);
+        assert_eq!(offset_of!(DisplaySnapshotUpload, text_cells), 0x100);
         assert_eq!(offset_of!(DisplaySnapshotUpload, graphics_b_plane), 0x4100);
         assert_eq!(offset_of!(DisplaySnapshotUpload, graphics_r_plane), 0xC100);
         assert_eq!(offset_of!(DisplaySnapshotUpload, graphics_g_plane), 0x14100);

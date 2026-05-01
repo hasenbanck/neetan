@@ -265,8 +265,13 @@ impl DisplayControl {
         self.state.video_mode & MODE1_COLUMN_WIDTH != 0
     }
 
-    /// Returns whether font select is set to 7x13 mode (mode1 bit 3).
-    pub fn is_font_7x13_mode(&self) -> bool {
+    /// Returns whether the 8x16-cell font is selected (mode1 bit 3 set).
+    ///
+    /// Per `undoc98`, mode1 bit 3 = 1 selects the 7x13-dot font for 400-line
+    /// displays, which is rendered inside 8x16 cells. The rest of the
+    /// text-rendering code uses cell-size terminology (`ANK_8X16_BASE`,
+    /// `fontsel_8x16`); this helper matches that.
+    pub fn is_font_8x16_mode(&self) -> bool {
         self.state.video_mode & MODE1_FONT_SEL != 0
     }
 
@@ -314,7 +319,7 @@ mod tests {
 
         assert!(!display_control.is_attr_semigraphics_enabled());
         assert!(!display_control.is_text_40_columns());
-        assert!(!display_control.is_font_7x13_mode());
+        assert!(!display_control.is_font_8x16_mode());
         assert!(!display_control.is_hide_odd_rasters_enabled());
         assert!(!display_control.is_kac_dot_access_mode());
 
@@ -326,7 +331,7 @@ mod tests {
 
         assert!(display_control.is_attr_semigraphics_enabled());
         assert!(display_control.is_text_40_columns());
-        assert!(display_control.is_font_7x13_mode());
+        assert!(display_control.is_font_8x16_mode());
         assert!(display_control.is_hide_odd_rasters_enabled());
         assert!(display_control.is_kac_dot_access_mode());
 
@@ -338,7 +343,7 @@ mod tests {
 
         assert!(!display_control.is_attr_semigraphics_enabled());
         assert!(!display_control.is_text_40_columns());
-        assert!(!display_control.is_font_7x13_mode());
+        assert!(!display_control.is_font_8x16_mode());
         assert!(!display_control.is_hide_odd_rasters_enabled());
         assert!(!display_control.is_kac_dot_access_mode());
     }

@@ -14,10 +14,11 @@ mod jis;
 pub mod log;
 mod os;
 mod stack_vec;
+mod text_normalizer;
 mod trace;
 
 pub use display_snapshot::{
-    DISPLAY_FLAG_PEGC_256_COLOR, DisplaySnapshotUpload, PegcSnapshotUpload,
+    DISPLAY_FLAG_PEGC_256_COLOR, DisplaySnapshotUpload, PegcSnapshotUpload, TEXT_VRAM_BYTES,
     cast_u32_slice_as_bytes_mut,
 };
 pub use error::{Context, ContextError, OptionContext, StringError};
@@ -30,6 +31,7 @@ pub use os::{
     ConsoleIo, CpuAccess, CursorAccess, DiskIo, DriveIo, HardwareCursorState, MemoryAccess,
 };
 pub use stack_vec::StackVec;
+pub use text_normalizer::{TEXT_CELL_COUNT, TextNormalizerInputs, normalize_text_plane};
 pub use trace::{NoTracing, OsBootStage, Tracing};
 
 /// CPU generation.
