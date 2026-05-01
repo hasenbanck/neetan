@@ -854,16 +854,11 @@ mod tests {
     #[derive(Default)]
     struct UnhandledTrace {
         reads: Vec<u16>,
-        writes: Vec<(u16, u8)>,
     }
 
     impl Tracing for UnhandledTrace {
         fn trace_io_unhandled_read(&mut self, port: u16) {
             self.reads.push(port);
-        }
-
-        fn trace_io_unhandled_write(&mut self, port: u16, value: u8) {
-            self.writes.push((port, value));
         }
     }
 
@@ -923,18 +918,15 @@ mod tests {
         assert_eq!(bus.io_read_byte(0x0055), 0xFF);
 
         assert_eq!(bus.tracer().reads, Vec::<u16>::new());
-        assert_eq!(bus.tracer().writes, Vec::<(u16, u8)>::new());
     }
 
     #[test]
-    fn fdd320_ppi_is_not_exposed_on_later_models() {
+    fn fdd320_ppi_reads_are_not_exposed_on_later_models() {
         let mut bus =
             Pc9801Bus::<UnhandledTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
 
         assert_eq!(bus.io_read_byte(0x0055), 0xFF);
-        bus.io_write_byte(0x0053, 0x22);
 
         assert_eq!(bus.tracer().reads, vec![0x0055]);
-        assert_eq!(bus.tracer().writes, vec![(0x0053, 0x22)]);
     }
 }

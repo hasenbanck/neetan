@@ -192,6 +192,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             gdc_master: Gdc::new_master(clocks.cpu_clock_hz),
             gdc_slave: Gdc::new_slave(clocks.cpu_clock_hz),
             floppy: FloppyController::new(),
+            fdd640k_hle: device::fdd640k_hle::Fdd640kHle::new(),
             fdd320_ppi: device::fdd320_ppi::Fdd320Ppi::new(),
             system_ppi: I8255SystemPpi::new(is_8mhz_lineage),
             printer: Printer::new(),
