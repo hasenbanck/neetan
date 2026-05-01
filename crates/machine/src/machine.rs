@@ -64,6 +64,15 @@ impl<C: Cpu, T: Tracing> Machine<C, T> {
                 continue;
             }
 
+            if self.bus.fdd640k_hle_pending() {
+                self.bus.set_hle_paging(self.cpu.cr0(), self.cpu.cr3());
+                self.bus.execute_fdd640k_hle(
+                    self.cpu.segment_base(common::SegmentRegister::SS),
+                    self.cpu.sp(),
+                );
+                continue;
+            }
+
             if self.bus.bios_hle_pending() {
                 self.bus.set_hle_paging(self.cpu.cr0(), self.cpu.cr3());
                 self.bus.execute_bios_hle(&mut self.cpu);

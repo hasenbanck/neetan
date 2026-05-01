@@ -85,6 +85,10 @@ impl<T: Tracing> Pc9801Bus<T> {
             // Printer i8255 PPI control register (write-only).
             0x46 => self.printer.write_control(value),
 
+            // PC-9801F 320KB FDD PPI host interface.
+            0x0053 if self.machine_model.has_fdd320_ppi() => self.fdd320_ppi.write_port_b(value),
+            0x0057 if self.machine_model.has_fdd320_ppi() => self.fdd320_ppi.write_control(value),
+
             // NMI control
             0x50 => self.nmi_enabled = false,
             0x52 => self.nmi_enabled = true,
@@ -478,6 +482,11 @@ impl<T: Tracing> Pc9801Bus<T> {
                 if self.machine_model.has_protected_memory_register() {
                     self.protected_memory_max = value;
                 }
+            }
+
+            // 640KB FDD HLE trap port.
+            0x07ED if self.fdd640k_hle.rom_installed() => {
+                self.fdd640k_hle.write_trap_port(value);
             }
 
             // SASI HLE trap port.
@@ -1249,14 +1258,48 @@ impl<T: Tracing> Pc9801Bus<T> {
 
 #[cfg(test)]
 mod tests {
-    use common::{Bus, CpuMode, MachineModel};
+    use common::{Bus, CpuMode, MachineModel, Tracing};
     use device::upd7220_gdc::{DOT_CLOCK_200LINE, DOT_CLOCK_400LINE, VramOp};
 
     use crate::bus::{NoTracing, Pc9801Bus};
 
+    #[derive(Default)]
+    struct UnhandledWriteTrace {
+        writes: Vec<(u16, u8)>,
+    }
+
+    impl Tracing for UnhandledWriteTrace {
+        fn trace_io_unhandled_write(&mut self, port: u16, value: u8) {
+            self.writes.push((port, value));
+        }
+    }
+
     fn enable_egc_mode(bus: &mut Pc9801Bus<NoTracing>) {
         bus.io_write_byte(0x6A, 0x07);
         bus.io_write_byte(0x6A, 0x05);
+    }
+
+    #[test]
+    fn pc9801f_fdd320_ppi_shim_writes_are_handled() {
+        let mut bus =
+            Pc9801Bus::<UnhandledWriteTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
+
+        bus.io_write_byte(0x0057, 0x91);
+        bus.io_write_byte(0x0053, 0x00);
+        bus.io_write_byte(0x0057, 0x0F);
+
+        assert_eq!(bus.tracer().writes, Vec::<(u16, u8)>::new());
+    }
+
+    #[test]
+    fn fdd320_ppi_writes_are_not_exposed_on_later_models() {
+        let mut bus =
+            Pc9801Bus::<UnhandledWriteTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+
+        bus.io_write_byte(0x0053, 0x22);
+        bus.io_write_byte(0x0057, 0x91);
+
+        assert_eq!(bus.tracer().writes, vec![(0x0053, 0x22), (0x0057, 0x91)]);
     }
 
     #[test]

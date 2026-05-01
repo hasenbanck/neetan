@@ -1935,6 +1935,30 @@ impl<T: Tracing> Pc9801Bus<T> {
     }
 
     fn int1bh_fdd(&mut self, cpu: &mut impl Cpu, function: u8) {
+        let function_code = cpu.ah();
+        let device_select = cpu.al();
+        let initial_bx = cpu.bx();
+        let initial_cx = cpu.cx();
+        let initial_dx = cpu.dx();
+        let initial_es = cpu.es();
+        let initial_bp = cpu.bp();
+
+        let result_ah = self.int1bh_fdd_dispatch(cpu, function);
+
+        self.tracer.trace_fdd640k_hle(
+            function_code,
+            device_select,
+            result_ah,
+            initial_bx,
+            initial_cx,
+            initial_dx,
+            initial_es,
+            initial_bp,
+        );
+        self.write_result_ah_cf(cpu, result_ah);
+    }
+
+    fn int1bh_fdd_dispatch(&mut self, cpu: &mut impl Cpu, function: u8) -> u8 {
         let drive = (cpu.al() & 0x03) as usize;
         let ah = cpu.ah();
         self.tracer.trace_int1bh_fdd_params(
@@ -1949,8 +1973,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         let devtype = cpu.al() & 0xF0;
         // Reject 1MB-style device types on PC-9801F.
         if self.machine_model == MachineModel::PC9801F && !matches!(devtype, 0x50 | 0x70) {
-            self.write_result_ah_cf(cpu, 0x40);
-            return;
+            return 0x40;
         }
 
         match function {
@@ -1958,7 +1981,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 if ah & 0x10 != 0 {
                     self.fdd_seek_cylinder[drive] = cpu.cl();
                 }
-                self.write_result_ah_cf(cpu, 0x00);
+                0x00
             }
             0x03 => {
                 // Initialize FDD: update DISK_EQUIP.
@@ -1977,12 +2000,17 @@ impl<T: Tracing> Pc9801Bus<T> {
                     disk_equip = (disk_equip & 0x0FFF) | (equip << 12);
                 }
                 self.ram_write_u16(0x055C, disk_equip);
-                self.write_result_ah_cf(cpu, 0x00);
+
+                // Match SASI/IDE init: unmask master IRQ 0 (system timer).
+                self.pic.state.chips[0].imr &= !0x01;
+                self.pic.invalidate_irq_cache();
+
+                0x00
             }
             0x04 => {
                 // Sense: return drive status.
                 if !self.floppy.has_drive(drive) {
-                    self.write_result_ah_cf(cpu, 0x60);
+                    0x60
                 } else {
                     let mut result = 0x00u8;
                     if self.floppy.is_write_protected(drive) {
@@ -1994,7 +2022,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                     if (cpu.ax() & 0x8F40) == 0x8400 {
                         result |= 0x08;
                     }
-                    self.write_result_ah_cf(cpu, result);
+                    result
                 }
             }
             0x05 => {
@@ -2025,8 +2053,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                         buf_addr,
                         0x60,
                     );
-                    self.write_result_ah_cf(cpu, 0x60);
-                    return;
+                    return 0x60;
                 }
                 if self.floppy.is_write_protected(drive) {
                     self.tracer.trace_int1bh_fdd_write(
@@ -2039,8 +2066,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                         buf_addr,
                         0x70,
                     );
-                    self.write_result_ah_cf(cpu, 0x70);
-                    return;
+                    return 0x70;
                 }
                 let mut h = h;
                 let mut hd = (h ^ (cpu.al() >> 2)) & 1;
@@ -2056,8 +2082,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                         buf_addr,
                         0x20,
                     );
-                    self.write_result_ah_cf(cpu, 0x20);
-                    return;
+                    return 0x20;
                 }
                 if ah & 0x10 != 0 {
                     self.fdd_seek_cylinder[drive] = c;
@@ -2118,13 +2143,12 @@ impl<T: Tracing> Pc9801Bus<T> {
                     buf_addr,
                     result,
                 );
-                self.write_result_ah_cf(cpu, result);
+                result
             }
             0x02 | 0x06 => {
                 // Read sectors (0x06 = normal read, 0x02 = diagnostic read).
                 if !self.floppy.has_drive(drive) {
-                    self.write_result_ah_cf(cpu, 0x60);
-                    return;
+                    return 0x60;
                 }
                 let is_diagnostic = function == 0x02;
                 let c = cpu.cl();
@@ -2144,9 +2168,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 };
                 // Segment wrap check.
                 if (buf_addr & 0xFFFF) > ((buf_addr + size as u32 - 1) & 0xFFFF) {
-                    let err = if is_diagnostic { 0x00 } else { 0x20 };
-                    self.write_result_ah_cf(cpu, err);
-                    return;
+                    return if is_diagnostic { 0x00 } else { 0x20 };
                 }
                 if ah & 0x10 != 0 {
                     self.fdd_seek_cylinder[drive] = c;
@@ -2196,9 +2218,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                                 0xE0,
                             );
                             // Diagnostic read returns 0x00 on error.
-                            let err = if is_diagnostic { 0x00 } else { 0xE0 };
-                            self.write_result_ah_cf(cpu, err);
-                            return;
+                            return if is_diagnostic { 0x00 } else { 0xE0 };
                         }
                     } else {
                         self.tracer.trace_int1bh_fdd_read(
@@ -2211,9 +2231,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                             buf_addr,
                             0xE0,
                         );
-                        let err = if is_diagnostic { 0x00 } else { 0xE0 };
-                        self.write_result_ah_cf(cpu, err);
-                        return;
+                        return if is_diagnostic { 0x00 } else { 0xE0 };
                     }
                     current_r += 1;
                 }
@@ -2227,16 +2245,16 @@ impl<T: Tracing> Pc9801Bus<T> {
                     buf_addr,
                     0x00,
                 );
-                self.write_result_ah_cf(cpu, 0x00);
+                0x00
             }
             0x07 => {
                 // Recalibrate: no-op (always succeeds).
-                self.write_result_ah_cf(cpu, 0x00);
+                0x00
             }
             0x0A => {
                 // Read ID: return geometry of first sector on current track.
                 if !self.floppy.has_drive(drive) {
-                    self.write_result_ah_cf(cpu, 0x60);
+                    0x60
                 } else {
                     let c = cpu.cl();
                     let h = cpu.dh();
@@ -2248,29 +2266,26 @@ impl<T: Tracing> Pc9801Bus<T> {
                         cpu.set_dh(sector.head);
                         cpu.set_dl(sector.record);
                         cpu.set_ch(sector.size_code);
-                        self.write_result_ah_cf(cpu, 0x00);
+                        0x00
                     } else {
-                        self.write_result_ah_cf(cpu, 0xE0);
+                        0xE0
                     }
                 }
             }
             0x01 => {
                 // Verify: no-op.
                 if !self.floppy.has_drive(drive) {
-                    self.write_result_ah_cf(cpu, 0x60);
-                    return;
+                    return 0x60;
                 }
-                self.write_result_ah_cf(cpu, 0x00);
+                0x00
             }
             0x0D => {
                 // Format track.
                 if !self.floppy.has_drive(drive) {
-                    self.write_result_ah_cf(cpu, 0x60);
-                    return;
+                    return 0x60;
                 }
                 if self.floppy.is_write_protected(drive) {
-                    self.write_result_ah_cf(cpu, 0x70);
-                    return;
+                    return 0x70;
                 }
                 if ah & 0x10 != 0 {
                     self.fdd_seek_cylinder[drive] = cpu.cl();
@@ -2297,15 +2312,13 @@ impl<T: Tracing> Pc9801Bus<T> {
                 }
                 self.floppy
                     .format_track(drive, track_index, &chrn, n_val, fill_byte);
-                self.write_result_ah_cf(cpu, 0x00);
+                0x00
             }
             0x0E => {
                 // Set density.
-                self.write_result_ah_cf(cpu, 0x00);
+                0x00
             }
-            _ => {
-                self.write_result_ah_cf(cpu, 0x40);
-            }
+            _ => 0x40,
         }
     }
 

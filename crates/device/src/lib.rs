@@ -13,6 +13,7 @@ pub mod disk_hle;
 pub mod display_control;
 pub mod egc;
 pub mod fdd320_ppi;
+pub mod fdd640k_hle;
 pub mod floppy;
 pub mod grcg;
 pub mod i8237_dma;

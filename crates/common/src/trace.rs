@@ -120,6 +120,20 @@ pub trait Tracing {
         _bp: u16,
     ) {
     }
+    /// A 640KB FDD HLE operation was executed.
+    #[allow(clippy::too_many_arguments)]
+    fn trace_fdd640k_hle(
+        &mut self,
+        _function: u8,
+        _device_select: u8,
+        _result: u8,
+        _bx: u16,
+        _cx: u16,
+        _dx: u16,
+        _es: u16,
+        _bp: u16,
+    ) {
+    }
     /// An HLE OS boot stage was reached.
     fn trace_os_boot(
         &mut self,

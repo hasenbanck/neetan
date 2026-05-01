@@ -5,6 +5,7 @@
 
 mod bios;
 mod fdc;
+mod fdd_hle;
 mod graphics;
 mod hdd;
 mod init;
@@ -26,7 +27,8 @@ use device::{
     display_control::DisplayControl,
     egc::Egc,
     fdd320_ppi::Fdd320Ppi,
-    floppy::FloppyImage,
+    fdd640k_hle::Fdd640kHle,
+    floppy::{D88MediaType, FloppyImage},
     grcg::Grcg,
     i8237_dma::I8237Dma,
     i8251_keyboard::I8251Keyboard,
@@ -261,6 +263,8 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     gdc_slave: Gdc,
     /// PC-98 floppy controller (both FDC interfaces + drive storage).
     floppy: FloppyController,
+    /// PC-9801-09-style 640KB FDD BIOS HLE extension.
+    fdd640k_hle: Fdd640kHle,
     fdd320_ppi: Fdd320Ppi,
     system_ppi: I8255SystemPpi,
     printer: Printer,
@@ -477,7 +481,12 @@ impl<T: Tracing> Pc9801Bus<T> {
 
     /// Inserts a floppy disk image into the specified drive (0-3).
     pub fn insert_floppy(&mut self, drive: usize, image: FloppyImage, path: Option<PathBuf>) {
+        let install_fdd640k_hle = self.machine_model == MachineModel::PC9801F
+            && image.media_type == D88MediaType::Disk2DD;
         self.floppy.insert_drive(drive, image, path);
+        if install_fdd640k_hle {
+            self.fdd640k_hle.install_rom();
+        }
         if let Some(os) = self.os.as_mut() {
             let memory = os_adapter::OsMemoryAccess(&mut self.memory);
             os.invalidate_drive_caches(&memory, 0x90 | drive as u8);
@@ -950,6 +959,14 @@ impl<T: Tracing> Pc9801Bus<T> {
                 } else {
                     let page_base = self.access_page_index() * GRAPHICS_PAGE_SIZE_BYTES;
                     self.memory.state.graphics_vram[page_base + (address - 0xA8000) as usize]
+                }
+            }
+            // 640KB FDD HLE ROM overlay (PC-9801-09-compatible expansion ROM area).
+            0xD6000..=0xD6FFF => {
+                if self.fdd640k_hle.rom_installed() {
+                    self.fdd640k_hle.read_rom_byte((address - 0xD6000) as usize)
+                } else {
+                    self.memory.read_byte(address)
                 }
             }
             // SASI HLE ROM overlay (expansion ROM area).
@@ -2358,6 +2375,7 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
     fn cpu_should_yield(&self) -> bool {
         self.sasi.take_yield_requested()
             || self.ide.take_yield_requested()
+            || self.fdd640k_hle.take_yield_requested()
             || self.bios.take_yield_requested()
     }
 }

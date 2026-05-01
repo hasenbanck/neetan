@@ -14,16 +14,20 @@ files is supported, but should provide no additional benefit.
 
 ## Supported systems
 
-Currently, we aim to support all 16-bit era DOS games and emulate them accurately for 5 idealized machine targets:
+Currently, we aim to support all 16-bit era DOS games and emulate them accurately for 6 idealized machine targets:
 
-| Machine   | CPU      | CPU Speed | FPU (x87) | RAM     | Extended RAM | Graphics | Interface | CD-ROM |
-|-----------|----------|-----------|-----------|---------|--------------|----------|-----------|--------|
-| PC-9801F  | 8086     | 5 / 8 Mhz | No        | 640 KiB | None         | GDC      | SASI      | No     |
-| PC-9801VM | V30      | 10 Mhz    | No        | 640 KiB | None         | GRCG     | SASI      | No     |
-| PC-9801VX | 80286    | 10 Mhz    | No        | 640 KiB | 4 MiB        | ECG      | SASI      | No     |
-| PC-9801RA | 80386DX  | 20 Mhz    | Yes       | 640 KiB | 12 MiB       | ECG      | SASI      | No     |
-| PC-9821AS | 80486DX  | 33 Mhz    | Yes       | 640 KiB | 14 MiB       | PEGC     | IDE       | Yes    |
-| PC-9821AP | 80486DX2 | 66 Mhz    | Yes       | 640 KiB | 14 MiB       | PEGC     | IDE       | Yes    |
+| Machine   | CPU      | CPU Speed | FPU (x87) | Extended RAM | Graphics | Interface | CD-ROM |
+|-----------|----------|-----------|-----------|--------------|----------|-----------|--------|
+| PC-9801F  | 8086     | 5 / 8 Mhz | No        | None         | GDC      | SASI      | No     |
+| PC-9801VM | V30      | 10 Mhz    | No        | None         | GRCG     | SASI      | No     |
+| PC-9801VX | 80286    | 10 Mhz    | No        | 4 MiB        | ECG      | SASI      | No     |
+| PC-9801RA | 80386DX  | 20 Mhz    | Yes       | 12 MiB       | ECG      | SASI      | No     |
+| PC-9821AS | 80486DX  | 33 Mhz    | Yes       | 14 MiB       | PEGC     | IDE       | Yes    |
+| PC-9821AP | 80486DX2 | 66 Mhz    | Yes       | 14 MiB       | PEGC     | IDE       | Yes    |
+
+All targets have the full 640 KiB conventional RAM. The 8086 and V30 are cycle-count accurately emulated.
+The emulated 286 is calibrated to run at the same speed as the original 286 using trace data. The 386 and the 486
+are optimized for emulation speed and most likely run a bit fast compared to their real counterparts.
 
 We also support the following sound cards:
 
