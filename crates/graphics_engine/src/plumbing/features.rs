@@ -1,4 +1,4 @@
-//! Vulkan physical device feature management for Vulkan 1.0-1.4.
+//! Vulkan physical device feature management for Vulkan 1.0-1.3.
 
 use common::{bail, error, info, warn};
 use jay_ash::vk;
@@ -7,7 +7,7 @@ use crate::{Result, plumbing::extensions::ExtensionSet};
 
 /// Configuration for which device features to request.
 ///
-/// Features are organized by Vulkan version (1.0-1.4) and by extension.
+/// Features are organized by Vulkan version (1.0-1.3) and by extension.
 /// Only features that are both requested AND available will be enabled.
 #[derive(Default, Clone)]
 pub(crate) struct DeviceFeatures {
@@ -19,8 +19,6 @@ pub(crate) struct DeviceFeatures {
     pub(crate) features_1_2: vk::PhysicalDeviceVulkan12Features<'static>,
     /// Vulkan 1.3 features.
     pub(crate) features_1_3: vk::PhysicalDeviceVulkan13Features<'static>,
-    /// Vulkan 1.4 features.
-    pub(crate) features_1_4: vk::PhysicalDeviceVulkan14Features<'static>,
     /// VK_KHR_present_id2 features.
     pub(crate) present_id2: Option<vk::PhysicalDevicePresentId2FeaturesKHR<'static>>,
     /// VK_KHR_present_wait2 features.
@@ -114,7 +112,6 @@ pub(crate) fn query_physical_device_features(
     let mut features_1_1 = vk::PhysicalDeviceVulkan11Features::default();
     let mut features_1_2 = vk::PhysicalDeviceVulkan12Features::default();
     let mut features_1_3 = vk::PhysicalDeviceVulkan13Features::default();
-    let mut features_1_4 = vk::PhysicalDeviceVulkan14Features::default();
 
     init_extension_features! {
         extension_set;
@@ -128,8 +125,7 @@ pub(crate) fn query_physical_device_features(
     features_1_1.p_next = std::ptr::null_mut();
     features_1_2.p_next = &mut features_1_1 as *mut _ as *mut std::ffi::c_void;
     features_1_3.p_next = &mut features_1_2 as *mut _ as *mut std::ffi::c_void;
-    features_1_4.p_next = &mut features_1_3 as *mut _ as *mut std::ffi::c_void;
-    features2.p_next = &mut features_1_4 as *mut _ as *mut std::ffi::c_void;
+    features2.p_next = &mut features_1_3 as *mut _ as *mut std::ffi::c_void;
 
     chain_extension_features! {
         features2;
@@ -147,7 +143,6 @@ pub(crate) fn query_physical_device_features(
         features_1_1,
         features_1_2,
         features_1_3,
-        features_1_4,
         present_id2,
         present_wait2,
     }
@@ -241,21 +236,6 @@ pub(crate) fn validate_features(
         }
     );
 
-    let mut requested_1_4_list: Vec<&str> = Vec::new();
-    let mut available_1_4_list: Vec<&str> = Vec::new();
-
-    impl_feature_check!(
-        requested.features_1_4, available.features_1_4, requested_1_4_list, available_1_4_list;
-        {
-            global_priority_query shader_subgroup_rotate shader_subgroup_rotate_clustered
-            shader_float_controls2 shader_expect_assume rectangular_lines bresenham_lines
-            smooth_lines stippled_rectangular_lines stippled_bresenham_lines stippled_smooth_lines
-            vertex_attribute_instance_rate_divisor vertex_attribute_instance_rate_zero_divisor
-            index_type_uint8 dynamic_rendering_local_read maintenance5 maintenance6
-            pipeline_protected_access pipeline_robustness host_image_copy push_descriptor
-        }
-    );
-
     log_and_validate_features(
         &requested_1_0_list,
         &available_1_0_list,
@@ -284,14 +264,6 @@ pub(crate) fn validate_features(
         &requested_1_3_list,
         &available_1_3_list,
         "Vulkan 1.3",
-        &mut missing_features,
-        true,
-    );
-
-    log_and_validate_features(
-        &requested_1_4_list,
-        &available_1_4_list,
-        "Vulkan 1.4",
         &mut missing_features,
         true,
     );
@@ -345,8 +317,7 @@ pub(crate) unsafe fn build_features_chain(
     requested.features_1_1.p_next = std::ptr::null_mut();
     requested.features_1_2.p_next = &mut requested.features_1_1 as *mut _ as *mut std::ffi::c_void;
     requested.features_1_3.p_next = &mut requested.features_1_2 as *mut _ as *mut std::ffi::c_void;
-    requested.features_1_4.p_next = &mut requested.features_1_3 as *mut _ as *mut std::ffi::c_void;
-    features2.p_next = &mut requested.features_1_4 as *mut _ as *mut std::ffi::c_void;
+    features2.p_next = &mut requested.features_1_3 as *mut _ as *mut std::ffi::c_void;
 
     chain_extension_features! {
         features2;

@@ -127,23 +127,22 @@ impl GraphicsPipeline {
     ) -> Result<Self, vk::Result> {
         let device = context.device();
 
-        let mut vertex_module_info = vk::ShaderModuleCreateInfo::default().code(spirv);
-        let mut fragment_module_info = vk::ShaderModuleCreateInfo::default().code(spirv);
+        let shader_module_info = vk::ShaderModuleCreateInfo::default().code(spirv);
+        let shader_module = unsafe { device.create_shader_module(&shader_module_info, None) }?;
 
         let vertex_stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::VERTEX)
-            .name(vertex_entry)
-            .push_next(&mut vertex_module_info);
+            .module(shader_module)
+            .name(vertex_entry);
 
         let mut fragment_stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(shader_module)
             .name(fragment_entry);
 
         if let Some(spec_info) = config.specialization_info {
             fragment_stage = fragment_stage.specialization_info(spec_info);
         }
-
-        let fragment_stage = fragment_stage.push_next(&mut fragment_module_info);
 
         let stages = [vertex_stage, fragment_stage];
 
@@ -258,8 +257,12 @@ impl GraphicsPipeline {
                 None,
             )
         } {
-            Ok(pipelines) => pipelines[0],
+            Ok(pipelines) => {
+                unsafe { device.destroy_shader_module(shader_module, None) };
+                pipelines[0]
+            }
             Err((_, err)) => {
+                unsafe { device.destroy_shader_module(shader_module, None) };
                 return Err(err);
             }
         };

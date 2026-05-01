@@ -53,8 +53,6 @@ pub(crate) struct DeviceConfiguration {
     pub(crate) features_1_2: vk::PhysicalDeviceVulkan12Features<'static>,
     /// Vulkan 1.3 features to request.
     pub(crate) features_1_3: vk::PhysicalDeviceVulkan13Features<'static>,
-    /// Vulkan 1.4 features to request.
-    pub(crate) features_1_4: vk::PhysicalDeviceVulkan14Features<'static>,
     /// VK_KHR_present_id2 features.
     pub(crate) present_id2: Option<vk::PhysicalDevicePresentId2FeaturesKHR<'static>>,
     /// VK_KHR_present_wait2 features.
@@ -63,7 +61,7 @@ pub(crate) struct DeviceConfiguration {
 
 impl DeviceConfiguration {
     /// Creates a new DeviceConfiguration with all the required features.
-    /// Aims to use all best practises for modern Vulkan 1.4.
+    /// Aims to use all best practises for modern Vulkan 1.3.
     pub(crate) fn new(platform_extensions: Vec<*const c_char>) -> Self {
         let mut extensions = vec![
             // Standard swap chain extension (always supported).
@@ -89,8 +87,9 @@ impl DeviceConfiguration {
         };
 
         let features_1_2 = vk::PhysicalDeviceVulkan12Features {
-            // Required support since Vulkan 1.4.
+            // Required by our shader scalar layout.
             scalar_block_layout: vk::TRUE,
+            // Required by our frame resource management.
             timeline_semaphore: vk::TRUE,
             ..Default::default()
         };
@@ -98,12 +97,6 @@ impl DeviceConfiguration {
         let features_1_3 = vk::PhysicalDeviceVulkan13Features {
             dynamic_rendering: vk::TRUE,
             synchronization2: vk::TRUE,
-            ..Default::default()
-        };
-
-        let features_1_4 = vk::PhysicalDeviceVulkan14Features {
-            // Removes the need to create shader modules.
-            maintenance5: vk::TRUE,
             ..Default::default()
         };
 
@@ -119,7 +112,6 @@ impl DeviceConfiguration {
             features_1_1,
             features_1_2,
             features_1_3,
-            features_1_4,
             present_id2: Some(present_id2),
             present_wait2: Some(present_wait2),
         }
@@ -134,7 +126,6 @@ impl DeviceConfiguration {
             features_1_1: self.features_1_1,
             features_1_2: self.features_1_2,
             features_1_3: self.features_1_3,
-            features_1_4: self.features_1_4,
             present_id2: self.present_id2,
             present_wait2: self.present_wait2,
         }
@@ -164,11 +155,11 @@ impl Device {
             .context("Failed to enumerate instance version")?
             .unwrap_or(vk::make_api_version(0, 1, 0, 0));
 
-        if api_version < vk::make_api_version(0, 1, 4, 0) {
-            bail!("Unsupported Vulkan API version (requires 1.4+)");
+        if api_version < vk::make_api_version(0, 1, 3, 0) {
+            bail!("Unsupported Vulkan API version (requires 1.3+)");
         }
 
-        let api_version = vk::make_api_version(0, 1, 4, 0);
+        let api_version = vk::make_api_version(0, 1, 3, 0);
 
         info!(
             "Using Vulkan API Version: {api_version}",
@@ -239,8 +230,8 @@ impl Device {
             unsafe { CStr::from_ptr(device_properties.device_name.as_ptr()).to_string_lossy() };
         info!("Selected physical device: {device_name}");
 
-        // We do not need to check for limits, since our requirements are well within the
-        // requirements for Vulkan 1.4 support:
+        // We do not check for limits, since our requirements are well within the
+        // common desktop class limits:
         //
         // maxImageDimension2D = 8192 (we need 640x400 and the device has to support the color target for the viewport size)
         // maxMemoryAllocationCount = 4096 (we only allocate a couple of images and buffers)

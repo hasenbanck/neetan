@@ -81,7 +81,7 @@ fn compile_shader(shader_file: &Path, output_dir: &Path, modules_dir: &Path) -> 
         .arg("-I")
         .arg(modules_dir)
         .arg("-profile")
-        .arg("spirv_1_6")
+        .arg("spirv_1_5")
         // Uses column major layout for matrices.
         .arg("-matrix-layout-column-major")
         // Uses the entrypoint name from the source instead of 'main' in the spirv output.
