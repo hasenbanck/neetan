@@ -8,7 +8,7 @@ use jay_ash::vk;
 use super::context::Context;
 use crate::{
     Result,
-    plumbing::{FrameResources, Queue},
+    plumbing::{FrameResources, Queue, RenderPass, create_framebuffer},
 };
 
 /// Result of acquiring a swapchain image.
@@ -32,6 +32,8 @@ pub(crate) struct Surface {
     swapchain_loader: jay_ash::khr::swapchain::Device,
     images: Vec<vk::Image>,
     image_views: Vec<vk::ImageView>,
+    framebuffers: Vec<vk::Framebuffer>,
+    render_pass: Option<RenderPass>,
 
     format: vk::SurfaceFormatKHR,
     is_srgb: bool,
@@ -81,6 +83,8 @@ impl Surface {
             swapchain_loader,
             images: Vec::new(),
             image_views: Vec::new(),
+            framebuffers: Vec::new(),
+            render_pass: None,
             format: vk::SurfaceFormatKHR::default(),
             is_srgb: false,
             extent: vk::Extent2D::default(),
@@ -198,18 +202,23 @@ impl Surface {
 
         self.context.set_object_name(c"swapchain", swapchain);
 
+        let images = unsafe { self.swapchain_loader.get_swapchain_images(swapchain) }
+            .context("Failed to get swapchain images")?;
+
         if let Some(old_swapchain) = self.swapchain.take() {
             self.destroy_swapchain_resources(old_swapchain);
         }
 
-        let images = unsafe { self.swapchain_loader.get_swapchain_images(swapchain) }
-            .context("Failed to get swapchain images")?;
+        self.ensure_render_pass(format.format)
+            .context("Failed to create swapchain render pass")?;
 
         let image_views = Self::create_image_views(&self.context, &images, format.format)?;
+        let framebuffers = self.create_framebuffers(&image_views, extent)?;
 
         self.swapchain = Some(swapchain);
         self.images = images;
         self.image_views = image_views;
+        self.framebuffers = framebuffers;
         self.format = format;
         self.is_srgb = is_srgb;
         self.extent = extent;
@@ -504,8 +513,46 @@ impl Surface {
             .collect()
     }
 
+    fn ensure_render_pass(&mut self, format: vk::Format) -> Result<()> {
+        let recreate = self
+            .render_pass
+            .as_ref()
+            .is_none_or(|render_pass| render_pass.format() != format);
+
+        if recreate {
+            self.render_pass = Some(RenderPass::new_swapchain(
+                Rc::clone(&self.context),
+                c"swapchain_render_pass",
+                format,
+            )?);
+        }
+
+        Ok(())
+    }
+
+    fn create_framebuffers(
+        &self,
+        image_views: &[vk::ImageView],
+        extent: vk::Extent2D,
+    ) -> Result<Vec<vk::Framebuffer>> {
+        let render_pass = self.render_pass();
+
+        image_views
+            .iter()
+            .enumerate()
+            .map(|(i, &view)| {
+                let name = std::ffi::CString::new(format!("swapchain_framebuffer_{i}")).unwrap();
+                create_framebuffer(&self.context, &name, render_pass, view, extent)
+            })
+            .collect()
+    }
+
     /// Destroys swapchain resources (image views and swapchain).
     fn destroy_swapchain_resources(&mut self, swapchain: vk::SwapchainKHR) {
+        for framebuffer in self.framebuffers.drain(..) {
+            unsafe { self.context.device().destroy_framebuffer(framebuffer, None) };
+        }
+
         for view in self.image_views.drain(..) {
             unsafe { self.context.device().destroy_image_view(view, None) };
         }
@@ -533,10 +580,19 @@ impl Surface {
         &self.images
     }
 
-    /// Returns a reference to the swapchain image views.
+    /// Returns a reference to the swapchain framebuffers.
     #[inline]
-    pub(crate) fn image_views(&self) -> &[vk::ImageView] {
-        &self.image_views
+    pub(crate) fn framebuffers(&self) -> &[vk::Framebuffer] {
+        &self.framebuffers
+    }
+
+    /// Returns the swapchain render pass.
+    #[inline]
+    pub(crate) fn render_pass(&self) -> vk::RenderPass {
+        self.render_pass
+            .as_ref()
+            .expect("swapchain render pass not initialized")
+            .handle()
     }
 }
 

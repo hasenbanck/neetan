@@ -7,7 +7,7 @@ use super::memory::{self, MemoryBlock};
 use crate::{
     Result,
     layout_transitioner::LayoutTransitioner,
-    plumbing::{Context, IntoCString},
+    plumbing::{Context, IntoCString, create_framebuffer, framebuffer_name},
 };
 
 /// A 2D color target image for rasterization rendering and subsequent sampling.
@@ -17,6 +17,7 @@ use crate::{
 pub(crate) struct ColorTargetImage {
     handle: vk::Image,
     view: vk::ImageView,
+    framebuffer: vk::Framebuffer,
     extent: vk::Extent3D,
     memory_block: Option<MemoryBlock>,
     context: Rc<Context>,
@@ -32,6 +33,7 @@ impl ColorTargetImage {
         context: Rc<Context>,
         name: &CStr,
         layout_transitioner: &mut LayoutTransitioner,
+        render_pass: vk::RenderPass,
         format: vk::Format,
         width: u32,
         height: u32,
@@ -125,6 +127,25 @@ impl ColorTargetImage {
         let view_name = format!("{}_view", name.to_string_lossy()).into_cstring();
         context.set_object_name(&view_name, view);
 
+        let framebuffer_extent = vk::Extent2D { width, height };
+        let framebuffer = match create_framebuffer(
+            &context,
+            &framebuffer_name(name),
+            render_pass,
+            view,
+            framebuffer_extent,
+        ) {
+            Ok(framebuffer) => framebuffer,
+            Err(error) => {
+                unsafe {
+                    context.device().destroy_image_view(view, None);
+                    context.device().destroy_image(handle, None);
+                    context.allocator().dealloc(context.device(), memory_block);
+                }
+                return Err(error).context("Failed to create color target framebuffer")?;
+            }
+        };
+
         let initial_image_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
 
         let subresource_range = vk::ImageSubresourceRange::default()
@@ -141,6 +162,7 @@ impl ColorTargetImage {
             subresource_range,
         ) {
             unsafe {
+                context.device().destroy_framebuffer(framebuffer, None);
                 context.device().destroy_image_view(view, None);
                 context.device().destroy_image(handle, None);
                 context.allocator().dealloc(context.device(), memory_block);
@@ -152,6 +174,7 @@ impl ColorTargetImage {
         Ok(Self {
             handle,
             view,
+            framebuffer,
             extent,
             memory_block: Some(memory_block),
             context,
@@ -162,6 +185,12 @@ impl ColorTargetImage {
     #[inline]
     pub(crate) fn view(&self) -> vk::ImageView {
         self.view
+    }
+
+    /// Returns the framebuffer.
+    #[inline]
+    pub(crate) fn framebuffer(&self) -> vk::Framebuffer {
+        self.framebuffer
     }
 
     /// Returns the dimensions of the image.
@@ -181,23 +210,29 @@ impl ColorTargetImage {
     /// The caller is responsible for eventually destroying the image view,
     /// image, and freeing the memory.
     ///
-    /// Returns `(image_handle, view_handle, memory_block)`.
-    pub(crate) fn into_raw_parts(mut self) -> (vk::Image, vk::ImageView, MemoryBlock) {
+    /// Returns `(image_handle, view_handle, framebuffer, memory_block)`.
+    pub(crate) fn into_raw_parts(
+        mut self,
+    ) -> (vk::Image, vk::ImageView, vk::Framebuffer, MemoryBlock) {
         let handle = self.handle;
         let view = self.view;
+        let framebuffer = self.framebuffer;
         let memory = self
             .memory_block
             .take()
             .expect("color target image memory already taken");
         // Prevent Drop from running.
         std::mem::forget(self);
-        (handle, view, memory)
+        (handle, view, framebuffer, memory)
     }
 }
 
 impl Drop for ColorTargetImage {
     fn drop(&mut self) {
         unsafe {
+            self.context
+                .device()
+                .destroy_framebuffer(self.framebuffer, None);
             self.context.device().destroy_image_view(self.view, None);
             self.context.device().destroy_image(self.handle, None);
 

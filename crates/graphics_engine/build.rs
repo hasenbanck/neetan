@@ -81,14 +81,11 @@ fn compile_shader(shader_file: &Path, output_dir: &Path, modules_dir: &Path) -> 
         .arg("-I")
         .arg(modules_dir)
         .arg("-profile")
-        .arg("spirv_1_5")
+        .arg("spirv_1_0")
         // Uses column major layout for matrices.
         .arg("-matrix-layout-column-major")
         // Uses the entrypoint name from the source instead of 'main' in the spirv output.
-        .arg("-fvk-use-entrypoint-name")
-        // Make data accessed through ConstantBuffer, ParameterBlock, StructuredBuffer,
-        // ByteAddressBuffer and general pointers follow the 'scalar' layout.
-        .arg("-fvk-use-scalar-layout");
+        .arg("-fvk-use-entrypoint-name");
 
     cmd.arg("-o").arg(&output_file).arg(shader_file);
 

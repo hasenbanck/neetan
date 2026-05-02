@@ -1,6 +1,6 @@
 # Neetan (ねーたん)
 
-An emulator for the PC-98 written in Rust and using a Vulkan graphics engine.
+An emulator for the PC-98 written in Rust and using a Vulkan based graphics engine.
 
 [Game Compatibility](https://github.com/hasenbanck/neetan/wiki/Game-Compatibility)
 

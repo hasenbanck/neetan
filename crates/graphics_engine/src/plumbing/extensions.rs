@@ -7,11 +7,11 @@ use jay_ash::vk;
 
 use crate::Result;
 
-/// Tracks which optional device extensions are enabled.
+/// Tracks which device extensions are enabled.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ExtensionSet {
-    /// Whether VK_EXT_descriptor_heap is enabled.
-    pub(crate) descriptor_heap: bool,
+    /// Whether VK_KHR_timeline_semaphore is enabled.
+    pub(crate) timeline_semaphore: bool,
     /// Whether VK_KHR_present_id2 is enabled.
     pub(crate) present_id2: bool,
     /// Whether VK_KHR_present_wait2 is enabled.
@@ -47,7 +47,10 @@ pub(crate) fn build_extension_list(
     validate_extensions(&available_extensions, &extensions)?;
 
     let extension_set = ExtensionSet {
-        descriptor_heap: extension_in_list(&extensions, vk::EXT_DESCRIPTOR_HEAP_EXTENSION_NAME),
+        timeline_semaphore: extension_in_list(
+            &extensions,
+            vk::KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME,
+        ),
         present_id2: extension_in_list(&extensions, vk::KHR_PRESENT_ID_2_EXTENSION_NAME),
         present_wait2: extension_in_list(&extensions, vk::KHR_PRESENT_WAIT_2_EXTENSION_NAME),
     };

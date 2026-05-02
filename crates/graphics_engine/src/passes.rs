@@ -1,6 +1,6 @@
 use jay_ash::vk;
 
-use crate::plumbing::RenderingEncoder;
+use crate::plumbing::RenderPassEncoder;
 
 mod blitter;
 mod clear;
@@ -46,6 +46,6 @@ impl UpscalePushConstants {
 pub(crate) trait Renderer {
     type DrawData;
 
-    /// Records the render commands within a dynamic rendering pass.
-    fn render(&self, encoder: &RenderingEncoder<'_>, draw_data: Self::DrawData);
+    /// Records the render commands within a render pass.
+    fn render(&self, encoder: &RenderPassEncoder<'_>, draw_data: Self::DrawData);
 }

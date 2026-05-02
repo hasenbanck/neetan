@@ -133,35 +133,26 @@ impl<'a> CommandEncoder<'a> {
         Ok(Self { context, buffer })
     }
 
-    /// Inserts a pipeline barrier using synchronization2.
-    pub(crate) fn pipeline_barrier2(&self, dependency_info: &vk::DependencyInfo) {
-        unsafe {
-            self.context
-                .device()
-                .cmd_pipeline_barrier2(self.buffer, dependency_info)
-        };
-    }
-
     /// Begins a debug label region.
     pub(crate) fn begin_debug_label(&self, label: impl Into<Cow<'static, CStr>>, color: [f32; 4]) {
         let label = label.into();
         let label_info = vk::DebugUtilsLabelEXT::default()
             .label_name(&label)
             .color(color);
-        unsafe {
-            self.context
-                .debug_utils_device()
-                .cmd_begin_debug_utils_label(self.buffer, &label_info)
-        };
+        if let Some(debug_utils_device) = self.context.debug_utils_device() {
+            unsafe {
+                debug_utils_device.cmd_begin_debug_utils_label(self.buffer, &label_info);
+            }
+        }
     }
 
     /// Ends a debug label region.
     pub(crate) fn end_debug_label(&self) {
-        unsafe {
-            self.context
-                .debug_utils_device()
-                .cmd_end_debug_utils_label(self.buffer)
-        };
+        if let Some(debug_utils_device) = self.context.debug_utils_device() {
+            unsafe {
+                debug_utils_device.cmd_end_debug_utils_label(self.buffer);
+            }
+        }
     }
 }
 
@@ -177,239 +168,29 @@ impl Drop for CommandEncoder<'_> {
 }
 
 impl<'a> CommandEncoder<'a> {
-    /// Begins dynamic rendering. Returns an encoder that ends rendering on drop.
-    pub(crate) fn begin_rendering(
+    /// Begins a render pass. Returns an encoder that ends the render pass on drop.
+    pub(crate) fn begin_render_pass(
         &'a self,
-        rendering_info: &vk::RenderingInfo,
-    ) -> RenderingEncoder<'a> {
-        unsafe {
-            self.context
-                .device()
-                .cmd_begin_rendering(self.buffer, rendering_info)
-        };
-        RenderingEncoder { encoder: self }
-    }
+        render_pass: vk::RenderPass,
+        framebuffer: vk::Framebuffer,
+        render_area: vk::Rect2D,
+        clear_values: &'a [vk::ClearValue],
+    ) -> RenderPassEncoder<'a> {
+        let begin_info = vk::RenderPassBeginInfo::default()
+            .render_pass(render_pass)
+            .framebuffer(framebuffer)
+            .render_area(render_area)
+            .clear_values(clear_values);
 
-    /// Sets whether rasterizer discard is enabled.
-    pub(crate) fn set_rasterizer_discard_enable(&self, enable: bool) {
         unsafe {
-            self.context
-                .device()
-                .cmd_set_rasterizer_discard_enable(self.buffer, enable)
-        };
-    }
-
-    /// Sets the cull mode.
-    pub(crate) fn set_cull_mode(&self, cull_mode: vk::CullModeFlags) {
-        unsafe {
-            self.context
-                .device()
-                .cmd_set_cull_mode(self.buffer, cull_mode)
-        };
-    }
-
-    /// Sets whether depth testing is enabled.
-    pub(crate) fn set_depth_test_enable(&self, enable: bool) {
-        unsafe {
-            self.context
-                .device()
-                .cmd_set_depth_test_enable(self.buffer, enable)
-        };
-    }
-
-    /// Sets whether depth writing is enabled.
-    pub(crate) fn set_depth_write_enable(&self, enable: bool) {
-        unsafe {
-            self.context
-                .device()
-                .cmd_set_depth_write_enable(self.buffer, enable)
-        };
-    }
-
-    /// Sets the front face orientation.
-    pub(crate) fn set_front_face(&self, front_face: vk::FrontFace) {
-        unsafe {
-            self.context
-                .device()
-                .cmd_set_front_face(self.buffer, front_face)
-        };
-    }
-
-    /// Sets whether stencil testing is enabled.
-    pub(crate) fn set_stencil_test_enable(&self, enable: bool) {
-        unsafe {
-            self.context
-                .device()
-                .cmd_set_stencil_test_enable(self.buffer, enable)
-        };
-    }
-
-    /// Sets whether depth bias is enabled.
-    pub(crate) fn set_depth_bias_enable(&self, enable: bool) {
-        unsafe {
-            self.context
-                .device()
-                .cmd_set_depth_bias_enable(self.buffer, enable)
-        };
-    }
-
-    /// Sets the primitive topology.
-    pub(crate) fn set_primitive_topology(&self, topology: vk::PrimitiveTopology) {
-        unsafe {
-            self.context
-                .device()
-                .cmd_set_primitive_topology(self.buffer, topology)
-        };
-    }
-
-    /// Sets whether primitive restart is enabled.
-    pub(crate) fn set_primitive_restart_enable(&self, enable: bool) {
-        unsafe {
-            self.context
-                .device()
-                .cmd_set_primitive_restart_enable(self.buffer, enable)
-        };
-    }
-
-    /// Sets the depth compare operation.
-    pub(crate) fn set_depth_compare_op(&self, op: vk::CompareOp) {
-        unsafe {
-            self.context
-                .device()
-                .cmd_set_depth_compare_op(self.buffer, op)
-        };
-    }
-
-    /// Sets the line width for line rasterization.
-    pub(crate) fn set_line_width(&self, line_width: f32) {
-        unsafe {
-            self.context
-                .device()
-                .cmd_set_line_width(self.buffer, line_width)
-        };
-    }
-
-    /// Sets depth bias parameters.
-    pub(crate) fn set_depth_bias(&self, constant_factor: f32, clamp: f32, slope_factor: f32) {
-        unsafe {
-            self.context.device().cmd_set_depth_bias(
+            self.context.device().cmd_begin_render_pass(
                 self.buffer,
-                constant_factor,
-                clamp,
-                slope_factor,
+                &begin_info,
+                vk::SubpassContents::INLINE,
             )
         };
-    }
 
-    /// Sets the blend constant color.
-    pub(crate) fn set_blend_constants(&self, blend_constants: [f32; 4]) {
-        unsafe {
-            self.context
-                .device()
-                .cmd_set_blend_constants(self.buffer, &blend_constants)
-        };
-    }
-
-    /// Sets the depth bounds test range.
-    pub(crate) fn set_depth_bounds(&self, min: f32, max: f32) {
-        unsafe {
-            self.context
-                .device()
-                .cmd_set_depth_bounds(self.buffer, min, max)
-        };
-    }
-
-    /// Sets whether depth bounds testing is enabled.
-    pub(crate) fn set_depth_bounds_test_enable(&self, enable: bool) {
-        unsafe {
-            self.context
-                .device()
-                .cmd_set_depth_bounds_test_enable(self.buffer, enable)
-        };
-    }
-
-    /// Sets the stencil compare mask.
-    pub(crate) fn set_stencil_compare_mask(
-        &self,
-        face_mask: vk::StencilFaceFlags,
-        compare_mask: u32,
-    ) {
-        unsafe {
-            self.context
-                .device()
-                .cmd_set_stencil_compare_mask(self.buffer, face_mask, compare_mask)
-        };
-    }
-
-    /// Sets the stencil write mask.
-    pub(crate) fn set_stencil_write_mask(&self, face_mask: vk::StencilFaceFlags, write_mask: u32) {
-        unsafe {
-            self.context
-                .device()
-                .cmd_set_stencil_write_mask(self.buffer, face_mask, write_mask)
-        };
-    }
-
-    /// Sets the stencil reference value.
-    pub(crate) fn set_stencil_reference(&self, face_mask: vk::StencilFaceFlags, reference: u32) {
-        unsafe {
-            self.context
-                .device()
-                .cmd_set_stencil_reference(self.buffer, face_mask, reference)
-        };
-    }
-
-    /// Sets the stencil test operations.
-    pub(crate) fn set_stencil_op(
-        &self,
-        face_mask: vk::StencilFaceFlags,
-        fail_op: vk::StencilOp,
-        pass_op: vk::StencilOp,
-        depth_fail_op: vk::StencilOp,
-        compare_op: vk::CompareOp,
-    ) {
-        unsafe {
-            self.context.device().cmd_set_stencil_op(
-                self.buffer,
-                face_mask,
-                fail_op,
-                pass_op,
-                depth_fail_op,
-                compare_op,
-            )
-        };
-    }
-
-    /// Sets Vulkan 1.3 core dynamic states to their default values.
-    ///
-    /// Call this once after creating the encoder, before any render passes.
-    /// Blend state, polygon mode, and multisample state are baked into pipelines.
-    pub(crate) fn set_default_dynamic_state(&mut self) {
-        self.set_depth_test_enable(false);
-        self.set_depth_compare_op(vk::CompareOp::ALWAYS);
-        self.set_depth_write_enable(false);
-        self.set_depth_bias_enable(false);
-        self.set_depth_bias(0.0, 0.0, 0.0);
-        self.set_depth_bounds(0.0, 1.0);
-        self.set_depth_bounds_test_enable(false);
-        self.set_stencil_test_enable(false);
-        self.set_stencil_compare_mask(vk::StencilFaceFlags::FRONT_AND_BACK, 0xFF);
-        self.set_stencil_write_mask(vk::StencilFaceFlags::FRONT_AND_BACK, 0xFF);
-        self.set_stencil_reference(vk::StencilFaceFlags::FRONT_AND_BACK, 0x00);
-        self.set_stencil_op(
-            vk::StencilFaceFlags::FRONT_AND_BACK,
-            vk::StencilOp::KEEP,
-            vk::StencilOp::KEEP,
-            vk::StencilOp::KEEP,
-            vk::CompareOp::ALWAYS,
-        );
-        self.set_rasterizer_discard_enable(false);
-        self.set_cull_mode(vk::CullModeFlags::NONE);
-        self.set_front_face(vk::FrontFace::COUNTER_CLOCKWISE);
-        self.set_primitive_topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-        self.set_primitive_restart_enable(false);
-        self.set_blend_constants([0.0, 0.0, 0.0, 0.0]);
-        self.set_line_width(1.0);
+        RenderPassEncoder { encoder: self }
     }
 
     /// Binds descriptor sets to the graphics pipeline bind point.
@@ -474,17 +255,15 @@ impl<'a> CommandEncoder<'a> {
     pub(crate) fn image_barrier(
         &mut self,
         image: vk::Image,
-        src_stage: vk::PipelineStageFlags2,
-        src_access: vk::AccessFlags2,
-        dst_stage: vk::PipelineStageFlags2,
-        dst_access: vk::AccessFlags2,
+        src_stage: vk::PipelineStageFlags,
+        src_access: vk::AccessFlags,
+        dst_stage: vk::PipelineStageFlags,
+        dst_access: vk::AccessFlags,
         old_layout: vk::ImageLayout,
         new_layout: vk::ImageLayout,
     ) {
-        let barrier = vk::ImageMemoryBarrier2::default()
-            .src_stage_mask(src_stage)
+        let barrier = vk::ImageMemoryBarrier::default()
             .src_access_mask(src_access)
-            .dst_stage_mask(dst_stage)
             .dst_access_mask(dst_access)
             .old_layout(old_layout)
             .new_layout(new_layout)
@@ -499,20 +278,28 @@ impl<'a> CommandEncoder<'a> {
                     .base_array_layer(0)
                     .layer_count(1),
             );
-        self.pipeline_barrier2(
-            &vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&barrier)),
-        );
+        unsafe {
+            self.context.device().cmd_pipeline_barrier(
+                self.buffer,
+                src_stage,
+                dst_stage,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                std::slice::from_ref(&barrier),
+            );
+        }
     }
 }
 
-/// RAII guard for dynamic rendering scope.
+/// RAII guard for a render pass scope.
 ///
-/// Calls `cmd_end_rendering` on drop.
-pub(crate) struct RenderingEncoder<'a> {
+/// Calls `cmd_end_render_pass` on drop.
+pub(crate) struct RenderPassEncoder<'a> {
     encoder: &'a CommandEncoder<'a>,
 }
 
-impl RenderingEncoder<'_> {
+impl RenderPassEncoder<'_> {
     /// Binds a graphics pipeline.
     pub(crate) fn bind_pipeline(&self, pipeline: &GraphicsPipeline) {
         unsafe {
@@ -524,23 +311,23 @@ impl RenderingEncoder<'_> {
         };
     }
 
-    /// Sets the viewport with count (required for shader objects).
+    /// Sets the viewport.
     pub(crate) fn set_viewport(&self, viewports: &[vk::Viewport]) {
         unsafe {
             self.encoder
                 .context
                 .device()
-                .cmd_set_viewport_with_count(self.encoder.buffer, viewports)
+                .cmd_set_viewport(self.encoder.buffer, 0, viewports)
         };
     }
 
-    /// Sets the scissor rectangles with count (required for shader objects).
+    /// Sets the scissor rectangles.
     pub(crate) fn set_scissor(&self, scissors: &[vk::Rect2D]) {
         unsafe {
             self.encoder
                 .context
                 .device()
-                .cmd_set_scissor_with_count(self.encoder.buffer, scissors)
+                .cmd_set_scissor(self.encoder.buffer, 0, scissors)
         };
     }
 
@@ -583,13 +370,13 @@ impl RenderingEncoder<'_> {
     }
 }
 
-impl Drop for RenderingEncoder<'_> {
+impl Drop for RenderPassEncoder<'_> {
     fn drop(&mut self) {
         unsafe {
             self.encoder
                 .context
                 .device()
-                .cmd_end_rendering(self.encoder.buffer)
+                .cmd_end_render_pass(self.encoder.buffer)
         };
     }
 }

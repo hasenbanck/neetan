@@ -19,6 +19,7 @@ impl Resources {
     pub(crate) fn new(
         device: &Device,
         layout_transitioner: &mut LayoutTransitioner,
+        color_render_pass: vk::RenderPass,
         width: u32,
         height: u32,
     ) -> crate::Result<Self> {
@@ -28,6 +29,7 @@ impl Resources {
             Rc::clone(&context),
             c"color_target",
             layout_transitioner,
+            color_render_pass,
             vk::Format::R8G8B8A8_SRGB,
             width,
             height,
@@ -56,18 +58,20 @@ impl Resources {
         &mut self,
         device: &Device,
         layout_transitioner: &mut LayoutTransitioner,
+        color_render_pass: vk::RenderPass,
         width: u32,
         height: u32,
     ) {
         let context = Rc::clone(device.context());
 
         // Defer old color_target for cleanup.
-        let (old_handle, old_view, old_memory) = std::mem::replace(
+        let (old_handle, old_view, old_framebuffer, old_memory) = std::mem::replace(
             &mut self.color_target,
             ColorTargetImage::new(
                 Rc::clone(&context),
                 c"color_target",
                 layout_transitioner,
+                color_render_pass,
                 vk::Format::R8G8B8A8_SRGB,
                 width,
                 height,
@@ -79,6 +83,7 @@ impl Resources {
         device.defer_resource(DeferredResource::Image {
             handle: old_handle,
             view: Some(old_view),
+            framebuffer: Some(old_framebuffer),
             memory: old_memory,
         });
 

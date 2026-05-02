@@ -12,9 +12,10 @@ use crate::plumbing::utils::vk_result_to_string;
 /// The internal context.
 pub(crate) struct Context {
     allocator: RefCell<GpuAllocator>,
-    debug_utils_device: jay_ash::ext::debug_utils::Device,
+    debug_utils_device: Option<jay_ash::ext::debug_utils::Device>,
     debug_utils_instance: Option<jay_ash::ext::debug_utils::Instance>,
     debug_messenger: Option<vk::DebugUtilsMessengerEXT>,
+    timeline_semaphore: jay_ash::khr::timeline_semaphore::Device,
     present_wait2: Option<jay_ash::khr::present_wait2::Device>,
     device: jay_ash::Device,
     physical_device: vk::PhysicalDevice,
@@ -43,9 +44,10 @@ impl Context {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         allocator: GpuAllocator,
-        debug_utils_device: jay_ash::ext::debug_utils::Device,
+        debug_utils_device: Option<jay_ash::ext::debug_utils::Device>,
         debug_utils_instance: Option<jay_ash::ext::debug_utils::Instance>,
         debug_messenger: Option<vk::DebugUtilsMessengerEXT>,
+        timeline_semaphore: jay_ash::khr::timeline_semaphore::Device,
         present_wait2: Option<jay_ash::khr::present_wait2::Device>,
         instance: jay_ash::Instance,
         device: jay_ash::Device,
@@ -57,6 +59,7 @@ impl Context {
             debug_utils_device,
             debug_utils_instance,
             debug_messenger,
+            timeline_semaphore,
             present_wait2,
             device,
             physical_device,
@@ -67,11 +70,15 @@ impl Context {
 
     /// Sets a debug name for an object.
     pub(crate) fn set_object_name(&self, name: &CStr, object: impl vk::Handle) {
+        let Some(debug_utils_device) = &self.debug_utils_device else {
+            return;
+        };
+
         let info = vk::DebugUtilsObjectNameInfoEXT::default()
             .object_name(name)
             .object_handle(object);
 
-        if let Err(error) = unsafe { self.debug_utils_device.set_debug_utils_object_name(&info) } {
+        if let Err(error) = unsafe { debug_utils_device.set_debug_utils_object_name(&info) } {
             error!(
                 "Can't set object name: {error}",
                 error = vk_result_to_string(error)
@@ -97,6 +104,12 @@ impl Context {
     #[inline(always)]
     pub(crate) fn present_wait2(&self) -> Option<&jay_ash::khr::present_wait2::Device> {
         self.present_wait2.as_ref()
+    }
+
+    /// Returns a reference to the VK_KHR_timeline_semaphore extension loader.
+    #[inline(always)]
+    pub(crate) fn timeline_semaphore(&self) -> &jay_ash::khr::timeline_semaphore::Device {
+        &self.timeline_semaphore
     }
 
     /// Returns a reference to the Vulkan device.
@@ -125,7 +138,7 @@ impl Context {
 
     /// Returns a reference to the debug utils device extension loader.
     #[inline(always)]
-    pub(crate) fn debug_utils_device(&self) -> &jay_ash::ext::debug_utils::Device {
-        &self.debug_utils_device
+    pub(crate) fn debug_utils_device(&self) -> Option<&jay_ash::ext::debug_utils::Device> {
+        self.debug_utils_device.as_ref()
     }
 }
