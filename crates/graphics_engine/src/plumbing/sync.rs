@@ -37,7 +37,7 @@ impl Semaphore<Timeline> {
         name: &CStr,
         initial_value: u64,
     ) -> Result<Self, vk::Result> {
-        let mut type_create_info = vk::SemaphoreTypeCreateInfo::default()
+        let mut type_create_info = vk::SemaphoreTypeCreateInfoKHR::default()
             .semaphore_type(vk::SemaphoreType::TIMELINE)
             .initial_value(initial_value);
 
@@ -64,7 +64,7 @@ impl<T> Semaphore<T> {
     pub(crate) fn get_value(&self) -> Result<u64, vk::Result> {
         unsafe {
             self.context
-                .device()
+                .timeline_semaphore()
                 .get_semaphore_counter_value(self.handle)
         }
     }

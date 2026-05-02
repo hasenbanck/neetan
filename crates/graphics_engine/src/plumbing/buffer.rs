@@ -8,8 +8,8 @@ use crate::{Result, plumbing::Context};
 
 /// A persistently mapped host-visible GPU buffer.
 ///
-/// Allocates with `HOST_ACCESS | FAST_DEVICE_ACCESS | DEVICE_ADDRESS`,
-/// falling back to host-visible heaps.
+/// Allocates with `HOST_ACCESS | FAST_DEVICE_ACCESS`, falling back to
+/// host-visible heaps.
 ///
 /// The entire buffer is mapped on construction and remains mapped until
 /// drop.
@@ -33,11 +33,10 @@ impl MappedBuffer {
         min_alignment: Option<u64>,
     ) -> Result<Self> {
         let byte_size = byte_size.max(1);
-        let buffer_usage = usage | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
 
         let buffer_create_info = vk::BufferCreateInfo::default()
             .size(byte_size)
-            .usage(buffer_usage)
+            .usage(usage)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
         let raw = unsafe {

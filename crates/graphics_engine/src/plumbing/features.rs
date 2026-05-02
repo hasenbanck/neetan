@@ -1,4 +1,4 @@
-//! Vulkan physical device feature management for Vulkan 1.0-1.3.
+//! Vulkan physical device feature management for Vulkan 1.0 plus extensions.
 
 use common::{bail, error, info, warn};
 use jay_ash::vk;
@@ -7,18 +7,14 @@ use crate::{Result, plumbing::extensions::ExtensionSet};
 
 /// Configuration for which device features to request.
 ///
-/// Features are organized by Vulkan version (1.0-1.3) and by extension.
+/// Features are organized by Vulkan 1.0 core and by extension.
 /// Only features that are both requested AND available will be enabled.
 #[derive(Default, Clone)]
 pub(crate) struct DeviceFeatures {
     /// Vulkan 1.0 core features.
     pub(crate) features_1_0: vk::PhysicalDeviceFeatures,
-    /// Vulkan 1.1 features.
-    pub(crate) features_1_1: vk::PhysicalDeviceVulkan11Features<'static>,
-    /// Vulkan 1.2 features.
-    pub(crate) features_1_2: vk::PhysicalDeviceVulkan12Features<'static>,
-    /// Vulkan 1.3 features.
-    pub(crate) features_1_3: vk::PhysicalDeviceVulkan13Features<'static>,
+    /// VK_KHR_timeline_semaphore features.
+    pub(crate) timeline_semaphore: Option<vk::PhysicalDeviceTimelineSemaphoreFeaturesKHR<'static>>,
     /// VK_KHR_present_id2 features.
     pub(crate) present_id2: Option<vk::PhysicalDevicePresentId2FeaturesKHR<'static>>,
     /// VK_KHR_present_wait2 features.
@@ -37,6 +33,22 @@ macro_rules! impl_feature_check {
             if $available.$name == vk::TRUE {
                 $available_list.push(stringify!($name));
             }
+            if $requested.$name == vk::TRUE {
+                $requested_list.push(stringify!($name));
+            }
+        )*
+    };
+}
+
+/// Macro to collect requested device features when the containing extension is unavailable.
+macro_rules! impl_requested_feature_check {
+    (
+        $requested:expr, $requested_list:expr;
+        {
+            $($name:ident)*
+        }
+    ) => {
+        $(
             if $requested.$name == vk::TRUE {
                 $requested_list.push(stringify!($name));
             }
@@ -89,6 +101,11 @@ macro_rules! validate_extension_features {
                         requested_ext, available_ext, requested_list, available_list;
                         { $($feature)* }
                     );
+                } else if let Some(requested_ext) = &$requested.$field {
+                    impl_requested_feature_check!(
+                        requested_ext, requested_list;
+                        { $($feature)* }
+                    );
                 }
 
                 log_and_validate_features(
@@ -105,44 +122,33 @@ macro_rules! validate_extension_features {
 
 /// Queries all available physical device features.
 pub(crate) fn query_physical_device_features(
-    instance: &jay_ash::Instance,
+    physical_device_properties2: &jay_ash::khr::get_physical_device_properties2::Instance,
     physical_device: vk::PhysicalDevice,
     extension_set: &ExtensionSet,
 ) -> DeviceFeatures {
-    let mut features_1_1 = vk::PhysicalDeviceVulkan11Features::default();
-    let mut features_1_2 = vk::PhysicalDeviceVulkan12Features::default();
-    let mut features_1_3 = vk::PhysicalDeviceVulkan13Features::default();
-
     init_extension_features! {
         extension_set;
-        descriptor_heap => vk::PhysicalDeviceDescriptorHeapFeaturesEXT,
+        timeline_semaphore => vk::PhysicalDeviceTimelineSemaphoreFeaturesKHR,
         present_id2 => vk::PhysicalDevicePresentId2FeaturesKHR,
         present_wait2 => vk::PhysicalDevicePresentWait2FeaturesKHR,
     }
 
-    let mut features2 = vk::PhysicalDeviceFeatures2::default();
-
-    features_1_1.p_next = std::ptr::null_mut();
-    features_1_2.p_next = &mut features_1_1 as *mut _ as *mut std::ffi::c_void;
-    features_1_3.p_next = &mut features_1_2 as *mut _ as *mut std::ffi::c_void;
-    features2.p_next = &mut features_1_3 as *mut _ as *mut std::ffi::c_void;
+    let mut features2 = vk::PhysicalDeviceFeatures2KHR::default();
 
     chain_extension_features! {
         features2;
-        descriptor_heap,
+        timeline_semaphore,
         present_id2,
         present_wait2,
     }
 
     unsafe {
-        instance.get_physical_device_features2(physical_device, &mut features2);
+        physical_device_properties2.get_physical_device_features2(physical_device, &mut features2);
     }
 
     DeviceFeatures {
         features_1_0: features2.features,
-        features_1_1,
-        features_1_2,
-        features_1_3,
+        timeline_semaphore,
         present_id2,
         present_wait2,
     }
@@ -181,61 +187,6 @@ pub(crate) fn validate_features(
         }
     );
 
-    let mut requested_1_1_list: Vec<&str> = Vec::new();
-    let mut available_1_1_list: Vec<&str> = Vec::new();
-
-    impl_feature_check!(
-        requested.features_1_1, available.features_1_1, requested_1_1_list, available_1_1_list;
-        {
-            storage_buffer16_bit_access uniform_and_storage_buffer16_bit_access
-            storage_push_constant16 storage_input_output16 multiview multiview_geometry_shader
-            multiview_tessellation_shader variable_pointers_storage_buffer variable_pointers
-            protected_memory sampler_ycbcr_conversion shader_draw_parameters
-        }
-    );
-
-    let mut requested_1_2_list: Vec<&str> = Vec::new();
-    let mut available_1_2_list: Vec<&str> = Vec::new();
-
-    impl_feature_check!(
-        requested.features_1_2, available.features_1_2, requested_1_2_list, available_1_2_list;
-        {
-            sampler_mirror_clamp_to_edge draw_indirect_count storage_buffer8_bit_access
-            uniform_and_storage_buffer8_bit_access storage_push_constant8 shader_buffer_int64_atomics
-            shader_shared_int64_atomics shader_float16 shader_int8 descriptor_indexing
-            shader_input_attachment_array_dynamic_indexing shader_uniform_texel_buffer_array_dynamic_indexing
-            shader_storage_texel_buffer_array_dynamic_indexing shader_uniform_buffer_array_non_uniform_indexing
-            shader_sampled_image_array_non_uniform_indexing shader_storage_buffer_array_non_uniform_indexing
-            shader_storage_image_array_non_uniform_indexing shader_input_attachment_array_non_uniform_indexing
-            shader_uniform_texel_buffer_array_non_uniform_indexing shader_storage_texel_buffer_array_non_uniform_indexing
-            descriptor_binding_uniform_buffer_update_after_bind descriptor_binding_sampled_image_update_after_bind
-            descriptor_binding_storage_image_update_after_bind descriptor_binding_storage_buffer_update_after_bind
-            descriptor_binding_uniform_texel_buffer_update_after_bind descriptor_binding_storage_texel_buffer_update_after_bind
-            descriptor_binding_update_unused_while_pending descriptor_binding_partially_bound
-            descriptor_binding_variable_descriptor_count runtime_descriptor_array sampler_filter_minmax
-            scalar_block_layout imageless_framebuffer uniform_buffer_standard_layout
-            shader_subgroup_extended_types separate_depth_stencil_layouts host_query_reset
-            timeline_semaphore buffer_device_address buffer_device_address_capture_replay
-            buffer_device_address_multi_device vulkan_memory_model vulkan_memory_model_device_scope
-            vulkan_memory_model_availability_visibility_chains shader_output_viewport_index
-            shader_output_layer subgroup_broadcast_dynamic_id
-        }
-    );
-
-    let mut requested_1_3_list: Vec<&str> = Vec::new();
-    let mut available_1_3_list: Vec<&str> = Vec::new();
-
-    impl_feature_check!(
-        requested.features_1_3, available.features_1_3, requested_1_3_list, available_1_3_list;
-        {
-            robust_image_access inline_uniform_block descriptor_binding_inline_uniform_block_update_after_bind
-            pipeline_creation_cache_control private_data shader_demote_to_helper_invocation
-            shader_terminate_invocation subgroup_size_control compute_full_subgroups synchronization2
-            texture_compression_astc_hdr shader_zero_initialize_workgroup_memory dynamic_rendering
-            shader_integer_dot_product maintenance4
-        }
-    );
-
     log_and_validate_features(
         &requested_1_0_list,
         &available_1_0_list,
@@ -244,32 +195,9 @@ pub(crate) fn validate_features(
         true,
     );
 
-    log_and_validate_features(
-        &requested_1_1_list,
-        &available_1_1_list,
-        "Vulkan 1.1",
-        &mut missing_features,
-        true,
-    );
-
-    log_and_validate_features(
-        &requested_1_2_list,
-        &available_1_2_list,
-        "Vulkan 1.2",
-        &mut missing_features,
-        true,
-    );
-
-    log_and_validate_features(
-        &requested_1_3_list,
-        &available_1_3_list,
-        "Vulkan 1.3",
-        &mut missing_features,
-        true,
-    );
-
     validate_extension_features! {
         requested, available, missing_features;
+        timeline_semaphore: "VK_KHR_timeline_semaphore", true => { timeline_semaphore },
         present_wait2: "VK_KHR_present_wait2", false => { present_wait2 },
         present_id2: "VK_KHR_present_id2", false => { present_id2 },
     }
@@ -305,22 +233,18 @@ fn log_and_validate_features(
     }
 }
 
-/// Builds a `vk::PhysicalDeviceFeatures2` with the full pNext chain for device creation.
+/// Builds a `vk::PhysicalDeviceFeatures2KHR` with the full pNext chain for device creation.
 pub(crate) unsafe fn build_features_chain(
     requested: &mut DeviceFeatures,
-) -> vk::PhysicalDeviceFeatures2<'static> {
-    let mut features2 = vk::PhysicalDeviceFeatures2 {
+) -> vk::PhysicalDeviceFeatures2KHR<'static> {
+    let mut features2 = vk::PhysicalDeviceFeatures2KHR {
         features: requested.features_1_0,
         ..Default::default()
     };
 
-    requested.features_1_1.p_next = std::ptr::null_mut();
-    requested.features_1_2.p_next = &mut requested.features_1_1 as *mut _ as *mut std::ffi::c_void;
-    requested.features_1_3.p_next = &mut requested.features_1_2 as *mut _ as *mut std::ffi::c_void;
-    features2.p_next = &mut requested.features_1_3 as *mut _ as *mut std::ffi::c_void;
-
     chain_extension_features! {
         features2;
+        requested.timeline_semaphore,
         requested.present_id2,
         requested.present_wait2,
     }

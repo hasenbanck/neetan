@@ -30,7 +30,7 @@ use crate::{
     pipeline_loader::PipelineLoader,
     plumbing::{
         Binary, CommandPool, Device, DeviceConfiguration, Fence, FrameResources, FrameTarget,
-        IntoCString, MappedBuffer, Semaphore, Surface, Timeline,
+        IntoCString, MappedBuffer, RenderPass, Semaphore, Surface, Timeline,
     },
     resources::Resources,
 };
@@ -44,7 +44,6 @@ const INITIAL_WINDOW_HEIGHT_1_BY_1: u32 = 800;
 const NATIVE_WIDTH: u32 = 640;
 const NATIVE_HEIGHT: u32 = 480;
 const FRAMEBUFFER_BYTES: u64 = (NATIVE_WIDTH * NATIVE_HEIGHT * 4) as u64;
-const DEFAULT_BLITTER_IMAGE_FORMAT: vk::Format = vk::Format::R8G8B8A8_SRGB;
 
 /// Display aspect mode for scaling and startup dimensions.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -101,7 +100,9 @@ pub struct GraphicsEngine {
     /// Applies CRT scaling from the native-resolution image to the window resolution.
     crt: Crt,
     /// Copies the color target to the swapchain.
-    blitter: Blitter,
+    blitter: Option<Blitter>,
+    /// Render pass for offscreen color target rendering.
+    color_render_pass: RenderPass,
     /// Pipeline loader for creating graphics pipelines.
     pipeline_loader: PipelineLoader,
     /// Pool of frame resources, one per frame slot.
@@ -167,27 +168,40 @@ impl GraphicsEngine {
         let descriptor_resources = DescriptorResources::new(device.context())
             .context("Can't create descriptor resources")?;
 
+        let color_render_pass = RenderPass::new_color_target(
+            Rc::clone(device.context()),
+            c"color_target_render_pass",
+            vk::Format::R8G8B8A8_SRGB,
+        )
+        .context("Can't create color target render pass")?;
+
         let (color_width, color_height) = compute_color_target_extent(
             initial_width,
             initial_height,
             display_aspect_mode.display_aspect_ratio(),
         );
-        let resources =
-            Resources::new(&device, &mut layout_transitioner, color_width, color_height)
-                .context("Can't initialize resources")?;
+        let resources = Resources::new(
+            &device,
+            &mut layout_transitioner,
+            color_render_pass.handle(),
+            color_width,
+            color_height,
+        )
+        .context("Can't initialize resources")?;
 
-        let scale = Scale::new(&pipeline_loader, descriptor_resources.pipeline_layout())
-            .context("Can't create scale pipeline")?;
-
-        let crt = Crt::new(&pipeline_loader, descriptor_resources.pipeline_layout())
-            .context("Can't create crt pipeline")?;
-
-        let blitter = Blitter::new(
+        let scale = Scale::new(
             &pipeline_loader,
-            DEFAULT_BLITTER_IMAGE_FORMAT,
+            color_render_pass.handle(),
             descriptor_resources.pipeline_layout(),
         )
-        .context("Can't create blitter")?;
+        .context("Can't create scale pipeline")?;
+
+        let crt = Crt::new(
+            &pipeline_loader,
+            color_render_pass.handle(),
+            descriptor_resources.pipeline_layout(),
+        )
+        .context("Can't create crt pipeline")?;
 
         info!("Graphics engine initialized");
 
@@ -197,7 +211,8 @@ impl GraphicsEngine {
             layout_transitioner,
             scale,
             crt,
-            blitter,
+            blitter: None,
+            color_render_pass,
             pipeline_loader,
             frame_resources: None,
             render_finished_semaphores: None,
@@ -267,13 +282,26 @@ impl GraphicsEngine {
             .create_command_pool(c"graphics_command_pool")
             .context("Failed to create graphics command pool")?;
 
-        if surface_format != self.blitter.color_target_image_format() {
-            self.blitter = Blitter::new(
-                &self.pipeline_loader,
-                surface_format,
-                self.descriptor_resources.pipeline_layout(),
-            )
-            .context("Can't create blitter")?;
+        let surface_render_pass = self
+            .surface
+            .as_ref()
+            .context("Surface not initialized")?
+            .render_pass();
+
+        if self
+            .blitter
+            .as_ref()
+            .is_none_or(|blitter| !blitter.is_compatible(surface_format, surface_render_pass))
+        {
+            self.blitter = Some(
+                Blitter::new(
+                    &self.pipeline_loader,
+                    surface_format,
+                    surface_render_pass,
+                    self.descriptor_resources.pipeline_layout(),
+                )
+                .context("Can't create blitter")?,
+            );
         }
 
         let frame_resources = (0..frame_count)
@@ -417,7 +445,6 @@ impl GraphicsEngine {
                         .record()
                         .context("Failed to create command encoder")?;
 
-                    encoder.set_default_dynamic_state();
                     clear_frame_pass(&mut encoder, extent, &frame);
                 }
                 Some(render_instructions) => {
@@ -451,7 +478,6 @@ impl GraphicsEngine {
                     {
                         encoder.begin_debug_label(c"Setup Phase", [0.5, 0.5, 0.5, 1.0]);
 
-                        encoder.set_default_dynamic_state();
                         self.descriptor_resources
                             .bind_descriptors(&encoder, &frame_resources.descriptors);
 
@@ -466,10 +492,10 @@ impl GraphicsEngine {
                         let native_target = self.resources.native_target();
                         encoder.image_barrier(
                             native_target.handle(),
-                            vk::PipelineStageFlags2::FRAGMENT_SHADER,
-                            vk::AccessFlags2::SHADER_SAMPLED_READ,
-                            vk::PipelineStageFlags2::COPY,
-                            vk::AccessFlags2::TRANSFER_WRITE,
+                            vk::PipelineStageFlags::FRAGMENT_SHADER,
+                            vk::AccessFlags::SHADER_READ,
+                            vk::PipelineStageFlags::TRANSFER,
+                            vk::AccessFlags::TRANSFER_WRITE,
                             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                         );
@@ -481,10 +507,10 @@ impl GraphicsEngine {
                         );
                         encoder.image_barrier(
                             native_target.handle(),
-                            vk::PipelineStageFlags2::COPY,
-                            vk::AccessFlags2::TRANSFER_WRITE,
-                            vk::PipelineStageFlags2::FRAGMENT_SHADER,
-                            vk::AccessFlags2::SHADER_SAMPLED_READ,
+                            vk::PipelineStageFlags::TRANSFER,
+                            vk::AccessFlags::TRANSFER_WRITE,
+                            vk::PipelineStageFlags::FRAGMENT_SHADER,
+                            vk::AccessFlags::SHADER_READ,
                             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                         );
@@ -500,6 +526,7 @@ impl GraphicsEngine {
                             render_crt_pass(
                                 &mut encoder,
                                 self.resources.color_target(),
+                                self.color_render_pass.handle(),
                                 &self.crt,
                                 native_height,
                                 self.descriptor_resources.pipeline_layout(),
@@ -509,6 +536,7 @@ impl GraphicsEngine {
                             render_scale_pass(
                                 &mut encoder,
                                 self.resources.color_target(),
+                                self.color_render_pass.handle(),
                                 &self.scale,
                                 native_height,
                                 self.descriptor_resources.pipeline_layout(),
@@ -530,7 +558,7 @@ impl GraphicsEngine {
                             extent,
                             color_target_extent,
                             &frame,
-                            &self.blitter,
+                            self.blitter.as_ref().context("Blitter not initialized")?,
                             self.descriptor_resources.pipeline_layout(),
                         );
                         encoder.end_debug_label();
@@ -563,37 +591,27 @@ impl GraphicsEngine {
             .as_ref()
             .context("Frame resources not initialized")?[frame_index];
 
-        // Binary semaphore wait for swapchain image.
-        let binary_wait = vk::SemaphoreSubmitInfo::default()
-            .semaphore(resources.image_available_semaphore.handle())
-            .stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-            .value(0);
-
-        let wait_semaphores = [binary_wait];
+        let wait_semaphores = [resources.image_available_semaphore.handle()];
+        let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
 
         self.frame_timeline_value += 1;
 
-        // Binary semaphore signal for presentation.
-        let render_finished_signal = vk::SemaphoreSubmitInfo::default()
-            .semaphore(render_finished_semaphore)
-            .stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-            .value(0);
+        let signal_semaphores = [render_finished_semaphore, self.frame_timeline.handle()];
+        let wait_values = [0];
+        let signal_values = [0, self.frame_timeline_value];
 
-        // Timeline semaphore signal for graveyard ordering.
-        let timeline_signal = vk::SemaphoreSubmitInfo::default()
-            .semaphore(self.frame_timeline.handle())
-            .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .value(self.frame_timeline_value);
+        let mut timeline_info = vk::TimelineSemaphoreSubmitInfoKHR::default()
+            .wait_semaphore_values(&wait_values)
+            .signal_semaphore_values(&signal_values);
 
-        let signal_semaphores = [render_finished_signal, timeline_signal];
+        let command_buffers = [resources.graphics_command_buffer.handle()];
 
-        let command_buffer_info = vk::CommandBufferSubmitInfo::default()
-            .command_buffer(resources.graphics_command_buffer.handle());
-
-        let submit_info = vk::SubmitInfo2::default()
-            .wait_semaphore_infos(&wait_semaphores)
-            .command_buffer_infos(std::slice::from_ref(&command_buffer_info))
-            .signal_semaphore_infos(&signal_semaphores);
+        let submit_info = vk::SubmitInfo::default()
+            .wait_semaphores(&wait_semaphores)
+            .wait_dst_stage_mask(&wait_stages)
+            .command_buffers(&command_buffers)
+            .signal_semaphores(&signal_semaphores)
+            .push_next(&mut timeline_info);
 
         self.device
             .graphics_queue()
@@ -655,10 +673,10 @@ impl GraphicsEngine {
             .reset()
             .context("Failed to reset present fence")?;
 
-        let image_view = surface.image_views()[image_index as usize];
-        let image = surface.images()[image_index as usize];
+        let framebuffer = surface.framebuffers()[image_index as usize];
+        let render_pass = surface.render_pass();
 
-        Ok(FrameTarget::new(image_index, image_view, image))
+        Ok(FrameTarget::new(image_index, framebuffer, render_pass))
     }
 
     /// Presents a frame to the swapchain.
@@ -723,6 +741,21 @@ impl GraphicsEngine {
         }
 
         surface.on_resize(width, height, &fences)?;
+        let surface_format = surface.format();
+        let surface_render_pass = surface.render_pass();
+
+        if self
+            .blitter
+            .as_ref()
+            .is_none_or(|blitter| !blitter.is_compatible(surface_format, surface_render_pass))
+        {
+            self.blitter = Some(Blitter::new(
+                &self.pipeline_loader,
+                surface_format,
+                surface_render_pass,
+                self.descriptor_resources.pipeline_layout(),
+            )?);
+        }
 
         let (color_width, color_height) = compute_color_target_extent(
             width,
@@ -733,6 +766,7 @@ impl GraphicsEngine {
         self.resources.on_resize(
             &self.device,
             &mut self.layout_transitioner,
+            self.color_render_pass.handle(),
             color_width,
             color_height,
         );

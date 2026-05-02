@@ -75,12 +75,9 @@ impl LayoutTransitioner {
 
         drop(encoder);
 
-        let command_buffer_info =
-            vk::CommandBufferSubmitInfo::default().command_buffer(self.command_buffer.handle());
+        let command_buffers = [self.command_buffer.handle()];
 
-        let command_buffers = [command_buffer_info];
-
-        let submit_info = vk::SubmitInfo2::default().command_buffer_infos(&command_buffers);
+        let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
 
         let submits = [submit_info];
 
@@ -111,10 +108,8 @@ impl LayoutTransitioner {
         let (src_stage, src_access, dst_stage, dst_access) =
             layout_transition_masks(old_layout, new_layout);
 
-        let barrier = vk::ImageMemoryBarrier2::default()
-            .src_stage_mask(src_stage)
+        let barrier = vk::ImageMemoryBarrier::default()
             .src_access_mask(src_access)
-            .dst_stage_mask(dst_stage)
             .dst_access_mask(dst_access)
             .old_layout(old_layout)
             .new_layout(new_layout)
@@ -123,13 +118,16 @@ impl LayoutTransitioner {
             .image(handle)
             .subresource_range(subresource_range);
 
-        let dependency_info =
-            vk::DependencyInfo::default().image_memory_barriers(std::slice::from_ref(&barrier));
-
         unsafe {
-            self.context
-                .device()
-                .cmd_pipeline_barrier2(command_buffer, &dependency_info);
+            self.context.device().cmd_pipeline_barrier(
+                command_buffer,
+                src_stage,
+                dst_stage,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                std::slice::from_ref(&barrier),
+            );
         }
     }
 }
@@ -139,36 +137,37 @@ fn layout_transition_masks(
     old_layout: vk::ImageLayout,
     new_layout: vk::ImageLayout,
 ) -> (
-    vk::PipelineStageFlags2,
-    vk::AccessFlags2,
-    vk::PipelineStageFlags2,
-    vk::AccessFlags2,
+    vk::PipelineStageFlags,
+    vk::AccessFlags,
+    vk::PipelineStageFlags,
+    vk::AccessFlags,
 ) {
     let (src_stage, src_access) = match old_layout {
-        vk::ImageLayout::UNDEFINED => {
-            (vk::PipelineStageFlags2::TOP_OF_PIPE, vk::AccessFlags2::NONE)
-        }
+        vk::ImageLayout::UNDEFINED => (
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::AccessFlags::empty(),
+        ),
         vk::ImageLayout::TRANSFER_DST_OPTIMAL => (
-            vk::PipelineStageFlags2::COPY,
-            vk::AccessFlags2::TRANSFER_WRITE,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::AccessFlags::TRANSFER_WRITE,
         ),
         // For all other layouts, use generic masks.
         _ => (
-            vk::PipelineStageFlags2::ALL_COMMANDS,
-            vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
+            vk::PipelineStageFlags::ALL_COMMANDS,
+            vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
         ),
     };
 
     let (dst_stage, dst_access) = match new_layout {
         vk::ImageLayout::TRANSFER_DST_OPTIMAL => (
-            vk::PipelineStageFlags2::COPY,
-            vk::AccessFlags2::TRANSFER_WRITE,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::AccessFlags::TRANSFER_WRITE,
         ),
         // For all other layouts (GENERAL, SHADER_READ_ONLY_OPTIMAL, etc.),
         // use generic masks safe.
         _ => (
-            vk::PipelineStageFlags2::ALL_COMMANDS,
-            vk::AccessFlags2::MEMORY_READ,
+            vk::PipelineStageFlags::ALL_COMMANDS,
+            vk::AccessFlags::MEMORY_READ,
         ),
     };
 

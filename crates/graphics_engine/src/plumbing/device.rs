@@ -25,6 +25,7 @@ pub(crate) enum DeferredResource {
     Image {
         handle: vk::Image,
         view: Option<vk::ImageView>,
+        framebuffer: Option<vk::Framebuffer>,
         memory: MemoryBlock,
     },
 }
@@ -39,20 +40,18 @@ pub(crate) struct DeviceConfiguration {
     /// Platform-specific instance extensions (e.g. from SDL3's `SDL_Vulkan_GetInstanceExtensions`).
     pub(crate) platform_extensions: Vec<*const c_char>,
 
-    /// Device extensions to request.
+    /// Required device extensions to request.
     ///
-    /// The engine automatically adds required extensions like VK_KHR_swapchain
-    /// and VK_KHR_synchronization2. Only available extensions will be enabled.
-    pub(crate) extensions: Vec<*const c_char>,
+    /// If any of these are unavailable, device initialization fails.
+    pub(crate) required_device_extensions: Vec<*const c_char>,
+
+    /// Optional device extensions to request.
+    pub(crate) optional_device_extensions: Vec<*const c_char>,
 
     /// Vulkan 1.0 features to request.
     pub(crate) features_1_0: vk::PhysicalDeviceFeatures,
-    /// Vulkan 1.1 features to request.
-    pub(crate) features_1_1: vk::PhysicalDeviceVulkan11Features<'static>,
-    /// Vulkan 1.2 features to request.
-    pub(crate) features_1_2: vk::PhysicalDeviceVulkan12Features<'static>,
-    /// Vulkan 1.3 features to request.
-    pub(crate) features_1_3: vk::PhysicalDeviceVulkan13Features<'static>,
+    /// VK_KHR_timeline_semaphore features.
+    pub(crate) timeline_semaphore: vk::PhysicalDeviceTimelineSemaphoreFeaturesKHR<'static>,
     /// VK_KHR_present_id2 features.
     pub(crate) present_id2: Option<vk::PhysicalDevicePresentId2FeaturesKHR<'static>>,
     /// VK_KHR_present_wait2 features.
@@ -61,44 +60,27 @@ pub(crate) struct DeviceConfiguration {
 
 impl DeviceConfiguration {
     /// Creates a new DeviceConfiguration with all the required features.
-    /// Aims to use all best practises for modern Vulkan 1.3.
     pub(crate) fn new(platform_extensions: Vec<*const c_char>) -> Self {
-        let mut extensions = vec![
-            // Standard swap chain extension (always supported).
+        let mut required_device_extensions = vec![
             vk::KHR_SWAPCHAIN_EXTENSION_NAME.as_ptr(),
-            // Present wait for better frame pacing (optional).
-            //
-            // Allows waiting for previous frame presentation to complete, enabling
-            // more consistent frame timing and reduced input latency.
+            vk::KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME.as_ptr(),
+        ];
+
+        let optional_device_extensions = vec![
             vk::KHR_PRESENT_ID_2_EXTENSION_NAME.as_ptr(),
             vk::KHR_PRESENT_WAIT_2_EXTENSION_NAME.as_ptr(),
         ];
 
         if cfg!(target_os = "macos") {
-            extensions.push(vk::KHR_PORTABILITY_SUBSET_EXTENSION_NAME.as_ptr());
+            required_device_extensions.push(vk::KHR_PORTABILITY_SUBSET_EXTENSION_NAME.as_ptr());
         }
 
         let features_1_0 = vk::PhysicalDeviceFeatures {
             ..Default::default()
         };
 
-        let features_1_1 = vk::PhysicalDeviceVulkan11Features {
-            ..Default::default()
-        };
-
-        let features_1_2 = vk::PhysicalDeviceVulkan12Features {
-            // Required by our shader scalar layout.
-            scalar_block_layout: vk::TRUE,
-            // Required by our frame resource management.
-            timeline_semaphore: vk::TRUE,
-            ..Default::default()
-        };
-
-        let features_1_3 = vk::PhysicalDeviceVulkan13Features {
-            dynamic_rendering: vk::TRUE,
-            synchronization2: vk::TRUE,
-            ..Default::default()
-        };
+        let timeline_semaphore =
+            vk::PhysicalDeviceTimelineSemaphoreFeaturesKHR::default().timeline_semaphore(true);
 
         let present_id2 = vk::PhysicalDevicePresentId2FeaturesKHR::default().present_id2(true);
 
@@ -107,11 +89,10 @@ impl DeviceConfiguration {
 
         Self {
             platform_extensions,
-            extensions,
+            required_device_extensions,
+            optional_device_extensions,
             features_1_0,
-            features_1_1,
-            features_1_2,
-            features_1_3,
+            timeline_semaphore,
             present_id2: Some(present_id2),
             present_wait2: Some(present_wait2),
         }
@@ -119,13 +100,19 @@ impl DeviceConfiguration {
 }
 
 impl DeviceConfiguration {
+    fn device_extensions(&self) -> Vec<*const c_char> {
+        self.required_device_extensions
+            .iter()
+            .chain(self.optional_device_extensions.iter())
+            .copied()
+            .collect()
+    }
+
     /// Converts this configuration into a DeviceFeatures struct.
     fn into_device_features(self) -> DeviceFeatures {
         DeviceFeatures {
             features_1_0: self.features_1_0,
-            features_1_1: self.features_1_1,
-            features_1_2: self.features_1_2,
-            features_1_3: self.features_1_3,
+            timeline_semaphore: Some(self.timeline_semaphore),
             present_id2: self.present_id2,
             present_wait2: self.present_wait2,
         }
@@ -151,15 +138,7 @@ impl Device {
 
         let entry = load_vulkan_entry().context("Failed to load Vulkan entry")?;
 
-        let api_version = unsafe { entry.try_enumerate_instance_version() }
-            .context("Failed to enumerate instance version")?
-            .unwrap_or(vk::make_api_version(0, 1, 0, 0));
-
-        if api_version < vk::make_api_version(0, 1, 3, 0) {
-            bail!("Unsupported Vulkan API version (requires 1.3+)");
-        }
-
-        let api_version = vk::make_api_version(0, 1, 3, 0);
+        let api_version = vk::make_api_version(0, 1, 0, 0);
 
         info!(
             "Using Vulkan API Version: {api_version}",
@@ -168,7 +147,7 @@ impl Device {
 
         let (enable_validation, layer_names) = enable_validation_layers(&entry)?;
 
-        let extension_names = create_instance_extensions(&config.platform_extensions);
+        let instance_extensions = create_instance_extensions(&entry, &config.platform_extensions)?;
 
         let app_info = vk::ApplicationInfo::default()
             .engine_name(c"shinsekai_engine")
@@ -180,7 +159,7 @@ impl Device {
         let mut instance_create_info = vk::InstanceCreateInfo::default()
             .application_info(&app_info)
             .enabled_layer_names(&layer_names)
-            .enabled_extension_names(&extension_names);
+            .enabled_extension_names(&instance_extensions.names);
 
         if cfg!(target_os = "macos") {
             instance_create_info =
@@ -200,32 +179,41 @@ impl Device {
             )
             .pfn_user_callback(Some(vulkan_debug_callback));
 
-        if enable_validation && !layer_names.is_empty() {
+        if enable_validation && !layer_names.is_empty() && instance_extensions.debug_utils {
             instance_create_info = instance_create_info.push_next(&mut debug_create_info);
         }
 
         let instance = unsafe { entry.create_instance(&instance_create_info, None) }
             .context("Failed to create Vulkan instance")?;
 
-        let (debug_utils_instance, debug_messenger) = if enable_validation
-            && !layer_names.is_empty()
-        {
-            let debug_utils_instance = jay_ash::ext::debug_utils::Instance::new(&entry, &instance);
-            let messenger = unsafe {
-                debug_utils_instance.create_debug_utils_messenger(&debug_create_info, None)
-            }
-            .context("Failed to create debug messenger")?;
-            (Some(debug_utils_instance), Some(messenger))
-        } else {
-            (None, None)
-        };
+        let (debug_utils_instance, debug_messenger) =
+            if enable_validation && !layer_names.is_empty() && instance_extensions.debug_utils {
+                let debug_utils_instance =
+                    jay_ash::ext::debug_utils::Instance::new(&entry, &instance);
+                let messenger = unsafe {
+                    debug_utils_instance.create_debug_utils_messenger(&debug_create_info, None)
+                }
+                .context("Failed to create debug messenger")?;
+                (Some(debug_utils_instance), Some(messenger))
+            } else {
+                (None, None)
+            };
+
+        let physical_device_properties2 =
+            jay_ash::khr::get_physical_device_properties2::Instance::new(&entry, &instance);
 
         let physical_devices = unsafe { instance.enumerate_physical_devices() }
             .context("Failed to enumerate physical devices")?;
 
-        let physical_device = select_physical_device(&instance, &physical_devices)?;
+        let physical_device = select_physical_device(
+            &instance,
+            &physical_device_properties2,
+            &physical_devices,
+            &config.required_device_extensions,
+        )?;
 
-        let device_properties = unsafe { instance.get_physical_device_properties(physical_device) };
+        let device_properties =
+            query_physical_device_properties(&physical_device_properties2, physical_device);
         let device_name =
             unsafe { CStr::from_ptr(device_properties.device_name.as_ptr()).to_string_lossy() };
         info!("Selected physical device: {device_name}");
@@ -240,16 +228,7 @@ impl Device {
         // maxPerStageDescriptorSampledImages = 16 (we need at most one)
         // maxBoundDescriptorSets = 4 (we need at most two)
 
-        let (mut extension_ptrs, extension_set) = extensions::build_extension_list(
-            &instance,
-            physical_device,
-            config.extensions.clone(),
-        )?;
-
-        let available_features =
-            features::query_physical_device_features(&instance, physical_device, &extension_set);
-
-        // Check present_id2 and present_wait2 availability.
+        // Handle extension presence before required-extension validation.
         let present_id2_available = extensions::is_extension_available(
             &instance,
             physical_device,
@@ -261,21 +240,73 @@ impl Device {
             vk::KHR_PRESENT_WAIT_2_EXTENSION_NAME,
         );
 
+        let mut present_wait_disabled_reason = None;
+
         if !present_id2_available || !present_wait2_available {
+            let mut missing_extensions = Vec::new();
             if !present_id2_available {
-                info!("VK_KHR_present_id2 not available on this device");
+                missing_extensions.push("VK_KHR_present_id2");
             }
             if !present_wait2_available {
-                info!("VK_KHR_present_wait2 not available on this device");
+                missing_extensions.push("VK_KHR_present_wait2");
             }
+
+            present_wait_disabled_reason = Some(format!(
+                "optional extension unavailable ({missing_extensions})",
+                missing_extensions = missing_extensions.join(", ")
+            ));
+            disable_present_wait2(&mut config);
+        }
+
+        let (mut extension_ptrs, extension_set) = extensions::build_extension_list(
+            &instance,
+            physical_device,
+            config.device_extensions(),
+        )?;
+
+        let available_features = features::query_physical_device_features(
+            &physical_device_properties2,
+            physical_device,
+            &extension_set,
+        );
+
+        let present_id2_feature_available = available_features
+            .present_id2
+            .as_ref()
+            .is_some_and(|features| features.present_id2 == vk::TRUE);
+        let present_wait2_feature_available = available_features
+            .present_wait2
+            .as_ref()
+            .is_some_and(|features| features.present_wait2 == vk::TRUE);
+
+        // Handle extension feature bits after querying the pNext feature chain.
+        if config.present_id2.is_some()
+            && config.present_wait2.is_some()
+            && (!present_id2_feature_available || !present_wait2_feature_available)
+        {
+            let mut missing_features = Vec::new();
+            if !present_id2_feature_available {
+                missing_features.push("present_id2");
+            }
+            if !present_wait2_feature_available {
+                missing_features.push("present_wait2");
+            }
+
+            present_wait_disabled_reason = Some(format!(
+                "optional extension feature unavailable ({missing_features})",
+                missing_features = missing_features.join(", ")
+            ));
             extension_ptrs.retain(|&ptr| {
                 ptr != vk::KHR_PRESENT_ID_2_EXTENSION_NAME.as_ptr()
                     && ptr != vk::KHR_PRESENT_WAIT_2_EXTENSION_NAME.as_ptr()
             });
-            config.present_id2 = None;
-            config.present_wait2 = None;
+            disable_present_wait2(&mut config);
+        }
+
+        if let Some(reason) = present_wait_disabled_reason {
+            info!("Disabling present wait: {reason}");
         } else {
-            info!("VK_KHR_present_id2 and VK_KHR_present_wait2 are available on this device");
+            info!("Present wait enabled via VK_KHR_present_id2 and VK_KHR_present_wait2");
         }
 
         info!("Device extensions:");
@@ -285,6 +316,7 @@ impl Device {
             info!("  - {name_str}");
         }
 
+        let enable_present_wait2 = config.present_id2.is_some() && config.present_wait2.is_some();
         let mut requested_features = config.into_device_features();
         features::validate_features(&requested_features, &available_features)?;
 
@@ -304,8 +336,11 @@ impl Device {
         let device = unsafe { instance.create_device(physical_device, &device_create_info, None) }
             .context("Failed to create logical device")?;
 
-        let debug_utils_device = jay_ash::ext::debug_utils::Device::new(&instance, &device);
-        let present_wait2 = if present_id2_available && present_wait2_available {
+        let debug_utils_device = instance_extensions
+            .debug_utils
+            .then(|| jay_ash::ext::debug_utils::Device::new(&instance, &device));
+        let timeline_semaphore = jay_ash::khr::timeline_semaphore::Device::new(&instance, &device);
+        let present_wait2 = if enable_present_wait2 {
             Some(jay_ash::khr::present_wait2::Device::new(&instance, &device))
         } else {
             None
@@ -319,6 +354,7 @@ impl Device {
             debug_utils_device,
             debug_utils_instance,
             debug_messenger,
+            timeline_semaphore,
             present_wait2,
             instance,
             device,
@@ -403,8 +439,12 @@ impl Device {
                     DeferredResource::Image {
                         handle,
                         view,
+                        framebuffer,
                         memory,
                     } => unsafe {
+                        if let Some(framebuffer) = framebuffer {
+                            self.context.device().destroy_framebuffer(framebuffer, None);
+                        }
                         if let Some(view) = view {
                             self.context.device().destroy_image_view(view, None);
                         }
@@ -419,6 +459,15 @@ impl Device {
             }
         }
     }
+}
+
+fn disable_present_wait2(config: &mut DeviceConfiguration) {
+    config.optional_device_extensions.retain(|&ptr| {
+        ptr != vk::KHR_PRESENT_ID_2_EXTENSION_NAME.as_ptr()
+            && ptr != vk::KHR_PRESENT_WAIT_2_EXTENSION_NAME.as_ptr()
+    });
+    config.present_id2 = None;
+    config.present_wait2 = None;
 }
 
 fn enable_validation_layers(entry: &jay_ash::Entry) -> Result<(bool, Vec<*const c_char>)> {
@@ -446,14 +495,50 @@ fn enable_validation_layers(entry: &jay_ash::Entry) -> Result<(bool, Vec<*const 
     Ok((enable_validation, layer_names))
 }
 
-fn create_instance_extensions(platform_extensions: &[*const c_char]) -> Vec<*const c_char> {
-    let mut extension_names = Vec::from(platform_extensions);
+struct InstanceExtensions {
+    names: Vec<*const c_char>,
+    debug_utils: bool,
+}
 
-    extension_names.push(jay_ash::khr::get_surface_capabilities2::NAME.as_ptr());
-    extension_names.push(jay_ash::ext::debug_utils::NAME.as_ptr());
+fn create_instance_extensions(
+    entry: &jay_ash::Entry,
+    platform_extensions: &[*const c_char],
+) -> Result<InstanceExtensions> {
+    let available_extensions = unsafe { entry.enumerate_instance_extension_properties(None) }
+        .context("Failed to enumerate instance extensions")?;
+
+    let mut extension_names = Vec::new();
+
+    for &extension in platform_extensions {
+        push_required_instance_extension(&available_extensions, &mut extension_names, extension)?;
+    }
+
+    push_required_instance_extension(
+        &available_extensions,
+        &mut extension_names,
+        jay_ash::khr::get_physical_device_properties2::NAME.as_ptr(),
+    )?;
+    push_required_instance_extension(
+        &available_extensions,
+        &mut extension_names,
+        jay_ash::khr::get_surface_capabilities2::NAME.as_ptr(),
+    )?;
 
     if cfg!(target_os = "macos") {
-        extension_names.push(jay_ash::khr::portability_enumeration::NAME.as_ptr());
+        push_required_instance_extension(
+            &available_extensions,
+            &mut extension_names,
+            jay_ash::khr::portability_enumeration::NAME.as_ptr(),
+        )?;
+    }
+
+    let debug_utils =
+        is_instance_extension_available(&available_extensions, jay_ash::ext::debug_utils::NAME);
+    if debug_utils {
+        push_unique_extension(
+            &mut extension_names,
+            jay_ash::ext::debug_utils::NAME.as_ptr(),
+        );
     }
 
     info!("Enabled instance extensions:");
@@ -462,7 +547,49 @@ fn create_instance_extensions(platform_extensions: &[*const c_char]) -> Vec<*con
         info!("  - {ext_name}", ext_name = ext_name.to_string_lossy());
     }
 
-    extension_names
+    Ok(InstanceExtensions {
+        names: extension_names,
+        debug_utils,
+    })
+}
+
+fn push_required_instance_extension(
+    available_extensions: &[vk::ExtensionProperties],
+    extension_names: &mut Vec<*const c_char>,
+    extension: *const c_char,
+) -> Result<()> {
+    let extension_name = unsafe { CStr::from_ptr(extension) };
+
+    if !is_instance_extension_available(available_extensions, extension_name) {
+        bail!(
+            "required instance extension {extension_name} not available",
+            extension_name = extension_name.to_string_lossy()
+        );
+    }
+
+    push_unique_extension(extension_names, extension);
+    Ok(())
+}
+
+fn push_unique_extension(extension_names: &mut Vec<*const c_char>, extension: *const c_char) {
+    let extension_name = unsafe { CStr::from_ptr(extension) };
+
+    if extension_names.iter().all(|&existing_extension| {
+        let existing_name = unsafe { CStr::from_ptr(existing_extension) };
+        existing_name != extension_name
+    }) {
+        extension_names.push(extension);
+    }
+}
+
+fn is_instance_extension_available(
+    available_extensions: &[vk::ExtensionProperties],
+    extension_name: &CStr,
+) -> bool {
+    available_extensions.iter().any(|extension| {
+        let available_name = unsafe { CStr::from_ptr(extension.extension_name.as_ptr()) };
+        available_name == extension_name
+    })
 }
 
 fn query_graphics_queue_family(
@@ -482,10 +609,23 @@ fn query_graphics_queue_family(
 
 /// Scores a physical device based on its type and capabilities.
 /// Higher score is better. Returns 0 if device is unsuitable.
-fn score_device(instance: &jay_ash::Instance, physical_device: vk::PhysicalDevice) -> u32 {
-    let properties = unsafe { instance.get_physical_device_properties(physical_device) };
+fn score_device(
+    instance: &jay_ash::Instance,
+    physical_device_properties2: &jay_ash::khr::get_physical_device_properties2::Instance,
+    physical_device: vk::PhysicalDevice,
+    required_device_extensions: &[*const c_char],
+) -> u32 {
+    let properties = query_physical_device_properties(physical_device_properties2, physical_device);
 
     if find_graphics_queue_family(instance, physical_device).is_none() {
+        return 0;
+    }
+
+    if !supports_required_device_extensions(instance, physical_device, required_device_extensions) {
+        return 0;
+    }
+
+    if !supports_required_device_features(physical_device_properties2, physical_device) {
         return 0;
     }
 
@@ -501,7 +641,9 @@ fn score_device(instance: &jay_ash::Instance, physical_device: vk::PhysicalDevic
 /// Selects the best physical device from the available devices.
 fn select_physical_device(
     instance: &jay_ash::Instance,
+    physical_device_properties2: &jay_ash::khr::get_physical_device_properties2::Instance,
     devices: &[vk::PhysicalDevice],
+    required_device_extensions: &[*const c_char],
 ) -> Result<vk::PhysicalDevice> {
     if devices.is_empty() {
         bail!("no physical devices found");
@@ -511,7 +653,12 @@ fn select_physical_device(
     let mut best_score = 0;
 
     for &device in devices {
-        let score = score_device(instance, device);
+        let score = score_device(
+            instance,
+            physical_device_properties2,
+            device,
+            required_device_extensions,
+        );
         if score > best_score {
             best_score = score;
             best_device = Some(device);
@@ -520,9 +667,52 @@ fn select_physical_device(
 
     best_device.ok_or_else(|| {
         Error::Message(common::StringError(
-            "no suitable physical device found (missing required queue families)".to_owned(),
+            "no suitable physical device found (missing graphics queue, required extensions, or required features)".to_owned(),
         ))
     })
+}
+
+fn query_physical_device_properties(
+    physical_device_properties2: &jay_ash::khr::get_physical_device_properties2::Instance,
+    physical_device: vk::PhysicalDevice,
+) -> vk::PhysicalDeviceProperties {
+    let mut properties2 = vk::PhysicalDeviceProperties2KHR::default();
+    unsafe {
+        physical_device_properties2
+            .get_physical_device_properties2(physical_device, &mut properties2);
+    }
+    properties2.properties
+}
+
+fn supports_required_device_extensions(
+    instance: &jay_ash::Instance,
+    physical_device: vk::PhysicalDevice,
+    required_device_extensions: &[*const c_char],
+) -> bool {
+    required_device_extensions.iter().all(|&extension| {
+        let extension_name = unsafe { CStr::from_ptr(extension) };
+        extensions::is_extension_available(instance, physical_device, extension_name)
+    })
+}
+
+fn supports_required_device_features(
+    physical_device_properties2: &jay_ash::khr::get_physical_device_properties2::Instance,
+    physical_device: vk::PhysicalDevice,
+) -> bool {
+    let extension_set = extensions::ExtensionSet {
+        timeline_semaphore: true,
+        ..Default::default()
+    };
+    let available_features = features::query_physical_device_features(
+        physical_device_properties2,
+        physical_device,
+        &extension_set,
+    );
+
+    available_features
+        .timeline_semaphore
+        .as_ref()
+        .is_some_and(|features| features.timeline_semaphore == vk::TRUE)
 }
 
 fn load_vulkan_entry() -> Result<jay_ash::Entry> {

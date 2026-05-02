@@ -103,7 +103,7 @@ dependencies = [
 
 [[package]]
 name = "neetan"
-version = "2026.4.0"
+version = "2026.5.2"
 dependencies = [
  "audio_engine",
  "common",

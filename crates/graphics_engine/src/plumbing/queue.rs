@@ -62,9 +62,9 @@ impl Queue {
         CommandPool::new(Rc::clone(&self.context), name, self)
     }
 
-    /// Submits command buffers to the queue using synchronization2.
-    pub(crate) fn submit(&self, submits: &[vk::SubmitInfo2], fence: vk::Fence) -> VkResult<()> {
+    /// Submits command buffers to the queue.
+    pub(crate) fn submit(&self, submits: &[vk::SubmitInfo], fence: vk::Fence) -> VkResult<()> {
         let handle = self.lock_handle();
-        unsafe { self.context.device().queue_submit2(*handle, submits, fence) }
+        unsafe { self.context.device().queue_submit(*handle, submits, fence) }
     }
 }

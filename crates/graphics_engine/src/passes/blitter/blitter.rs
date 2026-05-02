@@ -6,7 +6,7 @@ use crate::{
     pipeline_loader::PipelineLoader,
     plumbing::{
         GraphicsPipeline, PipelineBlendState, PipelineConfig, PipelineMultisampleState,
-        RenderingEncoder,
+        RenderPassEncoder,
     },
 };
 
@@ -22,12 +22,14 @@ static BLITTER_SRGB_SPV: &[u8] = include_bytes!(concat!(
 pub(crate) struct Blitter {
     pipeline: GraphicsPipeline,
     color_target_image_format: vk::Format,
+    render_pass: vk::RenderPass,
 }
 
 impl Blitter {
     pub(crate) fn new(
         pipeline_loader: &PipelineLoader,
         color_target_image_format: vk::Format,
+        render_pass: vk::RenderPass,
         pipeline_layout: vk::PipelineLayout,
     ) -> crate::Result<Self> {
         let (shader_name, spv_data) = match color_target_image_format {
@@ -44,8 +46,8 @@ impl Blitter {
                 c"vs_main",
                 c"fs_main",
                 &PipelineConfig {
-                    color_formats: vec![color_target_image_format],
-                    depth_format: None,
+                    render_pass,
+                    subpass: 0,
                     blend_state: PipelineBlendState::default(),
                     multisample_state: PipelineMultisampleState::default(),
                     specialization_info: None,
@@ -58,18 +60,24 @@ impl Blitter {
         Ok(Self {
             pipeline,
             color_target_image_format,
+            render_pass,
         })
     }
 
-    pub(crate) fn color_target_image_format(&self) -> vk::Format {
-        self.color_target_image_format
+    pub(crate) fn is_compatible(
+        &self,
+        color_target_image_format: vk::Format,
+        render_pass: vk::RenderPass,
+    ) -> bool {
+        self.color_target_image_format == color_target_image_format
+            && self.render_pass == render_pass
     }
 }
 
 impl Renderer for Blitter {
     type DrawData = ();
 
-    fn render(&self, encoder: &RenderingEncoder<'_>, _draw_data: Self::DrawData) {
+    fn render(&self, encoder: &RenderPassEncoder<'_>, _draw_data: Self::DrawData) {
         encoder.bind_pipeline(&self.pipeline);
         encoder.draw(3, 1, 0, 0);
     }

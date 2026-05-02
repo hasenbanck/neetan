@@ -4,25 +4,29 @@ use jay_ash::vk;
 
 /// A frame acquired from the swapchain, ready to be used as a rendering target.
 ///
-/// Contains only swapchain-specific data. Synchronization primitives are
-/// owned by `FrameResources` and accessed via `current_frame_index`.
+/// Contains only swapchain-specific data. Synchronization primitives are owned
+/// by `FrameResources` and accessed via `current_frame_index`.
 #[derive(Copy, Clone)]
 pub(crate) struct FrameTarget {
     /// The swapchain image index for this frame.
     image_index: u32,
-    /// The image view for rendering to this frame.
-    image_view: vk::ImageView,
-    /// The raw swapchain image handle.
-    image: vk::Image,
+    /// The framebuffer for rendering to this frame.
+    framebuffer: vk::Framebuffer,
+    /// The render pass compatible with this frame.
+    render_pass: vk::RenderPass,
 }
 
 impl FrameTarget {
     /// Creates a new render frame with swapchain handles.
-    pub(crate) fn new(image_index: u32, image_view: vk::ImageView, image: vk::Image) -> Self {
+    pub(crate) fn new(
+        image_index: u32,
+        framebuffer: vk::Framebuffer,
+        render_pass: vk::RenderPass,
+    ) -> Self {
         Self {
             image_index,
-            image_view,
-            image,
+            framebuffer,
+            render_pass,
         }
     }
 
@@ -31,13 +35,13 @@ impl FrameTarget {
         self.image_index
     }
 
-    /// Returns the image view for rendering to this frame.
-    pub(crate) fn view(&self) -> vk::ImageView {
-        self.image_view
+    /// Returns the framebuffer for rendering to this frame.
+    pub(crate) fn framebuffer(&self) -> vk::Framebuffer {
+        self.framebuffer
     }
 
-    /// Returns the raw swapchain image handle.
-    pub(crate) fn image(&self) -> vk::Image {
-        self.image
+    /// Returns the render pass compatible with this frame.
+    pub(crate) fn render_pass(&self) -> vk::RenderPass {
+        self.render_pass
     }
 }

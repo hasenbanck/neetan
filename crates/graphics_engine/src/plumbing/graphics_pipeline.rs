@@ -1,4 +1,4 @@
-//! Graphics pipeline wrappers for traditional Vulkan pipelines with dynamic rendering.
+//! Graphics pipeline wrappers for traditional Vulkan render pass pipelines.
 
 use std::{ffi::CStr, rc::Rc};
 
@@ -65,10 +65,10 @@ impl Default for PipelineMultisampleState {
 
 /// Pipeline configuration for creation.
 pub(crate) struct PipelineConfig<'a> {
-    /// Color attachment formats for dynamic rendering.
-    pub color_formats: Vec<vk::Format>,
-    /// Depth attachment format for dynamic rendering.
-    pub depth_format: Option<vk::Format>,
+    /// Compatible render pass for this pipeline.
+    pub render_pass: vk::RenderPass,
+    /// Subpass index within the render pass.
+    pub subpass: u32,
     /// Blend state.
     pub blend_state: PipelineBlendState,
     /// Multisample state.
@@ -83,9 +83,7 @@ pub(crate) struct PipelineConfig<'a> {
 
 /// Graphics pipeline wrapping vertex and fragment shaders.
 ///
-/// Uses dynamic rendering with extensive dynamic state. Most state is set
-/// via command buffer commands; only blend state and multisample state are
-/// baked into the pipeline.
+/// Uses a single color attachment render pass with dynamic viewport and scissor.
 pub(crate) struct GraphicsPipeline {
     pipeline: vk::Pipeline,
     context: Rc<Context>,
@@ -94,28 +92,7 @@ pub(crate) struct GraphicsPipeline {
 impl GraphicsPipeline {
     /// Creates a graphics pipeline from SPIR-V with separate vertex and fragment entry points.
     ///
-    /// # Dynamic State
-    ///
-    /// The following states are dynamic (set via command buffer):
-    /// - Viewport with count
-    /// - Scissor with count
-    /// - Cull mode
-    /// - Front face
-    /// - Depth test enable/write enable/compare op
-    /// - Stencil test enable
-    /// - Depth bias enable
-    /// - Primitive topology
-    /// - Primitive restart enable
-    /// - Rasterizer discard enable
-    /// - Vertex input
-    ///
-    /// # Baked State
-    ///
-    /// The following states are baked into the pipeline:
-    /// - Blend enable/equation/write mask
-    /// - Polygon mode
-    /// - Sample count/mask
-    /// - Alpha to coverage enable
+    /// Viewport and scissor are dynamic; fixed-function rasterization state is baked.
     #[allow(clippy::too_many_lines)]
     pub(crate) fn new(
         context: Rc<Context>,
@@ -156,7 +133,9 @@ impl GraphicsPipeline {
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
             .primitive_restart_enable(false);
 
-        let viewport_state = vk::PipelineViewportStateCreateInfo::default();
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
 
         let rasterization_state = vk::PipelineRasterizationStateCreateInfo::default()
             .depth_clamp_enable(false)
@@ -194,7 +173,7 @@ impl GraphicsPipeline {
             .alpha_blend_op(config.blend_state.alpha_blend_op)
             .color_write_mask(config.blend_state.write_mask);
 
-        let color_blend_attachments = vec![color_blend_attachment; config.color_formats.len()];
+        let color_blend_attachments = [color_blend_attachment];
 
         let color_blend_state = vk::PipelineColorBlendStateCreateInfo::default()
             .logic_op_enable(false)
@@ -202,44 +181,16 @@ impl GraphicsPipeline {
             .attachments(&color_blend_attachments)
             .blend_constants([0.0, 0.0, 0.0, 0.0]);
 
-        // Activate all Vulkan 1.3 core dynamic states.
-        let dynamic_states = [
-            vk::DynamicState::LINE_WIDTH,
-            vk::DynamicState::DEPTH_BIAS,
-            vk::DynamicState::BLEND_CONSTANTS,
-            vk::DynamicState::DEPTH_BOUNDS,
-            vk::DynamicState::STENCIL_COMPARE_MASK,
-            vk::DynamicState::STENCIL_WRITE_MASK,
-            vk::DynamicState::STENCIL_REFERENCE,
-            vk::DynamicState::CULL_MODE,
-            vk::DynamicState::FRONT_FACE,
-            vk::DynamicState::PRIMITIVE_TOPOLOGY,
-            vk::DynamicState::VIEWPORT_WITH_COUNT,
-            vk::DynamicState::SCISSOR_WITH_COUNT,
-            vk::DynamicState::DEPTH_TEST_ENABLE,
-            vk::DynamicState::DEPTH_WRITE_ENABLE,
-            vk::DynamicState::DEPTH_COMPARE_OP,
-            vk::DynamicState::DEPTH_BOUNDS_TEST_ENABLE,
-            vk::DynamicState::STENCIL_TEST_ENABLE,
-            vk::DynamicState::STENCIL_OP,
-            vk::DynamicState::RASTERIZER_DISCARD_ENABLE,
-            vk::DynamicState::DEPTH_BIAS_ENABLE,
-            vk::DynamicState::PRIMITIVE_RESTART_ENABLE,
-        ];
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
 
         let dynamic_state_info =
             vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
-        let mut pipeline_rendering_info = vk::PipelineRenderingCreateInfo::default()
-            .color_attachment_formats(&config.color_formats);
-
-        if let Some(depth_format) = config.depth_format {
-            pipeline_rendering_info = pipeline_rendering_info.depth_attachment_format(depth_format);
-        }
-
         let pipeline_create_info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&stages)
             .layout(config.pipeline_layout)
+            .render_pass(config.render_pass)
+            .subpass(config.subpass)
             .vertex_input_state(vertex_input_state)
             .input_assembly_state(&input_assembly_state)
             .viewport_state(&viewport_state)
@@ -247,8 +198,7 @@ impl GraphicsPipeline {
             .multisample_state(&multisample_state)
             .depth_stencil_state(&depth_stencil_state)
             .color_blend_state(&color_blend_state)
-            .dynamic_state(&dynamic_state_info)
-            .push_next(&mut pipeline_rendering_info);
+            .dynamic_state(&dynamic_state_info);
 
         let pipeline = match unsafe {
             device.create_graphics_pipelines(
