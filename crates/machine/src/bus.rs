@@ -259,6 +259,8 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     pit: I8253Pit,
     dma: I8237Dma,
     keyboard: I8251Keyboard,
+    /// Scan code already consumed from port 41h by a guest INT 09h pre-handler.
+    keyboard_chained_raw_code: Option<u8>,
     serial: I8251Serial,
     gdc_master: Gdc,
     gdc_slave: Gdc,
@@ -611,6 +613,7 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// Injects one keyboard scan code and raises IRQ1.
     pub fn push_keyboard_scancode(&mut self, code: u8) {
         self.keyboard.push_scancode(code);
+        self.keyboard_chained_raw_code = None;
         self.pic.set_irq(1);
     }
 
@@ -1492,6 +1495,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.gdc_master.state = state.gdc_master.clone();
         self.gdc_slave.state = state.gdc_slave.clone();
         self.keyboard.state = state.keyboard.clone();
+        self.keyboard_chained_raw_code = None;
         self.serial.state = state.serial.clone();
         self.a20_enabled = state.a20_enabled;
         self.floppy.fdc_1mb_mut().state = state.fdc_1mb.clone();

@@ -1,7 +1,7 @@
 //! Note: AH=44h (border color set) is not tested here - NP21W's implementation is
 //! fully commented out, and the real BIOS ROMs for VM/VX/RA do not appear to
 //! write to port 0x6C either.
-use common::Bus;
+use common::{Bus, Cpu};
 
 use super::{
     KB_COUNT, KB_HEAD, KB_TAIL, TEST_CODE, boot_inject_run_f, boot_inject_run_ra,
@@ -92,6 +92,40 @@ fn make_kb_int18h(ah: u8, al: u8, num_irqs: usize) -> Vec<u8> {
         0xF4,                   // HLT
     ]);
     code
+}
+
+#[rustfmt::skip]
+fn make_dosshell_chained_int09h_program() -> Vec<u8> {
+    vec![
+        0xFB,                   // STI
+        0xF4,                   // HLT (wait for key IRQ)
+        0xB4, 0x02,             // MOV AH,02h
+        0xCD, 0x18,             // INT 18h
+        0xB4, 0x01,             // MOV AH,01h
+        0xCD, 0x18,             // INT 18h
+        0xA3, 0x00, 0x06,       // MOV [RESULT], AX
+        0x89, 0x1E, 0x02, 0x06, // MOV [RESULT+2], BX
+        0xF4,                   // HLT
+    ]
+}
+
+#[rustfmt::skip]
+fn make_dosshell_int09h_prehandler(original_segment: u16, original_offset: u16) -> Vec<u8> {
+    vec![
+        0x50,                    // PUSH AX
+        0x52,                    // PUSH DX
+        0xBA, 0x43, 0x00,        // MOV DX,0043h
+        0xEC,                    // IN AL,DX
+        0xBA, 0x41, 0x00,        // MOV DX,0041h
+        0xEC,                    // IN AL,DX
+        0x5A,                    // POP DX
+        0x58,                    // POP AX
+        0xEA,                    // JMP FAR original INT 09h
+        (original_offset & 0xFF) as u8,
+        (original_offset >> 8) as u8,
+        (original_segment & 0xFF) as u8,
+        (original_segment >> 8) as u8,
+    ]
 }
 
 // Pattern F: AH+CH call (display area set, draw mode set).
@@ -429,6 +463,62 @@ fn buffer_sense_data_ra() {
     assert_eq!(
         state.memory.ram[KB_COUNT], 1,
         "AH=01h should not remove key from buffer"
+    );
+}
+
+#[test]
+fn buffer_sense_after_chained_int09h_prehandler_vm() {
+    const HANDLER: u32 = DATA_TABLE;
+
+    let mut machine = create_machine_vm();
+    boot_to_halt!(machine);
+
+    let state = machine.save_state();
+    let (original_segment, original_offset) = read_ivt_vector(&state.memory.ram, 0x09);
+    let handler = make_dosshell_int09h_prehandler(original_segment, original_offset);
+    write_bytes(&mut machine.bus, HANDLER, &handler);
+    write_bytes(
+        &mut machine.bus,
+        0x09 * 4,
+        &[
+            (HANDLER & 0xFF) as u8,
+            ((HANDLER >> 8) & 0xFF) as u8,
+            0x00,
+            0x00,
+        ],
+    );
+
+    let code = make_dosshell_chained_int09h_program();
+    write_bytes(&mut machine.bus, TEST_CODE, &code);
+    machine.bus.push_keyboard_scancode(0x4B);
+    machine.cpu.load_state(&{
+        let mut state = cpu::V30State {
+            ip: TEST_CODE as u16,
+            ..Default::default()
+        };
+        state.set_sp(0x4000);
+        state
+    });
+
+    machine.run_for(INT18H_BUDGET);
+
+    assert!(machine.cpu.halted(), "guest program should halt");
+    let ax = machine.bus.read_word(RESULT);
+    let bh = machine.bus.read_byte(RESULT + 3);
+    let state = machine.save_state();
+
+    assert_eq!(
+        bh, 0x01,
+        "AH=01h should see the cursor key buffered by the chained INT 09h path"
+    );
+    assert_ne!(ax, 0x0000, "AH=01h should return a buffered key code");
+    assert_eq!(
+        state.memory.ram[KB_COUNT], 1,
+        "AH=01h should not consume the buffered key"
+    );
+    assert!(
+        !state.keyboard.rx_ready && state.keyboard.rx_fifo.is_empty(),
+        "the chained INT 09h path should not leave the controller byte pending"
     );
 }
 
