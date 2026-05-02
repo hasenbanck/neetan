@@ -35,7 +35,7 @@ Commands:
 Options:
   -c, --config <PATH>           Load configuration from file
       --machine <TYPE>          Machine type: PC9801F, PC9801VM, PC9801VX, PC9801RA, PC9821AS, PC9821AP
-      --cpu-mode <MODE>         CPU speed mode: low or high (default: high; only affects PC9801F)
+      --cpu-mode <MODE>         CPU speed mode: low or high (default: high; PC-9801 only)
       --fdd1 <PATH>             Floppy disk image for drive 1 (repeatable)
       --fdd2 <PATH>             Floppy disk image for drive 2 (repeatable)
       --hdd1 <PATH>             Hard disk image for drive 1 (SASI or IDE)

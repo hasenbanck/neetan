@@ -130,13 +130,13 @@ impl<C: Cpu, T: Tracing> Machine<C, T> {
 /// PC-9801F machine type (8086 CPU at 5 / 8 MHz, basic µPD7220, 20-bit address space).
 pub type Pc9801F = Machine<cpu::I8086>;
 
-/// PC-9801VM machine type (V30 CPU at 10 MHz).
+/// PC-9801VM machine type (V30 CPU at 8 / 10 MHz).
 pub type Pc9801Vm = Machine<cpu::VX0>;
 
-/// PC-9801VX machine type (80286 CPU at 10 MHz).
+/// PC-9801VX machine type (80286 CPU at 8 / 10 MHz).
 pub type Pc9801Vx = Machine<cpu::I286>;
 
-/// PC-9801RA machine type (80386 SX CPU at 20 MHz).
+/// PC-9801RA machine type (80386 SX CPU at 16 / 20 MHz).
 pub type Pc9801Ra = Machine<cpu::I386>;
 
 /// PC-9821AS machine type (486DX CPU at 33 MHz, IDE, PEGC).

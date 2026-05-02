@@ -164,9 +164,8 @@ const KEYBOARD_TABLES: [[u8; 0x60]; 8] = [
 impl<T: Tracing> Pc9801Bus<T> {
     /// Creates a new bus configured for the given machine model and CPU mode.
     ///
-    /// `cpu_mode` selects between Low and High CPU clock for machines that
-    /// support speed switching (currently only the PC-9801F). Other models
-    /// ignore this value.
+    /// `cpu_mode` selects between Low and High CPU clock for PC-9801 models.
+    /// PC-9821 models ignore this value.
     pub fn new(machine_model: MachineModel, cpu_mode: CpuMode, sample_rate: u32) -> Self
     where
         T: Default,

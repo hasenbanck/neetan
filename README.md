@@ -16,14 +16,14 @@ files is supported, but should provide no additional benefit.
 
 Currently, we aim to support all 16-bit era DOS games and emulate them accurately for 6 idealized machine targets:
 
-| Machine   | CPU      | CPU Speed | FPU (x87) | Extended RAM | Graphics | Interface | CD-ROM |
-|-----------|----------|-----------|-----------|--------------|----------|-----------|--------|
-| PC-9801F  | 8086     | 5 / 8 Mhz | No        | None         | GDC      | SASI      | No     |
-| PC-9801VM | V30      | 10 Mhz    | No        | None         | GRCG     | SASI      | No     |
-| PC-9801VX | 80286    | 10 Mhz    | No        | 4 MiB        | ECG      | SASI      | No     |
-| PC-9801RA | 80386DX  | 20 Mhz    | Yes       | 12 MiB       | ECG      | SASI      | No     |
-| PC-9821AS | 80486DX  | 33 Mhz    | Yes       | 14 MiB       | PEGC     | IDE       | Yes    |
-| PC-9821AP | 80486DX2 | 66 Mhz    | Yes       | 14 MiB       | PEGC     | IDE       | Yes    |
+| Machine   | CPU      | CPU Speed   | FPU (x87) | Extended RAM | Graphics | Interface | CD-ROM |
+|-----------|----------|-------------|-----------|--------------|----------|-----------|--------|
+| PC-9801F  | 8086     | 5 / 8 MHz   | No        | None         | GDC      | SASI      | No     |
+| PC-9801VM | V30      | 8 / 10 MHz  | No        | None         | GRCG     | SASI      | No     |
+| PC-9801VX | 80286    | 8 / 10 MHz  | No        | 4 MiB        | ECG      | SASI      | No     |
+| PC-9801RA | 80386DX  | 16 / 20 MHz | Yes       | 12 MiB       | ECG      | SASI      | No     |
+| PC-9821AS | 80486DX  | 33 MHz      | Yes       | 14 MiB       | PEGC     | IDE       | Yes    |
+| PC-9821AP | 80486DX2 | 66 MHz      | Yes       | 14 MiB       | PEGC     | IDE       | Yes    |
 
 All targets have the full 640 KiB conventional RAM. The 8086 and V30 are cycle-count accurately emulated.
 The emulated 286 is calibrated to run at the same speed as the original 286 using trace data. The 386 and the 486
@@ -56,7 +56,7 @@ neetan <COMMAND>
 |------------------------------|-------------------------------------------------------------------------------------|------------|
 | `-c, --config <PATH>`        | Load configuration from file                                                        | -          |
 | `--machine <TYPE>`           | Machine type: `PC9801F`, `PC9801VM`, `PC9801VX`, `PC9801RA`, `PC9821AS`, `PC9821AP` | `PC9801RA` |
-| `--cpu-mode <MODE>`          | CPU speed mode: low or high (default: high; only affects PC9801F)                   | high       |
+| `--cpu-mode <MODE>`          | CPU speed mode: low or high (default: high; PC-9801 only)                           | high       |
 | `--fdd1 <PATH>`              | Floppy disk image for drive 1 (repeatable)                                          | -          |
 | `--fdd2 <PATH>`              | Floppy disk image for drive 2 (repeatable)                                          | -          |
 | `--hdd1 <PATH>`              | Hard disk image for hard disk drive 1                                               | -          |
