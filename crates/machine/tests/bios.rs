@@ -270,6 +270,9 @@ mod cdrom_boot;
 #[path = "bios/int18h.rs"]
 mod int18h;
 
+#[path = "bios/int09h.rs"]
+mod int09h;
+
 #[path = "bios/int19h.rs"]
 mod int19h;
 

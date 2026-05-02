@@ -258,6 +258,52 @@ impl<T: Tracing> Pc9801Bus<T> {
     }
 
     fn hle_int09h(&mut self, cpu: &mut impl Cpu) {
+        let Some(raw_code) = self
+            .keyboard_chained_raw_code
+            .take()
+            .or_else(|| self.read_pending_keyboard_scan_code())
+        else {
+            self.pic.write_port0(0, 0x20);
+            return;
+        };
+        let (key_code, is_release) = self.buffer_keyboard_scan_code(raw_code);
+        self.pic.write_port0(0, 0x20);
+
+        // COPY key (0x60) -> INT 06H, STOP key (0x61) -> INT 05H.
+        // The real BIOS dispatches these after EOI via the assembly wrapper.
+        if !is_release {
+            let int_vector = match key_code {
+                0x60 => Some(0x06u8),
+                0x61 => Some(0x05u8),
+                _ => None,
+            };
+            if let Some(vector) = int_vector {
+                let iret_base = iret_stack_base(cpu);
+                let callback_offset = self.ram_read_u16((vector as usize) * 4);
+                let callback_segment = self.ram_read_u16((vector as usize) * 4 + 2);
+                if callback_offset != 0 || callback_segment != 0 {
+                    // Rewrite the IRQ handler's IRET frame so it returns into
+                    // the COPY/STOP vector first, with the original return
+                    // frame stacked behind it.
+                    let orig_ip = self.read_word_direct(iret_base);
+                    let orig_cs = self.read_word_direct(iret_base + 0x02);
+                    let orig_flags = self.read_word_direct(iret_base + 0x04);
+                    self.write_mem_word(iret_base + 0x06, orig_ip);
+                    self.write_mem_word(iret_base + 0x08, orig_cs);
+                    self.write_mem_word(iret_base + 0x0A, orig_flags);
+                    self.write_mem_word(iret_base, callback_offset);
+                    self.write_mem_word(iret_base + 0x02, callback_segment);
+                    self.write_mem_word(iret_base + 0x04, orig_flags & !0x0200);
+                }
+            }
+        }
+    }
+
+    fn read_pending_keyboard_scan_code(&mut self) -> Option<u8> {
+        if !self.keyboard.has_rx_ready() {
+            return None;
+        }
+
         let (raw_code, clear_irq, retrigger_irq) = self.keyboard.read_data();
         if clear_irq {
             self.pic.clear_irq(1);
@@ -265,15 +311,25 @@ impl<T: Tracing> Pc9801Bus<T> {
         if retrigger_irq {
             self.pic.set_irq(1);
         }
+        Some(raw_code)
+    }
 
+    fn poll_keyboard_scan_codes(&mut self) {
+        while let Some(raw_code) = self.read_pending_keyboard_scan_code() {
+            self.buffer_keyboard_scan_code(raw_code);
+        }
+    }
+
+    fn buffer_keyboard_scan_code(&mut self, raw_code: u8) -> (u8, bool) {
         let key_code = raw_code & 0x7F;
         let is_release = raw_code & 0x80 != 0;
         let group = (key_code >> 3) as usize;
         let bit = 1u8 << (key_code & 0x07);
+        let key_state_addr = 0x052A + group;
 
         if is_release {
             // Key release: clear key status bit.
-            self.memory.state.ram[0x052A + group] &= !bit;
+            self.memory.state.ram[key_state_addr] &= !bit;
 
             // Update shift state for modifier key releases.
             if (0x70..0x75).contains(&key_code) || key_code == 0x7D {
@@ -286,7 +342,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
         } else {
             // Key press: set key status bit.
-            self.memory.state.ram[0x052A + group] |= bit;
+            self.memory.state.ram[key_state_addr] |= bit;
 
             // Update shift state for modifier key presses.
             if key_code == 0x70 || key_code == 0x7D {
@@ -315,34 +371,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
         }
 
-        // Send EOI to master PIC.
-        self.pic.write_port0(0, 0x20);
-
-        // COPY key (0x60) -> INT 06H, STOP key (0x61) -> INT 05H.
-        // The real BIOS dispatches these after EOI via the assembly wrapper.
-        if !is_release {
-            let int_vector = match key_code {
-                0x60 => Some(0x06u8),
-                0x61 => Some(0x05u8),
-                _ => None,
-            };
-            if let Some(vector) = int_vector {
-                let iret_base = iret_stack_base(cpu);
-                let callback_offset = self.ram_read_u16((vector as usize) * 4);
-                let callback_segment = self.ram_read_u16((vector as usize) * 4 + 2);
-                if callback_offset != 0 || callback_segment != 0 {
-                    let orig_ip = self.read_word_direct(iret_base);
-                    let orig_cs = self.read_word_direct(iret_base + 0x02);
-                    let orig_flags = self.read_word_direct(iret_base + 0x04);
-                    self.write_mem_word(iret_base + 0x06, orig_ip);
-                    self.write_mem_word(iret_base + 0x08, orig_cs);
-                    self.write_mem_word(iret_base + 0x0A, orig_flags);
-                    self.write_mem_word(iret_base, callback_offset);
-                    self.write_mem_word(iret_base + 0x02, callback_segment);
-                    self.write_mem_word(iret_base + 0x04, orig_flags & !0x0200);
-                }
-            }
-        }
+        (key_code, is_release)
     }
 
     fn update_shift_key(&mut self) {
@@ -379,24 +408,27 @@ impl<T: Tracing> Pc9801Bus<T> {
             if key_code == 0x51 || key_code == 0x35 || key_code == 0x3E {
                 let val = self.read_byte_direct(table_base + key_code as u32);
                 if val == 0xFF {
-                    return 0xFFFF;
+                    0xFFFF
+                } else {
+                    (val as u16) << 8
                 }
-                (val as u16) << 8
             } else {
                 let val = self.read_byte_direct(table_base + key_code as u32);
                 if val == 0xFF {
-                    return 0xFFFF;
+                    0xFFFF
+                } else {
+                    val as u16 + ((key_code as u16) << 8)
                 }
-                val as u16 + ((key_code as u16) << 8)
             }
         } else if key_code < 0x60 {
             if key_code == 0x5E { 0xAE00 } else { 0xFFFF }
         } else if (0x62..0x70).contains(&key_code) {
             let val = self.read_byte_direct(table_base + (key_code - 0x0C) as u32);
             if val == 0xFF {
-                return 0xFFFF;
+                0xFFFF
+            } else {
+                (val as u16) << 8
             }
-            (val as u16) << 8
         } else {
             0xFFFF
         }
@@ -695,6 +727,7 @@ impl<T: Tracing> Pc9801Bus<T> {
     }
 
     fn int18h_key_read(&mut self, cpu: &mut impl Cpu) {
+        self.poll_keyboard_scan_codes();
         let count = self.memory.state.ram[0x0528];
         if count == 0 {
             // Block until a key is available by rewinding the caller's return IP
@@ -728,6 +761,7 @@ impl<T: Tracing> Pc9801Bus<T> {
     }
 
     fn int18h_buffer_sense(&mut self, cpu: &mut impl Cpu) {
+        self.poll_keyboard_scan_codes();
         let count = self.memory.state.ram[0x0528];
         if count == 0 {
             cpu.set_bh(0x00);
@@ -777,6 +811,7 @@ impl<T: Tracing> Pc9801Bus<T> {
     }
 
     fn int18h_key_code_read(&mut self, cpu: &mut impl Cpu) {
+        self.poll_keyboard_scan_codes();
         let count = self.memory.state.ram[0x0528];
         if count == 0 {
             cpu.set_bh(0x00);

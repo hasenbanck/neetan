@@ -127,6 +127,9 @@ impl<T: Tracing> Pc9801Bus<T> {
                     self.pic.set_irq(1);
                     self.tracer.trace_irq_raise(1);
                 }
+                if clear_irq || retrigger_irq {
+                    self.keyboard_chained_raw_code = Some(data);
+                }
                 data
             }
             // Keyboard µPD8251A status register (port 0x43 read).
