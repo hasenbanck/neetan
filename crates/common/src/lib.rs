@@ -127,11 +127,11 @@ pub enum BeeperKind {
 pub enum MachineModel {
     /// PC-9801F (8086, 5/8 MHz, basic µPD7220 only, 20-bit address space).
     PC9801F,
-    /// PC-9801VM (V30, 10 MHz, GRCG v1, 20-bit address space, SASI built-in).
+    /// PC-9801VM (V30, 8/10 MHz, GRCG v1, 20-bit address space, SASI built-in).
     PC9801VM,
-    /// PC-9801VX (80286, 10 MHz, EGC, 24-bit address space, SASI built-in).
+    /// PC-9801VX (80286, 8/10 MHz, EGC, 24-bit address space, SASI built-in).
     PC9801VX,
-    /// PC-9801RA (80386, 20 MHz, EGC, 32-bit address space, SASI built-in).
+    /// PC-9801RA (80386, 16/20 MHz, EGC, 32-bit address space, SASI built-in).
     PC9801RA,
     /// PC-9821AS (486DX, 33 MHz, PEGC, 32-bit address space, IDE built-in).
     PC9821AS,
@@ -165,16 +165,22 @@ impl MachineModel {
 
     /// Returns the CPU clock frequency in Hz for the given CPU mode.
     ///
-    /// Machines with a fixed CPU clock ignore `mode`; only the PC-9801F
-    /// switches between Low (5 MHz) and High (8 MHz).
+    /// PC-9801 models switch between Low and High speeds. PC-9821 models
+    /// ignore `mode`.
     pub const fn cpu_clock_hz(self, mode: CpuMode) -> u32 {
         match self {
             Self::PC9801F => match mode {
                 CpuMode::Low => 5_000_000,
                 CpuMode::High => 8_000_000,
             },
-            Self::PC9801VM | Self::PC9801VX => 10_000_000,
-            Self::PC9801RA => 20_000_000,
+            Self::PC9801VM | Self::PC9801VX => match mode {
+                CpuMode::Low => 8_000_000,
+                CpuMode::High => 10_000_000,
+            },
+            Self::PC9801RA => match mode {
+                CpuMode::Low => 16_000_000,
+                CpuMode::High => 20_000_000,
+            },
             Self::PC9821AS => 33_000_000,
             Self::PC9821AP => 66_000_000,
         }
@@ -440,6 +446,28 @@ impl std::str::FromStr for MachineModel {
             _ => Err(format!(
                 "unknown machine model '{s}', expected PC9801F, PC9801VM, PC9801VX, PC9801RA, PC9821AS, or PC9821AP"
             )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CpuMode, MachineModel};
+
+    #[test]
+    fn machine_cpu_clock_hz_uses_cpu_mode_for_pc9801_models() {
+        let cases = [
+            (MachineModel::PC9801F, 5_000_000, 8_000_000),
+            (MachineModel::PC9801VM, 8_000_000, 10_000_000),
+            (MachineModel::PC9801VX, 8_000_000, 10_000_000),
+            (MachineModel::PC9801RA, 16_000_000, 20_000_000),
+            (MachineModel::PC9821AS, 33_000_000, 33_000_000),
+            (MachineModel::PC9821AP, 66_000_000, 66_000_000),
+        ];
+
+        for (model, low_clock_hz, high_clock_hz) in cases {
+            assert_eq!(model.cpu_clock_hz(CpuMode::Low), low_clock_hz);
+            assert_eq!(model.cpu_clock_hz(CpuMode::High), high_clock_hz);
         }
     }
 }

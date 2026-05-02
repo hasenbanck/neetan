@@ -73,6 +73,28 @@ fn graphics_vram_access() {
 }
 
 #[test]
+fn bus_clock_config_uses_cpu_mode_without_changing_pit_lineage() {
+    let cases = [
+        (MachineModel::PC9801F, 5_000_000, 8_000_000, 1_996_800),
+        (MachineModel::PC9801VM, 8_000_000, 10_000_000, 2_457_600),
+        (MachineModel::PC9801VX, 8_000_000, 10_000_000, 2_457_600),
+        (MachineModel::PC9801RA, 16_000_000, 20_000_000, 1_996_800),
+        (MachineModel::PC9821AS, 33_000_000, 33_000_000, 1_996_800),
+        (MachineModel::PC9821AP, 66_000_000, 66_000_000, 1_996_800),
+    ];
+
+    for (model, low_clock_hz, high_clock_hz, pit_clock_hz) in cases {
+        let low_bus = Pc9801Bus::<NoTracing>::new(model, CpuMode::Low, 48000);
+        let high_bus = Pc9801Bus::<NoTracing>::new(model, CpuMode::High, 48000);
+
+        assert_eq!(low_bus.cpu_clock_hz(), low_clock_hz, "{model} low clock");
+        assert_eq!(high_bus.cpu_clock_hz(), high_clock_hz, "{model} high clock");
+        assert_eq!(low_bus.pit_clock_hz(), pit_clock_hz, "{model} low PIT");
+        assert_eq!(high_bus.pit_clock_hz(), pit_clock_hz, "{model} high PIT");
+    }
+}
+
+#[test]
 fn kanji_ram_stub() {
     let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
 
@@ -338,7 +360,7 @@ fn pit_mirror_ports() {
 
 #[test]
 fn timer_full_cycle() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
 
     // Set up PIC: unmask all.
     bus.io_write_byte(0x00, 0x11);
@@ -376,7 +398,7 @@ fn timer_full_cycle() {
 
 #[test]
 fn timer_value_zero_65536_period() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
 
     // Set up PIC: enable only IRQ 0 (timer). Mask IRQ 2 (VSYNC) since this
     // test advances past the VSYNC period.
@@ -401,7 +423,7 @@ fn timer_value_zero_65536_period() {
 
 #[test]
 fn control_word_write_clears_irq0() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
 
     // Set up PIC.
     bus.io_write_byte(0x00, 0x11);
@@ -426,7 +448,7 @@ fn control_word_write_clears_irq0() {
 
 #[test]
 fn pit_latch_command_does_not_clear_irq0() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
 
     init_pic(&mut bus);
 
@@ -458,7 +480,7 @@ fn init_pic(bus: &mut Pc9801Bus) {
 
 #[test]
 fn timer_reprogram_mid_count() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
     init_pic(&mut bus);
 
     // PIT ch0: mode 2, reload = 100 -> fire at cycle 1001
@@ -487,7 +509,7 @@ fn timer_reprogram_mid_count() {
 
 #[test]
 fn timer_reprogram_larger_value_delays_fire() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
     init_pic(&mut bus);
 
     // PIT ch0: mode 2, reload = 100 -> fire at cycle 1001
@@ -541,7 +563,7 @@ fn pit_channels_1_and_2_no_irq() {
 
 #[test]
 fn multiple_timer_periods_accumulate() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
     init_pic(&mut bus);
 
     // PIT ch0: mode 2, reload = 100 -> fire every 1001 cycles
@@ -566,7 +588,7 @@ fn multiple_timer_periods_accumulate() {
 
 #[test]
 fn timer_count_readable_while_running() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
+    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::High, 48000);
     init_pic(&mut bus);
 
     // PIT ch0: mode 2, reload = 1000 -> fire at cycle ~10016

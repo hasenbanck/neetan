@@ -211,7 +211,7 @@ fn bios_reset_vector_targets_bios_segment_f() {
 // §4.5 BDA Setup - System configuration
 // ============================================================================
 
-/// PC-9801VM (V30 @ 10 MHz, single-bank BIOS ROM).
+/// PC-9801VM (V30 @ 8 / 10 MHz, single-bank BIOS ROM).
 #[test]
 fn system_config_vm() {
     let mut machine = create_machine_vm();
@@ -233,7 +233,7 @@ fn system_config_vm() {
     assert_eq!(machine.bus.read_byte(BDA_BIOS_FLAG1), 0x64, "BIOS_FLAG1");
 }
 
-/// PC-9801VX (80286 @ 10 MHz, dual-bank BIOS ROM).
+/// PC-9801VX (80286 @ 8 / 10 MHz, dual-bank BIOS ROM).
 #[test]
 fn system_config_vx() {
     let mut machine = create_machine_vx();
@@ -277,7 +277,7 @@ fn system_config_f() {
     assert_eq!(machine.bus.read_byte(BDA_BIOS_FLAG1), 0xA4, "BIOS_FLAG1");
 }
 
-/// PC-9801RA (80386 @ 20 MHz, dual-bank BIOS ROM).
+/// PC-9801RA (80386 @ 16 / 20 MHz, dual-bank BIOS ROM).
 #[test]
 fn system_config_ra() {
     let mut machine = create_machine_ra();
