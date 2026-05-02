@@ -382,12 +382,8 @@ impl Application {
         let cpu_hz = machine.cpu_clock_hz();
         let crt_enabled = config.crt;
 
-        let graphics_engine = GraphicsEngine::new(
-            platform_extensions,
-            machine.font_rom_data(),
-            display_aspect_mode,
-        )
-        .context("Failed to create graphics engine")?;
+        let graphics_engine = GraphicsEngine::new(platform_extensions, display_aspect_mode)
+            .context("Failed to create graphics engine")?;
 
         let scale_factor = window.display_scale();
 
@@ -710,6 +706,7 @@ impl Application {
                 media_type,
                 display_cursor,
                 display_count,
+                self.machine.font_rom_data(),
             ));
         }
     }
@@ -829,29 +826,25 @@ impl Application {
     }
 
     fn render_frame(&mut self) -> Result<()> {
-        if self.machine.take_font_rom_dirty() {
-            self.graphics_engine
-                .update_font_rom(self.machine.font_rom_data());
-        }
-
-        let display_snapshot = if let Some(ref mut selector) = self.image_selector {
+        let (framebuffer, native_height) = if let Some(ref mut selector) = self.image_selector {
             let (entries, loaded_index) = match selector.media_type() {
                 MediaType::Floppy(0) => (&self.fdd1_entries, self.fdd1_index),
                 MediaType::Floppy(_) => (&self.fdd2_entries, self.fdd2_index),
                 MediaType::CdRom => (&self.cdrom_entries, self.cdrom_index),
             };
-            selector.ensure_snapshot(entries, loaded_index);
-            selector.snapshot()
+            selector.ensure_render(entries, loaded_index);
+            (selector.framebuffer(), 400u32)
         } else {
-            self.machine.snapshot_display()
+            (
+                self.machine.display_framebuffer(),
+                self.machine.display_native_height(),
+            )
         };
-
-        let pegc_snapshot = self.machine.pegc_snapshot_display();
 
         self.graphics_engine
             .render_frame(Some(&RenderInstructions {
-                display_snapshot,
-                pegc_snapshot,
+                framebuffer,
+                native_height,
                 crt: self.crt_enabled,
             }))
             .context("Graphics engine failed to render frame")?;

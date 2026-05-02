@@ -15,11 +15,7 @@ mod os_adapter;
 
 use std::path::PathBuf;
 
-use common::{
-    CpuType, DISPLAY_FLAG_PEGC_256_COLOR, DisplaySnapshotUpload, EventKind, MachineModel,
-    PegcSnapshotUpload, Scheduler, StackVec, TextNormalizerInputs, cast_u32_slice_as_bytes_mut,
-    normalize_text_plane,
-};
+use common::{CpuType, EventKind, MachineModel, Scheduler, StackVec};
 use device::{
     beeper::Beeper,
     cdrom::CdImage,
@@ -43,6 +39,9 @@ use device::{
     printer::Printer,
     sasi::SasiController,
     sdip::Sdip,
+    software_renderer::{
+        DISPLAY_FLAG_PEGC_256_COLOR, PegcRenderInputs, RenderInputs, SoftwareRenderer,
+    },
     sound_blaster_16::{SoundBlaster16, SoundboardSb16Action},
     soundboard_14::{Soundboard14, Soundboard14Action},
     soundboard_26k::{Soundboard26k, Soundboard26kAction},
@@ -71,6 +70,8 @@ const GRCG_WAIT_CYCLES: i64 = 8;
 /// Each byte-sized I/O read or write incurs this penalty.
 const IO_WAIT_CYCLES: i64 = 1;
 
+const DIGITAL_GRAPHICS_PALETTE_BASE: usize = 8;
+
 /// DMA access control register (port 0x0439) default: 20-bit DMA mask.
 ///
 /// Used by 8/10 MHz machines (VM, VX). On 386+ machines (RA, PC-9821),
@@ -88,6 +89,54 @@ const SYSTEM_STATUS_DEFAULT: u8 = 0x00;
 /// Hi-res mode (1120x750) is only on PC-H98, PC-98XA/XL/RL, and some PC-9821 models.
 /// Ref: undoc98 `io_hires.txt` (port 0x0431)
 const MODE_DETECT_NORMAL: u8 = 0x04;
+
+fn pack_rgba(red: u8, green: u8, blue: u8) -> u32 {
+    u32::from(red) | (u32::from(green) << 8) | (u32::from(blue) << 16) | 0xFF00_0000
+}
+
+fn pack_fixed_color(index: u8) -> u32 {
+    let blue = if index & 0x01 != 0 { 0xFF } else { 0 };
+    let red = if index & 0x02 != 0 { 0xFF } else { 0 };
+    let green = if index & 0x04 != 0 { 0xFF } else { 0 };
+
+    pack_rgba(red, green, blue)
+}
+
+fn digital_palette_register_index(color_index: usize) -> usize {
+    match color_index & 0x03 {
+        0 => 3,
+        1 => 1,
+        2 => 2,
+        3 => 0,
+        _ => unreachable!(),
+    }
+}
+
+fn pack_digital_graphics_color(digital_palette: &[u8; 4], color_index: usize) -> u32 {
+    let register_index = digital_palette_register_index(color_index);
+    let packed_pair = digital_palette[register_index];
+    let packed_color = if color_index < 4 {
+        packed_pair >> 4
+    } else {
+        packed_pair & 0x0F
+    };
+
+    pack_fixed_color(packed_color)
+}
+
+fn digital_monochrome_mask(digital_palette: &[u8; 4]) -> u32 {
+    let mut mask = 0;
+    for color_index in 0..4 {
+        let packed_pair = digital_palette[digital_palette_register_index(color_index)];
+        if packed_pair & 0x40 != 0 {
+            mask |= (1 << color_index) | (1 << (color_index + 8));
+        }
+        if packed_pair & 0x04 != 0 {
+            mask |= (1 << (color_index + 4)) | (1 << (color_index + 12));
+        }
+    }
+    mask
+}
 
 /// 1MB FDC external circuit input register value (port 0x0094 read).
 /// Bit 6: FINT0 = 1 (fixed for dual-mode FD I/F).
@@ -324,9 +373,12 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     /// On real hardware the CPU stops immediately; in our emulator the CPU
     /// continues until the machine loop checks, so we snapshot the state.
     warm_reset_context: Option<(u16, u16, u16, u16)>,
-    vsync_snapshot: Box<DisplaySnapshotUpload>,
-    pegc_vsync_snapshot: Box<PegcSnapshotUpload>,
-    pegc_mode_active: bool,
+    /// CPU-side software renderer that produces the composed framebuffer
+    /// uploaded by the graphics engine.
+    software_renderer: Box<SoftwareRenderer>,
+    /// Active vertical display height (400, or up to 480 in PEGC 480-line mode)
+    /// from the most recent [`render_display_frame`] call.
+    last_native_height: u32,
     /// DMA access control register (port 0x0439). Bit 2: mask DMA above 1MB.
     dma_access_ctrl: u8,
     /// VRAM/EMS bank register (write-only via port 0x043F).
@@ -469,9 +521,12 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.protected_memory_max = 0;
     }
 
-    /// Loads a V98-format font ROM into the CGROM buffer.
+    /// Loads a V98-format font ROM into the CGROM buffer and propagates the
+    /// new bytes to the software renderer.
     pub fn load_font_rom(&mut self, data: &[u8]) {
         self.memory.load_font_rom(data);
+        self.software_renderer
+            .update_font_rom(self.memory.font_rom_data());
     }
 
     /// Loads the PC-9801-26K sound ROM (16 KB at CC000-CFFFF).
@@ -892,15 +947,6 @@ impl<T: Tracing> Pc9801Bus<T> {
         }
     }
 
-    /// Returns the PEGC VSYNC snapshot if 256-color mode was active at last capture.
-    pub fn pegc_vsync_snapshot(&self) -> Option<&PegcSnapshotUpload> {
-        if self.pegc_mode_active {
-            Some(&self.pegc_vsync_snapshot)
-        } else {
-            None
-        }
-    }
-
     fn mouse_timer_irq_enabled(&self) -> bool {
         (self.mouse_ppi.state.port_c & 0x10) == 0
     }
@@ -1113,24 +1159,28 @@ impl<T: Tracing> Pc9801Bus<T> {
         }
     }
 
-    /// Returns a reference to the last VSYNC display snapshot.
-    pub fn vsync_snapshot(&self) -> &DisplaySnapshotUpload {
-        &self.vsync_snapshot
+    /// Returns the composed 640x480 framebuffer rendered at the last VSYNC.
+    pub fn display_framebuffer(&self) -> &[u8] {
+        self.software_renderer.framebuffer()
     }
 
-    /// Captures the current display state into the internal VSYNC snapshot buffer.
-    pub fn capture_vsync_snapshot(&mut self) {
+    /// Returns the active vertical display height (400, or up to 480 in
+    /// PEGC 480-line mode) corresponding to the current framebuffer.
+    pub fn display_native_height(&self) -> u32 {
+        self.last_native_height
+    }
+
+    /// Composes the current display state into the renderer's internal
+    /// framebuffer. Called at every VSYNC.
+    pub fn render_display_frame(&mut self) {
+        if self.memory.take_font_rom_dirty() {
+            self.software_renderer
+                .update_font_rom(self.memory.font_rom_data());
+        }
+
         let display_page_base = self.display_page_index() * GRAPHICS_PAGE_SIZE_BYTES;
         let e_page_base = self.display_page_index() * E_PLANE_PAGE_SIZE_BYTES;
 
-        // Display flags:
-        // bit 0 = GDC started,
-        // bit 1 = blink visible,
-        // bit 2 = hide odd rasters,
-        // bit 3 = 16-color mode,
-        // bit 4 = text display enabled (master GDC DE),
-        // bit 5 = graphics display enabled (slave GDC DE),
-        // bit 6 = global display enable (mode1 bit 7).
         // Blink timing: derive a phase counter from the monotonic VSYNC blink_counter.
         //   threshold = cursor_blink_rate * 2, or 64 when rate == 0
         //   count increments every `threshold` VSYNCs
@@ -1143,6 +1193,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         };
         let blink_count = self.gdc_master.state.blink_counter / blink_threshold;
         let text_blink_visible = (blink_count & 3) != 0;
+
         let video_mode = self.display_control.state.video_mode;
         let hide_odd_rasters = u32::from(self.display_control.is_hide_odd_rasters_enabled());
         let is_16_color = u32::from(self.display_control.is_16_color());
@@ -1154,20 +1205,35 @@ impl<T: Tracing> Pc9801Bus<T> {
         let is_kac_dot_access_mode = self.display_control.is_kac_dot_access_mode();
         let interlace_on = self.gdc_slave.state.interlace_mode == 0x09;
 
-        let snapshot = &mut *self.vsync_snapshot;
-
-        // Palette: pack analog [green_4bit, red_4bit, blue_4bit] -> u32 as 0xFF_BB_GG_RR.
-        for i in 0..16 {
-            let [g4, r4, b4] = self.palette.state.analog[i];
-            let r8 = (r4 & 0x0F) * 17;
-            let g8 = (g4 & 0x0F) * 17;
-            let b8 = (b4 & 0x0F) * 17;
-            snapshot.palette_rgba[i] =
-                u32::from(r8) | (u32::from(g8) << 8) | (u32::from(b8) << 16) | 0xFF00_0000;
+        let mut palette_rgba = [0u32; 16];
+        if is_palette_analog_mode {
+            for (i, slot) in palette_rgba.iter_mut().enumerate() {
+                let [g4, r4, b4] = self.palette.state.analog[i];
+                let red = (r4 & 0x0F) * 17;
+                let green = (g4 & 0x0F) * 17;
+                let blue = (b4 & 0x0F) * 17;
+                *slot = pack_rgba(red, green, blue);
+            }
+        } else {
+            let (fixed, digital) = palette_rgba.split_at_mut(DIGITAL_GRAPHICS_PALETTE_BASE);
+            for (i, slot) in fixed.iter_mut().enumerate() {
+                *slot = pack_fixed_color(i as u8);
+            }
+            for (i, slot) in digital.iter_mut().enumerate() {
+                *slot = pack_digital_graphics_color(&self.palette.state.digital, i);
+            }
         }
 
-        // Display flags.
-        snapshot.display_flags = 1
+        // Display flag layout:
+        // bit 0 = GDC started,
+        // bit 1 = blink visible,
+        // bit 2 = hide odd rasters,
+        // bit 3 = 16-color mode,
+        // bit 4 = text display enabled (master GDC DE),
+        // bit 5 = graphics display enabled (slave GDC DE),
+        // bit 6 = global display enable (mode1 bit 7),
+        // bit 7 = PEGC 256-color mode (set below if active).
+        let mut display_flags = 1
             | (u32::from(text_blink_visible) << 1)
             | (hide_odd_rasters << 2)
             | (is_16_color << 3)
@@ -1175,17 +1241,14 @@ impl<T: Tracing> Pc9801Bus<T> {
             | (graphics_display_enabled << 5)
             | (global_display_enabled << 6);
 
-        // GDC text pitch.
-        snapshot.gdc_text_pitch = u32::from(self.gdc_master.state.pitch);
+        let gdc_text_pitch = u32::from(self.gdc_master.state.pitch);
 
-        // GDC text scroll areas.
-        for i in 0..4 {
+        let mut gdc_scroll_start_line = [0u32; 4];
+        for (i, slot) in gdc_scroll_start_line.iter_mut().enumerate() {
             let area = &self.gdc_master.state.scroll[i];
-            snapshot.gdc_scroll_start_line[i] =
-                area.start_address | (u32::from(area.line_count) << 16);
+            *slot = area.start_address | (u32::from(area.line_count) << 16);
         }
 
-        // GDC graphics pitch - convert to byte stride following NP21W logic.
         // In 2.5 MHz mode (mode2 bits 9-10 clear): pitch is in words, multiply by 2.
         // In 5 MHz mode (mode2 bits 9-10 set):     pitch is already in bytes.
         let gdc_5mhz = self.display_control.is_gdc_5mhz();
@@ -1194,70 +1257,48 @@ impl<T: Tracing> Pc9801Bus<T> {
         } else {
             self.gdc_slave.state.pitch * 2
         };
-        snapshot.gdc_graphics_pitch = u32::from(graphics_pitch & 0xFE);
+        let gdc_graphics_pitch = u32::from(graphics_pitch & 0xFE);
 
-        // Video mode register (port 0x68).
-        snapshot.video_mode = u32::from(video_mode);
-
-        // Monochrome mask: bitmask of graphics color indices that are "on".
-        snapshot.graphics_monochrome_mask = if is_graphics_monochrome {
-            let mut mask: u32 = 0;
+        let graphics_monochrome_mask = if is_graphics_monochrome {
             if is_palette_analog_mode {
+                let mut mask: u32 = 0;
                 for i in 0..16u32 {
                     if self.palette.state.analog[i as usize][0] & 0x08 != 0 {
                         mask |= 1 << i;
                     }
                 }
+                mask
             } else {
-                for i in 0..4u32 {
-                    let dp = self.palette.state.digital[i as usize];
-                    if dp & 0x40 != 0 {
-                        mask |= (1 << i) | (1 << (i + 8));
-                    }
-                    if dp & 0x04 != 0 {
-                        mask |= (1 << (i + 4)) | (1 << (i + 12));
-                    }
-                }
+                digital_monochrome_mask(&self.palette.state.digital)
             }
-            mask
         } else {
             0
         };
 
-        // Graphics GDC line repeat factor from CSRFORM.
-        snapshot.gdc_graphics_lines_per_row = u32::from(self.gdc_slave.state.lines_per_row);
+        let gdc_graphics_lines_per_row = u32::from(self.gdc_slave.state.lines_per_row);
+        let gdc_graphics_zoom_display = u32::from(self.gdc_slave.state.zoom_display);
 
-        // Graphics GDC display zoom factor.
-        snapshot.gdc_graphics_zoom_display = u32::from(self.gdc_slave.state.zoom_display);
-
-        // Interlace mode.
-        snapshot.gdc_interlace_mode = u32::from(self.gdc_slave.state.interlace_mode);
-
-        // GDC graphics scroll areas - double partition line counts for interlace ON mode.
-        for i in 0..4 {
+        // Graphics scroll partitions - double partition line counts for interlace ON mode.
+        let mut gdc_graphics_scroll = [0u32; 4];
+        for (i, slot) in gdc_graphics_scroll.iter_mut().enumerate() {
             let area = &self.gdc_slave.state.scroll[i];
             let line_count = if interlace_on {
                 area.line_count.saturating_mul(2)
             } else {
                 area.line_count
             };
-            snapshot.gdc_graphics_scroll[i] = area.start_address | (u32::from(line_count) << 16);
+            *slot = area.start_address | (u32::from(line_count) << 16);
         }
 
-        // KAC-mode-derived mask for kanji high-byte detection.
         let kanji_high_mask: u8 = if is_kac_dot_access_mode { 0x00 } else { 0xFF };
-        snapshot.gdc_text_kanji_high_mask = u32::from(kanji_high_mask);
 
-        // CRTC registers.
-        snapshot.crtc_pl_bl =
+        let crtc_pl_bl =
             u32::from(self.crtc.state.regs[0]) | (u32::from(self.crtc.state.regs[1]) << 16);
-        snapshot.crtc_cl_ssl =
+        let crtc_cl_ssl =
             u32::from(self.crtc.state.regs[2]) | (u32::from(self.crtc.state.regs[3]) << 16);
-        snapshot.crtc_sur_sdr =
+        let crtc_sur_sdr =
             u32::from(self.crtc.state.regs[4]) | (u32::from(self.crtc.state.regs[5]) << 16);
 
-        // Text cursor (master GDC EAD = character address in text VRAM).
-        // Bit layout: [31] visible, [27:23] cursor_bottom, [22:18] cursor_top, [17:0] address.
         let cursor_blink_visible = if self.gdc_master.state.cursor_blink {
             true
         } else {
@@ -1267,79 +1308,86 @@ impl<T: Tracing> Pc9801Bus<T> {
         let cursor_addr = self.gdc_master.state.ead;
         let cursor_top = u32::from(self.gdc_master.state.cursor_top & 0x1F);
         let cursor_bottom = u32::from(self.gdc_master.state.cursor_bottom & 0x1F);
-        snapshot.text_cursor = if cursor_enabled {
-            cursor_addr | (cursor_top << 18) | (cursor_bottom << 23) | 0x8000_0000
+
+        let gdc_graphics_al = u32::from(self.gdc_slave.state.al);
+
+        let pegc_inputs = if self.pegc.is_256_color_active() {
+            display_flags |= DISPLAY_FLAG_PEGC_256_COLOR;
+            let is_packed = self.pegc.is_packed_pixel_mode();
+            let is_one_screen =
+                self.pegc.state.screen_mode == device::pegc::PegcScreenMode::OneScreen;
+            let display_page = self.display_page_index() as u32;
+
+            let mut palette_rgba_256 = [0u32; 256];
+            for (i, slot) in palette_rgba_256.iter_mut().enumerate() {
+                let [green, red, blue] = self.pegc.state.palette_256[i];
+                *slot = u32::from(red)
+                    | (u32::from(green) << 8)
+                    | (u32::from(blue) << 16)
+                    | 0xFF00_0000;
+            }
+
+            let pegc_flags =
+                u32::from(is_packed) | (u32::from(is_one_screen) << 1) | (display_page << 2);
+
+            let vram: &[u8] = self
+                .memory
+                .state
+                .pegc_vram
+                .as_ref()
+                .map(|v| v.as_ref().as_ref())
+                .unwrap_or(&[]);
+
+            Some(PegcRenderInputs {
+                palette_rgba_256,
+                pegc_flags,
+                vram,
+            })
         } else {
-            0
+            None
         };
 
-        // Normalize the text plane into self-contained per-cell descriptors.
-        let normalizer_inputs = TextNormalizerInputs {
+        let inputs = RenderInputs {
             text_vram: &self.memory.state.text_vram,
-            pitch: u32::from(self.gdc_master.state.pitch),
+            gdc_text_pitch,
+            gdc_scroll_start_line,
+            video_mode: u32::from(video_mode),
+            crtc_pl_bl,
+            crtc_cl_ssl,
+            crtc_sur_sdr,
             kanji_high_mask,
             attr_semigraphics_mode: self.display_control.is_attr_semigraphics_enabled(),
             fontsel_8x16: self.display_control.is_font_8x16_mode(),
             blink_visible: text_blink_visible,
             cursor_visible: cursor_enabled,
             cursor_addr,
-        };
-        normalize_text_plane(&normalizer_inputs, &mut snapshot.text_cells);
+            cursor_top,
+            cursor_bottom,
 
-        // Graphics GDC active display lines.
-        snapshot.gdc_graphics_al = u32::from(self.gdc_slave.state.al);
-
-        // Graphics VRAM planes (selected display page).
-        let b_plane = cast_u32_slice_as_bytes_mut(&mut snapshot.graphics_b_plane);
-        b_plane.copy_from_slice(
-            &self.memory.state.graphics_vram[display_page_base..display_page_base + 0x8000],
-        );
-
-        let r_plane = cast_u32_slice_as_bytes_mut(&mut snapshot.graphics_r_plane);
-        r_plane.copy_from_slice(
-            &self.memory.state.graphics_vram
+            graphics_b_plane: &self.memory.state.graphics_vram
+                [display_page_base..display_page_base + 0x8000],
+            graphics_r_plane: &self.memory.state.graphics_vram
                 [display_page_base + 0x8000..display_page_base + 0x10000],
-        );
-
-        let g_plane = cast_u32_slice_as_bytes_mut(&mut snapshot.graphics_g_plane);
-        g_plane.copy_from_slice(
-            &self.memory.state.graphics_vram
+            graphics_g_plane: &self.memory.state.graphics_vram
                 [display_page_base + 0x10000..display_page_base + 0x18000],
-        );
+            graphics_e_plane: &self.memory.state.e_plane_vram
+                [e_page_base..e_page_base + E_PLANE_PAGE_SIZE_BYTES],
+            gdc_graphics_pitch,
+            gdc_graphics_scroll,
+            gdc_graphics_lines_per_row,
+            gdc_graphics_zoom_display,
+            gdc_graphics_al,
+            graphics_monochrome_mask,
 
-        let e_plane = cast_u32_slice_as_bytes_mut(&mut snapshot.graphics_e_plane);
-        e_plane.copy_from_slice(
-            &self.memory.state.e_plane_vram[e_page_base..e_page_base + E_PLANE_PAGE_SIZE_BYTES],
-        );
+            palette_rgba,
+            display_flags,
 
-        if self.pegc.is_256_color_active() {
-            snapshot.display_flags |= DISPLAY_FLAG_PEGC_256_COLOR;
+            pegc: pegc_inputs,
+        };
 
-            let is_packed = self.pegc.is_packed_pixel_mode();
-            let is_one_screen =
-                self.pegc.state.screen_mode == device::pegc::PegcScreenMode::OneScreen;
-            let display_page = self.display_page_index() as u32;
+        self.last_native_height = SoftwareRenderer::native_height(&inputs);
 
-            let pegc_snap = &mut *self.pegc_vsync_snapshot;
-
-            for i in 0..256 {
-                let [green, red, blue] = self.pegc.state.palette_256[i];
-                pegc_snap.palette_rgba_256[i] = u32::from(red)
-                    | (u32::from(green) << 8)
-                    | (u32::from(blue) << 16)
-                    | 0xFF00_0000;
-            }
-
-            pegc_snap.pegc_flags =
-                u32::from(is_packed) | (u32::from(is_one_screen) << 1) | (display_page << 2);
-
-            let vram_bytes = cast_u32_slice_as_bytes_mut(&mut pegc_snap.pegc_vram);
-            vram_bytes.copy_from_slice(&**self.memory.state.pegc_vram.as_ref().unwrap());
-
-            self.pegc_mode_active = true;
-        } else {
-            self.pegc_mode_active = false;
-        }
+        self.software_renderer.render(&inputs);
     }
 
     /// Generates audio samples for the current frame.
@@ -1867,7 +1915,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                     }
                 }
                 EventKind::GdcVsync => {
-                    self.capture_vsync_snapshot();
+                    self.render_display_frame();
                     self.tram_wait = 1;
                     self.vram_wait = 1;
                     self.grcg_wait = 1;
@@ -2438,56 +2486,33 @@ mod tests {
     }
 
     #[test]
-    fn capture_vsync_snapshot_populates_typed_fields() {
+    fn render_display_frame_uses_active_display_page_for_graphics() {
         let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
 
-        bus.palette.state.analog[1] = [0x0A, 0x02, 0x0F];
-        bus.gdc_master.state.pitch = 80;
-        bus.gdc_master.state.blink_counter = 64;
-        bus.gdc_master.state.scroll[0].start_address = 0x1234;
-        bus.gdc_master.state.scroll[0].line_count = 0x00AB;
-        bus.gdc_slave.state.scroll[0].start_address = 0x5678;
-        bus.gdc_slave.state.scroll[0].line_count = 0x00CD;
+        // Enable global display (mode1 bit 7), 16-color/analog palette (mode2 bit 0),
+        // and graphics display.
+        bus.display_control.state.video_mode = 0x80;
+        bus.display_control.state.mode2 |= 0x01;
+        bus.gdc_slave.state.display_enabled = true;
         bus.gdc_slave.state.pitch = 40;
-        bus.display_control.state.video_mode = 0x1C;
+        bus.gdc_slave.state.scroll[0].line_count = 400;
+        bus.gdc_slave.state.lines_per_row = 1;
+        // palette[2] = red. With only the R plane bit set, graphics_color resolves
+        // to (R<<1) = 2.
+        bus.palette.state.analog[2] = [0x00, 0x0F, 0x00];
 
-        bus.memory.state.graphics_vram[0] = 0xAA;
-        bus.memory.state.graphics_vram[0x8000] = 0xBB;
-        bus.memory.state.graphics_vram[0x10000] = 0xCC;
-        bus.memory.state.e_plane_vram[0] = 0xDD;
+        // Page 0: top-left pixel reads bit 7 of R-plane, set to 1.
+        bus.memory.state.graphics_vram[0x8000] = 0x80;
 
-        bus.capture_vsync_snapshot();
-        let snapshot = bus.vsync_snapshot();
+        bus.render_display_frame();
+        let fb = bus.display_framebuffer();
+        assert_eq!(&fb[0..4], &[0xFF, 0x00, 0x00, 0xFF], "page 0 red pixel");
 
-        assert_eq!(snapshot.palette_rgba[1], 0xFFFF_AA22);
-        assert_eq!(snapshot.display_flags, 0b0111);
-        assert_eq!(snapshot.gdc_text_pitch, 80);
-        assert_eq!(snapshot.gdc_scroll_start_line[0], 0x00AB_1234);
-        assert_eq!(snapshot.gdc_graphics_scroll[0], 0x00CD_5678);
-        assert_eq!(snapshot.gdc_graphics_pitch, 80);
-        assert_eq!(snapshot.video_mode, 0x1C);
-        assert_eq!(snapshot.graphics_b_plane[0] & 0xFF, 0xAA);
-        assert_eq!(snapshot.graphics_r_plane[0] & 0xFF, 0xBB);
-        assert_eq!(snapshot.graphics_g_plane[0] & 0xFF, 0xCC);
-        assert_eq!(snapshot.graphics_e_plane[0] & 0xFF, 0xDD);
-    }
-
-    #[test]
-    fn capture_vsync_snapshot_sets_kanji_high_mask_from_kac_mode() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
-
-        bus.capture_vsync_snapshot();
-        assert_eq!(bus.vsync_snapshot().gdc_text_kanji_high_mask, 0xFF);
-
-        // Set mode1 bit 5 (KAC dot-access mode).
-        bus.io_write_byte(0x68, 0x0B);
-        bus.capture_vsync_snapshot();
-        assert_eq!(bus.vsync_snapshot().gdc_text_kanji_high_mask, 0x00);
-
-        // Clear mode1 bit 5 (KAC code-access mode).
-        bus.io_write_byte(0x68, 0x0A);
-        bus.capture_vsync_snapshot();
-        assert_eq!(bus.vsync_snapshot().gdc_text_kanji_high_mask, 0xFF);
+        // Switch display page to 1 - top-left should now read page 1 R-plane, which is 0.
+        bus.io_write_byte(0xA4, 0x01);
+        bus.render_display_frame();
+        let fb = bus.display_framebuffer();
+        assert_eq!(&fb[0..4], &[0x00, 0x00, 0x00, 0xFF], "page 1 black pixel");
     }
 
     #[test]
@@ -2607,24 +2632,6 @@ mod tests {
         bus.write_byte(0xE0000, 0x55);
         assert_eq!(bus.memory.state.e_plane_vram[e_page1_base], 0x55);
         assert_eq!(bus.memory.state.e_plane_vram[0], 0x33);
-    }
-
-    #[test]
-    fn display_page_selects_snapshot_bank() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
-
-        let page1_base = super::GRAPHICS_PAGE_SIZE_BYTES;
-        bus.memory.state.graphics_vram[0] = 0xAA; // page 0 B-plane
-        bus.memory.state.graphics_vram[page1_base] = 0xBB; // page 1 B-plane
-
-        // Snapshot from page 0 (default).
-        bus.capture_vsync_snapshot();
-        assert_eq!(bus.vsync_snapshot().graphics_b_plane[0] & 0xFF, 0xAA);
-
-        // Switch display page to 1 via port 0xA4.
-        bus.io_write_byte(0xA4, 0x01);
-        bus.capture_vsync_snapshot();
-        assert_eq!(bus.vsync_snapshot().graphics_b_plane[0] & 0xFF, 0xBB);
     }
 
     #[test]
@@ -2819,34 +2826,6 @@ mod tests {
     }
 
     #[test]
-    fn pegc_snapshot_sets_flag_bit() {
-        let mut bus = create_pc9821_bus();
-        enable_pegc(&mut bus);
-
-        bus.capture_vsync_snapshot();
-        assert_ne!(
-            bus.vsync_snapshot().display_flags & super::DISPLAY_FLAG_PEGC_256_COLOR,
-            0
-        );
-        assert!(bus.pegc_vsync_snapshot().is_some());
-    }
-
-    #[test]
-    fn pegc_snapshot_copies_vram_and_palette() {
-        let mut bus = create_pc9821_bus();
-        enable_pegc(&mut bus);
-
-        bus.pegc.state.palette_256[42] = [0x10, 0x20, 0x30];
-        bus.memory.state.pegc_vram.as_mut().unwrap()[0] = 0xEE;
-
-        bus.capture_vsync_snapshot();
-
-        let snap = bus.pegc_vsync_snapshot().unwrap();
-        assert_eq!(snap.palette_rgba_256[42], 0xFF30_1020);
-        assert_eq!(snap.pegc_vram[0] & 0xFF, 0xEE);
-    }
-
-    #[test]
     fn pegc_b8000_falls_through_to_graphics_vram() {
         let mut bus = create_pc9821_bus();
         enable_pegc(&mut bus);
@@ -2966,22 +2945,6 @@ mod tests {
         bus.io_write_byte(0x6A, 0x68);
         bus.io_write_byte(0x09A0, 0x0D);
         assert_eq!(bus.io_read_byte(0x09A0), 0);
-    }
-
-    #[test]
-    fn pegc_snapshot_display_page_bit() {
-        let mut bus = create_pc9821_bus();
-        enable_pegc(&mut bus);
-
-        bus.display_control.write_display_page(0);
-        bus.capture_vsync_snapshot();
-        let snap = bus.pegc_vsync_snapshot().unwrap();
-        assert_eq!(snap.pegc_flags & 0x04, 0);
-
-        bus.display_control.write_display_page(1);
-        bus.capture_vsync_snapshot();
-        let snap = bus.pegc_vsync_snapshot().unwrap();
-        assert_eq!(snap.pegc_flags & 0x04, 0x04);
     }
 
     #[test]

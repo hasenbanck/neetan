@@ -186,17 +186,6 @@ fn graphics_page_select_affects_cpu_access_and_snapshot_display() {
     bus.io_write_byte(0xA6, 0x00);
     assert_eq!(bus.read_byte(0xA8000), 0x11);
     assert_eq!(bus.read_byte(0xE0000), 0x55);
-
-    // Display page selects which page is sent to the renderer snapshot.
-    bus.io_write_byte(0xA4, 0x00);
-    bus.capture_vsync_snapshot();
-    assert_eq!(bus.vsync_snapshot().graphics_b_plane[0] & 0xFF, 0x11);
-    assert_eq!(bus.vsync_snapshot().graphics_e_plane[0] & 0xFF, 0x55);
-
-    bus.io_write_byte(0xA4, 0x01);
-    bus.capture_vsync_snapshot();
-    assert_eq!(bus.vsync_snapshot().graphics_b_plane[0] & 0xFF, 0x22);
-    assert_eq!(bus.vsync_snapshot().graphics_e_plane[0] & 0xFF, 0x66);
 }
 
 #[test]
@@ -218,25 +207,6 @@ fn memory_switch_writes_require_mode1_bit6() {
     bus.io_write_byte(0x68, 0x0C);
     bus.write_byte(memory_switch_1, 0x55);
     assert_eq!(bus.read_byte(memory_switch_1), 0xAA);
-}
-
-#[test]
-fn mode1_bit7_controls_global_display_flag() {
-    let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
-
-    // Boot state: bit 7 set.
-    bus.capture_vsync_snapshot();
-    assert_ne!(bus.vsync_snapshot().display_flags & 0x40, 0);
-
-    // Clear mode1 bit 7 (flip-flop: ADR=7, DT=0).
-    bus.io_write_byte(0x68, 0x0E);
-    bus.capture_vsync_snapshot();
-    assert_eq!(bus.vsync_snapshot().display_flags & 0x40, 0);
-
-    // Set mode1 bit 7 again (flip-flop: ADR=7, DT=1).
-    bus.io_write_byte(0x68, 0x0F);
-    bus.capture_vsync_snapshot();
-    assert_ne!(bus.vsync_snapshot().display_flags & 0x40, 0);
 }
 
 #[test]

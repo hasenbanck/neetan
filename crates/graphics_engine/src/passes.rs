@@ -4,13 +4,11 @@ use crate::plumbing::RenderingEncoder;
 
 mod blitter;
 mod clear;
-mod compose;
 mod crt;
 mod scale;
 
 pub(crate) use blitter::*;
 pub(crate) use clear::*;
-pub(crate) use compose::{Compose, render_compose_pass};
 pub(crate) use crt::{Crt, render_crt_pass};
 pub(crate) use scale::{Scale, render_scale_pass};
 

@@ -1,7 +1,7 @@
 //! Hardware device emulations for PC-98 peripherals.
 
 #![warn(missing_docs)]
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 pub mod beeper;
 pub mod bios;
@@ -34,6 +34,7 @@ pub mod sasi;
 #[cfg(feature = "sc55")]
 pub mod sc55;
 pub mod sdip;
+pub mod software_renderer;
 pub mod sound_blaster_16;
 pub mod soundboard_14;
 pub mod soundboard_26k;

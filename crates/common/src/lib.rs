@@ -8,19 +8,13 @@
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
-mod display_snapshot;
 pub mod error;
 mod jis;
 pub mod log;
 mod os;
 mod stack_vec;
-mod text_normalizer;
 mod trace;
 
-pub use display_snapshot::{
-    DISPLAY_FLAG_PEGC_256_COLOR, DisplaySnapshotUpload, PegcSnapshotUpload, TEXT_VRAM_BYTES,
-    cast_u32_slice_as_bytes_mut,
-};
 pub use error::{Context, ContextError, OptionContext, StringError};
 pub use jis::{
     JisChar, char_to_jis, is_shift_jis_lead_byte, is_shift_jis_trail_byte, jis_slice_to_string,
@@ -31,7 +25,6 @@ pub use os::{
     ConsoleIo, CpuAccess, CursorAccess, DiskIo, DriveIo, HardwareCursorState, MemoryAccess,
 };
 pub use stack_vec::StackVec;
-pub use text_normalizer::{TEXT_CELL_COUNT, TextNormalizerInputs, normalize_text_plane};
 pub use trace::{NoTracing, OsBootStage, Tracing};
 
 /// CPU generation.
@@ -1131,13 +1124,14 @@ pub trait Machine {
     /// Returns `true` if the guest triggered a system shutdown.
     fn shutdown_requested(&self) -> bool;
 
-    /// Returns a reference to the display snapshot captured at the last VSYNC.
-    fn snapshot_display(&self) -> &DisplaySnapshotUpload;
+    /// Returns the composed 640x480 framebuffer rendered at the last VSYNC,
+    /// as packed `R, G, B, A` bytes (little-endian per pixel).
+    fn display_framebuffer(&self) -> &[u8];
 
-    /// Returns the PEGC snapshot if 256-color mode was active at last VSYNC.
-    fn pegc_snapshot_display(&self) -> Option<&PegcSnapshotUpload> {
-        None
-    }
+    /// Returns the active vertical display height (400, or up to 480 in
+    /// PEGC 480-line mode) for the framebuffer returned by
+    /// [`display_framebuffer`](Self::display_framebuffer).
+    fn display_native_height(&self) -> u32;
 
     /// Injects a PC-98 keyboard scan code.
     fn push_keyboard_scancode(&mut self, code: u8);
@@ -1162,10 +1156,8 @@ pub trait Machine {
     /// last call, at the given `volume` (0.0–1.0).
     fn generate_audio_samples(&mut self, volume: f32, output: &mut [f32]) -> usize;
 
-    /// Returns `true` if the font ROM was modified since the last call, and clears the flag.
-    fn take_font_rom_dirty(&mut self) -> bool;
-
-    /// Returns the font ROM data for GPU upload.
+    /// Returns the font ROM data. Used by the image selector to seed its
+    /// own software renderer with the same font ROM the bus is using.
     fn font_rom_data(&self) -> &[u8];
 
     /// Inserts a floppy disk image into the specified drive (0-based).

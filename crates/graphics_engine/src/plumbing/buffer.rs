@@ -135,11 +135,6 @@ impl MappedBuffer {
     pub(crate) fn raw(&self) -> vk::Buffer {
         self.raw
     }
-
-    #[inline]
-    pub(crate) fn byte_size(&self) -> u64 {
-        self.byte_size
-    }
 }
 
 impl Drop for MappedBuffer {

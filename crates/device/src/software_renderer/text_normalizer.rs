@@ -3,14 +3,11 @@
 //! Text rendering on the PC-98 is partly stateful: kanji characters span two
 //! cells with a leading + trailing JIS byte, gaiji codes alternate between two
 //! ROM banks, and the underline attribute "bleeds" into the right edge of the
-//! next cell on the same row. Doing this on the GPU forces per-pixel neighbor
-//! lookbacks. We instead walk the 80x25 text plane on the CPU once per VSYNC
-//! and produce a self-contained packed `u32` per cell that the compose shader
-//! can read without any neighbor lookups.
-//!
-//! The packed cell layout matches [`crate::DisplaySnapshotUpload::text_cells`].
+//! next cell on the same row. We walk the 80x25 text plane on the CPU once
+//! per VSYNC and produce a self-contained packed `u32` per cell that the
+//! compose loop can read without any neighbor lookups.
 
-use crate::display_snapshot::TEXT_VRAM_BYTES;
+use super::{TEXT_CELL_COUNT, TEXT_VRAM_BYTES};
 
 /// Width in bits of the font ROM offset field within a packed cell.
 const FONT_OFFSET_BITS: u32 = 20;
@@ -31,10 +28,7 @@ const FLAG_VLINE: u32 = 1 << 27;
 /// Bit position of the `cursor_cell` flag.
 const FLAG_CURSOR_CELL: u32 = 1 << 28;
 
-/// Number of cells in the normalized text plane.
-pub const TEXT_CELL_COUNT: usize = 4096;
-
-/// Address mask for the cursor EAD field (matches the shader-side mask).
+/// Address mask for the cursor EAD field.
 const CURSOR_ADDRESS_MASK: u32 = 0x3FFFF;
 
 /// Half of the kanji ROM (left half size in bytes). Adding this to a left-half
@@ -57,7 +51,7 @@ const ANK_8X16_SEMIGFX_OFFSET: u32 = 0x1000;
 const ANK_6X8_SEMIGFX_OFFSET: u32 = 8;
 
 /// Inputs that vary per VSYNC and drive the normalization pass.
-pub struct TextNormalizerInputs<'a> {
+pub(super) struct TextNormalizerInputs<'a> {
     /// Full TVRAM image: 0x0000-0x1FFF character bytes, 0x2000-0x3FFF attribute bytes.
     pub text_vram: &'a [u8; TEXT_VRAM_BYTES],
     /// GDC text pitch in cells per row (typically 80).
@@ -65,7 +59,8 @@ pub struct TextNormalizerInputs<'a> {
     /// Mask applied to `char_high` to detect kanji. 0xFF for code-access mode,
     /// 0x00 when KAC dot-access mode is selected (which disables kanji decoding).
     pub kanji_high_mask: u8,
-    /// True when port 0x68 bit 0 selects semigraphics for attr bit 4 (false = vertical line).
+    /// True when port 0x68 bit 0 selects semigraphics for attr bit 4
+    /// (false = vertical line).
     pub attr_semigraphics_mode: bool,
     /// True when port 0x68 bit 3 selects 7x13/8x16 mode (false = 6x8 mode).
     pub fontsel_8x16: bool,
@@ -83,7 +78,7 @@ pub struct TextNormalizerInputs<'a> {
 /// needed to flatten kanji lead/trail pairs, gaiji bank pairing, underline
 /// bleed, and cursor inheritance. Cells beyond `pitch * rows` for the active
 /// pitch are zeroed.
-pub fn normalize_text_plane(
+pub(super) fn normalize_text_plane(
     inputs: &TextNormalizerInputs<'_>,
     out_cells: &mut [u32; TEXT_CELL_COUNT],
 ) {

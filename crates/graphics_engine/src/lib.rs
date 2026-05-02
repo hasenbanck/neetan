@@ -15,10 +15,7 @@ use std::{
     rc::Rc,
 };
 
-use common::{
-    Context, DISPLAY_FLAG_PEGC_256_COLOR, DisplaySnapshotUpload, OptionContext, PegcSnapshotUpload,
-    StackVec, bail, error, info,
-};
+use common::{Context, OptionContext, StackVec, bail, error, info};
 pub use errors::Error;
 pub use instructions::RenderInstructions;
 use jay_ash::vk;
@@ -27,8 +24,8 @@ use crate::{
     descriptors::{DescriptorResources, FrameDescriptorSets},
     layout_transitioner::LayoutTransitioner,
     passes::{
-        Blitter, Compose, Crt, Scale, clear_frame_pass, render_blitter_pass, render_compose_pass,
-        render_crt_pass, render_scale_pass,
+        Blitter, Crt, Scale, clear_frame_pass, render_blitter_pass, render_crt_pass,
+        render_scale_pass,
     },
     pipeline_loader::PipelineLoader,
     plumbing::{
@@ -44,9 +41,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 const INITIAL_WINDOW_WIDTH: u32 = 1280;
 const INITIAL_WINDOW_HEIGHT_4_BY_3: u32 = 960;
 const INITIAL_WINDOW_HEIGHT_1_BY_1: u32 = 800;
-const UPLOAD_BUFFER_SIZE: u64 = DisplaySnapshotUpload::BYTE_SIZE as u64;
-const PEGC_BUFFER_SIZE: u64 = PegcSnapshotUpload::BYTE_SIZE as u64;
-const FONT_ROM_BUFFER_SIZE: u64 = 0x83000;
+const NATIVE_WIDTH: u32 = 640;
+const NATIVE_HEIGHT: u32 = 480;
+const FRAMEBUFFER_BYTES: u64 = (NATIVE_WIDTH * NATIVE_HEIGHT * 4) as u64;
 const DEFAULT_BLITTER_IMAGE_FORMAT: vk::Format = vk::Format::R8G8B8A8_SRGB;
 
 /// Display aspect mode for scaling and startup dimensions.
@@ -99,8 +96,6 @@ pub struct GraphicsEngine {
     resources: Resources,
     /// Layout transitioner for image layout transitions.
     layout_transitioner: LayoutTransitioner,
-    /// Composes the native-resolution image from VRAM data.
-    compose: Compose,
     /// Scales the native-resolution image to the window resolution.
     scale: Scale,
     /// Applies CRT scaling from the native-resolution image to the window resolution.
@@ -131,8 +126,6 @@ pub struct GraphicsEngine {
     surface: Option<Surface>,
     /// Vulkan device abstraction.
     device: Device,
-    /// Font ROM GPU buffer (kanji + text font banks, shared across frames).
-    font_rom_buffer: MappedBuffer,
     /// Display aspect mode for computing fitted color target extent.
     display_aspect_mode: DisplayAspectMode,
 }
@@ -141,7 +134,6 @@ impl GraphicsEngine {
     /// Creates a new graphics engine.
     pub fn new(
         platform_extension_names: &[String],
-        font_rom_data: &[u8],
         display_aspect_mode: DisplayAspectMode,
     ) -> Result<Self> {
         let (initial_width, initial_height) = display_aspect_mode.startup_extent();
@@ -184,9 +176,6 @@ impl GraphicsEngine {
             Resources::new(&device, &mut layout_transitioner, color_width, color_height)
                 .context("Can't initialize resources")?;
 
-        let compose = Compose::new(&pipeline_loader, descriptor_resources.pipeline_layout())
-            .context("Can't create compose pipeline")?;
-
         let scale = Scale::new(&pipeline_loader, descriptor_resources.pipeline_layout())
             .context("Can't create scale pipeline")?;
 
@@ -200,28 +189,12 @@ impl GraphicsEngine {
         )
         .context("Can't create blitter")?;
 
-        let mut font_rom_buffer = MappedBuffer::new(
-            Rc::clone(device.context()),
-            c"font_rom_buffer",
-            vk::BufferUsageFlags::STORAGE_BUFFER,
-            FONT_ROM_BUFFER_SIZE,
-            None,
-        )
-        .context("Failed to create font ROM buffer")?;
-
-        {
-            let dst = font_rom_buffer.as_mut_slice_at(0, font_rom_data.len());
-            dst.copy_from_slice(font_rom_data);
-            font_rom_buffer.flush(0, font_rom_data.len() as u64);
-        }
-
         info!("Graphics engine initialized");
 
         let engine = Self {
             descriptor_resources,
             resources,
             layout_transitioner,
-            compose,
             scale,
             crt,
             blitter,
@@ -236,18 +209,10 @@ impl GraphicsEngine {
             frame_timeline_value: 0,
             surface: None,
             device,
-            font_rom_buffer,
             display_aspect_mode,
         };
 
         Ok(engine)
-    }
-
-    /// Updates the font ROM GPU buffer with new data (e.g. after gaiji writes).
-    pub fn update_font_rom(&mut self, data: &[u8]) {
-        let dst = self.font_rom_buffer.as_mut_slice_at(0, data.len());
-        dst.copy_from_slice(data);
-        self.font_rom_buffer.flush(0, data.len() as u64);
     }
 
     /// Returns the raw `VkInstance` handle for interop with external libraries.
@@ -335,23 +300,14 @@ impl GraphicsEngine {
                 )
                 .context("Failed to create per-frame descriptors")?;
 
-                let upload_buffer = MappedBuffer::new(
+                let framebuffer_staging = MappedBuffer::new(
                     Rc::clone(&context),
-                    &format!("upload_buffer_{i}").into_cstring(),
-                    vk::BufferUsageFlags::STORAGE_BUFFER,
-                    UPLOAD_BUFFER_SIZE,
+                    &format!("framebuffer_staging_{i}").into_cstring(),
+                    vk::BufferUsageFlags::TRANSFER_SRC,
+                    FRAMEBUFFER_BYTES,
                     None,
                 )
-                .context("Failed to create per-frame upload buffer")?;
-
-                let pegc_buffer = MappedBuffer::new(
-                    Rc::clone(&context),
-                    &format!("pegc_buffer_{i}").into_cstring(),
-                    vk::BufferUsageFlags::STORAGE_BUFFER,
-                    PEGC_BUFFER_SIZE,
-                    None,
-                )
-                .context("Failed to create per-frame PEGC buffer")?;
+                .context("Failed to create per-frame framebuffer staging buffer")?;
 
                 let mut last_descriptor_version = 0u64;
                 self.descriptor_resources.write_stale_descriptors(
@@ -360,9 +316,6 @@ impl GraphicsEngine {
                     self.resources.descriptor_version(),
                     self.resources.color_target(),
                     self.resources.native_target(),
-                    &upload_buffer,
-                    &self.font_rom_buffer,
-                    &pegc_buffer,
                 );
 
                 Ok(FrameResources {
@@ -370,8 +323,7 @@ impl GraphicsEngine {
                     present_fence,
                     graphics_command_buffer,
                     descriptors,
-                    upload_buffer,
-                    pegc_buffer,
+                    framebuffer_staging,
                     last_descriptor_version,
                     present_wait_id: 0,
                 })
@@ -469,28 +421,18 @@ impl GraphicsEngine {
                     clear_frame_pass(&mut encoder, extent, &frame);
                 }
                 Some(render_instructions) => {
-                    // Copy upload data from render instructions into the GPU-mapped buffer.
-                    let upload_data = render_instructions.display_snapshot.as_bytes();
+                    // Copy the composed framebuffer into the per-frame staging buffer.
+                    let framebuffer = render_instructions.framebuffer;
+                    debug_assert_eq!(framebuffer.len(), FRAMEBUFFER_BYTES as usize);
                     {
                         let dst = frame_resources
-                            .upload_buffer
-                            .as_mut_slice_at(0, upload_data.len());
-                        dst.copy_from_slice(upload_data);
+                            .framebuffer_staging
+                            .as_mut_slice_at(0, framebuffer.len());
+                        dst.copy_from_slice(framebuffer);
                     }
                     frame_resources
-                        .upload_buffer
-                        .flush(0, upload_data.len() as u64);
-
-                    if let Some(pegc_snapshot) = render_instructions.pegc_snapshot {
-                        let pegc_data = pegc_snapshot.as_bytes();
-                        {
-                            let dst = frame_resources
-                                .pegc_buffer
-                                .as_mut_slice_at(0, pegc_data.len());
-                            dst.copy_from_slice(pegc_data);
-                        }
-                        frame_resources.pegc_buffer.flush(0, pegc_data.len() as u64);
-                    }
+                        .framebuffer_staging
+                        .flush(0, framebuffer.len() as u64);
 
                     self.descriptor_resources.write_stale_descriptors(
                         &mut frame_resources.descriptors,
@@ -498,9 +440,6 @@ impl GraphicsEngine {
                         self.resources.descriptor_version(),
                         self.resources.color_target(),
                         self.resources.native_target(),
-                        &frame_resources.upload_buffer,
-                        &self.font_rom_buffer,
-                        &frame_resources.pegc_buffer,
                     );
 
                     // Render phase
@@ -521,29 +460,40 @@ impl GraphicsEngine {
 
                     encoder.begin_debug_label(c"Render Phase", [0.0, 0.5, 1.0, 1.0]);
 
-                    // Stage 1 - Compose: render text VRAM to native_target (640×480).
+                    // Stage 1 - Image transfer: Copy the composed framebuffer into native target image.
                     {
-                        encoder.begin_debug_label(c"Compose Pass", [1.0, 0.0, 0.0, 1.0]);
-                        render_compose_pass(
-                            &mut encoder,
-                            self.resources.native_target(),
-                            &self.compose,
+                        encoder.begin_debug_label(c"Framebuffer Copy", [1.0, 0.0, 0.0, 1.0]);
+                        let native_target = self.resources.native_target();
+                        encoder.image_barrier(
+                            native_target.handle(),
+                            vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                            vk::AccessFlags2::SHADER_SAMPLED_READ,
+                            vk::PipelineStageFlags2::COPY,
+                            vk::AccessFlags2::TRANSFER_WRITE,
+                            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        );
+                        encoder.copy_buffer_to_image(
+                            frame_resources.framebuffer_staging.raw(),
+                            native_target.handle(),
+                            NATIVE_WIDTH,
+                            NATIVE_HEIGHT,
+                        );
+                        encoder.image_barrier(
+                            native_target.handle(),
+                            vk::PipelineStageFlags2::COPY,
+                            vk::AccessFlags2::TRANSFER_WRITE,
+                            vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                            vk::AccessFlags2::SHADER_SAMPLED_READ,
+                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                         );
                         encoder.end_debug_label();
                     }
 
                     // Stage 2 - Upscale: read native_target, write to color_target (window res).
                     {
-                        let gdc_al = render_instructions.display_snapshot.gdc_graphics_al;
-                        let native_height = if (render_instructions.display_snapshot.display_flags
-                            & DISPLAY_FLAG_PEGC_256_COLOR)
-                            != 0
-                            && gdc_al > 400
-                        {
-                            gdc_al.min(480)
-                        } else {
-                            400
-                        };
+                        let native_height = render_instructions.native_height;
 
                         if render_instructions.crt {
                             encoder.begin_debug_label(c"CRT Pass", [0.0, 1.0, 0.0, 1.0]);

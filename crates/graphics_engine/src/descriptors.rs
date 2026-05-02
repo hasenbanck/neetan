@@ -5,7 +5,7 @@ use jay_ash::vk;
 
 use crate::{
     Result,
-    plumbing::{ColorTargetImage, CommandEncoder, Context, MappedBuffer},
+    plumbing::{ColorTargetImage, CommandEncoder, Context, SampledTransferImage},
 };
 
 pub(crate) struct DescriptorResources {
@@ -60,7 +60,8 @@ impl DescriptorResources {
                 .context("Failed to create sampler set layout")?
         };
 
-        // Set 1: Two SAMPLED_IMAGE bindings + three STORAGE_BUFFER bindings.
+        // Set 1: Two SAMPLED_IMAGE bindings - color_target (binding 0) and
+        // native_target (binding 1), used by the scale/CRT and blitter passes.
         let resource_bindings = [
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
@@ -70,21 +71,6 @@ impl DescriptorResources {
             vk::DescriptorSetLayoutBinding::default()
                 .binding(1)
                 .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(3)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(4)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
@@ -124,17 +110,13 @@ impl DescriptorResources {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn write_stale_descriptors(
         &self,
         frame_sets: &mut FrameDescriptorSets,
         descriptor_version: &mut u64,
         current_version: u64,
         color_target: &ColorTargetImage,
-        native_target: &ColorTargetImage,
-        upload_buffer: &MappedBuffer,
-        font_rom_buffer: &MappedBuffer,
-        pegc_buffer: &MappedBuffer,
+        native_target: &SampledTransferImage,
     ) {
         if *descriptor_version >= current_version {
             return;
@@ -150,21 +132,6 @@ impl DescriptorResources {
             .image_view(native_target.view())
             .image_layout(image_layout);
 
-        let upload_buffer_info = vk::DescriptorBufferInfo::default()
-            .buffer(upload_buffer.raw())
-            .offset(0)
-            .range(upload_buffer.byte_size());
-
-        let font_rom_buffer_info = vk::DescriptorBufferInfo::default()
-            .buffer(font_rom_buffer.raw())
-            .offset(0)
-            .range(font_rom_buffer.byte_size());
-
-        let pegc_buffer_info = vk::DescriptorBufferInfo::default()
-            .buffer(pegc_buffer.raw())
-            .offset(0)
-            .range(pegc_buffer.byte_size());
-
         let writes = [
             vk::WriteDescriptorSet::default()
                 .dst_set(frame_sets.resource_set())
@@ -176,21 +143,6 @@ impl DescriptorResources {
                 .dst_binding(1)
                 .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                 .image_info(std::slice::from_ref(&native_target_info)),
-            vk::WriteDescriptorSet::default()
-                .dst_set(frame_sets.resource_set())
-                .dst_binding(2)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(std::slice::from_ref(&upload_buffer_info)),
-            vk::WriteDescriptorSet::default()
-                .dst_set(frame_sets.resource_set())
-                .dst_binding(3)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(std::slice::from_ref(&font_rom_buffer_info)),
-            vk::WriteDescriptorSet::default()
-                .dst_set(frame_sets.resource_set())
-                .dst_binding(4)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(std::slice::from_ref(&pegc_buffer_info)),
         ];
 
         unsafe {
@@ -261,9 +213,6 @@ impl FrameDescriptorSets {
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::SAMPLED_IMAGE)
                 .descriptor_count(2),
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(3),
         ];
 
         let pool_info = vk::DescriptorPoolCreateInfo::default()

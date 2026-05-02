@@ -430,6 +430,45 @@ impl<'a> CommandEncoder<'a> {
         };
     }
 
+    /// Records a buffer-to-image copy of `width x height` pixels into the
+    /// color aspect of `dst` (mip 0, layer 0). The image must be in
+    /// `TRANSFER_DST_OPTIMAL` layout when this is recorded.
+    pub(crate) fn copy_buffer_to_image(
+        &mut self,
+        src: vk::Buffer,
+        dst: vk::Image,
+        width: u32,
+        height: u32,
+    ) {
+        let region = vk::BufferImageCopy::default()
+            .buffer_offset(0)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(
+                vk::ImageSubresourceLayers::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .mip_level(0)
+                    .base_array_layer(0)
+                    .layer_count(1),
+            )
+            .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+            .image_extent(vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            });
+
+        unsafe {
+            self.context.device().cmd_copy_buffer_to_image(
+                self.buffer,
+                src,
+                dst,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                std::slice::from_ref(&region),
+            );
+        }
+    }
+
     /// Inserts an image memory barrier for a color image layout transition.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn image_barrier(

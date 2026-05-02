@@ -1,7 +1,4 @@
-use common::{
-    BeeperKind, CpuMode, CpuType, DisplaySnapshotUpload, EventKind, MachineModel,
-    PegcSnapshotUpload, Scheduler,
-};
+use common::{BeeperKind, CpuMode, CpuType, EventKind, MachineModel, Scheduler};
 use device::{
     beeper::Beeper,
     cgrom::Cgrom,
@@ -21,6 +18,7 @@ use device::{
     printer::Printer,
     sasi::SasiController,
     sdip::Sdip,
+    software_renderer::SoftwareRenderer,
     upd765a_fdc::FloppyController,
     upd4990a_rtc::Upd4990aRtc,
     upd7220_gdc::{Gdc, GdcScrollPartition},
@@ -230,9 +228,11 @@ impl<T: Tracing> Pc9801Bus<T> {
             shutdown_requested: false,
             needs_full_reinit: false,
             warm_reset_context: None,
-            vsync_snapshot: Box::new(DisplaySnapshotUpload::default()),
-            pegc_vsync_snapshot: Box::new(PegcSnapshotUpload::default()),
-            pegc_mode_active: false,
+            // Initialize the renderer with empty font ROM bytes; the bus's
+            // `load_font_rom` (or first VSYNC after CG-RAM dirties) will
+            // refresh the renderer's copy.
+            software_renderer: Box::new(SoftwareRenderer::new(&[])),
+            last_native_height: 400,
             dma_access_ctrl: match machine_model {
                 MachineModel::PC9801F | MachineModel::PC9801VM | MachineModel::PC9801VX => {
                     DMA_ACCESS_CTRL_20BIT

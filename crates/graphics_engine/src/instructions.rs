@@ -1,13 +1,10 @@
-use common::{DisplaySnapshotUpload, PegcSnapshotUpload};
-
 /// The instructions to render a frame.
 pub struct RenderInstructions<'a> {
-    // TODO: We could make the GRCG & ECG portion also optional of the display_snapshot!
-    //       Then we would have a grcg and text snapshot!
-    /// The display snapshot used by the composer.
-    pub display_snapshot: &'a DisplaySnapshotUpload,
-    /// Optional PEGC snapshot for 256-color mode rendering.
-    pub pegc_snapshot: Option<&'a PegcSnapshotUpload>,
+    /// 640*480*4 bytes of packed `R, G, B, A` sRGB pixels (little-endian per pixel)
+    /// uploaded to the native-resolution sampled image.
+    pub framebuffer: &'a [u8],
+    /// Active vertical display height (400, or up to 480 in PEGC 480-line mode).
+    pub native_height: u32,
     /// Whether the CRT upscale effect is enabled.
     pub crt: bool,
 }

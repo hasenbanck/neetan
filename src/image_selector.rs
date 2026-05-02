@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
-use common::{
-    DisplaySnapshotUpload, JisChar, StackVec, TEXT_VRAM_BYTES, TextNormalizerInputs,
-    normalize_text_plane, str_to_jis,
+use common::{JisChar, StackVec, str_to_jis};
+use device::software_renderer::{
+    PegcRenderInputs, RenderInputs, SoftwareRenderer, TEXT_VRAM_BYTES,
 };
 
 const VISIBLE_ITEMS: usize = 19;
@@ -49,14 +49,19 @@ pub struct ImageSelector {
     media_type: MediaType,
     cursor: usize,
     scroll_offset: usize,
-    snapshot: Box<DisplaySnapshotUpload>,
+    renderer: SoftwareRenderer,
     text_vram: Box<TextVram>,
     title_jis: Vec<JisChar>,
     dirty: bool,
 }
 
 impl ImageSelector {
-    pub fn new(media_type: MediaType, initial_cursor: usize, entry_count: usize) -> Self {
+    pub fn new(
+        media_type: MediaType,
+        initial_cursor: usize,
+        entry_count: usize,
+        font_rom_data: &[u8],
+    ) -> Self {
         let cursor = initial_cursor.min(entry_count.saturating_sub(1));
         let scroll_offset = if cursor >= VISIBLE_ITEMS {
             cursor - VISIBLE_ITEMS + 1
@@ -72,7 +77,7 @@ impl ImageSelector {
             media_type,
             cursor,
             scroll_offset,
-            snapshot: Box::new(DisplaySnapshotUpload::zeroed()),
+            renderer: SoftwareRenderer::new(font_rom_data),
             text_vram,
             title_jis,
             dirty: true,
@@ -124,13 +129,13 @@ impl ImageSelector {
         }
     }
 
-    pub fn ensure_snapshot(&mut self, entries: &[ImageEntry], current_index: Option<usize>) {
+    pub fn ensure_render(&mut self, entries: &[ImageEntry], current_index: Option<usize>) {
         if !self.dirty {
             return;
         }
         self.dirty = false;
-        rebuild_snapshot(
-            &mut self.snapshot,
+        rebuild_render(
+            &mut self.renderer,
             &mut self.text_vram,
             entries,
             &self.title_jis,
@@ -140,8 +145,8 @@ impl ImageSelector {
         );
     }
 
-    pub fn snapshot(&self) -> &DisplaySnapshotUpload {
-        &self.snapshot
+    pub fn framebuffer(&self) -> &[u8] {
+        self.renderer.framebuffer()
     }
 }
 
@@ -258,8 +263,8 @@ fn media_title(media_type: &MediaType) -> &'static str {
     }
 }
 
-fn rebuild_snapshot(
-    snapshot: &mut DisplaySnapshotUpload,
+fn rebuild_render(
+    renderer: &mut SoftwareRenderer,
     text_vram: &mut TextVram,
     entries: &[ImageEntry],
     title_jis: &[JisChar],
@@ -267,26 +272,17 @@ fn rebuild_snapshot(
     scroll_offset: usize,
     current_index: Option<usize>,
 ) {
-    *snapshot = DisplaySnapshotUpload::zeroed();
     text_vram.fill(0);
 
-    snapshot.palette_rgba[0] = 0xFF000000; // black
-    snapshot.palette_rgba[1] = 0xFF0000BB; // blue
-    snapshot.palette_rgba[2] = 0xFF00BB00; // red (PC-98 order)
-    snapshot.palette_rgba[3] = 0xFF00BBBB; // magenta
-    snapshot.palette_rgba[4] = 0xFFBB0000; // green
-    snapshot.palette_rgba[5] = 0xFF777700; // cyan
-    snapshot.palette_rgba[6] = 0xFFBBBB00; // yellow
-    snapshot.palette_rgba[7] = 0xFF777777; // white
-
-    snapshot.display_flags = 0x53;
-    snapshot.gdc_text_pitch = 80;
-    snapshot.gdc_scroll_start_line[0] = 400 << 16;
-    snapshot.video_mode = 0x08;
-    snapshot.gdc_text_kanji_high_mask = 0xFF;
-    snapshot.crtc_pl_bl = 15 << 16;
-    snapshot.crtc_cl_ssl = 16;
-    snapshot.text_cursor = 0;
+    let mut palette_rgba = [0u32; 16];
+    palette_rgba[0] = 0xFF000000; // black
+    palette_rgba[1] = 0xFF0000BB; // blue
+    palette_rgba[2] = 0xFF00BB00; // red (PC-98 order)
+    palette_rgba[3] = 0xFF00BBBB; // magenta
+    palette_rgba[4] = 0xFFBB0000; // green
+    palette_rgba[5] = 0xFF777700; // cyan
+    palette_rgba[6] = 0xFFBBBB00; // yellow
+    palette_rgba[7] = 0xFF777777; // white
 
     let attr = ATTR_WHITE;
 
@@ -385,18 +381,44 @@ fn rebuild_snapshot(
 
     draw_horizontal_line(text_vram, 24, BOX_BOTTOM_LEFT, BOX_BOTTOM_RIGHT, attr);
 
-    let inputs = TextNormalizerInputs {
+    static ZERO_PLANE: [u8; 0x8000] = [0u8; 0x8000];
+
+    let inputs = RenderInputs {
         text_vram,
-        pitch: 80,
+        gdc_text_pitch: 80,
+        gdc_scroll_start_line: [400 << 16, 0, 0, 0],
+        video_mode: 0x08, // FONTSEL_8X16
+        crtc_pl_bl: 15 << 16,
+        crtc_cl_ssl: 16,
+        crtc_sur_sdr: 0,
         kanji_high_mask: 0xFF,
         attr_semigraphics_mode: false,
         fontsel_8x16: true,
         blink_visible: true,
         cursor_visible: false,
         cursor_addr: 0,
+        cursor_top: 0,
+        cursor_bottom: 0,
+
+        graphics_b_plane: &ZERO_PLANE,
+        graphics_r_plane: &ZERO_PLANE,
+        graphics_g_plane: &ZERO_PLANE,
+        graphics_e_plane: &ZERO_PLANE,
+        gdc_graphics_pitch: 0,
+        gdc_graphics_scroll: [0; 4],
+        gdc_graphics_lines_per_row: 1,
+        gdc_graphics_zoom_display: 0,
+        gdc_graphics_al: 0,
+        graphics_monochrome_mask: 0,
+
+        palette_rgba,
+        // bit 0 GDC started, bit 1 blink visible, bit 4 text enabled, bit 6 global enabled.
+        display_flags: 0x53,
+
+        pegc: Option::<PegcRenderInputs<'_>>::None,
     };
 
-    normalize_text_plane(&inputs, &mut snapshot.text_cells);
+    renderer.render(&inputs);
 }
 
 fn jis_display_width(chars: &[JisChar]) -> usize {

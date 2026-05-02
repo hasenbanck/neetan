@@ -288,17 +288,6 @@ fn grcg_firmware_all_patterns() {
         attr20, 0xC1,
         "P8 text attr row 20: expected 0xC1, got 0x{attr20:02X}"
     );
-
-    // Verify display snapshot monochrome mask
-    // In analog mode with default palette, green channel bit 3 set for indices 12-15 only
-    // (indices 4-7 have green=0x7 which lacks bit 3)
-    machine.bus.capture_vsync_snapshot();
-    assert_eq!(
-        machine.bus.vsync_snapshot().graphics_monochrome_mask,
-        0x0000F000,
-        "P8 monochrome mask: expected 0xF000 (analog default), got 0x{:08X}",
-        machine.bus.vsync_snapshot().graphics_monochrome_mask
-    );
 }
 
 const VRAM_B_BASE: u32 = 0xA8000;
