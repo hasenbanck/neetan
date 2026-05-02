@@ -1,4 +1,4 @@
-use common::{Bus, Cpu, DisplaySnapshotUpload, PegcSnapshotUpload};
+use common::{Bus, Cpu};
 
 use crate::{CpuState, MachineState, NoTracing, Pc9801Bus, Tracing};
 
@@ -269,12 +269,12 @@ impl<T: Tracing> common::Machine for Machine<cpu::VX0, T> {
         self.bus.shutdown_requested()
     }
 
-    fn snapshot_display(&self) -> &DisplaySnapshotUpload {
-        self.bus.vsync_snapshot()
+    fn display_framebuffer(&self) -> &[u8] {
+        self.bus.display_framebuffer()
     }
 
-    fn pegc_snapshot_display(&self) -> Option<&PegcSnapshotUpload> {
-        self.bus.pegc_vsync_snapshot()
+    fn display_native_height(&self) -> u32 {
+        self.bus.display_native_height()
     }
 
     fn push_keyboard_scancode(&mut self, code: u8) {
@@ -291,10 +291,6 @@ impl<T: Tracing> common::Machine for Machine<cpu::VX0, T> {
 
     fn generate_audio_samples(&mut self, volume: f32, output: &mut [f32]) -> usize {
         self.bus.generate_audio_samples(volume, output)
-    }
-
-    fn take_font_rom_dirty(&mut self) -> bool {
-        self.bus.take_font_rom_dirty()
     }
 
     fn font_rom_data(&self) -> &[u8] {
@@ -343,12 +339,12 @@ impl<T: Tracing> common::Machine for Machine<cpu::I286, T> {
         self.bus.shutdown_requested()
     }
 
-    fn snapshot_display(&self) -> &DisplaySnapshotUpload {
-        self.bus.vsync_snapshot()
+    fn display_framebuffer(&self) -> &[u8] {
+        self.bus.display_framebuffer()
     }
 
-    fn pegc_snapshot_display(&self) -> Option<&PegcSnapshotUpload> {
-        self.bus.pegc_vsync_snapshot()
+    fn display_native_height(&self) -> u32 {
+        self.bus.display_native_height()
     }
 
     fn push_keyboard_scancode(&mut self, code: u8) {
@@ -365,10 +361,6 @@ impl<T: Tracing> common::Machine for Machine<cpu::I286, T> {
 
     fn generate_audio_samples(&mut self, volume: f32, output: &mut [f32]) -> usize {
         self.bus.generate_audio_samples(volume, output)
-    }
-
-    fn take_font_rom_dirty(&mut self) -> bool {
-        self.bus.take_font_rom_dirty()
     }
 
     fn font_rom_data(&self) -> &[u8] {
@@ -417,12 +409,12 @@ impl<const CPU_MODEL: u8, T: Tracing> common::Machine for Machine<cpu::I386<CPU_
         self.bus.shutdown_requested()
     }
 
-    fn snapshot_display(&self) -> &DisplaySnapshotUpload {
-        self.bus.vsync_snapshot()
+    fn display_framebuffer(&self) -> &[u8] {
+        self.bus.display_framebuffer()
     }
 
-    fn pegc_snapshot_display(&self) -> Option<&PegcSnapshotUpload> {
-        self.bus.pegc_vsync_snapshot()
+    fn display_native_height(&self) -> u32 {
+        self.bus.display_native_height()
     }
 
     fn push_keyboard_scancode(&mut self, code: u8) {
@@ -439,10 +431,6 @@ impl<const CPU_MODEL: u8, T: Tracing> common::Machine for Machine<cpu::I386<CPU_
 
     fn generate_audio_samples(&mut self, volume: f32, output: &mut [f32]) -> usize {
         self.bus.generate_audio_samples(volume, output)
-    }
-
-    fn take_font_rom_dirty(&mut self) -> bool {
-        self.bus.take_font_rom_dirty()
     }
 
     fn font_rom_data(&self) -> &[u8] {
@@ -491,12 +479,12 @@ impl<T: Tracing> common::Machine for Machine<cpu::I8086, T> {
         self.bus.shutdown_requested()
     }
 
-    fn snapshot_display(&self) -> &DisplaySnapshotUpload {
-        self.bus.vsync_snapshot()
+    fn display_framebuffer(&self) -> &[u8] {
+        self.bus.display_framebuffer()
     }
 
-    fn pegc_snapshot_display(&self) -> Option<&PegcSnapshotUpload> {
-        self.bus.pegc_vsync_snapshot()
+    fn display_native_height(&self) -> u32 {
+        self.bus.display_native_height()
     }
 
     fn push_keyboard_scancode(&mut self, code: u8) {
@@ -513,10 +501,6 @@ impl<T: Tracing> common::Machine for Machine<cpu::I8086, T> {
 
     fn generate_audio_samples(&mut self, volume: f32, output: &mut [f32]) -> usize {
         self.bus.generate_audio_samples(volume, output)
-    }
-
-    fn take_font_rom_dirty(&mut self) -> bool {
-        self.bus.take_font_rom_dirty()
     }
 
     fn font_rom_data(&self) -> &[u8] {

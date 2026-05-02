@@ -23,7 +23,7 @@ pub(crate) use frame_target::FrameTarget;
 pub(crate) use graphics_pipeline::{
     GraphicsPipeline, PipelineBlendState, PipelineConfig, PipelineMultisampleState,
 };
-pub(crate) use image::ColorTargetImage;
+pub(crate) use image::{ColorTargetImage, SampledTransferImage};
 pub(crate) use queue::Queue;
 pub(crate) use surface::Surface;
 pub(crate) use sync::{Binary, Fence, Semaphore, Timeline};

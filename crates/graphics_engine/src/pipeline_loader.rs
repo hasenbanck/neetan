@@ -23,12 +23,10 @@ impl PipelineLoader {
     /// Converts raw SPIR-V bytes into a `Vec<u32>`.
     fn load_spirv(spv_data: &[u8]) -> Vec<u32> {
         assert_eq!(spv_data.len() % 4, 0);
-        let u32_length = spv_data.len() / 4;
-
-        let mut aligned_data = vec![0u32; u32_length];
-        common::cast_u32_slice_as_bytes_mut(&mut aligned_data).copy_from_slice(spv_data);
-
-        aligned_data
+        spv_data
+            .chunks_exact(4)
+            .map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+            .collect()
     }
 
     /// Compiles a graphics pipeline from embedded SPIR-V data.

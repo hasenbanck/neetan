@@ -4,13 +4,14 @@ use common::Context as _;
 use jay_ash::vk;
 
 use crate::{
+    NATIVE_HEIGHT, NATIVE_WIDTH,
     layout_transitioner::LayoutTransitioner,
-    plumbing::{ColorTargetImage, DeferredResource, Device},
+    plumbing::{ColorTargetImage, DeferredResource, Device, SampledTransferImage},
 };
 
 pub(crate) struct Resources {
     color_target: ColorTargetImage,
-    native_target: ColorTargetImage,
+    native_target: SampledTransferImage,
     descriptor_version: u64,
 }
 
@@ -33,13 +34,13 @@ impl Resources {
         )
         .context("Can't create color target")?;
 
-        let native_target = ColorTargetImage::new(
+        let native_target = SampledTransferImage::new(
             Rc::clone(&context),
             c"native_target",
             layout_transitioner,
             vk::Format::R8G8B8A8_SRGB,
-            640,
-            480,
+            NATIVE_WIDTH,
+            NATIVE_HEIGHT,
         )
         .context("Can't create native-resolution target")?;
 
@@ -90,7 +91,7 @@ impl Resources {
     }
 
     /// Returns a reference to the native-resolution target image (640x480).
-    pub(crate) fn native_target(&self) -> &ColorTargetImage {
+    pub(crate) fn native_target(&self) -> &SampledTransferImage {
         &self.native_target
     }
 
