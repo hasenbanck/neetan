@@ -3,7 +3,18 @@
 use common::{bail, error, info, warn};
 use jay_ash::vk;
 
-use crate::{Result, plumbing::extensions::ExtensionSet};
+use crate::Result;
+
+/// Tracks which device extensions are enabled.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ExtensionSet {
+    /// Whether VK_KHR_timeline_semaphore is enabled.
+    pub(crate) timeline_semaphore: bool,
+    /// Whether VK_KHR_present_id2 is enabled.
+    pub(crate) present_id2: bool,
+    /// Whether VK_KHR_present_wait2 is enabled.
+    pub(crate) present_wait2: bool,
+}
 
 /// Configuration for which device features to request.
 ///
