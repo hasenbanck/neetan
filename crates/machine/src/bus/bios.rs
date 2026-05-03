@@ -1579,22 +1579,15 @@ impl<T: Tracing> Pc9801Bus<T> {
     }
 
     fn plot_pixel_ope(&mut self, x: u16, y: u16, gbon_ptn: u8, ope: u8, ch: u8) {
-        let word_x = x / 16;
-        let bit = 15 - (x & 15);
-        let byte_offset = u32::from(y) * 80 + u32::from(word_x) * 2;
-
-        let (mask, byte_idx) = if bit >= 8 {
-            (1u8 << (bit - 8), 1usize)
-        } else {
-            (1u8 << bit, 0usize)
-        };
+        let byte_offset = (u32::from(y) * 80 + u32::from(x) / 8) as usize;
+        let mask = 0x80u8 >> (x & 7);
 
         let all_planes = (ch & 0x30) == 0x30;
 
         if all_planes {
             for plane in 0..3u8 {
                 let plane_ope = if gbon_ptn & (1 << plane) != 0 { 0 } else { 1 };
-                let idx = (plane as usize) * 0x8000 + byte_offset as usize + byte_idx;
+                let idx = (plane as usize) * 0x8000 + byte_offset;
                 if idx < self.memory.state.graphics_vram.len() {
                     match plane_ope {
                         0 => self.memory.state.graphics_vram[idx] |= mask,
@@ -1606,7 +1599,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
         } else {
             let plane_sel = ((ch & 0x30) >> 4) as usize;
-            let idx = plane_sel * 0x8000 + byte_offset as usize + byte_idx;
+            let idx = plane_sel * 0x8000 + byte_offset;
             if idx < self.memory.state.graphics_vram.len() {
                 match ope {
                     0 => self.memory.state.graphics_vram[idx] |= mask,
