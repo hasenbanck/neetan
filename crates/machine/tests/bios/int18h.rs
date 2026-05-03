@@ -4591,6 +4591,25 @@ fn line_draw_byte_ordering_right_byte_holds_pixels_8_to_15() {
 }
 
 #[test]
+fn line_draw_single_plane_set_operation_writes_selected_plane() {
+    let ucw = make_ucw_horizontal_line_solid(0x00, 0x03, 0, 0, 7);
+    let state = run_draw_test_vm_with_ch(&ucw, 0x47, 0x00);
+
+    assert_eq!(
+        state.memory.graphics_vram[0], 0xFF,
+        "GBDOTU=3 should set pixels in the selected B plane"
+    );
+    assert_eq!(
+        state.memory.graphics_vram[0x8000], 0x00,
+        "CH=0 should not write the R plane"
+    );
+    assert_eq!(
+        state.memory.graphics_vram[0x10000], 0x00,
+        "CH=0 should not write the G plane"
+    );
+}
+
+#[test]
 fn line_draw_three_byte_horizontal_has_no_byte_aligned_gaps() {
     let ucw = make_ucw_horizontal_line_solid(0x01, 0x00, 16, 10, 39);
     let state = run_draw_test_vm_with_ch(&ucw, 0x47, 0xC0);

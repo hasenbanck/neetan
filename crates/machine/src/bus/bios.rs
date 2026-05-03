@@ -9,12 +9,16 @@ use common::{Cpu, MachineModel, warn};
 use device::{floppy::D88MediaType, i8253_pit::PIT_FLAG_I, upd7220_gdc::GdcScrollPartition};
 
 use super::{
-    BootDevice, KEYBOARD_ROM_OFFSET_F, KEYBOARD_ROM_OFFSET_VM, Pc9801Bus,
+    BootDevice, GRAPHICS_PAGE_SIZE_BYTES, KEYBOARD_ROM_OFFSET_F, KEYBOARD_ROM_OFFSET_VM, Pc9801Bus,
     os_adapter::{OsCpuAccess, OsCursorAccess, OsDiskIo, OsMemoryAccess},
 };
 use crate::{Tracing, memory::Pc9801Memory};
 
 const PIT_CLOCK_8MHZ_LINEAGE: u32 = 1_996_800;
+const GDC_OPE_REPLACE: u8 = 0;
+const GDC_OPE_COMPLEMENT: u8 = 1;
+const GDC_OPE_CLEAR: u8 = 2;
+const GDC_OPE_SET: u8 = 3;
 
 fn iret_stack_base(cpu: &impl Cpu) -> u32 {
     cpu.segment_base(common::SegmentRegister::SS)
@@ -1276,7 +1280,11 @@ impl<T: Tracing> Pc9801Bus<T> {
 
             if all_planes {
                 for plane in 0..3u8 {
-                    let ope = if gbon_ptn & (1 << plane) != 0 { 0 } else { 1 };
+                    let ope = if gbon_ptn & (1 << plane) != 0 {
+                        GDC_OPE_SET
+                    } else {
+                        GDC_OPE_CLEAR
+                    };
                     let plane_base = (plane as usize) * 0x4000;
                     self.gdc_pset_byte(plane_base + word_addr, bit_offset, pat, ope);
                 }
@@ -1299,37 +1307,29 @@ impl<T: Tracing> Pc9801Bus<T> {
     }
 
     fn gdc_pset_byte(&mut self, word_addr: usize, bit_offset: u32, pat: u8, ope: u8) {
+        let page_base = self.access_page_index() * GRAPHICS_PAGE_SIZE_BYTES;
         for bit in 0..8u32 {
-            let pixel_bit = (pat >> (7 - bit)) & 1;
+            let pixel_bit = (pat >> bit) & 1;
             let target_bit = bit_offset + bit;
             let addr = word_addr + (target_bit >> 4) as usize;
             let bit_in_word = (target_bit & 0x0F) as u8;
 
-            if addr >= 0x4000 {
+            if addr >= 0xC000 {
                 continue;
             }
-            let byte_idx = addr * 2 + (bit_in_word >> 3) as usize;
+            let byte_idx = page_base + addr * 2 + (bit_in_word >> 3) as usize;
             let bit_mask = 0x80 >> (bit_in_word & 7);
 
             if byte_idx >= self.memory.state.graphics_vram.len() {
                 continue;
             }
 
-            match ope {
-                // SET: set bit if pattern bit is 1.
-                0 if pixel_bit != 0 => {
-                    self.memory.state.graphics_vram[byte_idx] |= bit_mask;
-                }
-                // CLEAR: clear bit if pattern bit is 1.
-                1 if pixel_bit != 0 => {
-                    self.memory.state.graphics_vram[byte_idx] &= !bit_mask;
-                }
-                // COMPLEMENT: toggle bit if pattern bit is 1.
-                2 if pixel_bit != 0 => {
-                    self.memory.state.graphics_vram[byte_idx] ^= bit_mask;
-                }
-                _ => {}
-            }
+            Self::apply_gdc_dot(
+                &mut self.memory.state.graphics_vram[byte_idx],
+                bit_mask,
+                ope,
+                pixel_bit != 0,
+            );
         }
     }
 
@@ -1425,10 +1425,8 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         loop {
             if (0..640).contains(&x) && (0..400).contains(&y) {
-                let bit_in_pattern = (pattern >> (15 - (pat_idx & 15))) & 1;
-                if bit_in_pattern != 0 {
-                    self.plot_pixel_ope(x as u16, y as u16, gbon_ptn, ope, ch);
-                }
+                let bit_in_pattern = (pattern >> (pat_idx & 15)) & 1;
+                self.plot_pixel_ope(x as u16, y as u16, gbon_ptn, ope, ch, bit_in_pattern != 0);
             }
             pat_idx += 1;
 
@@ -1495,10 +1493,15 @@ impl<T: Tracing> Pc9801Bus<T> {
 
             for &(px, py) in &points {
                 if (0..640).contains(&px) && (0..400).contains(&py) {
-                    let bit_in_pattern = (pattern >> (15 - (pat_idx & 15))) & 1;
-                    if bit_in_pattern != 0 {
-                        self.plot_pixel_ope(px as u16, py as u16, gbon_ptn, ope, ch);
-                    }
+                    let bit_in_pattern = (pattern >> (pat_idx & 15)) & 1;
+                    self.plot_pixel_ope(
+                        px as u16,
+                        py as u16,
+                        gbon_ptn,
+                        ope,
+                        ch,
+                        bit_in_pattern != 0,
+                    );
                 }
             }
             pat_idx += 1;
@@ -1552,7 +1555,11 @@ impl<T: Tracing> Pc9801Bus<T> {
 
             if all_planes {
                 for plane in 0..3u8 {
-                    let ope = if gbon_ptn & (1 << plane) != 0 { 0 } else { 1 };
+                    let ope = if gbon_ptn & (1 << plane) != 0 {
+                        GDC_OPE_SET
+                    } else {
+                        GDC_OPE_CLEAR
+                    };
                     let plane_base = (plane as usize) * 0x4000;
                     self.gdc_pset_byte(plane_base + word_addr, bit_offset, pat_byte, ope);
                 }
@@ -1578,35 +1585,44 @@ impl<T: Tracing> Pc9801Bus<T> {
         }
     }
 
-    fn plot_pixel_ope(&mut self, x: u16, y: u16, gbon_ptn: u8, ope: u8, ch: u8) {
+    fn apply_gdc_dot(byte: &mut u8, mask: u8, ope: u8, dot: bool) {
+        match (ope & 3, dot) {
+            (GDC_OPE_REPLACE, true) | (GDC_OPE_SET, true) => *byte |= mask,
+            (GDC_OPE_REPLACE, false) | (GDC_OPE_CLEAR, true) => *byte &= !mask,
+            (GDC_OPE_COMPLEMENT, true) => *byte ^= mask,
+            _ => {}
+        }
+    }
+
+    fn plot_pixel_ope(&mut self, x: u16, y: u16, gbon_ptn: u8, ope: u8, ch: u8, dot: bool) {
         let byte_offset = (u32::from(y) * 80 + u32::from(x) / 8) as usize;
         let mask = 0x80u8 >> (x & 7);
+        let page_base = self.access_page_index() * GRAPHICS_PAGE_SIZE_BYTES;
 
         let all_planes = (ch & 0x30) == 0x30;
 
         if all_planes {
             for plane in 0..3u8 {
-                let plane_ope = if gbon_ptn & (1 << plane) != 0 { 0 } else { 1 };
-                let idx = (plane as usize) * 0x8000 + byte_offset;
+                let plane_ope = if gbon_ptn & (1 << plane) != 0 {
+                    GDC_OPE_SET
+                } else {
+                    GDC_OPE_CLEAR
+                };
+                let idx = page_base + (plane as usize) * 0x8000 + byte_offset;
                 if idx < self.memory.state.graphics_vram.len() {
-                    match plane_ope {
-                        0 => self.memory.state.graphics_vram[idx] |= mask,
-                        1 => self.memory.state.graphics_vram[idx] &= !mask,
-                        2 => self.memory.state.graphics_vram[idx] ^= mask,
-                        _ => {}
-                    }
+                    Self::apply_gdc_dot(
+                        &mut self.memory.state.graphics_vram[idx],
+                        mask,
+                        plane_ope,
+                        dot,
+                    );
                 }
             }
         } else {
             let plane_sel = ((ch & 0x30) >> 4) as usize;
-            let idx = plane_sel * 0x8000 + byte_offset;
+            let idx = page_base + plane_sel * 0x8000 + byte_offset;
             if idx < self.memory.state.graphics_vram.len() {
-                match ope {
-                    0 => self.memory.state.graphics_vram[idx] |= mask,
-                    1 => self.memory.state.graphics_vram[idx] &= !mask,
-                    2 => self.memory.state.graphics_vram[idx] ^= mask,
-                    _ => {}
-                }
+                Self::apply_gdc_dot(&mut self.memory.state.graphics_vram[idx], mask, ope, dot);
             }
         }
     }
