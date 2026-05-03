@@ -1046,7 +1046,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             GdcAction::ReadVram(_request) => {
                 // Feed VRAM words to the GDC for RDAT.
                 while let Some(address) = self.gdc_slave.rdat_next_address() {
-                    let word = self.read_gdc_b_plane_word_from_access_page(address);
+                    let word = self.read_gdc_vram_word_from_access_page(address);
                     let needs_more = self.gdc_slave.provide_rdat_word(word);
                     if !needs_more {
                         break;
@@ -1163,11 +1163,14 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.update_next_event_cycle();
     }
 
-    fn write_gdc_b_plane_word_to_access_page(&mut self, address: u32, value: u16) {
-        let byte_offset = (address as usize & 0x3FFF) * 2;
+    fn write_gdc_vram_word_to_access_page(&mut self, address: u32, value: u16) {
+        let (plane, byte_offset) = Self::gdc_address_to_plane_and_byte_offset(address);
+        if plane == 3 && !self.graphics_extension_enabled {
+            return;
+        }
         let page = self.access_page_index();
-        self.graphics_plane_write_byte_to_page(page, 0, byte_offset, value as u8);
-        self.graphics_plane_write_byte_to_page(page, 0, byte_offset + 1, (value >> 8) as u8);
+        self.graphics_plane_write_byte_to_page(page, plane, byte_offset, value as u8);
+        self.graphics_plane_write_byte_to_page(page, plane, byte_offset + 1, (value >> 8) as u8);
     }
 
     /// Converts between GDC bit ordering and CPU/VRAM bit ordering.
@@ -1189,7 +1192,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             return;
         }
 
-        let current = self.read_gdc_b_plane_word_from_access_page(op.address);
+        let current = self.read_gdc_vram_word_from_access_page(op.address);
 
         let mask = Self::reverse_bits_in_bytes(op.mask);
         let data = Self::reverse_bits_in_bytes(op.data);
@@ -1201,7 +1204,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             _ => current,
         };
 
-        self.write_gdc_b_plane_word_to_access_page(op.address, result);
+        self.write_gdc_vram_word_to_access_page(op.address, result);
     }
 
     fn apply_gdc_vram_op_grcg(&mut self, op: &VramOp) {
@@ -1329,6 +1332,58 @@ mod tests {
         bus.io_write_byte(0x6A, 0x85);
         assert_eq!(bus.gdc_master.state.dot_clock_hz, DOT_CLOCK_400LINE * 2);
         assert_eq!(bus.gdc_slave.state.dot_clock_hz, DOT_CLOCK_400LINE * 2);
+    }
+
+    #[test]
+    fn gdc_direct_draw_uses_address_plane_bits() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+
+        for (address, offset) in [(0x4000, 0), (0x8000, 0x8000), (0xC000, 0x10000)] {
+            bus.apply_gdc_vram_op(&VramOp {
+                address,
+                data: 0x0080,
+                mask: 0x0080,
+                mode: 0,
+            });
+
+            assert_eq!(bus.memory.state.graphics_vram[offset], 0x01);
+        }
+        assert_eq!(bus.memory.state.e_plane_vram[0], 0x00);
+    }
+
+    #[test]
+    fn gdc_direct_read_uses_address_plane_bits() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+
+        bus.memory.state.graphics_vram[0] = 0x12;
+        bus.memory.state.graphics_vram[1] = 0x34;
+        bus.memory.state.graphics_vram[0x8000] = 0x56;
+        bus.memory.state.graphics_vram[0x8001] = 0x78;
+        bus.memory.state.graphics_vram[0x10000] = 0x9A;
+        bus.memory.state.graphics_vram[0x10001] = 0xBC;
+
+        assert_eq!(bus.read_gdc_vram_word_from_access_page(0x4000), 0x3412);
+        assert_eq!(bus.read_gdc_vram_word_from_access_page(0x8000), 0x7856);
+        assert_eq!(bus.read_gdc_vram_word_from_access_page(0xC000), 0xBC9A);
+    }
+
+    #[test]
+    fn gdc_direct_e_plane_requires_graphics_extension() {
+        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+        bus.set_graphics_extension_enabled(false);
+        let operation = VramOp {
+            address: 0x0000,
+            data: 0x0080,
+            mask: 0x0080,
+            mode: 0,
+        };
+
+        bus.apply_gdc_vram_op(&operation);
+        assert_eq!(bus.memory.state.e_plane_vram[0], 0x00);
+
+        bus.set_graphics_extension_enabled(true);
+        bus.apply_gdc_vram_op(&operation);
+        assert_eq!(bus.memory.state.e_plane_vram[0], 0x01);
     }
 
     #[test]

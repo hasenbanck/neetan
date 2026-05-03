@@ -2035,11 +2035,20 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.update_next_event_cycle();
     }
 
-    fn read_gdc_b_plane_word_from_access_page(&self, address: u32) -> u16 {
+    fn gdc_address_to_plane_and_byte_offset(address: u32) -> (usize, usize) {
+        let plane = (((address >> 14) & 0x03).wrapping_add(3) % 4) as usize;
         let byte_offset = (address as usize & 0x3FFF) * 2;
+        (plane, byte_offset)
+    }
+
+    fn read_gdc_vram_word_from_access_page(&self, address: u32) -> u16 {
+        let (plane, byte_offset) = Self::gdc_address_to_plane_and_byte_offset(address);
+        if plane == 3 && !self.graphics_extension_enabled {
+            return 0;
+        }
         let page = self.access_page_index();
-        let low = self.graphics_plane_read_byte_from_page(page, 0, byte_offset);
-        let high = self.graphics_plane_read_byte_from_page(page, 0, byte_offset + 1);
+        let low = self.graphics_plane_read_byte_from_page(page, plane, byte_offset);
+        let high = self.graphics_plane_read_byte_from_page(page, plane, byte_offset + 1);
         u16::from(low) | (u16::from(high) << 8)
     }
 }
