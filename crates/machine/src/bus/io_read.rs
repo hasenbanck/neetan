@@ -843,7 +843,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         let vram_word = self
             .gdc_slave
             .dmar_next_address()
-            .map(|address| self.read_gdc_b_plane_word_from_access_page(address));
+            .map(|address| self.read_gdc_vram_word_from_access_page(address));
         self.gdc_slave.dack_read(vram_word)
     }
 }
