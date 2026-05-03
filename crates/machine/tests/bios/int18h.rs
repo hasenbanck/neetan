@@ -3283,10 +3283,6 @@ fn pattern_read_ra() {
 // §9.1 AH=00h - Key Read Blocks on Empty Buffer
 // ============================================================================
 
-// Fix: AH=00h now rewinds the IRET IP to re-execute INT 18H when the buffer
-// is empty, instead of returning AX=0. The CPU should not halt within budget
-// when no key is available.
-
 #[test]
 fn key_read_blocks_on_empty_buffer_f() {
     use common::Cpu as _;
@@ -3432,9 +3428,6 @@ fn palette_set_nibble_unpack_ra() {
 // ============================================================================
 // §9.2 AH=0Eh - Single Display Area Zeros Other Partitions
 // ============================================================================
-
-// Fix: AH=0Eh now zeros scroll partitions 1-3, sets line_count with raster
-// multiplication, and updates BDA 0x0548/0x054A.
 
 #[test]
 fn single_display_area_does_not_zero_other_partitions_f() {
@@ -3624,8 +3617,6 @@ fn single_display_area_does_not_zero_other_partitions_ra() {
 // §9.2 AH=16h - Text VRAM Attribute Fill Reaches 0x3FE0
 // ============================================================================
 
-// Fix: Attribute fill now goes up to 0x3FE0 instead of 0x3FC0.
-
 #[test]
 fn text_vram_init_attr_reaches_end_f() {
     let code = make_int18h_call_dx(0x16, 0xE100);
@@ -3675,8 +3666,6 @@ fn text_vram_init_attr_reaches_end_ra() {
 // ============================================================================
 // §9.3 AH=1Ah - User Char Define Rejects Non-0x76/0x77 Rows
 // ============================================================================
-
-// Fix: AH=1Ah now rejects rows outside 0x76/0x77 range.
 
 #[test]
 fn user_char_define_rejects_invalid_row_f() {
@@ -3777,9 +3766,6 @@ fn user_char_define_rejects_invalid_row_vm() {
 // ============================================================================
 // §9.3 AH=1Ah - User Char Define Skips 2-byte Header
 // ============================================================================
-
-// Fix: AH=1Ah now skips the first 2 bytes (size header) and reads 32 bytes
-// of font data starting at src+2.
 
 #[test]
 fn user_char_define_skips_header_f() {
@@ -3975,9 +3961,6 @@ fn user_char_define_skips_header_ra() {
 // §9.2 AH=0Fh - Multi Display Area VRAM Addr >>1 and Raster
 // ============================================================================
 
-// Fix: Multi display area now applies >>1 to VRAM addresses and multiplies
-// line counts by the raster value.
-
 #[test]
 fn multi_display_area_vram_addr_halved_f() {
     let state = run_multi_display_area_f();
@@ -4077,10 +4060,6 @@ fn multi_display_area_line_count_has_raster_ra() {
 // ============================================================================
 // §9.3 AH=14h - Kanji Font Read Interleaved Layout
 // ============================================================================
-
-// Fix: Kanji font offset now uses interleaved layout:
-// col * 0x1000 + (row - 0x20) * 16, with right half at +0x800.
-// Verify that two different kanji codes return different patterns.
 
 #[test]
 fn kanji_font_read_different_codes_f() {
@@ -4498,4 +4477,141 @@ fn draw_mode_set_sync_draw_on_retrace_ra() {
     let state = machine.save_state();
     assert_eq!(state.gdc_slave.param_buffer[0], 0x12);
     assert!(state.gdc_slave.draw_on_retrace);
+}
+
+/// AH=40h (graphics start) -> AH=42h CH=0xC0 (640x400) -> set CH explicitly -> draw call.
+#[rustfmt::skip]
+fn make_draw_test_code_with_ch(draw_ah: u8, draw_ch: u8) -> Vec<u8> {
+    let dt_lo = (DATA_TABLE & 0xFF) as u8;
+    let dt_hi = ((DATA_TABLE >> 8) & 0xFF) as u8;
+    vec![
+        0xB4, 0x40,             // MOV AH, 0x40 (graphics display start)
+        0xCD, 0x18,             // INT 18h
+        0xB4, 0x42,             // MOV AH, 0x42 (display area set)
+        0xB5, 0xC0,             // MOV CH, 0xC0 (640x400)
+        0xCD, 0x18,             // INT 18h
+        0x31, 0xC0,             // XOR AX, AX
+        0x8E, 0xD8,             // MOV DS, AX
+        0xBB, dt_lo, dt_hi,     // MOV BX, DATA_TABLE
+        0xB4, draw_ah,          // MOV AH, draw_ah
+        0xB5, draw_ch,          // MOV CH, draw_ch
+        0xCD, 0x18,             // INT 18h
+        0xF4,                   // HLT
+    ]
+}
+
+fn run_draw_test_vm_with_ch(ucw_data: &[u8], draw_ah: u8, draw_ch: u8) -> machine::MachineState {
+    let mut machine = create_machine_vm();
+    boot_to_halt!(machine);
+    write_bytes(&mut machine.bus, DATA_TABLE, ucw_data);
+    let code = make_draw_test_code_with_ch(draw_ah, draw_ch);
+    write_bytes(&mut machine.bus, TEST_CODE, &code);
+    machine.cpu.load_state(&{
+        let mut s = cpu::V30State {
+            ip: TEST_CODE as u16,
+            ..Default::default()
+        };
+        s.set_sp(0x4000);
+        s
+    });
+    machine.run_for(DRAW_BUDGET);
+    machine.save_state()
+}
+
+fn make_ucw_horizontal_line_solid(
+    gbon_ptn: u8,
+    gbdotu: u8,
+    x1: u16,
+    y1: u16,
+    x2: u16,
+) -> [u8; 0x2A] {
+    let mut ucw = [0u8; 0x2A];
+    ucw[0x00] = gbon_ptn;
+    ucw[0x02] = gbdotu;
+    ucw[0x08] = (x1 & 0xFF) as u8;
+    ucw[0x09] = (x1 >> 8) as u8;
+    ucw[0x0A] = (y1 & 0xFF) as u8;
+    ucw[0x0B] = (y1 >> 8) as u8;
+    ucw[0x16] = (x2 & 0xFF) as u8;
+    ucw[0x17] = (x2 >> 8) as u8;
+    ucw[0x18] = (y1 & 0xFF) as u8;
+    ucw[0x19] = (y1 >> 8) as u8;
+    for i in 0..8 {
+        ucw[0x20 + i] = 0xFF;
+    }
+    ucw[0x28] = 0x01; // GBDTYP: line
+    ucw
+}
+
+#[test]
+fn line_draw_byte_ordering_left_byte_holds_pixels_0_to_7() {
+    let ucw = make_ucw_horizontal_line_solid(0x01, 0x00, 0, 0, 7);
+    let state = run_draw_test_vm_with_ch(&ucw, 0x47, 0xC0);
+
+    let mut pattern_found = false;
+    for plane_offset in [0x0000usize, 0x8000, 0x10000] {
+        let byte0 = state.memory.graphics_vram[plane_offset];
+        let byte1 = state.memory.graphics_vram[plane_offset + 1];
+        if byte0 == 0 && byte1 == 0 {
+            continue;
+        }
+        assert_eq!(
+            (byte0, byte1),
+            (0xFF, 0x00),
+            "plane at 0x{plane_offset:X}: line x=0..7 must occupy byte 0 (0xFF) leaving byte 1 untouched (0x00); got (0x{byte0:02X}, 0x{byte1:02X}) - high/low byte of word are swapped",
+        );
+        pattern_found = true;
+    }
+    assert!(
+        pattern_found,
+        "AH=47h line draw produced no VRAM writes in any of the B/R/G planes"
+    );
+}
+
+#[test]
+fn line_draw_byte_ordering_right_byte_holds_pixels_8_to_15() {
+    let ucw = make_ucw_horizontal_line_solid(0x01, 0x00, 8, 0, 15);
+    let state = run_draw_test_vm_with_ch(&ucw, 0x47, 0xC0);
+
+    let mut pattern_found = false;
+    for plane_offset in [0x0000usize, 0x8000, 0x10000] {
+        let byte0 = state.memory.graphics_vram[plane_offset];
+        let byte1 = state.memory.graphics_vram[plane_offset + 1];
+        if byte0 == 0 && byte1 == 0 {
+            continue;
+        }
+        assert_eq!(
+            (byte0, byte1),
+            (0x00, 0xFF),
+            "plane at 0x{plane_offset:X}: line x=8..15 must occupy byte 1 (0xFF) leaving byte 0 untouched (0x00); got (0x{byte0:02X}, 0x{byte1:02X})",
+        );
+        pattern_found = true;
+    }
+    assert!(pattern_found, "AH=47h line draw produced no VRAM writes");
+}
+
+#[test]
+fn line_draw_three_byte_horizontal_has_no_byte_aligned_gaps() {
+    let ucw = make_ucw_horizontal_line_solid(0x01, 0x00, 16, 10, 39);
+    let state = run_draw_test_vm_with_ch(&ucw, 0x47, 0xC0);
+
+    let row_base = 10 * 80;
+    for plane_offset in [0x0000usize, 0x8000, 0x10000] {
+        let plane_row = plane_offset + row_base;
+        let bytes: [u8; 8] = (0..8)
+            .map(|i| state.memory.graphics_vram[plane_row + i])
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        if bytes.iter().all(|&b| b == 0) {
+            continue;
+        }
+        assert_eq!(
+            bytes,
+            [0x00, 0x00, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00],
+            "line x=16..39 at y=10 must fill exactly bytes 2..4 of the targeted plane; got {bytes:02X?} at plane 0x{plane_offset:X}, row offset 0x{row_base:X}. A byte-swap bug fills bytes 2,3,5 instead, leaving byte 4 empty - the 8-pixel gap visible in the rendered frame.",
+        );
+        return;
+    }
+    panic!("line draw produced no writes in any of B/R/G planes");
 }
