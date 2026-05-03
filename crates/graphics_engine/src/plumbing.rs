@@ -2,7 +2,6 @@ mod buffer;
 mod command;
 mod context;
 mod device;
-mod extensions;
 mod features;
 mod frame_resource;
 mod frame_target;

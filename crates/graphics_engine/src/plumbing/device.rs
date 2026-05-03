@@ -9,8 +9,8 @@ use common::{Context as _, bail, info};
 use jay_ash::vk;
 
 use super::{
-    Queue, extensions,
-    features::{self, DeviceFeatures},
+    Queue,
+    features::{self, DeviceFeatures, ExtensionSet},
     memory::MemoryBlock,
     utils::{format_api_version, vulkan_debug_callback},
 };
@@ -136,7 +136,7 @@ impl Device {
             panic!("Graphics device initialization more than once");
         }
 
-        let entry = load_vulkan_entry().context("Failed to load Vulkan entry")?;
+        let entry = jay_ash::Entry::linked();
 
         let api_version = vk::make_api_version(0, 1, 0, 0);
 
@@ -205,17 +205,17 @@ impl Device {
         let physical_devices = unsafe { instance.enumerate_physical_devices() }
             .context("Failed to enumerate physical devices")?;
 
-        let physical_device = select_physical_device(
+        let candidate = select_physical_device(
             &instance,
             &physical_device_properties2,
             &physical_devices,
             &config.required_device_extensions,
+            &config.optional_device_extensions,
         )?;
 
-        let device_properties =
-            query_physical_device_properties(&physical_device_properties2, physical_device);
         let device_name =
-            unsafe { CStr::from_ptr(device_properties.device_name.as_ptr()).to_string_lossy() };
+            unsafe { CStr::from_ptr(candidate.properties.device_name.as_ptr()).to_string_lossy() }
+                .into_owned();
         info!("Selected physical device: {device_name}");
 
         // We do not check for limits, since our requirements are well within the
@@ -228,78 +228,49 @@ impl Device {
         // maxPerStageDescriptorSampledImages = 16 (we need at most one)
         // maxBoundDescriptorSets = 4 (we need at most two)
 
-        // Handle extension presence before required-extension validation.
-        let present_id2_available = extensions::is_extension_available(
-            &instance,
-            physical_device,
-            vk::KHR_PRESENT_ID_2_EXTENSION_NAME,
-        );
-        let present_wait2_available = extensions::is_extension_available(
-            &instance,
-            physical_device,
-            vk::KHR_PRESENT_WAIT_2_EXTENSION_NAME,
-        );
-
-        let mut present_wait_disabled_reason = None;
-
-        if !present_id2_available || !present_wait2_available {
-            let mut missing_extensions = Vec::new();
-            if !present_id2_available {
-                missing_extensions.push("VK_KHR_present_id2");
-            }
-            if !present_wait2_available {
-                missing_extensions.push("VK_KHR_present_wait2");
-            }
-
-            present_wait_disabled_reason = Some(format!(
-                "optional extension unavailable ({missing_extensions})",
-                missing_extensions = missing_extensions.join(", ")
-            ));
-            disable_present_wait2(&mut config);
-        }
-
-        let (mut extension_ptrs, extension_set) = extensions::build_extension_list(
-            &instance,
-            physical_device,
-            config.device_extensions(),
-        )?;
-
-        let available_features = features::query_physical_device_features(
-            &physical_device_properties2,
-            physical_device,
-            &extension_set,
-        );
-
-        let present_id2_feature_available = available_features
+        let present_id2_extension_present = candidate.extension_set.present_id2;
+        let present_wait2_extension_present = candidate.extension_set.present_wait2;
+        let present_id2_feature_available = candidate
+            .features
             .present_id2
             .as_ref()
             .is_some_and(|features| features.present_id2 == vk::TRUE);
-        let present_wait2_feature_available = available_features
+        let present_wait2_feature_available = candidate
+            .features
             .present_wait2
             .as_ref()
             .is_some_and(|features| features.present_wait2 == vk::TRUE);
 
-        // Handle extension feature bits after querying the pNext feature chain.
-        if config.present_id2.is_some()
-            && config.present_wait2.is_some()
-            && (!present_id2_feature_available || !present_wait2_feature_available)
-        {
-            let mut missing_features = Vec::new();
-            if !present_id2_feature_available {
-                missing_features.push("present_id2");
-            }
-            if !present_wait2_feature_available {
-                missing_features.push("present_wait2");
-            }
+        let present_wait_disabled_reason =
+            if !present_id2_extension_present || !present_wait2_extension_present {
+                let mut missing = Vec::new();
+                if !present_id2_extension_present {
+                    missing.push("VK_KHR_present_id2");
+                }
+                if !present_wait2_extension_present {
+                    missing.push("VK_KHR_present_wait2");
+                }
+                Some(format!(
+                    "optional extension unavailable ({missing})",
+                    missing = missing.join(", ")
+                ))
+            } else if !present_id2_feature_available || !present_wait2_feature_available {
+                let mut missing = Vec::new();
+                if !present_id2_feature_available {
+                    missing.push("present_id2");
+                }
+                if !present_wait2_feature_available {
+                    missing.push("present_wait2");
+                }
+                Some(format!(
+                    "optional extension feature unavailable ({missing})",
+                    missing = missing.join(", ")
+                ))
+            } else {
+                None
+            };
 
-            present_wait_disabled_reason = Some(format!(
-                "optional extension feature unavailable ({missing_features})",
-                missing_features = missing_features.join(", ")
-            ));
-            extension_ptrs.retain(|&ptr| {
-                ptr != vk::KHR_PRESENT_ID_2_EXTENSION_NAME.as_ptr()
-                    && ptr != vk::KHR_PRESENT_WAIT_2_EXTENSION_NAME.as_ptr()
-            });
+        if present_wait_disabled_reason.is_some() {
             disable_present_wait2(&mut config);
         }
 
@@ -308,6 +279,18 @@ impl Device {
         } else {
             info!("Present wait enabled via VK_KHR_present_id2 and VK_KHR_present_wait2");
         }
+
+        // Build the final extension list as the intersection of the still-requested
+        // extensions in `config` and the extensions actually available on the candidate.
+        // Required extensions were already validated during candidate evaluation;
+        let extension_ptrs: Vec<*const c_char> = config
+            .device_extensions()
+            .into_iter()
+            .filter(|&ptr| {
+                let name = unsafe { CStr::from_ptr(ptr) };
+                extension_in_available(&candidate.available_extensions, name)
+            })
+            .collect();
 
         info!("Device extensions:");
         for &extension_ptr in extension_ptrs.iter() {
@@ -318,12 +301,12 @@ impl Device {
 
         let enable_present_wait2 = config.present_id2.is_some() && config.present_wait2.is_some();
         let mut requested_features = config.into_device_features();
-        features::validate_features(&requested_features, &available_features)?;
+        features::validate_features(&requested_features, &candidate.features)?;
 
         let mut features2 = unsafe { features::build_features_chain(&mut requested_features) };
 
-        let (graphics_queue_family, queue_create_info) =
-            query_graphics_queue_family(&instance, physical_device);
+        let graphics_queue_family = candidate.graphics_queue_family;
+        let queue_create_info = build_queue_create_info(graphics_queue_family);
 
         let queue_create_infos = [queue_create_info];
         let mut device_create_info = vk::DeviceCreateInfo::default()
@@ -333,6 +316,7 @@ impl Device {
         // Manually set pNext since features2 already has a chain.
         device_create_info.p_next = &mut features2 as *mut _ as *mut std::ffi::c_void;
 
+        let physical_device = candidate.physical_device;
         let device = unsafe { instance.create_device(physical_device, &device_create_info, None) }
             .context("Failed to create logical device")?;
 
@@ -592,132 +576,164 @@ fn is_instance_extension_available(
     })
 }
 
-fn query_graphics_queue_family(
-    instance: &jay_ash::Instance,
-    physical_device: vk::PhysicalDevice,
-) -> (u32, vk::DeviceQueueCreateInfo<'static>) {
-    let graphics_queue_family = find_graphics_queue_family(instance, physical_device).unwrap();
-
+fn build_queue_create_info(graphics_queue_family: u32) -> vk::DeviceQueueCreateInfo<'static> {
     static QUEUE_PRIORITIES: &[f32] = &[1.0f32];
 
-    let queue_create_info = vk::DeviceQueueCreateInfo::default()
+    vk::DeviceQueueCreateInfo::default()
         .queue_family_index(graphics_queue_family)
-        .queue_priorities(QUEUE_PRIORITIES);
-
-    (graphics_queue_family, queue_create_info)
+        .queue_priorities(QUEUE_PRIORITIES)
 }
 
-/// Scores a physical device based on its type and capabilities.
-/// Higher score is better. Returns 0 if device is unsuitable.
-fn score_device(
-    instance: &jay_ash::Instance,
-    physical_device_properties2: &jay_ash::khr::get_physical_device_properties2::Instance,
+/// A physical device evaluated against the configured requirements, with all
+/// per-device queries cached so device creation does not re-issue them.
+struct PhysicalDeviceCandidate {
     physical_device: vk::PhysicalDevice,
-    required_device_extensions: &[*const c_char],
-) -> u32 {
-    let properties = query_physical_device_properties(physical_device_properties2, physical_device);
-
-    if find_graphics_queue_family(instance, physical_device).is_none() {
-        return 0;
-    }
-
-    if !supports_required_device_extensions(instance, physical_device, required_device_extensions) {
-        return 0;
-    }
-
-    if !supports_required_device_features(physical_device_properties2, physical_device) {
-        return 0;
-    }
-
-    let mut score = 1;
-
-    if properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU {
-        score += 1000;
-    }
-
-    score
+    properties: vk::PhysicalDeviceProperties,
+    graphics_queue_family: u32,
+    available_extensions: Vec<vk::ExtensionProperties>,
+    extension_set: ExtensionSet,
+    features: features::DeviceFeatures,
+    score: u32,
 }
 
-/// Selects the best physical device from the available devices.
+/// Selects the best suitable physical device, evaluating each candidate exactly once.
 fn select_physical_device(
     instance: &jay_ash::Instance,
     physical_device_properties2: &jay_ash::khr::get_physical_device_properties2::Instance,
     devices: &[vk::PhysicalDevice],
     required_device_extensions: &[*const c_char],
-) -> Result<vk::PhysicalDevice> {
+    optional_device_extensions: &[*const c_char],
+) -> Result<PhysicalDeviceCandidate> {
     if devices.is_empty() {
         bail!("no physical devices found");
     }
 
-    let mut best_device = None;
-    let mut best_score = 0;
+    let mut best: Option<PhysicalDeviceCandidate> = None;
 
     for &device in devices {
-        let score = score_device(
+        let Some(candidate) = evaluate_physical_device_candidate(
             instance,
             physical_device_properties2,
             device,
             required_device_extensions,
-        );
-        if score > best_score {
-            best_score = score;
-            best_device = Some(device);
+            optional_device_extensions,
+        ) else {
+            continue;
+        };
+
+        match &best {
+            Some(current_best) if current_best.score >= candidate.score => {}
+            _ => best = Some(candidate),
         }
     }
 
-    best_device.ok_or_else(|| {
+    best.ok_or_else(|| {
         Error::Message(common::StringError(
             "no suitable physical device found (missing graphics queue, required extensions, or required features)".to_owned(),
         ))
     })
 }
 
-fn query_physical_device_properties(
-    physical_device_properties2: &jay_ash::khr::get_physical_device_properties2::Instance,
-    physical_device: vk::PhysicalDevice,
-) -> vk::PhysicalDeviceProperties {
-    let mut properties2 = vk::PhysicalDeviceProperties2KHR::default();
-    unsafe {
-        physical_device_properties2
-            .get_physical_device_properties2(physical_device, &mut properties2);
-    }
-    properties2.properties
-}
-
-fn supports_required_device_extensions(
+/// Evaluates a single physical device. Returns `None` if it does not meet the
+/// hard requirements (graphics queue, all required extensions, required feature bits).
+fn evaluate_physical_device_candidate(
     instance: &jay_ash::Instance,
+    physical_device_properties2: &jay_ash::khr::get_physical_device_properties2::Instance,
     physical_device: vk::PhysicalDevice,
     required_device_extensions: &[*const c_char],
-) -> bool {
-    required_device_extensions.iter().all(|&extension| {
-        let extension_name = unsafe { CStr::from_ptr(extension) };
-        extensions::is_extension_available(instance, physical_device, extension_name)
-    })
-}
-
-fn supports_required_device_features(
-    physical_device_properties2: &jay_ash::khr::get_physical_device_properties2::Instance,
-    physical_device: vk::PhysicalDevice,
-) -> bool {
-    let extension_set = extensions::ExtensionSet {
-        timeline_semaphore: true,
-        ..Default::default()
+    optional_device_extensions: &[*const c_char],
+) -> Option<PhysicalDeviceCandidate> {
+    let properties = {
+        let mut properties2 = vk::PhysicalDeviceProperties2KHR::default();
+        unsafe {
+            physical_device_properties2
+                .get_physical_device_properties2(physical_device, &mut properties2);
+        }
+        properties2.properties
     };
-    let available_features = features::query_physical_device_features(
+
+    let graphics_queue_family = find_graphics_queue_family(instance, physical_device)?;
+
+    let available_extensions =
+        unsafe { instance.enumerate_device_extension_properties(physical_device) }.ok()?;
+
+    for &required in required_device_extensions {
+        let required_name = unsafe { CStr::from_ptr(required) };
+        if !extension_in_available(&available_extensions, required_name) {
+            return None;
+        }
+    }
+
+    let mut enabled_extension_ptrs: Vec<*const c_char> = required_device_extensions.to_vec();
+    for &optional in optional_device_extensions {
+        let optional_name = unsafe { CStr::from_ptr(optional) };
+        if extension_in_available(&available_extensions, optional_name) {
+            enabled_extension_ptrs.push(optional);
+        }
+    }
+
+    let extension_set = ExtensionSet {
+        timeline_semaphore: contains_extension(
+            &enabled_extension_ptrs,
+            vk::KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME,
+        ),
+        present_id2: contains_extension(
+            &enabled_extension_ptrs,
+            vk::KHR_PRESENT_ID_2_EXTENSION_NAME,
+        ),
+        present_wait2: contains_extension(
+            &enabled_extension_ptrs,
+            vk::KHR_PRESENT_WAIT_2_EXTENSION_NAME,
+        ),
+    };
+
+    let features = features::query_physical_device_features(
         physical_device_properties2,
         physical_device,
         &extension_set,
     );
 
-    available_features
-        .timeline_semaphore
-        .as_ref()
-        .is_some_and(|features| features.timeline_semaphore == vk::TRUE)
+    let timeline_semaphore_supported = extension_set.timeline_semaphore
+        && features
+            .timeline_semaphore
+            .as_ref()
+            .is_some_and(|f| f.timeline_semaphore == vk::TRUE);
+
+    if !timeline_semaphore_supported {
+        return None;
+    }
+
+    let mut score = 1u32;
+    if properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU {
+        score += 1000;
+    }
+
+    Some(PhysicalDeviceCandidate {
+        physical_device,
+        properties,
+        graphics_queue_family,
+        available_extensions,
+        extension_set,
+        features,
+        score,
+    })
 }
 
-fn load_vulkan_entry() -> Result<jay_ash::Entry> {
-    let entry = jay_ash::Entry::linked();
-    Ok(entry)
+fn extension_in_available(
+    available_extensions: &[vk::ExtensionProperties],
+    extension_name: &CStr,
+) -> bool {
+    available_extensions.iter().any(|extension| {
+        let available_name = unsafe { CStr::from_ptr(extension.extension_name.as_ptr()) };
+        available_name == extension_name
+    })
+}
+
+fn contains_extension(extensions: &[*const c_char], target: &CStr) -> bool {
+    extensions.iter().any(|&ptr| {
+        let name = unsafe { CStr::from_ptr(ptr) };
+        name == target
+    })
 }
 
 /// Finds the graphics queue family index for the given physical device.
