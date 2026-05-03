@@ -439,6 +439,13 @@ impl Gdc {
             self.display_enabled = value & 1 != 0;
         }
 
+        // WDAT latches the transfer mode from the command byte immediately.
+        // Real BIOS vector drawing changes clear/set mode this way, then
+        // issues FIGD without sending new WDAT pattern bytes.
+        if value & 0xE4 == 0x20 {
+            self.bitmap_mod = value & 3;
+        }
+
         GdcAction::None
     }
 

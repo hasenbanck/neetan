@@ -24,6 +24,48 @@ fn gdc_slave_write_masked_word(bus: &mut Pc9801Bus, value: u16) {
     bus.io_write_byte(GDC_SLAVE_DATA_PORT, (value >> 8) as u8);
 }
 
+fn gdc_slave_set_pattern(bus: &mut Pc9801Bus, value: u16) {
+    bus.io_write_byte(GDC_SLAVE_COMMAND_PORT, 0x78);
+    bus.io_write_byte(GDC_SLAVE_DATA_PORT, value as u8);
+    bus.io_write_byte(GDC_SLAVE_DATA_PORT, (value >> 8) as u8);
+}
+
+fn gdc_slave_set_horizontal_line_figure(bus: &mut Pc9801Bus) {
+    bus.io_write_byte(GDC_SLAVE_COMMAND_PORT, 0x4C);
+    bus.io_write_byte(GDC_SLAVE_DATA_PORT, 0x0A);
+    bus.io_write_byte(GDC_SLAVE_DATA_PORT, 0x07);
+    bus.io_write_byte(GDC_SLAVE_DATA_PORT, 0x00);
+    bus.io_write_byte(GDC_SLAVE_DATA_PORT, 0xFF);
+    bus.io_write_byte(GDC_SLAVE_DATA_PORT, 0x3F);
+    bus.io_write_byte(GDC_SLAVE_DATA_PORT, 0x00);
+    bus.io_write_byte(GDC_SLAVE_DATA_PORT, 0x00);
+    bus.io_write_byte(GDC_SLAVE_DATA_PORT, 0x00);
+    bus.io_write_byte(GDC_SLAVE_DATA_PORT, 0x00);
+}
+
+fn gdc_slave_draw_horizontal_line(bus: &mut Pc9801Bus, address: u32, dot_address: u8, mode: u8) {
+    gdc_slave_set_cursor(bus, address, dot_address);
+
+    gdc_slave_set_horizontal_line_figure(bus);
+
+    bus.io_write_byte(GDC_SLAVE_COMMAND_PORT, 0x20 | (mode & 0x03));
+    bus.io_write_byte(GDC_SLAVE_DATA_PORT, 0xFF);
+    bus.io_write_byte(GDC_SLAVE_DATA_PORT, 0xFF);
+    bus.io_write_byte(GDC_SLAVE_COMMAND_PORT, 0x6C);
+}
+
+fn gdc_slave_draw_horizontal_line_mode_only(
+    bus: &mut Pc9801Bus,
+    address: u32,
+    dot_address: u8,
+    mode: u8,
+) {
+    gdc_slave_set_cursor(bus, address, dot_address);
+    gdc_slave_set_horizontal_line_figure(bus);
+    bus.io_write_byte(GDC_SLAVE_COMMAND_PORT, 0x20 | (mode & 0x03));
+    bus.io_write_byte(GDC_SLAVE_COMMAND_PORT, 0x6C);
+}
+
 fn gdc_slave_draw_single_bit(bus: &mut Pc9801Bus, address: u32, dot_address: u8) {
     let mask = 1u16 << dot_address;
     gdc_slave_set_cursor(bus, address, dot_address);
@@ -55,4 +97,41 @@ fn gdc_slave_direct_writes_select_vram_plane_from_address() {
         0x04,
         "GDC address 0x0C016 should write the G plane"
     );
+}
+
+#[test]
+fn gdc_slave_line_clear_and_set_modes_produce_yellow() {
+    let mut bus = Pc9801Bus::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    bus.io_write_byte(0x7C, 0x00);
+
+    bus.write_byte(VRAM_B, 0xFF);
+    bus.write_byte(VRAM_R, 0x00);
+    bus.write_byte(VRAM_G, 0x00);
+
+    gdc_slave_draw_horizontal_line(&mut bus, 0x4000, 0, 2);
+    gdc_slave_draw_horizontal_line(&mut bus, 0x8000, 0, 3);
+    gdc_slave_draw_horizontal_line(&mut bus, 0xC000, 0, 3);
+
+    assert_eq!(bus.read_byte_direct(VRAM_B), 0x00);
+    assert_eq!(bus.read_byte_direct(VRAM_R), 0xFF);
+    assert_eq!(bus.read_byte_direct(VRAM_G), 0xFF);
+}
+
+#[test]
+fn gdc_slave_mode_only_wdat_latches_vector_clear_and_set_modes() {
+    let mut bus = Pc9801Bus::new(MachineModel::PC9801VX, CpuMode::Low, 48000);
+    bus.io_write_byte(0x7C, 0x00);
+    gdc_slave_set_pattern(&mut bus, 0xFFFF);
+
+    bus.write_byte(VRAM_B, 0xFF);
+    bus.write_byte(VRAM_R, 0x00);
+    bus.write_byte(VRAM_G, 0x00);
+
+    gdc_slave_draw_horizontal_line_mode_only(&mut bus, 0x4000, 0, 2);
+    gdc_slave_draw_horizontal_line_mode_only(&mut bus, 0x8000, 0, 3);
+    gdc_slave_draw_horizontal_line_mode_only(&mut bus, 0xC000, 0, 3);
+
+    assert_eq!(bus.read_byte_direct(VRAM_B), 0x00);
+    assert_eq!(bus.read_byte_direct(VRAM_R), 0xFF);
+    assert_eq!(bus.read_byte_direct(VRAM_G), 0xFF);
 }
