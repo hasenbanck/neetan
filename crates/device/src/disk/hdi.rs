@@ -39,24 +39,7 @@ impl HddImage {
             geometry,
             format: HddFormat::Hdi,
             data: data[data_start..data_start + expected_data_size].to_vec(),
-            original_header_size: header_size,
+            header_bytes: data[..data_start].to_vec(),
         })
-    }
-
-    pub(super) fn serialize_hdi(&self) -> Vec<u8> {
-        let header_size = self.original_header_size.max(HDI_HEADER_SIZE as u32);
-        let mut out = vec![0u8; header_size as usize];
-
-        // hddtype at offset 4 (leave as 0)
-        out[8..12].copy_from_slice(&header_size.to_le_bytes());
-        let hdd_size = self.geometry.total_sectors();
-        out[12..16].copy_from_slice(&hdd_size.to_le_bytes());
-        out[16..20].copy_from_slice(&(self.geometry.sector_size as u32).to_le_bytes());
-        out[20..24].copy_from_slice(&(self.geometry.sectors_per_track as u32).to_le_bytes());
-        out[24..28].copy_from_slice(&(self.geometry.heads as u32).to_le_bytes());
-        out[28..32].copy_from_slice(&(self.geometry.cylinders as u32).to_le_bytes());
-
-        out.extend_from_slice(&self.data);
-        out
     }
 }

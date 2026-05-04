@@ -9,6 +9,7 @@ pub mod cd_audio;
 pub mod cdrom;
 pub mod cgrom;
 pub mod disk;
+pub mod disk_backend;
 pub mod disk_hle;
 pub mod display_control;
 pub mod egc;

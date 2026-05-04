@@ -9,7 +9,15 @@ mod hdi;
 mod nhd;
 mod thd;
 
-use std::{error::Error, fmt, path::Path};
+use std::{
+    error::Error,
+    fmt,
+    path::{Path, PathBuf},
+};
+
+use common::error;
+
+use crate::disk_backend::DiskBackend;
 
 /// HDI header size (fixed at 32 bytes).
 const HDI_HEADER_SIZE: usize = 32;
@@ -119,22 +127,20 @@ pub struct HddImage {
     pub format: HddFormat,
     /// Raw sector data (geometry.total_sectors() * geometry.sector_size bytes).
     data: Vec<u8>,
-    /// Header size from the original image (needed for HDI/NHD serialization).
-    original_header_size: u32,
+    /// Verbatim copy of the source-image header. `to_bytes` emits
+    /// `header_bytes ++ data`.
+    pub(crate) header_bytes: Vec<u8>,
 }
 
 impl HddImage {
     /// Creates an HDD image from raw components (for testing and programmatic creation).
     pub fn from_raw(geometry: HddGeometry, format: HddFormat, data: Vec<u8>) -> Self {
+        let header_bytes = synthesize_default_header(format, geometry);
         Self {
             geometry,
             format,
             data,
-            original_header_size: match format {
-                HddFormat::Nhd => NHD_HEADER_SIZE as u32,
-                HddFormat::Hdi => HDI_HEADER_SIZE as u32,
-                HddFormat::Thd => THD_HEADER_SIZE as u32,
-            },
+            header_bytes,
         }
     }
 
@@ -201,12 +207,47 @@ impl HddImage {
         true
     }
 
-    /// Serializes the image back to its original format.
+    /// Serializes the image to bytes by emitting the preserved header
+    /// followed by the in-memory sector data.
     pub fn to_bytes(&self) -> Vec<u8> {
-        match self.format {
-            HddFormat::Nhd => self.serialize_nhd(),
-            HddFormat::Hdi => self.serialize_hdi(),
-            HddFormat::Thd => self.serialize_thd(),
+        let mut out = Vec::with_capacity(self.header_bytes.len() + self.data.len());
+        out.extend_from_slice(&self.header_bytes);
+        out.extend_from_slice(&self.data);
+        out
+    }
+}
+
+/// Synthesizes a default header for the given format and geometry, matching
+/// what the format-specific parsers would have produced for a freshly-built
+/// image.
+fn synthesize_default_header(format: HddFormat, geometry: HddGeometry) -> Vec<u8> {
+    match format {
+        HddFormat::Nhd => {
+            let mut header = vec![0u8; NHD_HEADER_SIZE];
+            header[..15].copy_from_slice(NHD_SIGNATURE);
+            header[0x110..0x114].copy_from_slice(&(NHD_HEADER_SIZE as u32).to_le_bytes());
+            header[0x114..0x118].copy_from_slice(&(geometry.cylinders as u32).to_le_bytes());
+            header[0x118..0x11A].copy_from_slice(&(geometry.heads as u16).to_le_bytes());
+            header[0x11A..0x11C]
+                .copy_from_slice(&(geometry.sectors_per_track as u16).to_le_bytes());
+            header[0x11C..0x11E].copy_from_slice(&geometry.sector_size.to_le_bytes());
+            header
+        }
+        HddFormat::Hdi => {
+            let mut header = vec![0u8; HDI_HEADER_SIZE];
+            let total_sectors = geometry.total_sectors();
+            header[8..12].copy_from_slice(&(HDI_HEADER_SIZE as u32).to_le_bytes());
+            header[12..16].copy_from_slice(&total_sectors.to_le_bytes());
+            header[16..20].copy_from_slice(&(geometry.sector_size as u32).to_le_bytes());
+            header[20..24].copy_from_slice(&(geometry.sectors_per_track as u32).to_le_bytes());
+            header[24..28].copy_from_slice(&(geometry.heads as u32).to_le_bytes());
+            header[28..32].copy_from_slice(&(geometry.cylinders as u32).to_le_bytes());
+            header
+        }
+        HddFormat::Thd => {
+            let mut header = vec![0u8; THD_HEADER_SIZE];
+            header[0..2].copy_from_slice(&geometry.cylinders.to_le_bytes());
+            header
         }
     }
 }
@@ -335,6 +376,130 @@ impl fmt::Display for HddError {
 }
 
 impl Error for HddError {}
+
+/// A hard disk image bound to its source file for synchronous write-through.
+#[derive(Debug)]
+pub struct MountedHdd {
+    image: HddImage,
+    backend: Option<DiskBackend>,
+    dirty: bool,
+}
+
+impl MountedHdd {
+    /// Constructs a new mount. If `path` is `None` or the file cannot be
+    /// opened for write, writes only land in memory.
+    pub fn new(image: HddImage, path: Option<PathBuf>) -> Self {
+        let backend = path.and_then(|p| match DiskBackend::open(p.clone()) {
+            Ok(b) => Some(b),
+            Err(err) => {
+                error!(
+                    "Failed to open HDD {} for write-through: {err}",
+                    p.display()
+                );
+                None
+            }
+        });
+        Self {
+            image,
+            backend,
+            dirty: false,
+        }
+    }
+
+    /// Returns a read-only reference to the parsed image.
+    pub fn image(&self) -> &HddImage {
+        &self.image
+    }
+
+    /// Returns the disk geometry.
+    pub fn geometry(&self) -> HddGeometry {
+        self.image.geometry
+    }
+
+    /// Returns whether the image has unwritten changes.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// Reads sector data at the given LBA.
+    pub fn read_sector(&self, lba: u32) -> Option<&[u8]> {
+        self.image.read_sector(lba)
+    }
+
+    /// Writes sector data at the given LBA.
+    pub fn write_sector(&mut self, lba: u32, data: &[u8]) -> bool {
+        if !self.image.write_sector(lba, data) {
+            return false;
+        }
+        if let Some(backend) = self.backend.as_mut() {
+            let offset = self.image.header_bytes.len() as u64
+                + lba as u64 * self.image.geometry.sector_size as u64;
+            if let Err(err) = backend.write_at(offset, data) {
+                self.dirty = true;
+                error!("HDD write-through failed at LBA {lba}: {err}");
+            }
+        } else {
+            self.dirty = true;
+        }
+        true
+    }
+
+    /// Formats the track containing `start_lba` by filling its sectors
+    /// with 0xE5.
+    pub fn format_track(&mut self, start_lba: u32) -> bool {
+        if !self.image.format_track(start_lba) {
+            return false;
+        }
+        if let Some(backend) = self.backend.as_mut() {
+            let sector_size = self.image.geometry.sector_size as usize;
+            let spt = self.image.geometry.sectors_per_track as usize;
+            let offset =
+                self.image.header_bytes.len() as u64 + start_lba as u64 * sector_size as u64;
+            let buf = vec![0xE5u8; spt * sector_size];
+            if let Err(err) = backend.write_at(offset, &buf) {
+                self.dirty = true;
+                error!("HDD format_track write-through failed: {err}");
+            }
+        } else {
+            self.dirty = true;
+        }
+        true
+    }
+
+    /// Re-emits the entire image if dirty. The dirty flag remains set
+    /// only when an earlier per-sector write-through reported an error,
+    /// so under normal use this is a no-op.
+    pub fn flush_if_dirty(&mut self) {
+        if !self.dirty {
+            return;
+        }
+        let Some(backend) = self.backend.as_mut() else {
+            return;
+        };
+        let bytes = self.image.to_bytes();
+        if let Err(err) = backend.replace_atomic(&bytes) {
+            error!("HDD eject-time flush failed: {err}");
+            return;
+        }
+        self.dirty = false;
+    }
+
+    /// Flushes dirty fallback data and any buffered successful writes.
+    pub fn flush(&mut self) {
+        self.flush_if_dirty();
+        if let Some(backend) = self.backend.as_mut()
+            && let Err(err) = backend.flush()
+        {
+            self.dirty = true;
+            error!("HDD flush failed: {err}");
+        }
+    }
+
+    /// Flushes pending writes and releases the backend.
+    pub fn eject(mut self) {
+        self.flush();
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -711,10 +876,140 @@ mod tests {
 
         let hdd = HddImage::from_hdi(&image).unwrap();
         assert_eq!(hdd.geometry.cylinders, 153);
-        assert_eq!(hdd.original_header_size, 4096);
+        assert_eq!(hdd.header_bytes.len(), 4096);
 
-        // Roundtrip preserves the larger header.
+        // Roundtrip preserves the larger header byte-for-byte.
         let serialized = hdd.to_bytes();
         assert_eq!(serialized.len(), image.len());
+        assert_eq!(&serialized[..4096], &image[..4096]);
+    }
+
+    fn tempfile_with(bytes: &[u8], suffix: &str) -> PathBuf {
+        let dir = std::env::temp_dir();
+        let unique = format!(
+            "neetan_hdd_test_{}_{}{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            suffix
+        );
+        let path = dir.join(unique);
+        std::fs::write(&path, bytes).expect("write temp file");
+        path
+    }
+
+    #[test]
+    fn mounted_hdd_nhd_sector_write_through() {
+        let image_bytes = build_nhd_image(50, 4, 17, 512);
+        let path = tempfile_with(&image_bytes, ".nhd");
+
+        let image = HddImage::from_nhd(&image_bytes).unwrap();
+        let mut mounted = MountedHdd::new(image, Some(path.clone()));
+
+        let pattern = vec![0xAAu8; 512];
+        assert!(mounted.write_sector(123, &pattern));
+
+        drop(mounted);
+        let raw = std::fs::read(&path).unwrap();
+        let offset = NHD_HEADER_SIZE + 123 * 512;
+        assert_eq!(&raw[offset..offset + 512], &pattern[..]);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn mounted_hdd_hdi_format_track_writes_e5() {
+        let image_bytes = build_hdi_image(20, 4, 17, 256);
+        let path = tempfile_with(&image_bytes, ".hdi");
+
+        let image = HddImage::from_hdi(&image_bytes).unwrap();
+        let mut mounted = MountedHdd::new(image, Some(path.clone()));
+
+        // Format the track containing LBA 17 (cylinder 0, head 1).
+        assert!(mounted.format_track(17));
+
+        drop(mounted);
+        let raw = std::fs::read(&path).unwrap();
+        let track_start = HDI_HEADER_SIZE + 17 * 256;
+        let track_end = track_start + 17 * 256;
+        assert!(
+            raw[track_start..track_end].iter().all(|&b| b == 0xE5),
+            "track region should be filled with 0xE5"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn mounted_hdd_thd_sector_write_through() {
+        let image_bytes = build_thd_image(50);
+        let path = tempfile_with(&image_bytes, ".thd");
+
+        let image = HddImage::from_thd(&image_bytes).unwrap();
+        let mut mounted = MountedHdd::new(image, Some(path.clone()));
+
+        let pattern = vec![0x77u8; THD_SECTOR_SIZE as usize];
+        assert!(mounted.write_sector(42, &pattern));
+
+        drop(mounted);
+        let raw = std::fs::read(&path).unwrap();
+        let offset = THD_HEADER_SIZE + 42 * THD_SECTOR_SIZE as usize;
+        assert_eq!(
+            &raw[offset..offset + THD_SECTOR_SIZE as usize],
+            &pattern[..]
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn mounted_hdd_write_sector_preserves_existing_dirty_bit() {
+        let image_bytes = build_nhd_image(50, 4, 17, 512);
+        let path = tempfile_with(&image_bytes, ".nhd");
+
+        let image = HddImage::from_nhd(&image_bytes).unwrap();
+        let mut mounted = MountedHdd::new(image, Some(path.clone()));
+
+        // Simulate a prior write-through error: in-memory ahead of disk.
+        mounted.image.write_sector(7, &[0x11u8; 512]);
+        mounted.dirty = true;
+
+        // A successful unrelated write must NOT clear dirty, otherwise the
+        // earlier in-memory-only mutation is silently lost on flush.
+        let pattern = vec![0xAAu8; 512];
+        assert!(mounted.write_sector(123, &pattern));
+        assert!(
+            mounted.is_dirty(),
+            "dirty must remain set after later successful write"
+        );
+
+        drop(mounted);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn mounted_hdd_format_track_preserves_existing_dirty_bit() {
+        let image_bytes = build_nhd_image(50, 4, 17, 512);
+        let path = tempfile_with(&image_bytes, ".nhd");
+
+        let image = HddImage::from_nhd(&image_bytes).unwrap();
+        let mut mounted = MountedHdd::new(image, Some(path.clone()));
+
+        // Simulate a prior write-through error: in-memory ahead of disk.
+        mounted.image.write_sector(7, &[0x11u8; 512]);
+        mounted.dirty = true;
+
+        // A successful format_track must NOT clear dirty, otherwise the
+        // earlier in-memory-only mutation is silently lost on flush.
+        assert!(mounted.format_track(34));
+        assert!(
+            mounted.is_dirty(),
+            "dirty must remain set after later successful format_track"
+        );
+
+        drop(mounted);
+        std::fs::remove_file(&path).ok();
     }
 }

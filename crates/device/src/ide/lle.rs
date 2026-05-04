@@ -13,7 +13,7 @@
 //! for completion interrupts.
 
 use super::atapi::{self, AtapiState};
-use crate::disk::{HddGeometry, HddImage};
+use crate::disk::{HddGeometry, MountedHdd};
 
 /// IDE controller phase (data transfer state).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,11 +206,6 @@ impl Controller {
         self.channels[self.active_channel].phase
     }
 
-    /// Returns the currently selected drive index (0 or 1) on channel 0.
-    pub(super) fn selected_hdd_drive(&self) -> usize {
-        self.channels[0].selected_drive
-    }
-
     /// Returns the currently active channel index (0 or 1).
     #[cfg(test)]
     pub(super) fn active_channel(&self) -> usize {
@@ -260,7 +255,7 @@ impl Controller {
     }
 
     /// Reads the 16-bit data register (port 0x0640).
-    pub(super) fn read_data_word(&mut self, drives: &[Option<HddImage>; 2]) -> (u16, IdeAction) {
+    pub(super) fn read_data_word(&mut self, drives: &[Option<MountedHdd>; 2]) -> (u16, IdeAction) {
         let ch = self.active_channel;
         if self.channels[ch].phase != IdePhase::DataIn {
             return (0xFFFF, IdeAction::None);
@@ -299,7 +294,7 @@ impl Controller {
     pub(super) fn write_data_word(
         &mut self,
         value: u16,
-        drives: &mut [Option<HddImage>; 2],
+        drives: &mut [Option<MountedHdd>; 2],
     ) -> IdeAction {
         let ch = self.active_channel;
         if self.channels[ch].phase != IdePhase::DataOut {
@@ -441,7 +436,7 @@ impl Controller {
     pub(super) fn write_command(
         &mut self,
         command: u8,
-        drives: &[Option<HddImage>; 2],
+        drives: &[Option<MountedHdd>; 2],
     ) -> IdeAction {
         // Channel 1 has no HDD drives attached - commands abort until ATAPI
         // support is wired in.
@@ -606,7 +601,7 @@ impl Controller {
                     return self.abort_command();
                 }
                 let sel = self.channels[self.active_channel].selected_drive;
-                let geometry = drives[sel].as_ref().unwrap().geometry;
+                let geometry = drives[sel].as_ref().unwrap().geometry();
                 self.build_identify_data(geometry);
                 let ch = self.channel_mut();
                 ch.phase = IdePhase::DataIn;
@@ -664,7 +659,7 @@ impl Controller {
     /// a slave device. The computed value is stored back into bank[0].
     pub(super) fn read_bank0_status(
         &mut self,
-        drives: &[Option<HddImage>; 2],
+        drives: &[Option<MountedHdd>; 2],
         has_cdrom: bool,
     ) -> u8 {
         // Compatibility mode: CD-ROM present only on channel 1 master.
@@ -710,7 +705,7 @@ impl Controller {
 
     /// Reads the additional status register (port 0x0435).
     /// Bit 1: 0 = IDE HDD present, 1 = no IDE HDD.
-    pub(super) fn read_additional_status(&self, drives: &[Option<HddImage>; 2]) -> u8 {
+    pub(super) fn read_additional_status(&self, drives: &[Option<MountedHdd>; 2]) -> u8 {
         let has_hdd = drives[0].is_some() || drives[1].is_some();
         if has_hdd { 0x00 } else { 0x02 }
     }
@@ -737,7 +732,7 @@ impl Controller {
         should_interrupt
     }
 
-    fn execute_diagnostic(&mut self, drives: &[Option<HddImage>; 2]) -> IdeAction {
+    fn execute_diagnostic(&mut self, drives: &[Option<MountedHdd>; 2]) -> IdeAction {
         let ch = &mut self.channels[self.active_channel];
         for (i, drive_image) in drives.iter().enumerate() {
             ch.drives[i].reset();
@@ -841,9 +836,9 @@ impl Controller {
         }
     }
 
-    fn start_read(&mut self, drives: &[Option<HddImage>; 2], multiple: bool) -> IdeAction {
+    fn start_read(&mut self, drives: &[Option<MountedHdd>; 2], multiple: bool) -> IdeAction {
         let sel = self.channels[self.active_channel].selected_drive;
-        let geometry = drives[sel].as_ref().unwrap().geometry;
+        let geometry = drives[sel].as_ref().unwrap().geometry();
         let lba = self.get_current_sector(&geometry);
         let sector_count = self.channel().drive().sector_count;
         let count = if sector_count == 0 {
@@ -879,7 +874,7 @@ impl Controller {
         IdeAction::ScheduleCompletion
     }
 
-    fn check_data_in_complete(&mut self, drives: &[Option<HddImage>; 2]) -> IdeAction {
+    fn check_data_in_complete(&mut self, drives: &[Option<MountedHdd>; 2]) -> IdeAction {
         let ch_idx = self.active_channel;
         let sel = self.channels[ch_idx].selected_drive;
         let drive = &self.channels[ch_idx].drives[sel];
@@ -890,7 +885,7 @@ impl Controller {
         if drive.sectors_pending == 0 {
             let data_in_updates_sector_registers = drive.data_in_updates_sector_registers;
             if data_in_updates_sector_registers && let Some(drive) = drives[sel].as_ref() {
-                let geometry = drive.geometry;
+                let geometry = drive.geometry();
                 self.advance_sector_address(&geometry);
             }
             let ch = &mut self.channels[ch_idx];
@@ -905,7 +900,7 @@ impl Controller {
             return IdeAction::ScheduleCompletion;
         }
 
-        let geometry = drives[sel].as_ref().unwrap().geometry;
+        let geometry = drives[sel].as_ref().unwrap().geometry();
         self.advance_sector_address(&geometry);
         let lba = self.get_current_sector(&geometry);
         let Some(sector_data) = drives[sel].as_ref().unwrap().read_sector(lba) else {
@@ -964,10 +959,10 @@ impl Controller {
         IdeAction::None
     }
 
-    fn handle_write_complete(&mut self, drives: &mut [Option<HddImage>; 2]) -> IdeAction {
+    fn handle_write_complete(&mut self, drives: &mut [Option<MountedHdd>; 2]) -> IdeAction {
         let ch_idx = self.active_channel;
         let sel = self.channels[ch_idx].selected_drive;
-        let geometry = drives[sel].as_ref().unwrap().geometry;
+        let geometry = drives[sel].as_ref().unwrap().geometry();
         let lba = self.get_current_sector(&geometry);
 
         let drive = &self.channels[ch_idx].drives[sel];
@@ -1226,7 +1221,7 @@ mod tests {
     use super::*;
     use crate::disk::{HddFormat, HddGeometry, HddImage};
 
-    fn make_test_drive() -> HddImage {
+    fn make_test_drive() -> MountedHdd {
         let geometry = HddGeometry {
             cylinders: 20,
             heads: 4,
@@ -1240,10 +1235,10 @@ mod tests {
             data[offset] = (lba >> 8) as u8;
             data[offset + 1] = lba as u8;
         }
-        HddImage::from_raw(geometry, HddFormat::Hdi, data)
+        MountedHdd::new(HddImage::from_raw(geometry, HddFormat::Hdi, data), None)
     }
 
-    fn make_drives(drive0: Option<HddImage>) -> [Option<HddImage>; 2] {
+    fn make_drives(drive0: Option<MountedHdd>) -> [Option<MountedHdd>; 2] {
         [drive0, None]
     }
 
@@ -1355,7 +1350,7 @@ mod tests {
     #[test]
     fn write_sector() {
         let mut controller = Controller::new();
-        let mut drives: [Option<HddImage>; 2] = [Some(make_test_drive()), None];
+        let mut drives: [Option<MountedHdd>; 2] = [Some(make_test_drive()), None];
 
         // LBA mode, sector 10
         controller.write_sector_number(10);
@@ -1479,7 +1474,7 @@ mod tests {
     #[test]
     fn no_drive_returns_error() {
         let mut controller = Controller::new();
-        let drives: [Option<HddImage>; 2] = [None, None];
+        let drives: [Option<MountedHdd>; 2] = [None, None];
 
         let action = controller.write_command(0x20, &drives);
         assert_eq!(action, IdeAction::ScheduleCompletion);
@@ -1569,7 +1564,7 @@ mod tests {
     #[test]
     fn bank0_status_slave_sets_bit6() {
         let mut controller = Controller::new();
-        let drives: [Option<HddImage>; 2] = [Some(make_test_drive()), Some(make_test_drive())];
+        let drives: [Option<MountedHdd>; 2] = [Some(make_test_drive()), Some(make_test_drive())];
         // Non-compmode with slave: returns 0x41 (bit 0 + bit 6).
         assert_eq!(controller.read_bank0_status(&drives, false), 0x41);
     }
@@ -1588,7 +1583,7 @@ mod tests {
     fn bank0_status_no_device_returns_raw_bank() {
         let mut controller = Controller::new();
         controller.write_bank(0, 0x31);
-        let drives: [Option<HddImage>; 2] = [None, None];
+        let drives: [Option<MountedHdd>; 2] = [None, None];
         // No device on channel 0: returns raw bank[0].
         assert_eq!(controller.read_bank0_status(&drives, false), 0x31);
     }
@@ -1596,7 +1591,7 @@ mod tests {
     #[test]
     fn reading_error_clears_err_status_bit() {
         let mut controller = Controller::new();
-        let drives: [Option<HddImage>; 2] = [None, None];
+        let drives: [Option<MountedHdd>; 2] = [None, None];
 
         controller.write_command(0x20, &drives);
         assert_ne!(controller.read_alt_status() & STATUS_ERR, 0);
@@ -1608,7 +1603,7 @@ mod tests {
     #[test]
     fn reading_error_preserves_other_status_bits() {
         let mut controller = Controller::new();
-        let drives: [Option<HddImage>; 2] = [None, None];
+        let drives: [Option<MountedHdd>; 2] = [None, None];
 
         controller.write_command(0x20, &drives);
         let status = controller.read_alt_status();
@@ -1626,7 +1621,7 @@ mod tests {
     #[test]
     fn additional_status_no_hdd() {
         let controller = Controller::new();
-        let drives: [Option<HddImage>; 2] = [None, None];
+        let drives: [Option<MountedHdd>; 2] = [None, None];
         assert_eq!(controller.read_additional_status(&drives), 0x02);
     }
 
@@ -1723,7 +1718,7 @@ mod tests {
     #[test]
     fn identify_device_slave_word93() {
         let mut controller = Controller::new();
-        let drives: [Option<HddImage>; 2] = [Some(make_test_drive()), Some(make_test_drive())];
+        let drives: [Option<MountedHdd>; 2] = [Some(make_test_drive()), Some(make_test_drive())];
 
         controller.write_device_head(0xF0);
         controller.write_command(0xEC, &drives);
@@ -1738,7 +1733,7 @@ mod tests {
     #[test]
     fn execute_diagnostic_with_both_drives() {
         let mut controller = Controller::new();
-        let drives: [Option<HddImage>; 2] = [Some(make_test_drive()), Some(make_test_drive())];
+        let drives: [Option<MountedHdd>; 2] = [Some(make_test_drive()), Some(make_test_drive())];
 
         let action = controller.write_command(0x90, &drives);
         assert_eq!(action, IdeAction::ScheduleCompletion);
@@ -1761,7 +1756,7 @@ mod tests {
     #[test]
     fn execute_diagnostic_no_drives() {
         let mut controller = Controller::new();
-        let drives: [Option<HddImage>; 2] = [None, None];
+        let drives: [Option<MountedHdd>; 2] = [None, None];
 
         controller.write_command(0x90, &drives);
         assert_eq!(controller.channels[0].drives[0].error, 0x80);
@@ -1792,7 +1787,7 @@ mod tests {
     #[test]
     fn seek_command_aborts_without_drive() {
         let mut controller = Controller::new();
-        let drives: [Option<HddImage>; 2] = [None, None];
+        let drives: [Option<MountedHdd>; 2] = [None, None];
 
         let action = controller.write_command(0x70, &drives);
         assert_eq!(action, IdeAction::ScheduleCompletion);
@@ -1959,7 +1954,7 @@ mod tests {
     #[test]
     fn device_reset_both_drives_present() {
         let mut controller = Controller::new();
-        let drives: [Option<HddImage>; 2] = [Some(make_test_drive()), Some(make_test_drive())];
+        let drives: [Option<MountedHdd>; 2] = [Some(make_test_drive()), Some(make_test_drive())];
 
         let action = controller.write_command(0x08, &drives);
         assert_eq!(action, IdeAction::ScheduleCompletion);
@@ -1970,7 +1965,7 @@ mod tests {
     #[test]
     fn device_reset_no_drives() {
         let mut controller = Controller::new();
-        let drives: [Option<HddImage>; 2] = [None, None];
+        let drives: [Option<MountedHdd>; 2] = [None, None];
 
         let action = controller.write_command(0x08, &drives);
         assert_eq!(action, IdeAction::ScheduleCompletion);
@@ -2081,7 +2076,7 @@ mod tests {
     #[test]
     fn channel1_commands_abort_without_atapi() {
         let mut controller = Controller::new();
-        let drives: [Option<HddImage>; 2] = [None, None];
+        let drives: [Option<MountedHdd>; 2] = [None, None];
 
         // Switch to channel 1.
         controller.write_bank(1, 0x01);

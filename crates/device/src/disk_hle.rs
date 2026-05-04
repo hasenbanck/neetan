@@ -3,7 +3,7 @@
 //! Both SASI and IDE use the same INT 1Bh BIOS interface for disk I/O.
 //! This module provides the common HLE functions used by both controllers.
 
-use crate::disk::{HddGeometry, HddImage};
+use crate::disk::{HddGeometry, MountedHdd};
 
 /// Computes the sector position from register values.
 ///
@@ -48,7 +48,7 @@ pub fn execute_read(
     xfer_size: u32,
     sector_pos: u32,
     buf_addr: u32,
-    drives: &[Option<HddImage>; 2],
+    drives: &[Option<MountedHdd>; 2],
     mut write_byte: impl FnMut(u32, u8),
 ) -> u8 {
     let Some(drive) = &drives[drive_idx] else {
@@ -58,7 +58,7 @@ pub fn execute_read(
     let mut remaining = xfer_size;
     let mut pos = sector_pos;
     let mut addr = buf_addr;
-    let sector_size = drive.geometry.sector_size as u32;
+    let sector_size = drive.geometry().sector_size as u32;
 
     while remaining > 0 {
         let read_size = remaining.min(sector_size);
@@ -89,7 +89,7 @@ pub fn execute_write<const SECTOR_SIZE: usize>(
     xfer_size: u32,
     sector_pos: u32,
     buf_addr: u32,
-    drives: &mut [Option<HddImage>; 2],
+    drives: &mut [Option<MountedHdd>; 2],
     read_byte: impl Fn(u32) -> u8,
 ) -> u8 {
     let Some(drive) = &mut drives[drive_idx] else {
@@ -99,7 +99,7 @@ pub fn execute_write<const SECTOR_SIZE: usize>(
     let mut remaining = xfer_size;
     let mut pos = sector_pos;
     let mut addr = buf_addr;
-    let sector_size = drive.geometry.sector_size as usize;
+    let sector_size = drive.geometry().sector_size as usize;
 
     while remaining > 0 {
         let write_size = (remaining as usize).min(sector_size);
@@ -124,7 +124,7 @@ pub fn execute_write<const SECTOR_SIZE: usize>(
 /// Executes a BIOS init operation: returns the disk equipment word
 /// indicating which drives are present. Preserves non-disk bits from
 /// the current equipment word using mask 0xF0FF.
-pub fn execute_init(drives: &[Option<HddImage>; 2], current_equip: u16) -> u16 {
+pub fn execute_init(drives: &[Option<MountedHdd>; 2], current_equip: u16) -> u16 {
     let mut disk_equip = current_equip & 0xF0FF;
     for (i, drive) in drives.iter().enumerate() {
         if drive.is_some() {
@@ -135,7 +135,11 @@ pub fn execute_init(drives: &[Option<HddImage>; 2], current_equip: u16) -> u16 {
 }
 
 /// Executes a BIOS format operation on a track.
-pub fn execute_format(drive_idx: usize, sector_pos: u32, drives: &mut [Option<HddImage>; 2]) -> u8 {
+pub fn execute_format(
+    drive_idx: usize,
+    sector_pos: u32,
+    drives: &mut [Option<MountedHdd>; 2],
+) -> u8 {
     let Some(drive) = &mut drives[drive_idx] else {
         return 0x60;
     };
@@ -149,9 +153,9 @@ pub fn execute_format(drive_idx: usize, sector_pos: u32, drives: &mut [Option<Hd
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::disk::{HddFormat, HddGeometry};
+    use crate::disk::{HddFormat, HddGeometry, HddImage};
 
-    fn make_sasi_drive() -> HddImage {
+    fn make_sasi_drive() -> MountedHdd {
         let geometry = HddGeometry {
             cylinders: 153,
             heads: 4,
@@ -165,10 +169,10 @@ mod tests {
             data[offset] = (lba >> 8) as u8;
             data[offset + 1] = lba as u8;
         }
-        HddImage::from_raw(geometry, HddFormat::Thd, data)
+        MountedHdd::new(HddImage::from_raw(geometry, HddFormat::Thd, data), None)
     }
 
-    fn make_ide_drive() -> HddImage {
+    fn make_ide_drive() -> MountedHdd {
         let geometry = HddGeometry {
             cylinders: 20,
             heads: 4,
@@ -182,7 +186,7 @@ mod tests {
             data[offset] = (lba >> 8) as u8;
             data[offset + 1] = lba as u8;
         }
-        HddImage::from_raw(geometry, HddFormat::Hdi, data)
+        MountedHdd::new(HddImage::from_raw(geometry, HddFormat::Hdi, data), None)
     }
 
     fn sasi_geometry() -> HddGeometry {
@@ -252,7 +256,7 @@ mod tests {
 
     #[test]
     fn read_sasi_sector() {
-        let drives: [Option<HddImage>; 2] = [Some(make_sasi_drive()), None];
+        let drives: [Option<MountedHdd>; 2] = [Some(make_sasi_drive()), None];
         let geometry = sasi_geometry();
         let pos = sector_position(0x80, 0x0000, 0x0005, &geometry);
         let addr = buffer_address(0x2000, 0x0000);
@@ -269,7 +273,7 @@ mod tests {
 
     #[test]
     fn read_ide_sector() {
-        let drives: [Option<HddImage>; 2] = [Some(make_ide_drive()), None];
+        let drives: [Option<MountedHdd>; 2] = [Some(make_ide_drive()), None];
         let geometry = ide_geometry();
         let pos = sector_position(0x80, 0x0000, 0x0005, &geometry);
         let addr = buffer_address(0x2000, 0x0000);
@@ -286,14 +290,14 @@ mod tests {
 
     #[test]
     fn read_no_drive_returns_error() {
-        let drives: [Option<HddImage>; 2] = [None, None];
+        let drives: [Option<MountedHdd>; 2] = [None, None];
         let status = execute_read(0, 1, 0, 0x20000, &drives, |_, _| {});
         assert_eq!(status, 0x60);
     }
 
     #[test]
     fn write_sasi_sector() {
-        let mut drives: [Option<HddImage>; 2] = [Some(make_sasi_drive()), None];
+        let mut drives: [Option<MountedHdd>; 2] = [Some(make_sasi_drive()), None];
         let geometry = sasi_geometry();
         let pos = sector_position(0x80, 0x0000, 0x000A, &geometry);
         let addr = buffer_address(0x2000, 0x0000);
@@ -307,7 +311,7 @@ mod tests {
 
     #[test]
     fn write_ide_sector() {
-        let mut drives: [Option<HddImage>; 2] = [Some(make_ide_drive()), None];
+        let mut drives: [Option<MountedHdd>; 2] = [Some(make_ide_drive()), None];
         let geometry = ide_geometry();
         let pos = sector_position(0x80, 0x0000, 0x000A, &geometry);
         let addr = buffer_address(0x2000, 0x0000);
@@ -321,29 +325,29 @@ mod tests {
 
     #[test]
     fn init_detects_drives() {
-        let drives: [Option<HddImage>; 2] = [Some(make_sasi_drive()), None];
+        let drives: [Option<MountedHdd>; 2] = [Some(make_sasi_drive()), None];
         let equip = execute_init(&drives, 0x0000);
         assert_eq!(equip, 0x0100);
 
-        let both: [Option<HddImage>; 2] = [Some(make_sasi_drive()), Some(make_sasi_drive())];
+        let both: [Option<MountedHdd>; 2] = [Some(make_sasi_drive()), Some(make_sasi_drive())];
         let equip = execute_init(&both, 0x0000);
         assert_eq!(equip, 0x0300);
 
-        let none: [Option<HddImage>; 2] = [None, None];
+        let none: [Option<MountedHdd>; 2] = [None, None];
         let equip = execute_init(&none, 0x0000);
         assert_eq!(equip, 0x0000);
     }
 
     #[test]
     fn init_preserves_non_disk_bits() {
-        let drives: [Option<HddImage>; 2] = [Some(make_sasi_drive()), None];
+        let drives: [Option<MountedHdd>; 2] = [Some(make_sasi_drive()), None];
         let equip = execute_init(&drives, 0x8040);
         assert_eq!(equip, 0x8140);
     }
 
     #[test]
     fn format_fills_with_e5() {
-        let mut drives: [Option<HddImage>; 2] = [Some(make_sasi_drive()), None];
+        let mut drives: [Option<MountedHdd>; 2] = [Some(make_sasi_drive()), None];
         let status = execute_format(0, 0, &mut drives);
         assert_eq!(status, 0x00);
 
