@@ -10,10 +10,9 @@ mod lle;
 
 use std::{cell::Cell, path::PathBuf};
 
-use common::error;
 pub use lle::{SasiAction, SasiPhase};
 
-use crate::disk::{HddGeometry, HddImage};
+use crate::disk::{HddGeometry, HddImage, MountedHdd};
 pub use crate::disk_hle::{buffer_address, drive_index, sector_position, transfer_size};
 
 /// Size of the expansion ROM window mapped at 0xD7000.
@@ -40,9 +39,7 @@ pub struct SasiController {
     hle_pending: bool,
     yield_requested: Cell<bool>,
     rom: Option<Box<[u8; ROM_SIZE]>>,
-    drives: [Option<HddImage>; 2],
-    drive_paths: [Option<PathBuf>; 2],
-    drive_dirty: [bool; 2],
+    drives: [Option<MountedHdd>; 2],
 }
 
 impl Default for SasiController {
@@ -60,51 +57,26 @@ impl SasiController {
             yield_requested: Cell::new(false),
             rom: None,
             drives: [None, None],
-            drive_paths: [None, None],
-            drive_dirty: [false, false],
         }
     }
 
     /// Inserts a hard disk image into the specified drive (0-1).
     /// Installs the expansion ROM on the first insertion.
     pub fn insert_drive(&mut self, drive: usize, image: HddImage, path: Option<PathBuf>) {
-        self.drives[drive] = Some(image);
-        self.drive_paths[drive] = path;
-        self.drive_dirty[drive] = false;
+        if let Some(mounted) = self.drives[drive].take() {
+            mounted.eject();
+        }
+        self.drives[drive] = Some(MountedHdd::new(image, path));
         if self.rom.is_none() {
             self.rom = Some(Box::new(*ROM_IMAGE));
         }
         self.refresh_parameter_tables(drive);
     }
 
-    /// Writes the HDD image back to its file if it has been modified.
+    /// Flushes the HDD image to its source file.
     pub fn flush_drive(&mut self, drive: usize) {
-        if !self.drive_dirty[drive] {
-            return;
-        }
-        if let (Some(image), Some(path)) = (&self.drives[drive], &self.drive_paths[drive]) {
-            let data = image.to_bytes();
-            let tmp_path = path.with_extension("tmp");
-            match std::fs::write(&tmp_path, &data) {
-                Ok(()) => match std::fs::rename(&tmp_path, path) {
-                    Ok(()) => {
-                        self.drive_dirty[drive] = false;
-                    }
-                    Err(err) => {
-                        error!(
-                            "Failed to rename temp HDD image for drive {drive} to {}: {err}",
-                            path.display()
-                        );
-                        let _ = std::fs::remove_file(&tmp_path);
-                    }
-                },
-                Err(err) => {
-                    error!(
-                        "Failed to write HDD image for drive {drive} to {}: {err}",
-                        path.display()
-                    );
-                }
-            }
+        if let Some(mounted) = self.drives[drive].as_mut() {
+            mounted.flush();
         }
     }
 
@@ -149,7 +121,6 @@ impl SasiController {
     }
 
     /// Executes a BIOS write: reads from memory via closure and writes sectors.
-    /// Marks the drive dirty on success.
     pub fn execute_write(
         &mut self,
         drive_idx: usize,
@@ -158,18 +129,14 @@ impl SasiController {
         buf_addr: u32,
         read_byte: impl Fn(u32) -> u8,
     ) -> u8 {
-        let status = crate::disk_hle::execute_write::<256>(
+        crate::disk_hle::execute_write::<256>(
             drive_idx,
             xfer_size,
             sector_pos,
             buf_addr,
             &mut self.drives,
             read_byte,
-        );
-        if status == 0x00 {
-            self.drive_dirty[drive_idx] = true;
-        }
-        status
+        )
     }
 
     /// Executes a BIOS sense: returns the SASI media type.
@@ -183,13 +150,9 @@ impl SasiController {
         crate::disk_hle::execute_init(&self.drives, current_equip)
     }
 
-    /// Executes a BIOS format on a track. Marks the drive dirty on success.
+    /// Executes a BIOS format on a track.
     pub fn execute_format(&mut self, drive_idx: usize, sector_pos: u32) -> u8 {
-        let status = crate::disk_hle::execute_format(drive_idx, sector_pos, &mut self.drives);
-        if status == 0x00 {
-            self.drive_dirty[drive_idx] = true;
-        }
-        status
+        crate::disk_hle::execute_format(drive_idx, sector_pos, &mut self.drives)
     }
 
     /// Executes a BIOS mode set (function 0x0E): selects drive mode
@@ -231,7 +194,7 @@ impl SasiController {
 
     /// Returns the geometry of the selected drive, if present.
     pub fn drive_geometry(&self, drive: usize) -> Option<HddGeometry> {
-        self.drives.get(drive)?.as_ref().map(|drive| drive.geometry)
+        self.drives.get(drive)?.as_ref().map(MountedHdd::geometry)
     }
 
     /// Reads a single sector by LBA, returning a copy of the data.
@@ -243,15 +206,12 @@ impl SasiController {
             .map(|data| data.to_vec())
     }
 
-    /// Writes a single sector by LBA. Returns true on success.
+    /// Writes a single sector by LBA.
     pub fn write_sector_raw(&mut self, drive: usize, lba: u32, data: &[u8]) -> bool {
-        if let Some(Some(image)) = self.drives.get_mut(drive)
-            && image.write_sector(lba, data)
-        {
-            self.drive_dirty[drive] = true;
-            return true;
+        match self.drives.get_mut(drive).and_then(Option::as_mut) {
+            Some(mounted) => mounted.write_sector(lba, data),
+            None => false,
         }
-        false
     }
 
     /// Returns the sector size for the given drive.
@@ -259,7 +219,7 @@ impl SasiController {
         self.drives
             .get(drive)?
             .as_ref()
-            .map(|image| image.geometry.sector_size)
+            .map(|m| m.geometry().sector_size)
     }
 
     /// Returns the total sector count for the given drive.
@@ -267,7 +227,7 @@ impl SasiController {
         self.drives
             .get(drive)?
             .as_ref()
-            .map(|image| image.geometry.total_sectors())
+            .map(|m| m.geometry().total_sectors())
     }
 
     /// Reads a byte from the expansion ROM at the given offset.
@@ -306,11 +266,10 @@ impl SasiController {
     /// Handles pending sector writes internally.
     pub fn write_data(&mut self, value: u8) -> SasiAction {
         let action = self.lle_controller.write_data(value, &self.drives);
-        if let Some((unit, sector, data)) = self.lle_controller.pending_write_data() {
-            if let Some(drive) = &mut self.drives[unit as usize] {
-                drive.write_sector(sector, data);
-            }
-            self.drive_dirty[unit as usize] = true;
+        if let Some((unit, sector, data)) = self.lle_controller.pending_write_data()
+            && let Some(drive) = &mut self.drives[unit as usize]
+        {
+            drive.write_sector(sector, data);
         }
         if action == SasiAction::FormatTrack {
             self.do_format_track();
@@ -325,7 +284,6 @@ impl SasiController {
         let sector = self.lle_controller.current_sector();
         if let Some(drive) = &mut self.drives[unit] {
             drive.format_track(sector);
-            self.drive_dirty[unit] = true;
         }
     }
 
@@ -360,13 +318,8 @@ impl SasiController {
     }
 
     /// DMA write: transfers one byte from host to disk.
-    /// Marks the drive dirty when a sector write completes.
     pub fn dma_write_byte(&mut self, value: u8) -> SasiAction {
-        let action = self.lle_controller.dma_write_byte(value, &mut self.drives);
-        if matches!(action, SasiAction::ScheduleCompletion) {
-            self.drive_dirty[self.lle_controller.current_unit() as usize] = true;
-        }
-        action
+        self.lle_controller.dma_write_byte(value, &mut self.drives)
     }
 
     /// Called when the scheduled completion event fires.
@@ -379,9 +332,10 @@ impl SasiController {
         let Some(rom) = self.rom.as_mut() else {
             return;
         };
-        let Some(image) = &self.drives[drive] else {
+        let Some(mounted) = &self.drives[drive] else {
             return;
         };
+        let geometry = mounted.geometry();
 
         let full_offset = match drive {
             0 => PARAM_TABLE_D0_FULL_OFFSET,
@@ -390,11 +344,11 @@ impl SasiController {
         };
         let half_offset = full_offset + PARAM_TABLE_SIZE;
 
-        Self::write_parameter_table(rom.as_mut_slice(), full_offset, image);
-        Self::write_parameter_table(rom.as_mut_slice(), half_offset, image);
+        Self::write_parameter_table(rom.as_mut_slice(), full_offset, geometry);
+        Self::write_parameter_table(rom.as_mut_slice(), half_offset, geometry);
     }
 
-    fn write_parameter_table(rom: &mut [u8], offset: usize, image: &HddImage) {
+    fn write_parameter_table(rom: &mut [u8], offset: usize, geometry: HddGeometry) {
         if offset + PARAM_TABLE_SIZE > rom.len() {
             return;
         }
@@ -402,7 +356,6 @@ impl SasiController {
         let table = &mut rom[offset..offset + PARAM_TABLE_SIZE];
         table.fill(0x00);
 
-        let geometry = image.geometry;
         let cylinders_minus_one = geometry.cylinders.saturating_sub(1);
         let max_head_address = geometry.heads.saturating_sub(1);
         let legacy_sense = geometry.sasi_legacy_sense_type().unwrap_or(0x0F);
@@ -426,6 +379,22 @@ impl SasiController {
 mod tests {
     use super::*;
     use crate::disk::{HddFormat, HddGeometry};
+
+    fn tempfile_with(bytes: &[u8], suffix: &str) -> PathBuf {
+        let dir = std::env::temp_dir();
+        let unique = format!(
+            "neetan_sasi_test_{}_{}{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            suffix
+        );
+        let path = dir.join(unique);
+        std::fs::write(&path, bytes).expect("write temp file");
+        path
+    }
 
     fn make_test_drive() -> HddImage {
         let geometry = HddGeometry {
@@ -462,5 +431,24 @@ mod tests {
         assert_eq!(sasi.read_rom_byte(10), 0xAA);
         // ROM size code: 2 (= 2 * 512 = 1024 bytes).
         assert_eq!(sasi.read_rom_byte(11), 0x02);
+    }
+
+    #[test]
+    fn flush_all_drives_persists_successful_write_before_drop() {
+        let image = make_test_drive();
+        let path = tempfile_with(&image.to_bytes(), ".thd");
+
+        let mut sasi = SasiController::new();
+        sasi.insert_drive(0, image, Some(path.clone()));
+
+        let pattern = vec![0x39u8; 256];
+        assert!(sasi.write_sector_raw(0, 12, &pattern));
+        sasi.flush_all_drives();
+
+        let raw = std::fs::read(&path).unwrap();
+        let offset = 256 + 12 * 256;
+        assert_eq!(&raw[offset..offset + 256], &pattern[..]);
+
+        std::fs::remove_file(&path).ok();
     }
 }

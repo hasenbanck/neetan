@@ -39,6 +39,7 @@ pub fn create_fdd_image(path: &Path, fdd_type: FddType) -> crate::Result<()> {
                 status: 0x00,
                 reserved: [0u8; 5],
                 data: vec![0u8; sector_size],
+                source_offset: None,
             });
         }
 

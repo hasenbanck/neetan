@@ -206,6 +206,7 @@ fn build_d88_tracks(disk_data: &[u8], mfm_flag: u8) -> Vec<Option<Vec<D88Sector>
                 status: 0,
                 reserved: [0; 5],
                 data: disk_data[data_offset..data_offset + FLOPPY_SECTOR_SIZE].to_vec(),
+                source_offset: None,
             });
         }
         tracks.push(Some(sectors));

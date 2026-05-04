@@ -12,9 +12,7 @@ use std::{
     path::PathBuf,
 };
 
-use common::error;
-
-use crate::floppy::{FloppyImage, d88::D88MediaType};
+use crate::floppy::{FloppyImage, MountedFloppy, d88::D88MediaType};
 
 /// FDC command processing phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -715,12 +713,10 @@ pub struct FloppyController {
     fdc_640k: Upd765aFdc,
     /// Which FDC (0=1MB, 1=640K) is currently executing a command.
     active_interface: u8,
-    /// Floppy disk images (up to 4 drives, shared between both FDCs).
-    drives: [Option<FloppyImage>; 4],
-    /// File paths for floppy disk images (for write-back).
-    drive_paths: [Option<PathBuf>; 4],
-    /// Dirty flags per drive (set when a write modifies sector data).
-    drive_dirty: [bool; 4],
+    /// Mounted floppy disks (up to 4 drives, shared between both FDCs).
+    /// Each `MountedFloppy` pairs the parsed image with its open file
+    /// handle for synchronous write-through.
+    drives: [Option<MountedFloppy>; 4],
     /// Dual-mode FDC interface control register (port 0xBE).
     fdc_media: u8,
 }
@@ -739,14 +735,15 @@ impl FloppyController {
             fdc_640k: Upd765aFdc::new(),
             active_interface: 0,
             drives: [None, None, None, None],
-            drive_paths: [None, None, None, None],
-            drive_dirty: [false, false, false, false],
             fdc_media: FDC_MEDIA_DEFAULT,
         }
     }
 
     /// Inserts a floppy disk image into the specified drive (0-3).
     pub fn insert_drive(&mut self, drive: usize, image: FloppyImage, path: Option<PathBuf>) {
+        if let Some(mounted) = self.drives[drive].take() {
+            mounted.eject();
+        }
         let mask = 1u8 << drive;
         if image.write_protected {
             self.fdc_1mb.state.drive_write_protected |= mask;
@@ -755,19 +752,16 @@ impl FloppyController {
             self.fdc_1mb.state.drive_write_protected &= !mask;
             self.fdc_640k.state.drive_write_protected &= !mask;
         }
-        self.drives[drive] = Some(image);
-        self.drive_paths[drive] = path;
-        self.drive_dirty[drive] = false;
+        self.drives[drive] = Some(MountedFloppy::new(image, path));
         self.fdc_1mb.state.drive_has_disk |= mask;
         self.fdc_640k.state.drive_has_disk |= mask;
     }
 
     /// Ejects the floppy disk from the specified drive, flushing if dirty.
     pub fn eject_drive(&mut self, drive: usize) {
-        self.flush_drive(drive);
-        self.drives[drive] = None;
-        self.drive_paths[drive] = None;
-        self.drive_dirty[drive] = false;
+        if let Some(mounted) = self.drives[drive].take() {
+            mounted.eject();
+        }
         let mask = 1u8 << drive;
         self.fdc_1mb.state.drive_has_disk &= !mask;
         self.fdc_640k.state.drive_has_disk &= !mask;
@@ -775,34 +769,10 @@ impl FloppyController {
         self.fdc_640k.state.drive_write_protected &= !mask;
     }
 
-    /// Writes the floppy image back to its file if it has been modified.
+    /// Flushes the floppy image to its source file.
     pub fn flush_drive(&mut self, drive: usize) {
-        if !self.drive_dirty[drive] {
-            return;
-        }
-        if let (Some(image), Some(path)) = (&self.drives[drive], &self.drive_paths[drive]) {
-            let data = image.to_bytes();
-            let tmp_path = path.with_extension("tmp");
-            match std::fs::write(&tmp_path, &data) {
-                Ok(()) => match std::fs::rename(&tmp_path, path) {
-                    Ok(()) => {
-                        self.drive_dirty[drive] = false;
-                    }
-                    Err(err) => {
-                        error!(
-                            "Failed to rename temp floppy image for drive {drive} to {}: {err}",
-                            path.display()
-                        );
-                        let _ = std::fs::remove_file(&tmp_path);
-                    }
-                },
-                Err(err) => {
-                    error!(
-                        "Failed to write floppy image for drive {drive} to {}: {err}",
-                        path.display()
-                    );
-                }
-            }
+        if let Some(mounted) = self.drives[drive].as_mut() {
+            mounted.flush();
         }
     }
 
@@ -815,17 +785,15 @@ impl FloppyController {
 
     /// Returns a reference to the disk image in the given drive, if present.
     pub fn drive(&self, index: usize) -> Option<&FloppyImage> {
-        self.drives[index].as_ref()
+        self.drives[index].as_ref().map(MountedFloppy::image)
     }
 
-    /// Returns whether the disk in the given drive has been modified.
+    /// Returns whether the disk in the given drive has been modified
+    /// since the last successful flush.
     pub fn is_drive_dirty(&self, index: usize) -> bool {
-        self.drive_dirty[index]
-    }
-
-    /// Marks a drive as dirty (modified).
-    pub fn mark_dirty(&mut self, drive: usize) {
-        self.drive_dirty[drive] = true;
+        self.drives[index]
+            .as_ref()
+            .is_some_and(MountedFloppy::is_dirty)
     }
 
     /// Returns a reference to the 1MB FDC.
@@ -902,8 +870,8 @@ impl FloppyController {
     /// and FDD EXC (bit 1) low, routing accesses to the 640KB FDC at 250 kbps.
     pub fn effective_fdc_media(&self) -> u8 {
         let mut value = self.fdc_media;
-        if let Some(image) = &self.drives[0]
-            && image.media_type != D88MediaType::Disk2HD
+        if let Some(mounted) = &self.drives[0]
+            && mounted.image().media_type != D88MediaType::Disk2HD
         {
             value &= !0x03;
         }
@@ -919,9 +887,10 @@ impl FloppyController {
     /// the disk in the specified drive.
     pub fn density_matches(&self, drive: usize) -> bool {
         let track_index = self.active_fdc().current_track_index();
-        let Some(image) = &self.drives[drive] else {
+        let Some(mounted) = &self.drives[drive] else {
             return true;
         };
+        let image = mounted.image();
         let Some(sector) = image.sector_at_index(track_index, 0) else {
             return true;
         };
@@ -946,14 +915,14 @@ impl FloppyController {
     pub fn is_write_protected(&self, drive: usize) -> bool {
         self.drives[drive]
             .as_ref()
-            .is_some_and(|d| d.write_protected)
+            .is_some_and(|m| m.image().write_protected)
     }
 
     /// Returns the size code (N) of the first sector on track 0 of the specified drive.
     pub fn boot_sector_size_code(&self, drive: usize) -> Option<u8> {
         self.drives[drive]
             .as_ref()
-            .and_then(|disk| disk.sector_at_index(0, 0))
+            .and_then(|mounted| mounted.image().sector_at_index(0, 0))
             .map(|s| s.size_code)
     }
 
@@ -969,12 +938,16 @@ impl FloppyController {
     ) -> Option<&[u8]> {
         self.drives[drive]
             .as_ref()
-            .and_then(|disk| disk.find_sector_near_track_index(track_index, c, h, r, n))
+            .and_then(|mounted| {
+                mounted
+                    .image()
+                    .find_sector_near_track_index(track_index, c, h, r, n)
+            })
             .map(|s| s.data.as_slice())
     }
 
     /// Writes sector data to the specified drive by C/H/R/N near the given track index.
-    /// Returns `true` if the sector was found and written. Marks the drive dirty on success.
+    /// Returns `true` if the sector was found and written.
     #[allow(clippy::too_many_arguments)]
     pub fn write_sector_data(
         &mut self,
@@ -986,15 +959,9 @@ impl FloppyController {
         n: u8,
         data: &[u8],
     ) -> bool {
-        if let Some(disk) = self.drives[drive].as_mut()
-            && let Some(sector) = disk.find_sector_near_track_index_mut(track_index, c, h, r, n)
-        {
-            let copy_len = data.len().min(sector.data.len());
-            sector.data[..copy_len].copy_from_slice(&data[..copy_len]);
-            self.drive_dirty[drive] = true;
-            true
-        } else {
-            false
+        match self.drives[drive].as_mut() {
+            Some(mounted) => mounted.write_sector_data(track_index, c, h, r, n, data),
+            None => false,
         }
     }
 
@@ -1008,9 +975,8 @@ impl FloppyController {
         data_n: u8,
         fill_byte: u8,
     ) {
-        if let Some(disk) = self.drives[drive].as_mut() {
-            disk.format_track(track_index, chrn, data_n, fill_byte);
-            self.drive_dirty[drive] = true;
+        if let Some(mounted) = self.drives[drive].as_mut() {
+            mounted.format_track(track_index, chrn, data_n, fill_byte);
         }
     }
 
@@ -1021,8 +987,10 @@ impl FloppyController {
         track_index: usize,
         sector_index: usize,
     ) -> Option<(u8, u8, u8, u8)> {
-        self.drives[drive].as_ref().and_then(|disk| {
-            disk.sector_at_index(track_index, sector_index)
+        self.drives[drive].as_ref().and_then(|mounted| {
+            mounted
+                .image()
+                .sector_at_index(track_index, sector_index)
                 .map(|s| (s.cylinder, s.head, s.record, s.size_code))
         })
     }
@@ -1031,7 +999,7 @@ impl FloppyController {
     pub fn sector_count(&self, drive: usize, track_index: usize) -> usize {
         self.drives[drive]
             .as_ref()
-            .map(|disk| disk.sector_count(track_index))
+            .map(|mounted| mounted.image().sector_count(track_index))
             .unwrap_or(0)
     }
 
@@ -1081,6 +1049,7 @@ impl FloppyController {
     pub fn sector_size_for_drive(&self, drive: usize) -> Option<u16> {
         let size_code = self.drives[drive]
             .as_ref()?
+            .image()
             .sector_at_index(0, 0)?
             .size_code;
         Some(128u16 << size_code)
@@ -1089,7 +1058,7 @@ impl FloppyController {
     /// Returns the total number of track slots in the floppy image for a drive.
     /// Each slot represents one side of one cylinder (track_index = cylinder * 2 + head).
     pub fn track_slot_count(&self, drive: usize) -> Option<usize> {
-        Some(self.drives[drive].as_ref()?.track_slot_count())
+        Some(self.drives[drive].as_ref()?.image().track_slot_count())
     }
 
     /// Sets all FDC state to match the PC-98 post-ITF boot state.
@@ -1123,6 +1092,45 @@ impl FloppyController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tempfile_with(bytes: &[u8], suffix: &str) -> PathBuf {
+        let dir = std::env::temp_dir();
+        let unique = format!(
+            "neetan_fdc_test_{}_{}{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            suffix
+        );
+        let path = dir.join(unique);
+        std::fs::write(&path, bytes).expect("write temp file");
+        path
+    }
+
+    fn single_sector_floppy_image(fill: u8) -> FloppyImage {
+        let sector = crate::floppy::D88Sector {
+            cylinder: 0,
+            head: 0,
+            record: 1,
+            size_code: 0,
+            sector_count: 1,
+            mfm_flag: 0x00,
+            deleted: 0x00,
+            status: 0x00,
+            reserved: [0; 5],
+            data: vec![fill; 128],
+            source_offset: None,
+        };
+        let disk = crate::floppy::D88Disk::from_tracks(
+            String::from("TEST"),
+            false,
+            D88MediaType::Disk2DD,
+            vec![Some(vec![sector])],
+        );
+        FloppyImage::from_d88(disk)
+    }
 
     #[test]
     fn initial_state() {
@@ -1390,5 +1398,51 @@ mod tests {
         fdc.state.drive_cylinder[2] = 10;
         fdc.state.hd_us = 0x06; // head=1, drive=2
         assert_eq!(fdc.current_track_index(), 10 * 2 + 1);
+    }
+
+    #[test]
+    fn flush_all_drives_persists_successful_write_before_drop() {
+        let first_image = single_sector_floppy_image(0x00);
+        let first_bytes = first_image.to_bytes();
+        let path = tempfile_with(&first_bytes, ".d88");
+        let parsed = FloppyImage::from_d88_bytes(&first_bytes).unwrap();
+
+        let mut controller = FloppyController::new();
+        controller.insert_drive(0, parsed, Some(path.clone()));
+
+        let pattern = [0x7Au8; 128];
+        assert!(controller.write_sector_data(0, 0, 0, 0, 1, 0, &pattern));
+        controller.flush_all_drives();
+
+        let raw = std::fs::read(&path).unwrap();
+        let reparsed = FloppyImage::from_d88_bytes(&raw).unwrap();
+        let sector = reparsed.find_sector(0, 0, 1, 0).unwrap();
+        assert_eq!(sector.data.as_slice(), &pattern);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn inserting_drive_flushes_dirty_previous_mount() {
+        let first_image = single_sector_floppy_image(0x00);
+        let first_path = tempfile_with(&first_image.to_bytes(), ".d88");
+
+        let mut controller = FloppyController::new();
+        controller.insert_drive(0, first_image, Some(first_path.clone()));
+
+        let pattern = [0x55u8; 128];
+        assert!(controller.write_sector_data(0, 0, 0, 0, 1, 0, &pattern));
+
+        let second_image = single_sector_floppy_image(0xAA);
+        let second_path = tempfile_with(&second_image.to_bytes(), ".d88");
+        controller.insert_drive(0, second_image, Some(second_path.clone()));
+
+        let raw = std::fs::read(&first_path).unwrap();
+        let reparsed = FloppyImage::from_d88_bytes(&raw).unwrap();
+        let sector = reparsed.find_sector(0, 0, 1, 0).unwrap();
+        assert_eq!(sector.data.as_slice(), &pattern);
+
+        std::fs::remove_file(&first_path).ok();
+        std::fs::remove_file(&second_path).ok();
     }
 }

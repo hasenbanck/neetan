@@ -219,12 +219,7 @@ fn insert_floppy_impl<T: Tracing>(
     let image = device::floppy::load_floppy_image(path, &data)
         .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
     let description = format!("{} ({})", image.name, image.format_name());
-    let writeback = if image.can_write_back() {
-        Some(path.to_path_buf())
-    } else {
-        None
-    };
-    bus.insert_floppy(drive, image, writeback);
+    bus.insert_floppy(drive, image, Some(path.to_path_buf()));
     Ok(description)
 }
 

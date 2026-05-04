@@ -101,6 +101,7 @@ fn create_test_floppy_with_two_programs(
                 status: 0,
                 reserved: [0; 5],
                 data: disk_data[data_offset..data_offset + SECTOR_SIZE].to_vec(),
+                source_offset: None,
             });
         }
         tracks.push(Some(sectors));

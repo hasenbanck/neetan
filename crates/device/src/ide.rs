@@ -15,14 +15,13 @@ mod lle;
 
 use std::{cell::Cell, path::PathBuf};
 
-use common::error;
 pub use lle::{IdeAction, IdePhase};
 
 pub use crate::disk_hle::{buffer_address, drive_index, sector_position, transfer_size};
 use crate::{
     cd_audio::CdAudioPlayer,
     cdrom::CdImage,
-    disk::{HddGeometry, HddImage},
+    disk::{HddGeometry, HddImage, MountedHdd},
 };
 
 /// Size of the expansion ROM window mapped at 0xD8000.
@@ -39,9 +38,7 @@ pub struct IdeController {
     yield_requested: Cell<bool>,
     rom: Option<Box<[u8; ROM_SIZE]>>,
     // Channel 0: HDD drives (master/slave).
-    drives: [Option<HddImage>; 2],
-    drive_paths: [Option<PathBuf>; 2],
-    drive_dirty: [bool; 2],
+    drives: [Option<MountedHdd>; 2],
     // Channel 1: ATAPI CD-ROM.
     cdrom: Option<CdImage>,
     atapi_state: atapi::AtapiState,
@@ -64,8 +61,6 @@ impl IdeController {
             yield_requested: Cell::new(false),
             rom: None,
             drives: [None, None],
-            drive_paths: [None, None],
-            drive_dirty: [false, false],
             cdrom: None,
             atapi_state: atapi::AtapiState::new(),
             cd_audio_player: CdAudioPlayer::new(output_sample_rate),
@@ -77,9 +72,10 @@ impl IdeController {
     /// Installs the expansion ROM on the first insertion.
     pub fn insert_drive(&mut self, drive: usize, image: HddImage, path: Option<PathBuf>) {
         let sector_size = image.geometry.sector_size as usize;
-        self.drives[drive] = Some(image);
-        self.drive_paths[drive] = path;
-        self.drive_dirty[drive] = false;
+        if let Some(mounted) = self.drives[drive].take() {
+            mounted.eject();
+        }
+        self.drives[drive] = Some(MountedHdd::new(image, path));
         self.lle_controller
             .set_drive_sector_size(0, drive, sector_size);
         self.install_rom();
@@ -167,34 +163,10 @@ impl IdeController {
         }
     }
 
-    /// Writes the HDD image back to its file if it has been modified.
+    /// Flushes the HDD image to its source file.
     pub fn flush_drive(&mut self, drive: usize) {
-        if !self.drive_dirty[drive] {
-            return;
-        }
-        if let (Some(image), Some(path)) = (&self.drives[drive], &self.drive_paths[drive]) {
-            let data = image.to_bytes();
-            let tmp_path = path.with_extension("tmp");
-            match std::fs::write(&tmp_path, &data) {
-                Ok(()) => match std::fs::rename(&tmp_path, path) {
-                    Ok(()) => {
-                        self.drive_dirty[drive] = false;
-                    }
-                    Err(err) => {
-                        error!(
-                            "Failed to rename temp HDD image for IDE drive {drive} to {}: {err}",
-                            path.display()
-                        );
-                        let _ = std::fs::remove_file(&tmp_path);
-                    }
-                },
-                Err(err) => {
-                    error!(
-                        "Failed to write HDD image for IDE drive {drive} to {}: {err}",
-                        path.display()
-                    );
-                }
-            }
+        if let Some(mounted) = self.drives[drive].as_mut() {
+            mounted.flush();
         }
     }
 
@@ -245,7 +217,6 @@ impl IdeController {
     }
 
     /// Executes a BIOS write: reads from memory via closure and writes sectors.
-    /// Marks the drive dirty on success.
     pub fn execute_write(
         &mut self,
         drive_idx: usize,
@@ -256,9 +227,9 @@ impl IdeController {
     ) -> u8 {
         let sector_size = self.drives[drive_idx]
             .as_ref()
-            .map(|d| d.geometry.sector_size)
+            .map(|d| d.geometry().sector_size)
             .unwrap_or(512);
-        let status = match sector_size {
+        match sector_size {
             256 => crate::disk_hle::execute_write::<256>(
                 drive_idx,
                 xfer_size,
@@ -275,11 +246,7 @@ impl IdeController {
                 &mut self.drives,
                 read_byte,
             ),
-        };
-        if status == 0x00 {
-            self.drive_dirty[drive_idx] = true;
         }
-        status
     }
 
     /// Executes a BIOS sense: returns the IDE media type.
@@ -310,13 +277,9 @@ impl IdeController {
         crate::disk_hle::execute_init(&self.drives, current_equip)
     }
 
-    /// Executes a BIOS format on a track. Marks the drive dirty on success.
+    /// Executes a BIOS format on a track.
     pub fn execute_format(&mut self, drive_idx: usize, sector_pos: u32) -> u8 {
-        let status = crate::disk_hle::execute_format(drive_idx, sector_pos, &mut self.drives);
-        if status == 0x00 {
-            self.drive_dirty[drive_idx] = true;
-        }
-        status
+        crate::disk_hle::execute_format(drive_idx, sector_pos, &mut self.drives)
     }
 
     /// Executes a BIOS mode set (function 0x0E): returns 0x00 if the drive
@@ -374,7 +337,7 @@ impl IdeController {
 
     /// Returns the geometry of the selected drive, if present.
     pub fn drive_geometry(&self, drive: usize) -> Option<HddGeometry> {
-        self.drives.get(drive)?.as_ref().map(|drive| drive.geometry)
+        self.drives.get(drive)?.as_ref().map(MountedHdd::geometry)
     }
 
     /// Reads a single sector by LBA, returning a copy of the data.
@@ -386,15 +349,12 @@ impl IdeController {
             .map(|data| data.to_vec())
     }
 
-    /// Writes a single sector by LBA. Returns true on success.
+    /// Writes a single sector by LBA.
     pub fn write_sector_raw(&mut self, drive: usize, lba: u32, data: &[u8]) -> bool {
-        if let Some(Some(image)) = self.drives.get_mut(drive)
-            && image.write_sector(lba, data)
-        {
-            self.drive_dirty[drive] = true;
-            return true;
+        match self.drives.get_mut(drive).and_then(Option::as_mut) {
+            Some(mounted) => mounted.write_sector(lba, data),
+            None => false,
         }
-        false
     }
 
     /// Returns the sector size for the given drive.
@@ -402,7 +362,7 @@ impl IdeController {
         self.drives
             .get(drive)?
             .as_ref()
-            .map(|image| image.geometry.sector_size)
+            .map(|m| m.geometry().sector_size)
     }
 
     /// Returns the total sector count for the given drive.
@@ -410,7 +370,7 @@ impl IdeController {
         self.drives
             .get(drive)?
             .as_ref()
-            .map(|image| image.geometry.total_sectors())
+            .map(|m| m.geometry().total_sectors())
     }
 
     /// Reads a byte from the expansion ROM at the given offset.
@@ -460,12 +420,7 @@ impl IdeController {
         if self.lle_controller.is_atapi_channel_active() {
             return self.atapi_write_data_word(value);
         }
-        let action = self.lle_controller.write_data_word(value, &mut self.drives);
-        if matches!(action, IdeAction::ScheduleCompletion) {
-            let selected = self.lle_controller.selected_hdd_drive();
-            self.drive_dirty[selected] = true;
-        }
-        action
+        self.lle_controller.write_data_word(value, &mut self.drives)
     }
 
     /// Reads the error register (port 0x0642). Clears ERR bit in status.

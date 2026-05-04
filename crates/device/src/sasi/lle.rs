@@ -13,7 +13,7 @@
 //! protocol as a state machine: Free -> Command -> Read/Write -> Status ->
 //! Message -> Free.
 
-use crate::disk::HddImage;
+use crate::disk::MountedHdd;
 
 /// SASI controller phase (state machine).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,7 +149,7 @@ impl Controller {
     }
 
     /// Handles a write to port 0x80 (data register).
-    pub(super) fn write_data(&mut self, value: u8, drives: &[Option<HddImage>; 2]) -> SasiAction {
+    pub(super) fn write_data(&mut self, value: u8, drives: &[Option<MountedHdd>; 2]) -> SasiAction {
         match self.phase {
             SasiPhase::Free => {
                 if value == 1 {
@@ -190,7 +190,7 @@ impl Controller {
     }
 
     /// Handles a read from port 0x80 (data register).
-    pub(super) fn read_data(&mut self, drives: &[Option<HddImage>; 2]) -> u8 {
+    pub(super) fn read_data(&mut self, drives: &[Option<MountedHdd>; 2]) -> u8 {
         match self.phase {
             SasiPhase::Read => self.read_data_byte(drives),
             SasiPhase::Status => {
@@ -238,7 +238,7 @@ impl Controller {
     }
 
     /// Handles a read from port 0x82 (input status register).
-    pub(super) fn read_status(&mut self, drives: &[Option<HddImage>; 2]) -> u8 {
+    pub(super) fn read_status(&mut self, drives: &[Option<MountedHdd>; 2]) -> u8 {
         if self.output_control & OCR_NRDSW != 0 {
             self.read_bus_signals()
         } else {
@@ -257,7 +257,7 @@ impl Controller {
 
     /// Reads one byte from the sector buffer during DMA read.
     /// Called by the DMA controller for each byte transfer.
-    pub(super) fn dma_read_byte(&mut self, drives: &[Option<HddImage>; 2]) -> (u8, SasiAction) {
+    pub(super) fn dma_read_byte(&mut self, drives: &[Option<MountedHdd>; 2]) -> (u8, SasiAction) {
         if self.phase != SasiPhase::Read {
             return (0, SasiAction::None);
         }
@@ -276,7 +276,7 @@ impl Controller {
     pub(super) fn dma_write_byte(
         &mut self,
         value: u8,
-        drives: &mut [Option<HddImage>; 2],
+        drives: &mut [Option<MountedHdd>; 2],
     ) -> SasiAction {
         if self.phase != SasiPhase::Write {
             return SasiAction::None;
@@ -290,7 +290,7 @@ impl Controller {
         }
     }
 
-    fn execute_command(&mut self, drives: &[Option<HddImage>; 2]) -> SasiAction {
+    fn execute_command(&mut self, drives: &[Option<MountedHdd>; 2]) -> SasiAction {
         self.unit = (self.command[1] >> 5) & 1;
         let drive_present = drives[self.unit as usize].is_some();
 
@@ -342,7 +342,7 @@ impl Controller {
                 self.parse_sector_address();
                 self.status = 0;
                 if let Some(drive) = &drives[self.unit as usize]
-                    && self.sector < drive.geometry.total_sectors()
+                    && self.sector < drive.geometry().total_sectors()
                 {
                     self.set_completion(0x00);
                     return SasiAction::FormatTrack;
@@ -416,14 +416,14 @@ impl Controller {
         self.error_code = error_code;
     }
 
-    fn seek_read(&mut self, drives: &[Option<HddImage>; 2]) -> bool {
+    fn seek_read(&mut self, drives: &[Option<MountedHdd>; 2]) -> bool {
         self.data_position = 0;
         self.data_size = 0;
 
         let Some(drive) = &drives[self.unit as usize] else {
             return false;
         };
-        if drive.geometry.sector_size != 256 {
+        if drive.geometry().sector_size != 256 {
             return false;
         }
         let Some(sector_data) = drive.read_sector(self.sector) else {
@@ -434,7 +434,7 @@ impl Controller {
         true
     }
 
-    fn read_data_byte(&mut self, drives: &[Option<HddImage>; 2]) -> u8 {
+    fn read_data_byte(&mut self, drives: &[Option<MountedHdd>; 2]) -> u8 {
         if self.phase != SasiPhase::Read {
             return 0;
         }
@@ -458,7 +458,7 @@ impl Controller {
         ret
     }
 
-    fn handle_write_complete(&mut self, drives: &[Option<HddImage>; 2]) -> SasiAction {
+    fn handle_write_complete(&mut self, drives: &[Option<MountedHdd>; 2]) -> SasiAction {
         let drive_ok = drives[self.unit as usize].is_some();
         if !drive_ok {
             self.set_completion(0x0F);
@@ -478,7 +478,7 @@ impl Controller {
         }
     }
 
-    fn handle_write_complete_mut(&mut self, drives: &mut [Option<HddImage>; 2]) -> SasiAction {
+    fn handle_write_complete_mut(&mut self, drives: &mut [Option<MountedHdd>; 2]) -> SasiAction {
         let unit = self.unit as usize;
         let Some(drive) = &mut drives[unit] else {
             self.set_completion(0x0F);
@@ -534,19 +534,19 @@ impl Controller {
         ret
     }
 
-    fn read_capacity_indicators(&self, drives: &[Option<HddImage>; 2]) -> u8 {
+    fn read_capacity_indicators(&self, drives: &[Option<MountedHdd>; 2]) -> u8 {
         let mut ret = 0u8;
 
         // Drive 0 (SASI-1): bits 3-5
         if let Some(drive) = &drives[0] {
-            ret |= (drive.geometry.sasi_media_type().unwrap_or(7) & 7) << 3;
+            ret |= (drive.geometry().sasi_media_type().unwrap_or(7) & 7) << 3;
         } else {
             ret |= 7 << 3;
         }
 
         // Drive 1 (SASI-2): bits 0-2
         if let Some(drive) = &drives[1] {
-            ret |= drive.geometry.sasi_media_type().unwrap_or(7) & 7;
+            ret |= drive.geometry().sasi_media_type().unwrap_or(7) & 7;
         } else {
             ret |= 7;
         }
@@ -560,7 +560,7 @@ mod tests {
     use super::*;
     use crate::disk::{HddFormat, HddGeometry, HddImage};
 
-    fn make_test_drive() -> HddImage {
+    fn make_test_drive() -> MountedHdd {
         // 5 MB SASI: 153 cylinders, 4 heads, 33 sectors, 256 bytes/sector
         let geometry = HddGeometry {
             cylinders: 153,
@@ -576,10 +576,10 @@ mod tests {
             data[offset] = (lba >> 8) as u8;
             data[offset + 1] = lba as u8;
         }
-        HddImage::from_raw(geometry, HddFormat::Thd, data)
+        MountedHdd::new(HddImage::from_raw(geometry, HddFormat::Thd, data), None)
     }
 
-    fn make_drives(drive0: Option<HddImage>) -> [Option<HddImage>; 2] {
+    fn make_drives(drive0: Option<MountedHdd>) -> [Option<MountedHdd>; 2] {
         [drive0, None]
     }
 
@@ -771,7 +771,7 @@ mod tests {
     #[test]
     fn write_data_command() {
         let mut controller = Controller::new();
-        let mut drives: [Option<HddImage>; 2] = [Some(make_test_drive()), None];
+        let mut drives: [Option<MountedHdd>; 2] = [Some(make_test_drive()), None];
 
         controller.write_data(1, &drives);
         // Write 1 block at LBA 5.
@@ -828,7 +828,7 @@ mod tests {
     #[test]
     fn capacity_indicators_no_drives() {
         let controller = Controller::new();
-        let drives: [Option<HddImage>; 2] = [None, None];
+        let drives: [Option<MountedHdd>; 2] = [None, None];
 
         let mut ctrl = controller;
         ctrl.output_control = 0;

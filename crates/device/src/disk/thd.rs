@@ -42,14 +42,7 @@ impl HddImage {
             geometry,
             format: HddFormat::Thd,
             data: data[data_start..data_start + expected_data_size].to_vec(),
-            original_header_size: THD_HEADER_SIZE as u32,
+            header_bytes: data[..THD_HEADER_SIZE].to_vec(),
         })
-    }
-
-    pub(super) fn serialize_thd(&self) -> Vec<u8> {
-        let mut out = vec![0u8; THD_HEADER_SIZE];
-        out[0..2].copy_from_slice(&self.geometry.cylinders.to_le_bytes());
-        out.extend_from_slice(&self.data);
-        out
     }
 }

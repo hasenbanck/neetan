@@ -6,6 +6,8 @@
 
 use std::fmt;
 
+use common::warn;
+
 use super::d88::{D88Disk, D88MediaType, D88Sector};
 
 const HDM_FILE_SIZE: usize = 1_261_568;
@@ -54,6 +56,7 @@ pub fn from_bytes(data: &[u8]) -> Result<D88Disk, HdmError> {
 
             for record in 1..=SECTORS_PER_TRACK {
                 let sector_data = data[offset..offset + SECTOR_SIZE].to_vec();
+                let data_offset = offset;
                 offset += SECTOR_SIZE;
 
                 sectors.push(D88Sector {
@@ -67,6 +70,7 @@ pub fn from_bytes(data: &[u8]) -> Result<D88Disk, HdmError> {
                     status: 0x00,
                     reserved: [0u8; 5],
                     data: sector_data,
+                    source_offset: Some(data_offset as u64),
                 });
             }
 
@@ -80,6 +84,64 @@ pub fn from_bytes(data: &[u8]) -> Result<D88Disk, HdmError> {
         D88MediaType::Disk2HD,
         track_sectors,
     ))
+}
+
+/// Serializes a `D88Disk` back into the fixed HDM raw layout
+/// (77 cylinders x 2 heads x 8 sectors x 1024 bytes = 1,261,568 bytes).
+///
+/// Sectors are looked up by C/H/R in the fixed geometry. Missing sectors
+/// or sectors with non-1024-byte data are emitted as 1024 zero bytes;
+/// HDM cannot represent any other layout. This only happens when a
+/// guest's FORMAT TRACK has produced an HDM-incompatible layout.
+pub fn to_bytes(disk: &D88Disk) -> Vec<u8> {
+    let mut out = vec![0u8; HDM_FILE_SIZE];
+    let mut warned = false;
+
+    for cylinder in 0..CYLINDERS {
+        for head in 0..HEADS {
+            for record in 1..=SECTORS_PER_TRACK {
+                let slot_index = ((cylinder as usize) * (HEADS as usize) + (head as usize))
+                    * (SECTORS_PER_TRACK as usize)
+                    + ((record - 1) as usize);
+                let offset = slot_index * SECTOR_SIZE;
+
+                match disk.find_sector(cylinder, head, record, SIZE_CODE) {
+                    Some(sector) if sector.data.len() == SECTOR_SIZE => {
+                        out[offset..offset + SECTOR_SIZE].copy_from_slice(&sector.data);
+                    }
+                    _ => {
+                        if !warned {
+                            warn!(
+                                "HDM serializer: missing or non-1024-byte sector at \
+                                 C={cylinder} H={head} R={record}; emitting zeros. \
+                                 (HDM cannot represent non-standard geometry.)"
+                            );
+                            warned = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    out
+}
+
+/// Returns whether `disk` can be represented without data loss as HDM.
+pub(crate) fn is_representable(disk: &D88Disk) -> bool {
+    for cylinder in 0..CYLINDERS {
+        for head in 0..HEADS {
+            for record in 1..=SECTORS_PER_TRACK {
+                let Some(sector) = disk.find_sector(cylinder, head, record, SIZE_CODE) else {
+                    return false;
+                };
+                if sector.data.len() != SECTOR_SIZE {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -163,5 +225,51 @@ mod tests {
         let s0 = disk.sector_at_index(0, 0).unwrap();
         let s8 = disk.sector_at_index(0, 8).unwrap();
         assert_eq!(s0.record, s8.record);
+    }
+
+    fn build_pattern_image() -> Vec<u8> {
+        let mut data = vec![0u8; HDM_FILE_SIZE];
+        for (i, byte) in data.iter_mut().enumerate() {
+            *byte = (i & 0xFF) as u8;
+        }
+        data
+    }
+
+    #[test]
+    fn roundtrip_unchanged() {
+        let original = build_pattern_image();
+        let disk = from_bytes(&original).unwrap();
+        let serialized = to_bytes(&disk);
+        assert_eq!(serialized, original);
+    }
+
+    #[test]
+    fn roundtrip_after_sector_mutation() {
+        let original = build_pattern_image();
+        let mut disk = from_bytes(&original).unwrap();
+
+        let sector = disk
+            .find_sector_on_track_index_mut(2, 1, 0, 4, SIZE_CODE)
+            .unwrap();
+        sector.data.fill(0xCC);
+
+        let serialized = to_bytes(&disk);
+        let reparsed = from_bytes(&serialized).unwrap();
+        let s = reparsed.find_sector(1, 0, 4, SIZE_CODE).unwrap();
+        assert!(s.data.iter().all(|&b| b == 0xCC));
+    }
+
+    #[test]
+    fn parser_records_source_offsets() {
+        let data = build_pattern_image();
+        let disk = from_bytes(&data).unwrap();
+
+        // First sector (track 0, slot 0): cylinder 0, head 0, record 1.
+        let s = disk.find_sector(0, 0, 1, SIZE_CODE).unwrap();
+        assert_eq!(s.source_offset, Some(0));
+
+        // Sector at C=1 H=0 R=1 starts at offset 16384 (cylinder 1 = 2 tracks).
+        let s = disk.find_sector(1, 0, 1, SIZE_CODE).unwrap();
+        assert_eq!(s.source_offset, Some(2 * 8 * SECTOR_SIZE as u64));
     }
 }

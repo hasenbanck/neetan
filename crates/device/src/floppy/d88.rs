@@ -94,6 +94,11 @@ pub struct D88Sector {
     pub reserved: [u8; 5],
     /// Sector data.
     pub data: Vec<u8>,
+    /// Byte offset of this sector's data within the on-disk image.
+    /// Populated by every parser (D88, HDM, NFD); used by `MountedFloppy`
+    /// to seek-and-overwrite the sector in the file. `None` for sectors
+    /// created by `D88Disk::format_track` until a re-emit + reparse runs.
+    pub source_offset: Option<u64>,
 }
 
 /// A parsed track containing its sectors.
@@ -229,6 +234,7 @@ impl D88Disk {
                     status,
                     reserved,
                     data: sector_data,
+                    source_offset: Some(data_start as u64),
                 });
 
                 pos = data_end;
@@ -435,6 +441,7 @@ impl D88Disk {
                 status: 0x00,
                 reserved: [0u8; 5],
                 data: vec![fill_byte; sector_size],
+                source_offset: None,
             })
             .collect();
         self.tracks[track_index] = Some(D88Track { sectors });
@@ -875,5 +882,37 @@ mod tests {
             let s = disk.find_sector(0, 0, r, 3).unwrap();
             assert_eq!(s.data[0], r);
         }
+    }
+
+    #[test]
+    fn parser_records_source_offsets() {
+        let image = build_test_d88(
+            0x10,
+            &[(0, 0, 1, 0, &[0xAA; 128]), (0, 0, 2, 0, &[0xBB; 128])],
+        );
+        let disk = D88Disk::from_bytes(&image).unwrap();
+
+        // First sector data starts at HEADER_SIZE + SECTOR_HEADER_SIZE.
+        let s1 = disk.find_sector(0, 0, 1, 0).unwrap();
+        assert_eq!(
+            s1.source_offset,
+            Some((HEADER_SIZE + SECTOR_HEADER_SIZE) as u64)
+        );
+        // Second sector follows the first sector's data plus its own header.
+        let s2 = disk.find_sector(0, 0, 2, 0).unwrap();
+        assert_eq!(
+            s2.source_offset,
+            Some((HEADER_SIZE + SECTOR_HEADER_SIZE + 128 + SECTOR_HEADER_SIZE) as u64),
+        );
+    }
+
+    #[test]
+    fn format_track_clears_source_offsets() {
+        let image = build_test_d88(0x10, &[(0, 0, 1, 0, &[0xAA; 128])]);
+        let mut disk = D88Disk::from_bytes(&image).unwrap();
+
+        disk.format_track(0, &[(0, 0, 1, 0)], 0, 0xE5);
+        let sector = disk.sector_at_index(0, 0).unwrap();
+        assert!(sector.source_offset.is_none());
     }
 }

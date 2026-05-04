@@ -170,6 +170,7 @@ pub fn create_random_file_floppy_with_name(fcb_name: &[u8; 11], file_data: &[u8]
                 status: 0,
                 reserved: [0; 5],
                 data: disk_data[offset..offset + sector_size].to_vec(),
+                source_offset: None,
             });
         }
         tracks.push(Some(sectors));
@@ -281,6 +282,7 @@ pub fn create_broken_chain_floppy_with_name(
                 status: 0,
                 reserved: [0; 5],
                 data: disk_data[offset..offset + sector_size].to_vec(),
+                source_offset: None,
             });
         }
         tracks.push(Some(sectors));

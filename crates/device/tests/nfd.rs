@@ -16,7 +16,9 @@ fn load_nfd_fixture(name: &str) -> D88Disk {
     let path = fixture_path(name);
     let data = std::fs::read(&path)
         .unwrap_or_else(|error| panic!("Failed to read {}: {error}", path.display()));
-    nfd::from_bytes(&data).unwrap_or_else(|error| panic!("Failed to parse {name}: {error}"))
+    nfd::from_bytes(&data)
+        .unwrap_or_else(|error| panic!("Failed to parse {name}: {error}"))
+        .0
 }
 
 fn load_d88_fixture(name: &str) -> D88Disk {
