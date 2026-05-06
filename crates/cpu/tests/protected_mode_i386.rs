@@ -443,6 +443,34 @@ fn write_dword_at(bus: &mut TestBus, addr: u32, value: u32) {
     bus.ram[addr as usize + 3] = (value >> 24) as u8;
 }
 
+const TEST_PAGE_DIRECTORY_BASE: u32 = 0xA0000;
+const TEST_PAGE_TABLE_BASE: u32 = 0xA1000;
+const TEST_PAGE_PRESENT_WRITABLE: u32 = 0x003;
+
+fn enable_identity_paging(bus: &mut TestBus, state: &mut cpu::I386State) {
+    write_dword_at(
+        bus,
+        TEST_PAGE_DIRECTORY_BASE,
+        TEST_PAGE_TABLE_BASE | TEST_PAGE_PRESENT_WRITABLE,
+    );
+
+    for page_index in 0..1024u32 {
+        write_dword_at(
+            bus,
+            TEST_PAGE_TABLE_BASE + page_index * 4,
+            (page_index << 12) | TEST_PAGE_PRESENT_WRITABLE,
+        );
+    }
+
+    state.cr0 |= 0x8000_0000;
+    state.cr3 = TEST_PAGE_DIRECTORY_BASE;
+}
+
+fn unmap_identity_page(bus: &mut TestBus, linear_address: u32) {
+    let page_index = (linear_address >> 12) & 0x3FF;
+    write_dword_at(bus, TEST_PAGE_TABLE_BASE + page_index * 4, page_index << 12);
+}
+
 #[test]
 fn i386_lmsw_only_writes_low_4_bits() {
     let mut cpu: I386 = I386::new();
@@ -5091,6 +5119,7 @@ const PM_BP_HANDLER_IP: u16 = 0xD200;
 const PM_OF_HANDLER_IP: u16 = 0xD300;
 const PM_BR_HANDLER_IP: u16 = 0xD400;
 const PM_DB_HANDLER_IP: u16 = 0xD500;
+const PM_PAGE_FAULT_HANDLER_IP: u16 = 0xD600;
 
 fn setup_protected_mode_with_exception_handlers(bus: &mut TestBus) -> cpu::I386State {
     write_gdt_entry16(bus, PM_GDT_BASE, 0, 0, 0, 0);
@@ -5168,6 +5197,16 @@ fn setup_protected_mode_with_exception_handlers(bus: &mut TestBus) -> cpu::I386S
         14,
         0,
     );
+    // Vector 14: #PF
+    write_idt_gate(
+        bus,
+        PM_IDT_BASE,
+        14,
+        PM_PAGE_FAULT_HANDLER_IP as u32,
+        PM_CS_SEL,
+        14,
+        0,
+    );
 
     bus.ram[(PM_CODE_BASE + PM_DE_HANDLER_IP as u32) as usize] = 0xF4;
     bus.ram[(PM_CODE_BASE + PM_UD_HANDLER_IP as u32) as usize] = 0xF4;
@@ -5176,6 +5215,7 @@ fn setup_protected_mode_with_exception_handlers(bus: &mut TestBus) -> cpu::I386S
     bus.ram[(PM_CODE_BASE + PM_BR_HANDLER_IP as u32) as usize] = 0xF4;
     bus.ram[(PM_CODE_BASE + PM_DB_HANDLER_IP as u32) as usize] = 0xF4;
     bus.ram[(PM_CODE_BASE + PM_GP_HANDLER_IP as u32) as usize] = 0xF4;
+    bus.ram[(PM_CODE_BASE + PM_PAGE_FAULT_HANDLER_IP as u32) as usize] = 0xF4;
 
     let mut state = cpu::I386State {
         cr0: 0x0001,
@@ -5931,6 +5971,54 @@ fn i386_rep_movsd() {
 }
 
 #[test]
+fn i386_rep_movsd_source_page_fault_preserves_restart_state() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let mut state = setup_protected_mode_with_exception_handlers(&mut bus);
+    enable_identity_paging(&mut bus, &mut state);
+
+    let source_offset = 0x0FFCu32;
+    let source_fault_linear = PM_DATA_BASE + 0x1000;
+    let destination_offset = 0x2000u32;
+    let destination_second_value = 0xA5A5_A5A5;
+
+    write_dword_at(&mut bus, PM_DATA_BASE + source_offset, 0xDEAD_BEEF);
+    write_dword_at(
+        &mut bus,
+        PM_DATA_BASE + destination_offset + 4,
+        destination_second_value,
+    );
+    unmap_identity_page(&mut bus, source_fault_linear);
+
+    cpu.load_state(&state);
+    cpu.state.set_esi(source_offset);
+    cpu.state.set_edi(destination_offset);
+    cpu.state.set_ecx(2);
+    cpu.state.flags.df = false;
+
+    // REP MOVSD with 32-bit address and operand size in a 16-bit code segment.
+    place_at(&mut bus, PM_CODE_BASE, &[0xF3, 0x67, 0x66, 0xA5, 0xF4]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_PAGE_FAULT_HANDLER_IP as u32 + 1);
+    assert_eq!(cpu.cr2, source_fault_linear);
+    assert_eq!(
+        read_dword_at(&bus, PM_DATA_BASE + destination_offset),
+        0xDEAD_BEEF
+    );
+    assert_eq!(
+        read_dword_at(&bus, PM_DATA_BASE + destination_offset + 4),
+        destination_second_value
+    );
+    assert_eq!(cpu.state.ecx(), 1);
+    assert_eq!(cpu.state.esi(), 0x1000);
+    assert_eq!(cpu.state.edi(), destination_offset + 4);
+}
+
+#[test]
 fn i386_stosb() {
     let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
@@ -5980,6 +6068,51 @@ fn i386_rep_stosb() {
     }
     assert_eq!(cpu.state.ecx(), 0);
     assert_eq!(cpu.state.edi(), 0x0304);
+}
+
+#[test]
+fn i386_rep_stosd_destination_page_fault_preserves_restart_state() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let mut state = setup_protected_mode_with_exception_handlers(&mut bus);
+    enable_identity_paging(&mut bus, &mut state);
+
+    let destination_offset = 0x0FFCu32;
+    let destination_fault_linear = PM_DATA_BASE + 0x1000;
+    let destination_second_value = 0x5A5A_5A5A;
+
+    write_dword_at(
+        &mut bus,
+        PM_DATA_BASE + destination_offset + 4,
+        destination_second_value,
+    );
+    unmap_identity_page(&mut bus, destination_fault_linear);
+
+    cpu.load_state(&state);
+    cpu.state.set_eax(0xCAFE_BABE);
+    cpu.state.set_edi(destination_offset);
+    cpu.state.set_ecx(2);
+    cpu.state.flags.df = false;
+
+    // REP STOSD with 32-bit address and operand size in a 16-bit code segment.
+    place_at(&mut bus, PM_CODE_BASE, &[0xF3, 0x67, 0x66, 0xAB, 0xF4]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_PAGE_FAULT_HANDLER_IP as u32 + 1);
+    assert_eq!(cpu.cr2, destination_fault_linear);
+    assert_eq!(
+        read_dword_at(&bus, PM_DATA_BASE + destination_offset),
+        0xCAFE_BABE
+    );
+    assert_eq!(
+        read_dword_at(&bus, PM_DATA_BASE + destination_offset + 4),
+        destination_second_value
+    );
+    assert_eq!(cpu.state.ecx(), 1);
+    assert_eq!(cpu.state.edi(), 0x1000);
 }
 
 #[test]
