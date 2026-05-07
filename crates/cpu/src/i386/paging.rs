@@ -27,7 +27,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     pub(super) fn flush_tlb(&mut self) {
         self.tlb_valid = [false; TLB_SIZE];
         self.tlb_dirty = [false; TLB_SIZE];
+        self.tlb_user = [false; TLB_SIZE];
         self.fetch_page_valid = false;
+        self.fetch_page_user = false;
     }
 
     #[inline(always)]
@@ -45,7 +47,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let slot = (page & TLB_MASK) as usize;
 
         if self.tlb_valid[slot] && self.tlb_tag[slot] == page {
-            if write && (!self.tlb_writable[slot] || !self.tlb_dirty[slot]) {
+            let is_user = self.is_user_page_access();
+            if is_user && !self.tlb_user[slot] {
+                self.raise_page_fault(linear, write, true, bus);
+                return None;
+            }
+            let wp_enforced = CPU_MODEL == CPU_MODEL_486 && self.cr0 & 0x0001_0000 != 0;
+            if write && (is_user || wp_enforced) && !self.tlb_writable[slot] {
+                self.raise_page_fault(linear, write, true, bus);
+                return None;
+            }
+            if write && !self.tlb_dirty[slot] {
                 return self.page_table_walk(linear, write, bus);
             }
             return Some(self.tlb_phys[slot] | (linear & 0xFFF));
@@ -86,7 +98,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         // On 486, CR0.WP (bit 16) enforces R/W checks even in supervisor mode.
         // System table accesses (IDT, GDT, TSS) during interrupt delivery use
         // supervisor privilege regardless of current CPL.
-        let is_user = self.cpl() == 3 && !self.supervisor_override;
+        let is_user = self.is_user_page_access();
         if is_user {
             if pde & PTE_USER == 0 || pte & PTE_USER == 0 {
                 self.raise_page_fault(linear, write, true, bus);
@@ -129,13 +141,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.tlb_tag[slot] = page;
         self.tlb_phys[slot] = physical_page;
         self.tlb_dirty[slot] = write;
-        // Writable in TLB if both PDE and PTE allow writes (or supervisor without WP).
-        let wp_enforced = CPU_MODEL == CPU_MODEL_486 && self.cr0 & 0x0001_0000 != 0;
-        self.tlb_writable[slot] = if is_user || wp_enforced {
-            pde & PTE_WRITABLE != 0 && pte & PTE_WRITABLE != 0
-        } else {
-            true
-        };
+        self.tlb_writable[slot] = pde & PTE_WRITABLE != 0 && pte & PTE_WRITABLE != 0;
+        self.tlb_user[slot] = pde & PTE_USER != 0 && pte & PTE_USER != 0;
 
         Some(physical & PC98_PHYSICAL_ADDRESS_MASK)
     }
@@ -155,7 +162,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         if write {
             error_code |= 2; // W/R bit
         }
-        if self.cpl() == 3 {
+        if self.is_user_page_access() {
             error_code |= 4; // U/S bit
         }
         self.fault_pending = true;

@@ -1463,6 +1463,100 @@ fn paging_tlb_hit_read_write() {
 }
 
 #[test]
+fn paging_tlb_hit_preserves_user_read_permission() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_paged_protected_mode(&mut bus);
+    cpu.load_state(&state);
+
+    write_dword_at(
+        &mut bus,
+        PG_PAGE_DIR,
+        PG_PAGE_TABLE_0 | PTE_P | PTE_RW | PTE_US,
+    );
+    let code_pte_index = PG_RING3_CODE_BASE >> 12;
+    write_dword_at(
+        &mut bus,
+        PG_PAGE_TABLE_0 + code_pte_index * 4,
+        PG_RING3_CODE_BASE | PTE_P | PTE_RW | PTE_US,
+    );
+    let stack_pte_index = PG_RING3_STACK_BASE >> 12;
+    write_dword_at(
+        &mut bus,
+        PG_PAGE_TABLE_0 + stack_pte_index * 4,
+        PG_RING3_STACK_BASE | PTE_P | PTE_RW | PTE_US,
+    );
+    let data_pte_index = PG_DATA_BASE >> 12;
+    write_dword_at(
+        &mut bus,
+        PG_PAGE_TABLE_0 + data_pte_index * 4,
+        PG_DATA_BASE | PTE_P | PTE_RW,
+    );
+
+    bus.ram[PG_DATA_BASE as usize] = 0x5A;
+    place_at(&mut bus, PG_CODE_BASE, &[0xA0, 0x00, 0x00]);
+    cpu.step(&mut bus);
+    assert_eq!(cpu.al(), 0x5A);
+
+    make_ring3(&mut cpu.state);
+    cpu.state.stored_cpl = 3;
+    cpu.state.set_eip(0);
+    place_at(&mut bus, PG_RING3_CODE_BASE, &[0xA0, 0x00, 0x00]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PG_PF_HANDLER_IP as u32 + 1);
+    let error_code = read_word_at(&bus, PG_STACK_BASE + cpu.esp());
+    assert_eq!(error_code, 0x0005, "present + read + user");
+}
+
+#[test]
+fn paging_fetch_cache_preserves_user_read_permission() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_paged_protected_mode(&mut bus);
+    state.seg_bases[cpu::SegReg32::CS as usize] = PG_RING3_CODE_BASE;
+    cpu.load_state(&state);
+
+    write_dword_at(
+        &mut bus,
+        PG_PAGE_DIR,
+        PG_PAGE_TABLE_0 | PTE_P | PTE_RW | PTE_US,
+    );
+    let code_pte_index = PG_RING3_CODE_BASE >> 12;
+    write_dword_at(
+        &mut bus,
+        PG_PAGE_TABLE_0 + code_pte_index * 4,
+        PG_RING3_CODE_BASE | PTE_P | PTE_RW,
+    );
+    let stack_pte_index = PG_RING3_STACK_BASE >> 12;
+    write_dword_at(
+        &mut bus,
+        PG_PAGE_TABLE_0 + stack_pte_index * 4,
+        PG_RING3_STACK_BASE | PTE_P | PTE_RW | PTE_US,
+    );
+
+    place_at(&mut bus, PG_RING3_CODE_BASE, &[0x90, 0xF4]);
+    cpu.step(&mut bus);
+
+    make_ring3(&mut cpu.state);
+    cpu.state.stored_cpl = 3;
+    cpu.state.set_eip(1);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PG_PF_HANDLER_IP as u32 + 1);
+    let error_code = read_word_at(&bus, PG_STACK_BASE + cpu.esp());
+    assert_eq!(error_code, 0x0005, "present + fetch + user");
+}
+
+#[test]
 fn paging_accessed_dirty_bits_already_set() {
     let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
