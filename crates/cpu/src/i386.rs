@@ -98,6 +98,7 @@ pub struct I386<const CPU_MODEL: u8 = { CPU_MODEL_386 }> {
     fetch_page_valid: bool,
     fetch_page_tag: u32,
     fetch_page_phys: u32,
+    fetch_page_user: bool,
 
     prefetch_valid: bool,
     prefetch_addr: u32,
@@ -107,6 +108,7 @@ pub struct I386<const CPU_MODEL: u8 = { CPU_MODEL_386 }> {
     tlb_tag: [u32; 64],
     tlb_phys: [u32; 64],
     tlb_writable: [bool; 64],
+    tlb_user: [bool; 64],
     tlb_dirty: [bool; 64],
 
     debug_trap_pending: bool,
@@ -171,6 +173,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             fetch_page_valid: false,
             fetch_page_tag: 0,
             fetch_page_phys: 0,
+            fetch_page_user: false,
             prefetch_valid: false,
             prefetch_addr: 0,
             prefetch_byte: 0,
@@ -178,6 +181,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             tlb_tag: [0; 64],
             tlb_phys: [0; 64],
             tlb_writable: [false; 64],
+            tlb_user: [false; 64],
             tlb_dirty: [false; 64],
             debug_trap_pending: false,
             trap_level: 0,
@@ -395,18 +399,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
         let eip = self.effective_eip();
         let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
-        let page = linear >> 12;
-        let addr = if self.fetch_page_valid && self.fetch_page_tag == page {
-            self.fetch_page_phys | (linear & 0xFFF)
-        } else {
-            let Some(addr) = self.translate_linear(linear, false, bus) else {
-                self.prefetch_valid = false;
-                return 0;
-            };
-            self.fetch_page_valid = true;
-            self.fetch_page_tag = page;
-            self.fetch_page_phys = addr & !0xFFF;
-            addr
+        let Some(addr) = self.fetch_physical_address(linear, bus) else {
+            self.prefetch_valid = false;
+            return 0;
         };
         let value = if self.prefetch_valid && self.prefetch_addr == addr {
             self.prefetch_valid = false;
@@ -430,22 +425,36 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     #[inline(always)]
+    fn fetch_physical_address(&mut self, linear: u32, bus: &mut impl common::Bus) -> Option<u32> {
+        let page = linear >> 12;
+        if self.fetch_page_valid
+            && self.fetch_page_tag == page
+            && (!self.is_user_page_access() || self.fetch_page_user)
+        {
+            return Some(self.fetch_page_phys | (linear & 0xFFF));
+        }
+
+        let addr = self.translate_linear(linear, false, bus)?;
+        self.fetch_page_valid = true;
+        self.fetch_page_tag = page;
+        self.fetch_page_phys = addr & !0xFFF;
+        self.fetch_page_user = if self.is_paging_enabled() {
+            let slot = (page & 63) as usize;
+            self.tlb_valid[slot] && self.tlb_tag[slot] == page && self.tlb_user[slot]
+        } else {
+            true
+        };
+        Some(addr)
+    }
+
+    #[inline(always)]
     fn fetchword(&mut self, bus: &mut impl common::Bus) -> u16 {
         if !self.fault_pending {
             let eip = self.effective_eip();
             let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
             if (linear & 0xFFF) <= 0xFFE {
-                let page = linear >> 12;
-                let addr = if self.fetch_page_valid && self.fetch_page_tag == page {
-                    self.fetch_page_phys | (linear & 0xFFF)
-                } else {
-                    let Some(addr) = self.translate_linear(linear, false, bus) else {
-                        return 0;
-                    };
-                    self.fetch_page_valid = true;
-                    self.fetch_page_tag = page;
-                    self.fetch_page_phys = addr & !0xFFF;
-                    addr
+                let Some(addr) = self.fetch_physical_address(linear, bus) else {
+                    return 0;
                 };
                 let value = bus.read_word(addr);
                 self.advance_ip_by(2);
@@ -463,17 +472,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             let eip = self.effective_eip();
             let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
             if (linear & 0xFFF) <= 0xFFC {
-                let page = linear >> 12;
-                let addr = if self.fetch_page_valid && self.fetch_page_tag == page {
-                    self.fetch_page_phys | (linear & 0xFFF)
-                } else {
-                    let Some(addr) = self.translate_linear(linear, false, bus) else {
-                        return 0;
-                    };
-                    self.fetch_page_valid = true;
-                    self.fetch_page_tag = page;
-                    self.fetch_page_phys = addr & !0xFFF;
-                    addr
+                let Some(addr) = self.fetch_physical_address(linear, bus) else {
+                    return 0;
                 };
                 let value = bus.read_dword(addr);
                 self.advance_ip_by(4);
@@ -527,6 +527,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             return 0;
         }
         self.stored_cpl
+    }
+
+    #[inline(always)]
+    fn is_user_page_access(&self) -> bool {
+        self.cpl() == 3 && !self.supervisor_override
     }
 
     #[inline(always)]
