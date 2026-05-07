@@ -2782,13 +2782,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.invalidate_segment_if_needed(SegReg32::FS, new_cpl);
                 self.invalidate_segment_if_needed(SegReg32::GS, new_cpl);
             } else {
+                if !self.load_cs_for_return(new_cs, new_eip, bus) {
+                    return;
+                }
                 if self.use_esp() {
                     self.regs.set_dword(DwordReg::ESP, sp.wrapping_add(12));
                 } else {
                     self.regs.set_word(WordReg::SP, sp.wrapping_add(12) as u16);
-                }
-                if !self.load_cs_for_return(new_cs, new_eip, bus) {
-                    return;
                 }
                 self.ip = new_eip as u16;
                 self.ip_upper = new_eip & 0xFFFF_0000;
@@ -2834,13 +2834,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.invalidate_segment_if_needed(SegReg32::FS, new_cpl);
                 self.invalidate_segment_if_needed(SegReg32::GS, new_cpl);
             } else {
+                if !self.load_cs_for_return(new_cs, new_ip as u32, bus) {
+                    return;
+                }
                 if self.use_esp() {
                     self.regs.set_dword(DwordReg::ESP, sp.wrapping_add(6));
                 } else {
                     self.regs.set_word(WordReg::SP, sp.wrapping_add(6) as u16);
-                }
-                if !self.load_cs_for_return(new_cs, new_ip as u32, bus) {
-                    return;
                 }
                 self.ip = new_ip;
                 self.ip_upper = 0;
