@@ -554,6 +554,65 @@ fn paging_dirty_bit_on_write() {
     );
 }
 
+/// BT reads the memory operand but must not dirty the page.
+#[test]
+fn paging_group_ba_bt_imm_sets_accessed_not_dirty() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_paged_protected_mode(&mut bus);
+    cpu.load_state(&state);
+
+    let pte_index = PG_DATA_BASE >> 12;
+    let pde_before = read_dword_at(&bus, PG_PAGE_DIR);
+    let pte_before = read_dword_at(&bus, PG_PAGE_TABLE_0 + pte_index * 4);
+    write_dword_at(&mut bus, PG_PAGE_DIR, pde_before & !(PTE_A | PTE_D));
+    write_dword_at(
+        &mut bus,
+        PG_PAGE_TABLE_0 + pte_index * 4,
+        pte_before & !(PTE_A | PTE_D),
+    );
+
+    write_dword_at(&mut bus, PG_DATA_BASE + 0x80, 1 << 5);
+
+    // Operand-size override; BT dword [0x0080], 5.
+    place_at(
+        &mut bus,
+        PG_CODE_BASE,
+        &[0x66, 0x0F, 0xBA, 0x26, 0x80, 0x00, 0x05],
+    );
+    cpu.step(&mut bus);
+
+    let pde_after = read_dword_at(&bus, PG_PAGE_DIR);
+    let pte_after = read_dword_at(&bus, PG_PAGE_TABLE_0 + pte_index * 4);
+
+    assert_ne!(
+        cpu.eflags() & 1,
+        0,
+        "BT must load the selected bit into CF"
+    );
+    assert_ne!(
+        pde_after & PTE_A,
+        0,
+        "PDE Accessed bit must be set after BT memory read"
+    );
+    assert_ne!(
+        pte_after & PTE_A,
+        0,
+        "PTE Accessed bit must be set after BT memory read"
+    );
+    assert_eq!(
+        pte_after & PTE_D,
+        0,
+        "PTE Dirty bit must NOT be set after BT memory read"
+    );
+    assert_eq!(
+        read_dword_at(&bus, PG_DATA_BASE + 0x80),
+        1 << 5,
+        "BT must not modify the memory operand"
+    );
+}
+
 /// #PF on read from a not-present PDE. Error code = 0 (not present, read, supervisor).
 /// Uses PDE 1 (linear 0x400000+) for data so clearing it doesn't affect code/stack.
 #[test]
