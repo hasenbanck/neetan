@@ -446,6 +446,7 @@ fn write_dword_at(bus: &mut TestBus, addr: u32, value: u32) {
 const TEST_PAGE_DIRECTORY_BASE: u32 = 0xA0000;
 const TEST_PAGE_TABLE_BASE: u32 = 0xA1000;
 const TEST_PAGE_PRESENT_WRITABLE: u32 = 0x003;
+const TEST_PAGE_PRESENT_WRITABLE_USER: u32 = 0x007;
 
 fn enable_identity_paging(bus: &mut TestBus, state: &mut cpu::I386State) {
     write_dword_at(
@@ -469,6 +470,15 @@ fn enable_identity_paging(bus: &mut TestBus, state: &mut cpu::I386State) {
 fn unmap_identity_page(bus: &mut TestBus, linear_address: u32) {
     let page_index = (linear_address >> 12) & 0x3FF;
     write_dword_at(bus, TEST_PAGE_TABLE_BASE + page_index * 4, page_index << 12);
+}
+
+fn set_identity_page_flags(bus: &mut TestBus, linear_address: u32, flags: u32) {
+    let page_index = (linear_address >> 12) & 0x3FF;
+    write_dword_at(
+        bus,
+        TEST_PAGE_TABLE_BASE + page_index * 4,
+        (page_index << 12) | flags,
+    );
 }
 
 #[test]
@@ -1269,6 +1279,42 @@ fn make_ring3_state(state: &mut cpu::I386State) {
     state.set_es(PM_RING3_DS_SEL);
     state.seg_bases[cpu::SegReg32::ES as usize] = PM_DATA_BASE;
     state.seg_rights[cpu::SegReg32::ES as usize] = 0xF3;
+}
+
+#[test]
+fn i386_ring3_segment_load_reads_supervisor_descriptor_table_pages() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let mut state = setup_protected_mode_with_ring3(&mut bus);
+    make_ring3_state(&mut state);
+    enable_identity_paging(&mut bus, &mut state);
+
+    write_dword_at(
+        &mut bus,
+        TEST_PAGE_DIRECTORY_BASE,
+        TEST_PAGE_TABLE_BASE | TEST_PAGE_PRESENT_WRITABLE_USER,
+    );
+    set_identity_page_flags(&mut bus, PM_RING3_CODE_BASE, TEST_PAGE_PRESENT_WRITABLE_USER);
+    set_identity_page_flags(
+        &mut bus,
+        PM_RING3_STACK_BASE,
+        TEST_PAGE_PRESENT_WRITABLE_USER,
+    );
+    set_identity_page_flags(&mut bus, PM_DATA_BASE, TEST_PAGE_PRESENT_WRITABLE_USER);
+    set_identity_page_flags(&mut bus, PM_GDT_BASE, TEST_PAGE_PRESENT_WRITABLE);
+
+    cpu.load_state(&state);
+    place_at(
+        &mut bus,
+        PM_RING3_CODE_BASE,
+        &[0xB8, PM_RING3_DS_SEL as u8, 0x00, 0x8E, 0xD8, 0x90],
+    );
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.ds(), PM_RING3_DS_SEL);
+    assert_eq!(cpu.ip(), 5);
 }
 
 #[test]
@@ -2572,6 +2618,45 @@ fn i386_iret_32bit_protected_mode() {
         "EIP should be at target + 1 after HLT"
     );
     assert_eq!(cpu.cs(), PM_CS_SEL);
+}
+
+#[test]
+fn i386_iret_same_privilege_invalid_cs_preserves_source_frame() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode(&mut bus, 0xFFFF);
+    state.seg_granularity[cpu::SegReg32::SS as usize] = 0x40;
+    state.seg_limits[cpu::SegReg32::SS as usize] = 0xFFFF_FFFF;
+    cpu.load_state(&state);
+
+    let original_esp = cpu.esp().wrapping_sub(12);
+    write_dword_at(&mut bus, PM_STACK_BASE + original_esp, 0x2000);
+    write_dword_at(&mut bus, PM_STACK_BASE + original_esp + 4, 0x0040);
+    write_dword_at(&mut bus, PM_STACK_BASE + original_esp + 8, 0x0000_0202);
+    cpu.state.set_esp(original_esp);
+
+    place_at(&mut bus, PM_CODE_BASE, &[0x66, 0xCF]);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.ip(), u32::from(PM_GP_HANDLER_IP));
+    assert_eq!(cpu.esp(), original_esp.wrapping_sub(16));
+    assert_eq!(
+        read_dword_at(&bus, PM_STACK_BASE + cpu.esp()),
+        0x0040,
+        "error code should contain the invalid return selector"
+    );
+    assert_eq!(
+        read_dword_at(&bus, PM_STACK_BASE + cpu.esp() + 4),
+        0x0000,
+        "fault frame should point back to the IRET instruction"
+    );
+    assert_eq!(
+        read_dword_at(&bus, PM_STACK_BASE + original_esp),
+        0x2000,
+        "the original IRET frame must remain in place"
+    );
 }
 
 /// RETF in protected mode with operand size override pops 32-bit EIP/CS.

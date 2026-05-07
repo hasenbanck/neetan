@@ -657,7 +657,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus: &mut impl common::Bus,
     ) -> Option<SegmentDescriptor> {
         let addr = self.descriptor_addr_checked(selector)?;
-        Some(self.decode_descriptor_at(addr, bus))
+        let saved_supervisor_override = self.supervisor_override;
+        self.supervisor_override = true;
+        let descriptor = self.decode_descriptor_at(addr, bus);
+        self.supervisor_override = saved_supervisor_override;
+        Some(descriptor)
     }
 
     fn descriptor_dpl(rights: u8) -> u16 {
@@ -1420,12 +1424,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     fn set_accessed_bit(&mut self, selector: u16, bus: &mut impl common::Bus) {
         if let Some(addr) = self.descriptor_addr_checked(selector) {
+            let saved_supervisor_override = self.supervisor_override;
+            self.supervisor_override = true;
             let linear = addr.wrapping_add(5);
             let phys = self.translate_linear(linear, true, bus).unwrap_or(0);
             let rights = bus.read_byte(phys);
             if rights & 0x01 == 0 {
                 bus.write_byte(phys, rights | 0x01);
             }
+            self.supervisor_override = saved_supervisor_override;
         }
     }
 
