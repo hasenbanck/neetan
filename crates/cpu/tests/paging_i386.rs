@@ -815,6 +815,52 @@ fn paging_fault_user_writes_readonly_page() {
     assert_eq!(error_code, 0x0007, "error code: present, write, user");
 }
 
+#[test]
+fn paging_fault_user_read_modify_write_reports_write() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_paged_protected_mode(&mut bus);
+    make_ring3(&mut state);
+    state.set_ebx(0);
+    cpu.load_state(&state);
+
+    let pde = read_dword_at(&bus, PG_PAGE_DIR);
+    write_dword_at(&mut bus, PG_PAGE_DIR, pde | PTE_US);
+
+    let code_pte_index = PG_RING3_CODE_BASE >> 12;
+    write_dword_at(
+        &mut bus,
+        PG_PAGE_TABLE_0 + code_pte_index * 4,
+        PG_RING3_CODE_BASE | PTE_P | PTE_RW | PTE_US,
+    );
+
+    let stack_pte_index = PG_RING3_STACK_BASE >> 12;
+    write_dword_at(
+        &mut bus,
+        PG_PAGE_TABLE_0 + stack_pte_index * 4,
+        PG_RING3_STACK_BASE | PTE_P | PTE_RW | PTE_US,
+    );
+
+    let data_pte_index = PG_DATA_BASE >> 12;
+    write_dword_at(&mut bus, PG_PAGE_TABLE_0 + data_pte_index * 4, 0);
+
+    place_at(&mut bus, PG_RING3_CODE_BASE, &[0x26, 0x80, 0x0F, 0x00]);
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PG_PF_HANDLER_IP as u32 + 1);
+    assert_eq!(cpu.cr2, PG_DATA_BASE);
+
+    let sp = cpu.esp();
+    let error_code = read_word_at(&bus, PG_STACK_BASE + sp);
+    assert_eq!(error_code, 0x0006, "error code: not present, write, user");
+
+    let return_eip = read_dword_at(&bus, PG_STACK_BASE + sp + 4);
+    assert_eq!(return_eip, 0, "fault should restart at the segment prefix");
+}
+
 /// On a 386, supervisor (CPL 0) can write to a page with R/W=0.
 #[test]
 fn paging_supervisor_writes_readonly_page() {
