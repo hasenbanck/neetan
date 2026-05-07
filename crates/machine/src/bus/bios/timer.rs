@@ -40,7 +40,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             let callback_segment = self.ram_read_u16(0x001E);
 
             if callback_offset != 0 || callback_segment != 0 {
-                let orig_flags = self.read_word_direct(iret_base + 0x04);
+                let orig_flags = self.read_mem_word(iret_base + 0x04);
                 let callback_base = iret_base.wrapping_sub(6);
                 self.write_mem_word(callback_base, callback_offset);
                 self.write_mem_word(callback_base + 0x02, callback_segment);

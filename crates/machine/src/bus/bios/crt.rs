@@ -231,7 +231,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 let font_base = 0x82000 + (char_code as u8 as usize) * 16;
                 for i in 0..8 {
                     let byte = self.memory.font_read(font_base + i);
-                    self.memory.write_byte(dest_base + 2 + i as u32, byte);
+                    self.write_mem_byte(dest_base + 2 + i as u32, byte);
                 }
             }
             0x29..=0x2B => {
@@ -240,7 +240,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 let font_offset = cgrom_kanji_offset(high_byte, char_code as u8) as usize;
                 for i in 0..16 {
                     let byte = self.memory.font_read(font_offset + i);
-                    self.memory.write_byte(dest_base + 2 + i as u32, byte);
+                    self.write_mem_byte(dest_base + 2 + i as u32, byte);
                 }
             }
             0x80 => {
@@ -249,7 +249,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 let font_base = 0x80000 + (char_code as u8 as usize) * 16;
                 for i in 0..16 {
                     let byte = self.memory.font_read(font_base + i);
-                    self.memory.write_byte(dest_base + 2 + i as u32, byte);
+                    self.write_mem_byte(dest_base + 2 + i as u32, byte);
                 }
             }
             _ => {
@@ -260,9 +260,8 @@ impl<T: Tracing> Pc9801Bus<T> {
                 for i in 0..16 {
                     let left = self.memory.font_read(font_offset + i);
                     let right = self.memory.font_read(font_offset + 0x800 + i);
-                    self.memory.write_byte(dest_base + 2 + (i as u32) * 2, left);
-                    self.memory
-                        .write_byte(dest_base + 2 + (i as u32) * 2 + 1, right);
+                    self.write_mem_byte(dest_base + 2 + (i as u32) * 2, left);
+                    self.write_mem_byte(dest_base + 2 + (i as u32) * 2 + 1, right);
                 }
             }
         }
