@@ -275,7 +275,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             } else {
                 self.calc_ea(modrm, bus);
                 let (offset, bit_index) = self.bit_mem_effective_offset(bit_offset as i32, 32);
-                let mut value = self.read_dword_seg(bus, self.ea_seg, offset);
+                let mut value = self.read_dword_seg_for_update(bus, self.ea_seg, offset);
+                if self.fault_pending {
+                    return;
+                }
                 let bit = 1u32 << bit_index;
                 self.flags.carry_val = u32::from(value & bit != 0);
                 if clear {
@@ -312,7 +315,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.calc_ea(modrm, bus);
                 let signed_offset = bit_offset as i16 as i32;
                 let (offset, bit_index) = self.bit_mem_effective_offset(signed_offset, 16);
-                let mut value = self.read_word_seg(bus, self.ea_seg, offset);
+                let mut value = self.read_word_seg_for_update(bus, self.ea_seg, offset);
+                if self.fault_pending {
+                    return;
+                }
                 let bit = 1u16 << bit_index;
                 self.flags.carry_val = u32::from(value & bit != 0);
                 if clear {
@@ -369,7 +375,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 let bit_index = imm & 31;
                 if self.address_size_override {
                     let address = self.ea;
-                    let mut value = self.read_dword_linear(bus, address);
+                    let mut value = if write_back {
+                        self.read_dword_linear_for_update(bus, address)
+                    } else {
+                        self.read_dword_linear(bus, address)
+                    };
+                    if self.fault_pending {
+                        return;
+                    }
                     let bit = 1u32 << bit_index;
                     self.flags.carry_val = u32::from(value & bit != 0);
                     if clear {
@@ -386,7 +399,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                         self.write_dword_linear(bus, address, value);
                     }
                 } else {
-                    let mut value = self.seg_read_dword(bus);
+                    let mut value = if write_back {
+                        self.seg_read_dword_for_update(bus)
+                    } else {
+                        self.seg_read_dword(bus)
+                    };
+                    if self.fault_pending {
+                        return;
+                    }
                     let bit = 1u32 << bit_index;
                     self.flags.carry_val = u32::from(value & bit != 0);
                     if clear {
@@ -429,7 +449,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             let bit_index = imm & 15;
             if self.address_size_override {
                 let address = self.ea;
-                let mut value = self.read_word_linear(bus, address);
+                let mut value = if write_back {
+                    self.read_word_linear_for_update(bus, address)
+                } else {
+                    self.read_word_linear(bus, address)
+                };
+                if self.fault_pending {
+                    return;
+                }
                 let bit = 1u16 << bit_index;
                 self.flags.carry_val = u32::from(value & bit != 0);
                 if clear {
@@ -446,7 +473,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     self.write_word_linear(bus, address, value);
                 }
             } else {
-                let mut value = self.seg_read_word(bus);
+                let mut value = if write_back {
+                    self.seg_read_word_for_update(bus)
+                } else {
+                    self.seg_read_word(bus)
+                };
+                if self.fault_pending {
+                    return;
+                }
                 let bit = 1u16 << bit_index;
                 self.flags.carry_val = u32::from(value & bit != 0);
                 if clear {
@@ -1417,11 +1451,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         // CMPXCHG r/m8,r8 - compare AL with r/m8; if equal, load r8 into r/m8.
         let modrm = self.fetch(bus);
         let src = self.regs.byte(self.reg_byte(modrm));
-        let dst = self.get_rm_byte(modrm, bus);
+        let dst = self.get_rm_byte_for_update(modrm, bus);
+        if self.fault_pending {
+            return;
+        }
         let al = self.regs.byte(ByteReg::AL);
         self.alu_sub_byte(al, dst);
         if self.flags.zf() {
             self.putback_rm_byte(modrm, src, bus);
+            if self.fault_pending {
+                return;
+            }
         } else {
             self.regs.set_byte(ByteReg::AL, dst);
         }
@@ -1433,21 +1473,33 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let modrm = self.fetch(bus);
         if self.operand_size_override {
             let src = self.regs.dword(self.reg_dword(modrm));
-            let dst = self.get_rm_dword(modrm, bus);
+            let dst = self.get_rm_dword_for_update(modrm, bus);
+            if self.fault_pending {
+                return;
+            }
             let eax = self.regs.dword(DwordReg::EAX);
             self.alu_sub_dword(eax, dst);
             if self.flags.zf() {
                 self.putback_rm_dword(modrm, src, bus);
+                if self.fault_pending {
+                    return;
+                }
             } else {
                 self.regs.set_dword(DwordReg::EAX, dst);
             }
         } else {
             let src = self.regs.word(self.reg_word(modrm));
-            let dst = self.get_rm_word(modrm, bus);
+            let dst = self.get_rm_word_for_update(modrm, bus);
+            if self.fault_pending {
+                return;
+            }
             let ax = self.regs.word(WordReg::AX);
             self.alu_sub_word(ax, dst);
             if self.flags.zf() {
                 self.putback_rm_word(modrm, src, bus);
+                if self.fault_pending {
+                    return;
+                }
             } else {
                 self.regs.set_word(WordReg::AX, dst);
             }
@@ -1460,10 +1512,16 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let modrm = self.fetch(bus);
         let src_reg = self.reg_byte(modrm);
         let src = self.regs.byte(src_reg);
-        let dst = self.get_rm_byte(modrm, bus);
+        let dst = self.get_rm_byte_for_update(modrm, bus);
+        if self.fault_pending {
+            return;
+        }
         let result = self.alu_add_byte(dst, src);
         self.regs.set_byte(src_reg, dst);
         self.putback_rm_byte(modrm, result, bus);
+        if self.fault_pending {
+            return;
+        }
         self.clk_modrm(modrm, 3, 4);
     }
 
@@ -1473,17 +1531,29 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         if self.operand_size_override {
             let src_reg = self.reg_dword(modrm);
             let src = self.regs.dword(src_reg);
-            let dst = self.get_rm_dword(modrm, bus);
+            let dst = self.get_rm_dword_for_update(modrm, bus);
+            if self.fault_pending {
+                return;
+            }
             let result = self.alu_add_dword(dst, src);
             self.regs.set_dword(src_reg, dst);
             self.putback_rm_dword(modrm, result, bus);
+            if self.fault_pending {
+                return;
+            }
         } else {
             let src_reg = self.reg_word(modrm);
             let src = self.regs.word(src_reg);
-            let dst = self.get_rm_word(modrm, bus);
+            let dst = self.get_rm_word_for_update(modrm, bus);
+            if self.fault_pending {
+                return;
+            }
             let result = self.alu_add_word(dst, src);
             self.regs.set_word(src_reg, dst);
             self.putback_rm_word(modrm, result, bus);
+            if self.fault_pending {
+                return;
+            }
         }
         self.clk_modrm(modrm, 3, 4);
     }

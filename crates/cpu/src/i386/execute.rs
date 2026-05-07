@@ -368,9 +368,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     fn add_br8(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
         let src = self.regs.byte(self.reg_byte(modrm));
-        let dst = self.get_rm_byte(modrm, bus);
+        let dst = self.get_rm_byte_for_update(modrm, bus);
+        if self.fault_pending {
+            return;
+        }
         let result = self.alu_add_byte(dst, src);
         self.putback_rm_byte(modrm, result, bus);
+        if self.fault_pending {
+            return;
+        }
         self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(7, 3));
     }
 
@@ -378,15 +384,27 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let modrm = self.fetch(bus);
         if self.operand_size_override {
             let src = self.regs.dword(self.reg_dword(modrm));
-            let dst = self.get_rm_dword(modrm, bus);
+            let dst = self.get_rm_dword_for_update(modrm, bus);
+            if self.fault_pending {
+                return;
+            }
             let result = self.alu_add_dword(dst, src);
             self.putback_rm_dword(modrm, result, bus);
+            if self.fault_pending {
+                return;
+            }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
             let src = self.regs.word(self.reg_word(modrm));
-            let dst = self.get_rm_word(modrm, bus);
+            let dst = self.get_rm_word_for_update(modrm, bus);
+            if self.fault_pending {
+                return;
+            }
             let result = self.alu_add_word(dst, src);
             self.putback_rm_word(modrm, result, bus);
+            if self.fault_pending {
+                return;
+            }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 2);
         }
     }
@@ -446,9 +464,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     fn or_br8(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
         let src = self.regs.byte(self.reg_byte(modrm));
-        let dst = self.get_rm_byte(modrm, bus);
+        let dst = self.get_rm_byte_for_update(modrm, bus);
+        if self.fault_pending {
+            return;
+        }
         let result = self.alu_or_byte(dst, src);
         self.putback_rm_byte(modrm, result, bus);
+        if self.fault_pending {
+            return;
+        }
         self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(7, 3));
     }
 
@@ -456,15 +480,27 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let modrm = self.fetch(bus);
         if self.operand_size_override {
             let src = self.regs.dword(self.reg_dword(modrm));
-            let dst = self.get_rm_dword(modrm, bus);
+            let dst = self.get_rm_dword_for_update(modrm, bus);
+            if self.fault_pending {
+                return;
+            }
             let result = self.alu_or_dword(dst, src);
             self.putback_rm_dword(modrm, result, bus);
+            if self.fault_pending {
+                return;
+            }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
             let src = self.regs.word(self.reg_word(modrm));
-            let dst = self.get_rm_word(modrm, bus);
+            let dst = self.get_rm_word_for_update(modrm, bus);
+            if self.fault_pending {
+                return;
+            }
             let result = self.alu_or_word(dst, src);
             self.putback_rm_word(modrm, result, bus);
+            if self.fault_pending {
+                return;
+            }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 2);
         }
     }
@@ -524,10 +560,16 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     fn adc_br8(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
         let src = self.regs.byte(self.reg_byte(modrm));
-        let dst = self.get_rm_byte(modrm, bus);
+        let dst = self.get_rm_byte_for_update(modrm, bus);
+        if self.fault_pending {
+            return;
+        }
         let cf = self.flags.cf_val();
         let result = self.alu_adc_byte(dst, src, cf);
         self.putback_rm_byte(modrm, result, bus);
+        if self.fault_pending {
+            return;
+        }
         self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(7, 3));
     }
 
@@ -536,15 +578,27 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let cf = self.flags.cf_val();
         if self.operand_size_override {
             let src = self.regs.dword(self.reg_dword(modrm));
-            let dst = self.get_rm_dword(modrm, bus);
+            let dst = self.get_rm_dword_for_update(modrm, bus);
+            if self.fault_pending {
+                return;
+            }
             let result = self.alu_adc_dword(dst, src, cf);
             self.putback_rm_dword(modrm, result, bus);
+            if self.fault_pending {
+                return;
+            }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
             let src = self.regs.word(self.reg_word(modrm));
-            let dst = self.get_rm_word(modrm, bus);
+            let dst = self.get_rm_word_for_update(modrm, bus);
+            if self.fault_pending {
+                return;
+            }
             let result = self.alu_adc_word(dst, src, cf);
             self.putback_rm_word(modrm, result, bus);
+            if self.fault_pending {
+                return;
+            }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 2);
         }
     }
@@ -608,10 +662,16 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     fn sbb_br8(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
         let src = self.regs.byte(self.reg_byte(modrm));
-        let dst = self.get_rm_byte(modrm, bus);
+        let dst = self.get_rm_byte_for_update(modrm, bus);
+        if self.fault_pending {
+            return;
+        }
         let cf = self.flags.cf_val();
         let result = self.alu_sbb_byte(dst, src, cf);
         self.putback_rm_byte(modrm, result, bus);
+        if self.fault_pending {
+            return;
+        }
         self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(7, 3));
     }
 
@@ -620,15 +680,27 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let cf = self.flags.cf_val();
         if self.operand_size_override {
             let src = self.regs.dword(self.reg_dword(modrm));
-            let dst = self.get_rm_dword(modrm, bus);
+            let dst = self.get_rm_dword_for_update(modrm, bus);
+            if self.fault_pending {
+                return;
+            }
             let result = self.alu_sbb_dword(dst, src, cf);
             self.putback_rm_dword(modrm, result, bus);
+            if self.fault_pending {
+                return;
+            }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
             let src = self.regs.word(self.reg_word(modrm));
-            let dst = self.get_rm_word(modrm, bus);
+            let dst = self.get_rm_word_for_update(modrm, bus);
+            if self.fault_pending {
+                return;
+            }
             let result = self.alu_sbb_word(dst, src, cf);
             self.putback_rm_word(modrm, result, bus);
+            if self.fault_pending {
+                return;
+            }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 2);
         }
     }
@@ -692,9 +764,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     fn and_br8(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
         let src = self.regs.byte(self.reg_byte(modrm));
-        let dst = self.get_rm_byte(modrm, bus);
+        let dst = self.get_rm_byte_for_update(modrm, bus);
+        if self.fault_pending {
+            return;
+        }
         let result = self.alu_and_byte(dst, src);
         self.putback_rm_byte(modrm, result, bus);
+        if self.fault_pending {
+            return;
+        }
         self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(7, 3));
     }
 
@@ -702,15 +780,27 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let modrm = self.fetch(bus);
         if self.operand_size_override {
             let src = self.regs.dword(self.reg_dword(modrm));
-            let dst = self.get_rm_dword(modrm, bus);
+            let dst = self.get_rm_dword_for_update(modrm, bus);
+            if self.fault_pending {
+                return;
+            }
             let result = self.alu_and_dword(dst, src);
             self.putback_rm_dword(modrm, result, bus);
+            if self.fault_pending {
+                return;
+            }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
             let src = self.regs.word(self.reg_word(modrm));
-            let dst = self.get_rm_word(modrm, bus);
+            let dst = self.get_rm_word_for_update(modrm, bus);
+            if self.fault_pending {
+                return;
+            }
             let result = self.alu_and_word(dst, src);
             self.putback_rm_word(modrm, result, bus);
+            if self.fault_pending {
+                return;
+            }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 2);
         }
     }
@@ -770,9 +860,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     fn sub_br8(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
         let src = self.regs.byte(self.reg_byte(modrm));
-        let dst = self.get_rm_byte(modrm, bus);
+        let dst = self.get_rm_byte_for_update(modrm, bus);
+        if self.fault_pending {
+            return;
+        }
         let result = self.alu_sub_byte(dst, src);
         self.putback_rm_byte(modrm, result, bus);
+        if self.fault_pending {
+            return;
+        }
         self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(7, 3));
     }
 
@@ -780,15 +876,27 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let modrm = self.fetch(bus);
         if self.operand_size_override {
             let src = self.regs.dword(self.reg_dword(modrm));
-            let dst = self.get_rm_dword(modrm, bus);
+            let dst = self.get_rm_dword_for_update(modrm, bus);
+            if self.fault_pending {
+                return;
+            }
             let result = self.alu_sub_dword(dst, src);
             self.putback_rm_dword(modrm, result, bus);
+            if self.fault_pending {
+                return;
+            }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
             let src = self.regs.word(self.reg_word(modrm));
-            let dst = self.get_rm_word(modrm, bus);
+            let dst = self.get_rm_word_for_update(modrm, bus);
+            if self.fault_pending {
+                return;
+            }
             let result = self.alu_sub_word(dst, src);
             self.putback_rm_word(modrm, result, bus);
+            if self.fault_pending {
+                return;
+            }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 2);
         }
     }
@@ -848,9 +956,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     fn xor_br8(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
         let src = self.regs.byte(self.reg_byte(modrm));
-        let dst = self.get_rm_byte(modrm, bus);
+        let dst = self.get_rm_byte_for_update(modrm, bus);
+        if self.fault_pending {
+            return;
+        }
         let result = self.alu_xor_byte(dst, src);
         self.putback_rm_byte(modrm, result, bus);
+        if self.fault_pending {
+            return;
+        }
         self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(7, 3));
     }
 
@@ -858,15 +972,27 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let modrm = self.fetch(bus);
         if self.operand_size_override {
             let src = self.regs.dword(self.reg_dword(modrm));
-            let dst = self.get_rm_dword(modrm, bus);
+            let dst = self.get_rm_dword_for_update(modrm, bus);
+            if self.fault_pending {
+                return;
+            }
             let result = self.alu_xor_dword(dst, src);
             self.putback_rm_dword(modrm, result, bus);
+            if self.fault_pending {
+                return;
+            }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
             let src = self.regs.word(self.reg_word(modrm));
-            let dst = self.get_rm_word(modrm, bus);
+            let dst = self.get_rm_word_for_update(modrm, bus);
+            if self.fault_pending {
+                return;
+            }
             let result = self.alu_xor_word(dst, src);
             self.putback_rm_word(modrm, result, bus);
+            if self.fault_pending {
+                return;
+            }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 2);
         }
     }
@@ -1449,9 +1575,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let modrm = self.fetch(bus);
         let reg = self.reg_byte(modrm);
         let reg_val = self.regs.byte(reg);
-        let rm_val = self.get_rm_byte(modrm, bus);
+        let rm_val = self.get_rm_byte_for_update(modrm, bus);
+        if self.fault_pending {
+            return;
+        }
         self.regs.set_byte(reg, rm_val);
         self.putback_rm_byte(modrm, reg_val, bus);
+        if self.fault_pending {
+            return;
+        }
         self.clk_modrm(modrm, Self::timing(3, 3), Self::timing(5, 5));
     }
 
@@ -1460,16 +1592,28 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         if self.operand_size_override {
             let reg = self.reg_dword(modrm);
             let reg_val = self.regs.dword(reg);
-            let rm_val = self.get_rm_dword(modrm, bus);
+            let rm_val = self.get_rm_dword_for_update(modrm, bus);
+            if self.fault_pending {
+                return;
+            }
             self.regs.set_dword(reg, rm_val);
             self.putback_rm_dword(modrm, reg_val, bus);
+            if self.fault_pending {
+                return;
+            }
             self.clk_modrm_word(modrm, Self::timing(3, 3), Self::timing(5, 5), 4);
         } else {
             let reg = self.reg_word(modrm);
             let reg_val = self.regs.word(reg);
-            let rm_val = self.get_rm_word(modrm, bus);
+            let rm_val = self.get_rm_word_for_update(modrm, bus);
+            if self.fault_pending {
+                return;
+            }
             self.regs.set_word(reg, rm_val);
             self.putback_rm_word(modrm, reg_val, bus);
+            if self.fault_pending {
+                return;
+            }
             self.clk_modrm_word(modrm, Self::timing(3, 3), Self::timing(5, 5), 2);
         }
     }

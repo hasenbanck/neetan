@@ -81,14 +81,25 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     /// Group 0x81: ALU r/m16, imm16
     pub(super) fn group_81(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
-        if self.lock_prefix && (modrm >> 3) & 7 == 7 {
+        let extension = (modrm >> 3) & 7;
+        if self.lock_prefix && extension == 7 {
             self.raise_fault(6, bus);
             return;
         }
         if self.operand_size_override {
-            let dst = self.get_rm_dword(modrm, bus);
+            let dst = if extension == 7 {
+                self.get_rm_dword(modrm, bus)
+            } else {
+                self.get_rm_dword_for_update(modrm, bus)
+            };
+            if self.fault_pending {
+                return;
+            }
             let src = self.fetchdword(bus);
-            let result = match (modrm >> 3) & 7 {
+            if self.fault_pending {
+                return;
+            }
+            let result = match extension {
                 0 => self.alu_add_dword(dst, src),
                 1 => self.alu_or_dword(dst, src),
                 2 => {
@@ -109,14 +120,27 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
                 _ => unreachable!(),
             };
-            if (modrm >> 3) & 7 != 7 {
+            if extension != 7 {
                 self.putback_rm_dword(modrm, result, bus);
+                if self.fault_pending {
+                    return;
+                }
             }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
-            let dst = self.get_rm_word(modrm, bus);
+            let dst = if extension == 7 {
+                self.get_rm_word(modrm, bus)
+            } else {
+                self.get_rm_word_for_update(modrm, bus)
+            };
+            if self.fault_pending {
+                return;
+            }
             let src = self.fetchword(bus);
-            let result = match (modrm >> 3) & 7 {
+            if self.fault_pending {
+                return;
+            }
+            let result = match extension {
                 0 => self.alu_add_word(dst, src),
                 1 => self.alu_or_word(dst, src),
                 2 => {
@@ -137,8 +161,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
                 _ => unreachable!(),
             };
-            if (modrm >> 3) & 7 != 7 {
+            if extension != 7 {
                 self.putback_rm_word(modrm, result, bus);
+                if self.fault_pending {
+                    return;
+                }
             }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 2);
         }
@@ -152,14 +179,25 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     /// Group 0x83: ALU r/m16, sign-extended imm8
     pub(super) fn group_83(&mut self, bus: &mut impl common::Bus) {
         let modrm = self.fetch(bus);
-        if self.lock_prefix && (modrm >> 3) & 7 == 7 {
+        let extension = (modrm >> 3) & 7;
+        if self.lock_prefix && extension == 7 {
             self.raise_fault(6, bus);
             return;
         }
         if self.operand_size_override {
-            let dst = self.get_rm_dword(modrm, bus);
+            let dst = if extension == 7 {
+                self.get_rm_dword(modrm, bus)
+            } else {
+                self.get_rm_dword_for_update(modrm, bus)
+            };
+            if self.fault_pending {
+                return;
+            }
             let src = self.fetch(bus) as i8 as i32 as u32;
-            let result = match (modrm >> 3) & 7 {
+            if self.fault_pending {
+                return;
+            }
+            let result = match extension {
                 0 => self.alu_add_dword(dst, src),
                 1 => self.alu_or_dword(dst, src),
                 2 => {
@@ -180,14 +218,27 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
                 _ => unreachable!(),
             };
-            if (modrm >> 3) & 7 != 7 {
+            if extension != 7 {
                 self.putback_rm_dword(modrm, result, bus);
+                if self.fault_pending {
+                    return;
+                }
             }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
-            let dst = self.get_rm_word(modrm, bus);
+            let dst = if extension == 7 {
+                self.get_rm_word(modrm, bus)
+            } else {
+                self.get_rm_word_for_update(modrm, bus)
+            };
+            if self.fault_pending {
+                return;
+            }
             let src = self.fetch(bus) as i8 as u16;
-            let result = match (modrm >> 3) & 7 {
+            if self.fault_pending {
+                return;
+            }
+            let result = match extension {
                 0 => self.alu_add_word(dst, src),
                 1 => self.alu_or_word(dst, src),
                 2 => {
@@ -208,8 +259,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
                 _ => unreachable!(),
             };
-            if (modrm >> 3) & 7 != 7 {
+            if extension != 7 {
                 self.putback_rm_word(modrm, result, bus);
+                if self.fault_pending {
+                    return;
+                }
             }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 2);
         }
@@ -717,16 +771,28 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         match (modrm >> 3) & 7 {
             0 => {
                 // INC r/m8
-                let dst = self.get_rm_byte(modrm, bus);
+                let dst = self.get_rm_byte_for_update(modrm, bus);
+                if self.fault_pending {
+                    return;
+                }
                 let result = self.alu_inc_byte(dst);
                 self.putback_rm_byte(modrm, result, bus);
+                if self.fault_pending {
+                    return;
+                }
                 self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(6, 3));
             }
             1 => {
                 // DEC r/m8
-                let dst = self.get_rm_byte(modrm, bus);
+                let dst = self.get_rm_byte_for_update(modrm, bus);
+                if self.fault_pending {
+                    return;
+                }
                 let result = self.alu_dec_byte(dst);
                 self.putback_rm_byte(modrm, result, bus);
+                if self.fault_pending {
+                    return;
+                }
                 self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(6, 3));
             }
             _ => {
@@ -746,30 +812,54 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             0 => {
                 if self.operand_size_override {
                     // INC r/m32
-                    let dst = self.get_rm_dword(modrm, bus);
+                    let dst = self.get_rm_dword_for_update(modrm, bus);
+                    if self.fault_pending {
+                        return;
+                    }
                     let result = self.alu_inc_dword(dst);
                     self.putback_rm_dword(modrm, result, bus);
+                    if self.fault_pending {
+                        return;
+                    }
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 3), 4);
                 } else {
                     // INC r/m16
-                    let dst = self.get_rm_word(modrm, bus);
+                    let dst = self.get_rm_word_for_update(modrm, bus);
+                    if self.fault_pending {
+                        return;
+                    }
                     let result = self.alu_inc_word(dst);
                     self.putback_rm_word(modrm, result, bus);
+                    if self.fault_pending {
+                        return;
+                    }
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 3), 2);
                 }
             }
             1 => {
                 if self.operand_size_override {
                     // DEC r/m32
-                    let dst = self.get_rm_dword(modrm, bus);
+                    let dst = self.get_rm_dword_for_update(modrm, bus);
+                    if self.fault_pending {
+                        return;
+                    }
                     let result = self.alu_dec_dword(dst);
                     self.putback_rm_dword(modrm, result, bus);
+                    if self.fault_pending {
+                        return;
+                    }
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 3), 4);
                 } else {
                     // DEC r/m16
-                    let dst = self.get_rm_word(modrm, bus);
+                    let dst = self.get_rm_word_for_update(modrm, bus);
+                    if self.fault_pending {
+                        return;
+                    }
                     let result = self.alu_dec_word(dst);
                     self.putback_rm_word(modrm, result, bus);
+                    if self.fault_pending {
+                        return;
+                    }
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 3), 2);
                 }
             }
