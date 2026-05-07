@@ -53,7 +53,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                             cpu.set_bx(src_off);
                             return;
                         }
-                        let byte = self.read_byte_direct(src_base + u32::from(i));
+                        let byte = self.read_mem_byte(src_base + u32::from(i));
                         self.printer.write_data(byte);
                         let old_c = self.printer.read_port_c();
                         self.printer.write_port_c(old_c | 0x80);

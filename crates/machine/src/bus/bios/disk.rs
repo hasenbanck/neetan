@@ -180,7 +180,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 for _ in 0..sector_count {
                     let mut data = vec![0u8; sector_size];
                     for (j, data_byte) in data.iter_mut().enumerate() {
-                        *data_byte = self.read_byte_direct(buf_addr + offset + j as u32);
+                        *data_byte = self.read_mem_byte(buf_addr + offset + j as u32);
                     }
                     if !self.floppy.write_sector_data(
                         drive,
@@ -389,10 +389,10 @@ impl<T: Tracing> Pc9801Bus<T> {
                 let mut chrn = Vec::with_capacity(sector_count);
                 for i in 0..sector_count {
                     let base = buf_addr + (i as u32) * 4;
-                    let c = self.read_byte_direct(base);
-                    let h = self.read_byte_direct(base + 1);
-                    let r = self.read_byte_direct(base + 2);
-                    let n = self.read_byte_direct(base + 3);
+                    let c = self.read_mem_byte(base);
+                    let h = self.read_mem_byte(base + 1);
+                    let r = self.read_mem_byte(base + 2);
+                    let n = self.read_mem_byte(base + 3);
                     chrn.push((c, h, r, n));
                 }
                 self.floppy
