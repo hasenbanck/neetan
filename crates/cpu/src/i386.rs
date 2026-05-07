@@ -666,11 +666,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus: &mut impl common::Bus,
     ) -> Option<SegmentDescriptor> {
         let addr = self.descriptor_addr_checked(selector)?;
-        let saved_supervisor_override = self.supervisor_override;
-        self.supervisor_override = true;
-        let descriptor = self.decode_descriptor_at(addr, bus);
-        self.supervisor_override = saved_supervisor_override;
-        Some(descriptor)
+        Some(self.decode_descriptor_at(addr, bus))
     }
 
     fn descriptor_dpl(rights: u8) -> u16 {
@@ -2313,6 +2309,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             let phys = cpu.translate_linear(linear, false, bus).unwrap_or(0);
             bus.read_byte(phys)
         }
+        let saved_supervisor_override = self.supervisor_override;
+        self.supervisor_override = true;
         let b0 = translate_byte::<CPU_MODEL>(self, bus, addr);
         let b1 = translate_byte::<CPU_MODEL>(self, bus, addr.wrapping_add(1));
         let b2 = translate_byte::<CPU_MODEL>(self, bus, addr.wrapping_add(2));
@@ -2321,6 +2319,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let rights = translate_byte::<CPU_MODEL>(self, bus, addr.wrapping_add(5));
         let b6 = translate_byte::<CPU_MODEL>(self, bus, addr.wrapping_add(6));
         let b7 = translate_byte::<CPU_MODEL>(self, bus, addr.wrapping_add(7));
+        self.supervisor_override = saved_supervisor_override;
 
         let raw_limit = b0 as u32 | ((b1 as u32) << 8) | (((b6 & 0x0F) as u32) << 16);
         let base = b2 as u32 | ((b3 as u32) << 8) | ((b4 as u32) << 16) | ((b7 as u32) << 24);
