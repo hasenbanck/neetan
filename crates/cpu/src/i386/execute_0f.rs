@@ -341,6 +341,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         memory_cycles: i32,
     ) {
         let modrm = self.fetch(bus);
+        let write_back = clear || set || toggle;
 
         if self.operand_size_override {
             if modrm >= 0xC0 {
@@ -358,8 +359,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     value ^= bit;
                 }
                 self.flags.overflow_val = if self.flags.carry_val != 0 { 0x0800 } else { 0 };
-                let reg = self.rm_dword(modrm);
-                self.regs.set_dword(reg, value);
+                if write_back {
+                    let reg = self.rm_dword(modrm);
+                    self.regs.set_dword(reg, value);
+                }
             } else {
                 self.calc_ea(modrm, bus);
                 let imm = self.fetch(bus) as u32;
@@ -379,7 +382,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                         value ^= bit;
                     }
                     self.flags.overflow_val = if self.flags.carry_val != 0 { 0x0800 } else { 0 };
-                    self.write_dword_linear(bus, address, value);
+                    if write_back {
+                        self.write_dword_linear(bus, address, value);
+                    }
                 } else {
                     let mut value = self.seg_read_dword(bus);
                     let bit = 1u32 << bit_index;
@@ -394,7 +399,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                         value ^= bit;
                     }
                     self.flags.overflow_val = if self.flags.carry_val != 0 { 0x0800 } else { 0 };
-                    self.seg_write_dword(bus, value);
+                    if write_back {
+                        self.seg_write_dword(bus, value);
+                    }
                 }
             }
         } else if modrm >= 0xC0 {
@@ -412,8 +419,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 value ^= bit;
             }
             self.flags.overflow_val = if self.flags.carry_val != 0 { 0x0800 } else { 0 };
-            let reg = self.rm_word(modrm);
-            self.regs.set_word(reg, value);
+            if write_back {
+                let reg = self.rm_word(modrm);
+                self.regs.set_word(reg, value);
+            }
         } else {
             self.calc_ea(modrm, bus);
             let imm = self.fetch(bus) as u32;
@@ -433,7 +442,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     value ^= bit;
                 }
                 self.flags.overflow_val = if self.flags.carry_val != 0 { 0x0800 } else { 0 };
-                self.write_word_linear(bus, address, value);
+                if write_back {
+                    self.write_word_linear(bus, address, value);
+                }
             } else {
                 let mut value = self.seg_read_word(bus);
                 let bit = 1u16 << bit_index;
@@ -448,7 +459,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     value ^= bit;
                 }
                 self.flags.overflow_val = if self.flags.carry_val != 0 { 0x0800 } else { 0 };
-                self.seg_write_word(bus, value);
+                if write_back {
+                    self.seg_write_word(bus, value);
+                }
             }
         }
 
