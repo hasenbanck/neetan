@@ -2416,7 +2416,13 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
 
     fn acknowledge_irq(&mut self) -> u8 {
         let vector = self.pic.acknowledge();
-        let irq = vector.wrapping_sub(self.pic.state.chips[0].icw[1]);
+        let master_base = self.pic.state.chips[0].icw[1] & 0xF8;
+        let slave_base = self.pic.state.chips[1].icw[1] & 0xF8;
+        let irq = if vector & 0xF8 == slave_base {
+            8 + vector.wrapping_sub(slave_base)
+        } else {
+            vector.wrapping_sub(master_base)
+        };
         self.tracer.set_cycle(self.current_cycle);
         self.tracer.trace_irq_acknowledge(irq, vector);
         vector
