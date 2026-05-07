@@ -167,8 +167,8 @@ impl<T: Tracing> Pc9801Bus<T> {
                 break;
             }
             let entry_addr = (seg << 4).wrapping_add(u32::from(table_off));
-            let addr_word = self.read_word_direct(entry_addr) >> 1;
-            let lines = self.read_word_direct(entry_addr + 2) as u32 * raster;
+            let addr_word = self.read_mem_word(entry_addr) >> 1;
+            let lines = self.read_mem_word(entry_addr + 2) as u32 * raster;
 
             self.gdc_master.state.scroll[area_index].start_address = u32::from(addr_word);
             self.gdc_master.state.scroll[area_index].line_count = lines as u16;
@@ -309,8 +309,8 @@ impl<T: Tracing> Pc9801Bus<T> {
         let font_offset = cgrom_kanji_offset(jis_row, jis_col) as usize;
 
         for i in 0..16 {
-            let left = self.read_byte_direct(src_base + 2 + (i as u32) * 2);
-            let right = self.read_byte_direct(src_base + 2 + (i as u32) * 2 + 1);
+            let left = self.read_mem_byte(src_base + 2 + (i as u32) * 2);
+            let right = self.read_mem_byte(src_base + 2 + (i as u32) * 2 + 1);
             self.memory.font_write(font_offset + i, left);
             self.memory.font_write(font_offset + 0x800 + i, right);
         }

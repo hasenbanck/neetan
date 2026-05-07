@@ -777,4 +777,92 @@ mod tests {
         assert_eq!(bus.read_byte(0x0002_0001), 0x55);
         assert_eq!(bus.read_byte(0x0002_0002), 0x55);
     }
+
+    #[test]
+    fn int18h_multi_display_area_reads_paged_entry_table() {
+        let mut bus = test_bus();
+        setup_hle_page_tables(&mut bus);
+        let mut cpu = TestCpu::default();
+        cpu.set_ax(0x0F00);
+        cpu.set_bx(0x2000);
+        cpu.set_cx(0x0000);
+        cpu.set_dx(0x0001);
+
+        // Stale data at the linear address so we know the read came from the
+        // physical mapping.
+        write_bus_word(&mut bus, 0x0002_0000, 0xAAAA);
+        write_bus_word(&mut bus, 0x0002_0002, 0xBBBB);
+
+        // Real table at the physical address.
+        write_bus_word(&mut bus, 0x0003_0000, 0x0080);
+        write_bus_word(&mut bus, 0x0003_0002, 0x0001);
+
+        bus.hle_int18h(&mut cpu);
+
+        assert_eq!(bus.gdc_master.state.scroll[0].start_address, 0x0040);
+        assert_ne!(bus.gdc_master.state.scroll[0].line_count, 0);
+    }
+
+    #[test]
+    fn int19h_rx_count_reads_paged_buf_base() {
+        let mut bus = test_bus();
+        setup_hle_page_tables(&mut bus);
+        let mut cpu = TestCpu::default();
+
+        // BDA pointer at 0x0556/0x0558 points at linear 0x0002_0000.
+        bus.ram_write_u16(0x0556, 0x0000);
+        bus.ram_write_u16(0x0558, 0x2000);
+
+        // Mark the buffer as initialized at the physical address (R_FLAG bit 7).
+        bus.write_byte(0x0003_0002, 0x80);
+
+        // Stale R_CNT at linear, real R_CNT at physical.
+        write_bus_word(&mut bus, 0x0002_000E, 0xAAAA);
+        write_bus_word(&mut bus, 0x0003_000E, 0x1234);
+
+        // Mark linear as supervisor flag too so the bug-only path would see 0.
+        bus.write_byte(0x0002_0002, 0x00);
+
+        cpu.set_ax(0x0200);
+        bus.hle_int19h(&mut cpu);
+
+        assert_eq!(cpu.cx(), 0x1234);
+        assert_eq!(cpu.ah(), 0x00);
+    }
+
+    #[test]
+    fn int0ch_serial_irq_writes_paged_buf_base() {
+        let mut bus = test_bus();
+        setup_hle_page_tables(&mut bus);
+        let mut cpu = TestCpu::default();
+
+        // BDA pointer at 0x0556/0x0558 points at linear 0x0002_0000.
+        bus.ram_write_u16(0x0556, 0x0000);
+        bus.ram_write_u16(0x0558, 0x2000);
+
+        // Buffer ring config at the physical address. R_HEADP=R_PUTP=0x0014,
+        // R_TAILP=0x0024, R_GETP=0x0014, R_CNT=0, R_FLAG=0 (BFULL clear).
+        write_bus_word(&mut bus, 0x0003_000A, 0x0014); // R_HEADP
+        write_bus_word(&mut bus, 0x0003_000C, 0x0024); // R_TAILP
+        write_bus_word(&mut bus, 0x0003_000E, 0x0000); // R_CNT
+        write_bus_word(&mut bus, 0x0003_0010, 0x0014); // R_PUTP
+        write_bus_word(&mut bus, 0x0003_0012, 0x0014); // R_GETP
+        bus.write_byte(0x0003_0002, 0x00); // R_FLAG (no overflow)
+
+        // Stale conflicting data at linear: if the handler reads/writes
+        // through the linear path the test will see different values.
+        write_bus_word(&mut bus, 0x0002_000E, 0xAAAA);
+        bus.write_byte(0x0002_0002, 0xFF);
+
+        bus.hle_int0ch(&mut cpu);
+
+        // R_INT (offset 0x00) should be set with bit 7.
+        let r_int = bus.read_byte(0x0003_0000);
+        assert_ne!(r_int & 0x80, 0);
+        // R_CNT incremented to 1 at the physical address.
+        assert_eq!(read_bus_word(&mut bus, 0x0003_000E), 0x0001);
+        // Linear address must be untouched.
+        assert_eq!(read_bus_word(&mut bus, 0x0002_000E), 0xAAAA);
+        assert_eq!(bus.read_byte(0x0002_0002), 0xFF);
+    }
 }

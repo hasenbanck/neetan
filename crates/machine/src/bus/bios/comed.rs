@@ -35,9 +35,9 @@ impl<T: Tracing> Pc9801Bus<T> {
                 // BOVF check at function exit: if buffer overflow occurred,
                 // clear the flag and return AH=2.
                 let buf_base = self.int19h_get_buf_base();
-                let flag = self.read_byte_direct(buf_base + 0x02);
+                let flag = self.read_mem_byte(buf_base + 0x02);
                 if flag & 0x20 != 0 {
-                    self.memory.write_byte(buf_base + 0x02, flag & !0x20);
+                    self.write_mem_byte(buf_base + 0x02, flag & !0x20);
                     cpu.set_ah(0x02);
                 }
             }
@@ -51,12 +51,12 @@ impl<T: Tracing> Pc9801Bus<T> {
         (u32::from(segment) << 4).wrapping_add(u32::from(offset))
     }
 
-    fn int19h_is_initialized(&self) -> bool {
+    fn int19h_is_initialized(&mut self) -> bool {
         let buf_base = self.int19h_get_buf_base();
         if buf_base == 0 {
             return false;
         }
-        let flag = self.read_byte_direct(buf_base + 0x02);
+        let flag = self.read_mem_byte(buf_base + 0x02);
         flag & 0x80 != 0
     }
 
@@ -107,8 +107,8 @@ impl<T: Tracing> Pc9801Bus<T> {
         let data_end = data_start + buf_size;
 
         // R_INT (offset 0x00) and R_BFLG (offset 0x01): clear stale state.
-        self.memory.write_byte(buf_base, 0x00);
-        self.memory.write_byte(buf_base + 0x01, 0x00);
+        self.write_mem_byte(buf_base, 0x00);
+        self.write_mem_byte(buf_base + 0x01, 0x00);
 
         // R_FLAG (offset 0x02): set AH<<4, only add RFLAG_INIT if IR bit clear.
         let cmd = cpu.cl();
@@ -125,49 +125,38 @@ impl<T: Tracing> Pc9801Bus<T> {
                 self.pic.invalidate_irq_cache();
             }
         }
-        self.memory.write_byte(buf_base + 0x02, flag);
+        self.write_mem_byte(buf_base + 0x02, flag);
 
         // R_CMD (offset 0x03).
-        self.memory.write_byte(buf_base + 0x03, cmd);
+        self.write_mem_byte(buf_base + 0x03, cmd);
         // R_STIME (offset 0x04) = BH, default 0x04 if zero.
         let stime = if cpu.bh() == 0 { 0x04 } else { cpu.bh() };
-        self.memory.write_byte(buf_base + 0x04, stime);
+        self.write_mem_byte(buf_base + 0x04, stime);
         // R_RTIME (offset 0x05) = BL, default 0x40 if zero.
         let rtime = if cpu.bx() as u8 == 0 {
             0x40
         } else {
             cpu.bx() as u8
         };
-        self.memory.write_byte(buf_base + 0x05, rtime);
+        self.write_mem_byte(buf_base + 0x05, rtime);
 
         // R_XOFF (offset 0x06) = buf_size / 8.
         let xoff = buf_size / 8;
-        self.memory.write_byte(buf_base + 0x06, xoff as u8);
-        self.memory.write_byte(buf_base + 0x07, (xoff >> 8) as u8);
+        self.write_mem_word(buf_base + 0x06, xoff);
         // R_XON (offset 0x08) = XOFF + buf_size / 4.
         let xon = xoff + buf_size / 4;
-        self.memory.write_byte(buf_base + 0x08, xon as u8);
-        self.memory.write_byte(buf_base + 0x09, (xon >> 8) as u8);
+        self.write_mem_word(buf_base + 0x08, xon);
 
         // R_HEADP (offset 0x0A).
-        self.memory.write_byte(buf_base + 0x0A, data_start as u8);
-        self.memory
-            .write_byte(buf_base + 0x0B, (data_start >> 8) as u8);
+        self.write_mem_word(buf_base + 0x0A, data_start);
         // R_TAILP (offset 0x0C).
-        self.memory.write_byte(buf_base + 0x0C, data_end as u8);
-        self.memory
-            .write_byte(buf_base + 0x0D, (data_end >> 8) as u8);
+        self.write_mem_word(buf_base + 0x0C, data_end);
         // R_CNT (offset 0x0E).
-        self.memory.write_byte(buf_base + 0x0E, 0x00);
-        self.memory.write_byte(buf_base + 0x0F, 0x00);
+        self.write_mem_word(buf_base + 0x0E, 0x0000);
         // R_PUTP (offset 0x10).
-        self.memory.write_byte(buf_base + 0x10, data_start as u8);
-        self.memory
-            .write_byte(buf_base + 0x11, (data_start >> 8) as u8);
+        self.write_mem_word(buf_base + 0x10, data_start);
         // R_GETP (offset 0x12).
-        self.memory.write_byte(buf_base + 0x12, data_start as u8);
-        self.memory
-            .write_byte(buf_base + 0x13, (data_start >> 8) as u8);
+        self.write_mem_word(buf_base + 0x12, data_start);
 
         // Program the serial UART command register.
         self.serial.write_command(cmd);
@@ -181,13 +170,13 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         let buf_base = self.int19h_get_buf_base();
         // Set RFLAG_XON bit (bit 4).
-        let flag = self.read_byte_direct(buf_base + 0x02);
-        self.memory.write_byte(buf_base + 0x02, flag | 0x10);
+        let flag = self.read_mem_byte(buf_base + 0x02);
+        self.write_mem_byte(buf_base + 0x02, flag | 0x10);
     }
 
     fn int19h_rx_count(&mut self, cpu: &mut impl Cpu) {
         let buf_base = self.int19h_get_buf_base();
-        let count = self.read_word_direct(buf_base + 0x0E);
+        let count = self.read_mem_word(buf_base + 0x0E);
         cpu.set_cx(count);
         cpu.set_ah(0x00);
     }
@@ -201,41 +190,36 @@ impl<T: Tracing> Pc9801Bus<T> {
     fn int19h_receive(&mut self, cpu: &mut impl Cpu) -> bool {
         let buf_base = self.int19h_get_buf_base();
         let buf_seg = self.ram_read_u16(0x0558);
-        let count = self.read_word_direct(buf_base + 0x0E);
+        let count = self.read_mem_word(buf_base + 0x0E);
 
         if count == 0 {
             cpu.set_ah(0x03);
             return false;
         }
 
-        let r_getp = self.read_word_direct(buf_base + 0x12);
+        let r_getp = self.read_mem_word(buf_base + 0x12);
         let get_addr = (u32::from(buf_seg) << 4).wrapping_add(u32::from(r_getp));
-        let entry = self.read_word_direct(get_addr);
+        let entry = self.read_mem_word(get_addr);
 
         // Advance get pointer with wrap.
-        let r_tailp = self.read_word_direct(buf_base + 0x0C);
-        let r_headp = self.read_word_direct(buf_base + 0x0A);
+        let r_tailp = self.read_mem_word(buf_base + 0x0C);
+        let r_headp = self.read_mem_word(buf_base + 0x0A);
         let mut new_getp = r_getp + 2;
         if new_getp >= r_tailp {
             new_getp = r_headp;
         }
 
         let new_count = count - 1;
-        self.memory.write_byte(buf_base + 0x0E, new_count as u8);
-        self.memory
-            .write_byte(buf_base + 0x0F, (new_count >> 8) as u8);
-        self.memory.write_byte(buf_base + 0x12, new_getp as u8);
-        self.memory
-            .write_byte(buf_base + 0x13, (new_getp >> 8) as u8);
+        self.write_mem_word(buf_base + 0x0E, new_count);
+        self.write_mem_word(buf_base + 0x12, new_getp);
 
         // XON flow control: send XON if XOFF was active and count dropped below threshold.
-        let flag = self.read_byte_direct(buf_base + 0x02);
-        if (flag & 0x08) != 0 && new_count < self.read_word_direct(buf_base + 0x06) {
+        let flag = self.read_mem_byte(buf_base + 0x02);
+        if (flag & 0x08) != 0 && new_count < self.read_mem_word(buf_base + 0x06) {
             self.serial.write_data(0x11); // XON
-            self.memory
-                .write_byte(buf_base + 0x02, (flag & !0x08) & !0x20);
+            self.write_mem_byte(buf_base + 0x02, (flag & !0x08) & !0x20);
         } else {
-            self.memory.write_byte(buf_base + 0x02, flag & !0x20);
+            self.write_mem_byte(buf_base + 0x02, flag & !0x20);
         }
 
         // Return full entry word in CX (CL=status/error, CH=data).
@@ -250,10 +234,10 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         self.serial.write_command(cmd);
 
-        let flag = self.read_byte_direct(buf_base + 0x02);
+        let flag = self.read_mem_byte(buf_base + 0x02);
         if cmd & 0x40 != 0 {
             // IR (internal reset): clear INIT flag, disable RxRDY, mask IRQ 4.
-            self.memory.write_byte(buf_base + 0x02, flag & !0x80);
+            self.write_mem_byte(buf_base + 0x02, flag & !0x80);
             self.system_ppi.state.port_c &= !0x01;
             self.pic.state.chips[0].imr |= 0x10;
         } else if cmd & 0x04 == 0 {
@@ -267,7 +251,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         }
         self.pic.invalidate_irq_cache();
 
-        self.memory.write_byte(buf_base + 0x03, cmd);
+        self.write_mem_byte(buf_base + 0x03, cmd);
         cpu.set_ah(0x00);
     }
 

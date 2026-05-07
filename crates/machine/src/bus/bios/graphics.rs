@@ -124,7 +124,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         // map to digital[0..3], with reversed indexing vs NP21W's degpal.
         let mut col = [0u8; 4];
         for (i, col_byte) in col.iter_mut().enumerate() {
-            *col_byte = self.read_byte_direct(src_base + 4 + i as u32);
+            *col_byte = self.read_mem_byte(src_base + 4 + i as u32);
         }
         self.palette.state.digital[0] = ((col[2] & 0x0F) << 4) | (col[0] & 0x0F);
         self.palette.state.digital[1] = ((col[3] & 0x0F) << 4) | (col[1] & 0x0F);
@@ -138,12 +138,12 @@ impl<T: Tracing> Pc9801Bus<T> {
         let ucw_base = (u32::from(src_seg) << 4).wrapping_add(u32::from(src_off));
         let ch = cpu.ch();
 
-        let gbon_ptn = self.read_byte_direct(ucw_base); // GBON_PTN
-        let gbdotu = self.read_byte_direct(ucw_base + 2); // GBDOTU
-        let x = self.read_word_direct(ucw_base + 0x08) as u32; // GBSX1
-        let mut y = self.read_word_direct(ucw_base + 0x0A) as u32; // GBSY1
-        let length = self.read_word_direct(ucw_base + 0x0C) as u32; // GBLNG1
-        let pat_addr = self.read_word_direct(ucw_base + 0x0E); // GBWDPA
+        let gbon_ptn = self.read_mem_byte(ucw_base); // GBON_PTN
+        let gbdotu = self.read_mem_byte(ucw_base + 2); // GBDOTU
+        let x = self.read_mem_word(ucw_base + 0x08) as u32; // GBSX1
+        let mut y = self.read_mem_word(ucw_base + 0x0A) as u32; // GBSY1
+        let length = self.read_mem_word(ucw_base + 0x0C) as u32; // GBLNG1
+        let pat_addr = self.read_mem_word(ucw_base + 0x0E); // GBWDPA
 
         // 200-line page offset.
         if (ch & 0xC0) == 0x40 {
@@ -155,7 +155,7 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         let mut i = 0u32;
         loop {
-            let pat_byte = self.read_byte_direct((ds << 4).wrapping_add(u32::from(pat_addr) + i));
+            let pat_byte = self.read_mem_byte((ds << 4).wrapping_add(u32::from(pat_addr) + i));
             let remaining = length - i * 8;
             let bits = if remaining < 8 { remaining } else { 8 };
             let mask = if bits < 8 {
@@ -231,9 +231,9 @@ impl<T: Tracing> Pc9801Bus<T> {
         let ucw_base = (u32::from(ucw_seg) << 4).wrapping_add(u32::from(ucw_off));
         let out_base = u32::from(cpu.es()) << 4;
 
-        let x = self.read_word_direct(ucw_base + 0x08); // GBSX1
-        let y = self.read_word_direct(ucw_base + 0x0A); // GBSY1
-        let lines = self.read_word_direct(ucw_base + 0x0C); // GBLNG1
+        let x = self.read_mem_word(ucw_base + 0x08); // GBSX1
+        let y = self.read_mem_word(ucw_base + 0x0A); // GBSY1
+        let lines = self.read_mem_word(ucw_base + 0x0C); // GBLNG1
 
         let pitch_bytes = 80u16;
         let word_x = x / 16;
@@ -248,8 +248,8 @@ impl<T: Tracing> Pc9801Bus<T> {
             // Read from B-plane (offset 0x0000 in graphics VRAM).
             let b_lo = self.memory.state.graphics_vram[byte_offset as usize];
             let b_hi = self.memory.state.graphics_vram[byte_offset as usize + 1];
-            self.memory.write_byte(out_base + out_offset, b_lo);
-            self.memory.write_byte(out_base + out_offset + 1, b_hi);
+            self.write_mem_byte(out_base + out_offset, b_lo);
+            self.write_mem_byte(out_base + out_offset + 1, b_hi);
             out_offset += 2;
         }
     }
@@ -260,13 +260,13 @@ impl<T: Tracing> Pc9801Bus<T> {
         let ucw_base = (u32::from(src_seg) << 4).wrapping_add(u32::from(src_off));
         let ch = cpu.ch();
 
-        let gbon_ptn = self.read_byte_direct(ucw_base); // GBON_PTN
-        let gbdotu = self.read_byte_direct(ucw_base + 2); // GBDOTU
-        let x1 = self.read_word_direct(ucw_base + 0x08) as i32; // GBSX1
-        let mut y1 = self.read_word_direct(ucw_base + 0x0A) as i32; // GBSY1
-        let x2 = self.read_word_direct(ucw_base + 0x16) as i32; // GBSX2
-        let mut y2 = self.read_word_direct(ucw_base + 0x18) as i32; // GBSY2
-        let gbdtyp = self.read_byte_direct(ucw_base + 0x28); // GBDTYP
+        let gbon_ptn = self.read_mem_byte(ucw_base); // GBON_PTN
+        let gbdotu = self.read_mem_byte(ucw_base + 2); // GBDOTU
+        let x1 = self.read_mem_word(ucw_base + 0x08) as i32; // GBSX1
+        let mut y1 = self.read_mem_word(ucw_base + 0x0A) as i32; // GBSY1
+        let x2 = self.read_mem_word(ucw_base + 0x16) as i32; // GBSX2
+        let mut y2 = self.read_mem_word(ucw_base + 0x18) as i32; // GBSY2
+        let gbdtyp = self.read_mem_byte(ucw_base + 0x28); // GBDTYP
 
         if (ch & 0xC0) == 0x40 {
             y1 += 200;
@@ -274,8 +274,8 @@ impl<T: Tracing> Pc9801Bus<T> {
         }
 
         // Line style pattern from GBMDOTI (bit-reversed).
-        let pat_hi = reverse_bits(self.read_byte_direct(ucw_base + 0x20));
-        let pat_lo = reverse_bits(self.read_byte_direct(ucw_base + 0x21));
+        let pat_hi = reverse_bits(self.read_mem_byte(ucw_base + 0x20));
+        let pat_lo = reverse_bits(self.read_mem_byte(ucw_base + 0x21));
         let pattern = ((pat_hi as u16) << 8) | pat_lo as u16;
 
         let ope = gbdotu & 3;
@@ -284,7 +284,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x01 => self.draw_line(x1, y1, x2, y2, pattern, gbon_ptn, ope, ch),
             0x00 | 0x02 => self.draw_rect(x1, y1, x2, y2, pattern, gbon_ptn, ope, ch),
             _ => {
-                let radius = self.read_word_direct(ucw_base + 0x1C) as i32; // GBCIR
+                let radius = self.read_mem_word(ucw_base + 0x1C) as i32; // GBCIR
                 self.draw_circle(x1, y1, radius, pattern, gbon_ptn, ope, ch);
             }
         }
@@ -413,12 +413,12 @@ impl<T: Tracing> Pc9801Bus<T> {
         let ucw_base = (u32::from(src_seg) << 4).wrapping_add(u32::from(src_off));
         let ch = cpu.ch();
 
-        let gbon_ptn = self.read_byte_direct(ucw_base); // GBON_PTN
-        let gbdotu = self.read_byte_direct(ucw_base + 2); // GBDOTU
-        let x = self.read_word_direct(ucw_base + 0x08) as u32; // GBSX1
-        let mut y = self.read_word_direct(ucw_base + 0x0A) as u32; // GBSY1
-        let gblng1 = self.read_word_direct(ucw_base + 0x0C); // GBLNG1
-        let gblng2 = self.read_word_direct(ucw_base + 0x1E); // GBLNG2
+        let gbon_ptn = self.read_mem_byte(ucw_base); // GBON_PTN
+        let gbdotu = self.read_mem_byte(ucw_base + 2); // GBDOTU
+        let x = self.read_mem_word(ucw_base + 0x08) as u32; // GBSX1
+        let mut y = self.read_mem_word(ucw_base + 0x0A) as u32; // GBSY1
+        let gblng1 = self.read_mem_word(ucw_base + 0x0C); // GBLNG1
+        let gblng2 = self.read_mem_word(ucw_base + 0x1E); // GBLNG2
 
         if (ch & 0xC0) == 0x40 {
             y += 200;
@@ -427,7 +427,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         // Read 8 bytes of GBMDOTI pattern and bit-reverse each.
         let mut pat = [0u8; 8];
         for (i, pat_byte) in pat.iter_mut().enumerate() {
-            *pat_byte = reverse_bits(self.read_byte_direct(ucw_base + 0x20 + i as u32));
+            *pat_byte = reverse_bits(self.read_mem_byte(ucw_base + 0x20 + i as u32));
         }
 
         // Height (DC+1 scan lines) and width from GBLNG1/GBLNG2.
