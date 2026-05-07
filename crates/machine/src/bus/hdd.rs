@@ -143,9 +143,9 @@ impl<T: Tracing> Pc9801Bus<T> {
                 let addr = device::sasi::buffer_address(es, bp);
                 let cr0 = self.hle_cr0;
                 let cr3 = self.hle_cr3;
-                let memory = &self.memory;
+                let memory = &mut self.memory;
                 self.sasi.execute_write(drive_idx, xfer, pos, addr, |a| {
-                    let phys = bios::hle_page_translate(cr0, cr3, a, memory);
+                    let phys = bios::hle_page_translate_read(cr0, cr3, a, memory);
                     memory.read_byte(phys)
                 })
             }
@@ -161,7 +161,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 let memory = &mut self.memory;
                 self.sasi
                     .execute_read(drive_idx, xfer, pos, addr, |a, byte| {
-                        let phys = bios::hle_page_translate(cr0, cr3, a, memory);
+                        let phys = bios::hle_page_translate_write(cr0, cr3, a, memory);
                         memory.write_byte(phys, byte);
                     })
             }
@@ -310,9 +310,9 @@ impl<T: Tracing> Pc9801Bus<T> {
                 let addr = device::ide::buffer_address(es, bp);
                 let cr0 = self.hle_cr0;
                 let cr3 = self.hle_cr3;
-                let memory = &self.memory;
+                let memory = &mut self.memory;
                 self.ide.execute_write(drive_idx, xfer, pos, addr, |a| {
-                    let phys = bios::hle_page_translate(cr0, cr3, a, memory);
+                    let phys = bios::hle_page_translate_read(cr0, cr3, a, memory);
                     memory.read_byte(phys)
                 })
             }
@@ -328,7 +328,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                 let memory = &mut self.memory;
                 self.ide
                     .execute_read(drive_idx, xfer, pos, addr, |a, byte| {
-                        let phys = bios::hle_page_translate(cr0, cr3, a, memory);
+                        let phys = bios::hle_page_translate_write(cr0, cr3, a, memory);
                         memory.write_byte(phys, byte);
                     })
             }

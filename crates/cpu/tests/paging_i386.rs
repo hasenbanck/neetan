@@ -586,11 +586,7 @@ fn paging_group_ba_bt_imm_sets_accessed_not_dirty() {
     let pde_after = read_dword_at(&bus, PG_PAGE_DIR);
     let pte_after = read_dword_at(&bus, PG_PAGE_TABLE_0 + pte_index * 4);
 
-    assert_ne!(
-        cpu.eflags() & 1,
-        0,
-        "BT must load the selected bit into CF"
-    );
+    assert_ne!(cpu.eflags() & 1, 0, "BT must load the selected bit into CF");
     assert_ne!(
         pde_after & PTE_A,
         0,

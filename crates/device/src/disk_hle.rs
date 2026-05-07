@@ -90,7 +90,7 @@ pub fn execute_write<const SECTOR_SIZE: usize>(
     sector_pos: u32,
     buf_addr: u32,
     drives: &mut [Option<MountedHdd>; 2],
-    read_byte: impl Fn(u32) -> u8,
+    mut read_byte: impl FnMut(u32) -> u8,
 ) -> u8 {
     let Some(drive) = &mut drives[drive_idx] else {
         return 0x60;

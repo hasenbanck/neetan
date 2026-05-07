@@ -198,7 +198,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         let r = dx as u8;
         let n = (cx >> 8) as u8;
         let requested_sector_size = 128usize << n;
-        let buffer_address = self.fdd640k_buffer_address(es, bp, 0);
+        let buffer_address = self.fdd640k_buffer_address(es, bp, 0, false);
         let transfer_bytes = if bx == 0 {
             requested_sector_size
         } else {
@@ -225,7 +225,8 @@ impl<T: Tracing> Pc9801Bus<T> {
                 if !diagnostic {
                     let copy_len = data.len().min(transfer_bytes - offset);
                     for (index, &byte) in data.iter().take(copy_len).enumerate() {
-                        let address = self.fdd640k_buffer_address(es, bp, (offset + index) as u32);
+                        let address =
+                            self.fdd640k_buffer_address(es, bp, (offset + index) as u32, true);
                         self.memory.write_byte(address, byte);
                     }
                 }
@@ -243,7 +244,7 @@ impl<T: Tracing> Pc9801Bus<T> {
                         let copy_len = data.len().min(transfer_bytes - offset);
                         for (index, &byte) in data.iter().take(copy_len).enumerate() {
                             let address =
-                                self.fdd640k_buffer_address(es, bp, (offset + index) as u32);
+                                self.fdd640k_buffer_address(es, bp, (offset + index) as u32, true);
                             self.memory.write_byte(address, byte);
                         }
                     }
@@ -328,7 +329,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         let r = dx as u8;
         let n = (cx >> 8) as u8;
         let sector_size = 128usize << n;
-        let buffer_address = self.fdd640k_buffer_address(es, bp, 0);
+        let buffer_address = self.fdd640k_buffer_address(es, bp, 0, false);
         let transfer_bytes = if bx == 0 { sector_size } else { bx as usize };
         let sector_count = transfer_bytes / sector_size;
 
@@ -384,7 +385,7 @@ impl<T: Tracing> Pc9801Bus<T> {
         for _ in 0..sector_count {
             let mut data = vec![0u8; sector_size];
             for (index, byte) in data.iter_mut().enumerate() {
-                let address = self.fdd640k_buffer_address(es, bp, offset + index as u32);
+                let address = self.fdd640k_buffer_address(es, bp, offset + index as u32, false);
                 *byte = self.memory.read_byte(address);
             }
 
@@ -477,18 +478,14 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         for index in 0..sector_count {
             let base = (index as u32) * 4;
-            let c = self
-                .memory
-                .read_byte(self.fdd640k_buffer_address(es, bp, base));
-            let h = self
-                .memory
-                .read_byte(self.fdd640k_buffer_address(es, bp, base + 1));
-            let r = self
-                .memory
-                .read_byte(self.fdd640k_buffer_address(es, bp, base + 2));
-            let n = self
-                .memory
-                .read_byte(self.fdd640k_buffer_address(es, bp, base + 3));
+            let c_addr = self.fdd640k_buffer_address(es, bp, base, false);
+            let h_addr = self.fdd640k_buffer_address(es, bp, base + 1, false);
+            let r_addr = self.fdd640k_buffer_address(es, bp, base + 2, false);
+            let n_addr = self.fdd640k_buffer_address(es, bp, base + 3, false);
+            let c = self.memory.read_byte(c_addr);
+            let h = self.memory.read_byte(h_addr);
+            let r = self.memory.read_byte(r_addr);
+            let n = self.memory.read_byte(n_addr);
             chrn.push((c, h, r, n));
         }
 
@@ -497,11 +494,15 @@ impl<T: Tracing> Pc9801Bus<T> {
         0x00
     }
 
-    fn fdd640k_buffer_address(&self, es: u16, bp: u16, offset: u32) -> u32 {
+    fn fdd640k_buffer_address(&mut self, es: u16, bp: u16, offset: u32, write: bool) -> u32 {
         let linear = (u32::from(es) << 4)
             .wrapping_add(u32::from(bp))
             .wrapping_add(offset);
-        bios::hle_page_translate(self.hle_cr0, self.hle_cr3, linear, &self.memory)
+        if write {
+            bios::hle_page_translate_write(self.hle_cr0, self.hle_cr3, linear, &mut self.memory)
+        } else {
+            bios::hle_page_translate_read(self.hle_cr0, self.hle_cr3, linear, &mut self.memory)
+        }
     }
 
     fn fdd640k_segment_wraps(bp: u16, length: usize) -> bool {
