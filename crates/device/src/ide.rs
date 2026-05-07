@@ -223,7 +223,7 @@ impl IdeController {
         xfer_size: u32,
         sector_pos: u32,
         buf_addr: u32,
-        read_byte: impl Fn(u32) -> u8,
+        read_byte: impl FnMut(u32) -> u8,
     ) -> u8 {
         let sector_size = self.drives[drive_idx]
             .as_ref()
