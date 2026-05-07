@@ -29,6 +29,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     fn start_rep(&mut self, rep_type: RepType, bus: &mut impl common::Bus) {
         self.clk(Self::timing(0, 1));
         self.rep_restart_ip = self.prev_ip;
+        self.rep_restart_ip_upper = self.prev_ip_upper;
         let mut next = self.fetch(bus);
 
         // Handle any number of prefixes between REP and opcode.
@@ -172,6 +173,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 // Save state for resume.
                 self.rep_active = true;
                 self.rep_ip = self.ip;
+                self.rep_ip_upper = self.ip_upper;
                 self.rep_seg_prefix = self.seg_prefix;
                 self.rep_prefix_seg = self.prefix_seg;
                 self.rep_opcode = next;
@@ -193,6 +195,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     pub(super) fn continue_rep(&mut self, bus: &mut impl common::Bus) {
         self.ip = self.rep_ip;
+        self.ip_upper = self.rep_ip_upper;
+        self.prev_ip = self.rep_restart_ip;
+        self.prev_ip_upper = self.rep_restart_ip_upper;
         self.seg_prefix = self.rep_seg_prefix;
         self.prefix_seg = self.rep_prefix_seg;
         self.operand_size_override = self.rep_operand_size_override;

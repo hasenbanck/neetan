@@ -6108,6 +6108,71 @@ fn i386_rep_movsd_source_page_fault_preserves_restart_state() {
 }
 
 #[test]
+fn i386_resumed_rep_movsd_source_page_fault_restarts_at_prefix() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let mut state = setup_protected_mode_with_exception_handlers(&mut bus);
+    enable_identity_paging(&mut bus, &mut state);
+
+    let source_offset = 0x0FFCu32;
+    let source_fault_linear = PM_DATA_BASE + 0x1000;
+    let destination_offset = 0x2000u32;
+    let destination_second_value = 0x5A5A_5A5A;
+
+    write_dword_at(&mut bus, PM_DATA_BASE + source_offset, 0xDEAD_BEEF);
+    write_dword_at(
+        &mut bus,
+        PM_DATA_BASE + destination_offset + 4,
+        destination_second_value,
+    );
+    unmap_identity_page(&mut bus, source_fault_linear);
+
+    cpu.load_state(&state);
+    cpu.state.set_esi(source_offset);
+    cpu.state.set_edi(destination_offset);
+    cpu.state.set_ecx(2);
+    cpu.state.flags.df = false;
+
+    // REP MOVSD with 32-bit address and operand size in a 16-bit code segment.
+    place_at(&mut bus, PM_CODE_BASE, &[0xF3, 0x67, 0x66, 0xA5, 0xF4]);
+
+    let _ = cpu.run_for(1, &mut bus);
+
+    assert_eq!(cpu.ip(), 0x0004);
+    assert_eq!(cpu.state.ecx(), 1);
+    assert_eq!(
+        read_dword_at(&bus, PM_DATA_BASE + destination_offset),
+        0xDEAD_BEEF
+    );
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_PAGE_FAULT_HANDLER_IP as u32 + 1);
+    assert_eq!(cpu.cr2, source_fault_linear);
+    assert_eq!(
+        read_dword_at(&bus, PM_DATA_BASE + destination_offset + 4),
+        destination_second_value
+    );
+    assert_eq!(cpu.state.ecx(), 1);
+    assert_eq!(cpu.state.esi(), 0x1000);
+    assert_eq!(cpu.state.edi(), destination_offset + 4);
+
+    let stack_pointer = cpu.esp();
+    assert_eq!(read_dword_at(&bus, PM_STACK_BASE + stack_pointer), 0);
+    assert_eq!(
+        read_dword_at(&bus, PM_STACK_BASE + stack_pointer + 4),
+        0,
+        "page fault should restart at the REP prefix"
+    );
+    assert_eq!(
+        read_dword_at(&bus, PM_STACK_BASE + stack_pointer + 8) as u16,
+        PM_CS_SEL
+    );
+}
+
+#[test]
 fn i386_stosb() {
     let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();

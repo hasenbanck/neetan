@@ -504,7 +504,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     pub(super) fn raise_interrupt(&mut self, vector: u8, bus: &mut impl common::Bus) {
         let return_eip = if self.rep_active {
-            self.ip_upper | self.rep_restart_ip as u32
+            self.rep_restart_ip_upper | self.rep_restart_ip as u32
         } else {
             self.ip_upper | self.ip as u32
         };
@@ -518,7 +518,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus: &mut impl common::Bus,
     ) {
         let return_eip = if self.rep_active {
-            self.ip_upper | self.rep_restart_ip as u32
+            self.rep_restart_ip_upper | self.rep_restart_ip as u32
         } else {
             self.ip_upper | self.ip as u32
         };
@@ -533,7 +533,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     pub(super) fn raise_trap(&mut self, vector: u8, bus: &mut impl common::Bus) {
         let return_eip = if self.rep_active {
-            self.ip_upper | self.rep_restart_ip as u32
+            self.rep_restart_ip_upper | self.rep_restart_ip as u32
         } else {
             self.ip_upper | self.ip as u32
         };
