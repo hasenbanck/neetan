@@ -861,6 +861,172 @@ fn paging_fault_user_read_modify_write_reports_write() {
     assert_eq!(return_eip, 0, "fault should restart at the segment prefix");
 }
 
+/// Helper for RMW page-fault tests: ring-3 user, ES segment override, [BX]
+/// addressing pointing at a not-present user data page; expect error 0x0006.
+fn assert_rmw_user_fault_writes_with_cpu<const CPU_MODEL: u8>(
+    cpu: &mut I386<{ CPU_MODEL }>,
+    instruction: &[u8],
+    expected_eip_after_fault: u32,
+) {
+    let mut bus = TestBus::new();
+
+    let mut state = setup_paged_protected_mode(&mut bus);
+    make_ring3(&mut state);
+    state.set_ebx(0);
+    state.set_edi(0);
+    cpu.load_state(&state);
+
+    let pde = read_dword_at(&bus, PG_PAGE_DIR);
+    write_dword_at(&mut bus, PG_PAGE_DIR, pde | PTE_US);
+
+    let code_pte_index = PG_RING3_CODE_BASE >> 12;
+    write_dword_at(
+        &mut bus,
+        PG_PAGE_TABLE_0 + code_pte_index * 4,
+        PG_RING3_CODE_BASE | PTE_P | PTE_RW | PTE_US,
+    );
+
+    let stack_pte_index = PG_RING3_STACK_BASE >> 12;
+    write_dword_at(
+        &mut bus,
+        PG_PAGE_TABLE_0 + stack_pte_index * 4,
+        PG_RING3_STACK_BASE | PTE_P | PTE_RW | PTE_US,
+    );
+
+    let data_pte_index = PG_DATA_BASE >> 12;
+    write_dword_at(&mut bus, PG_PAGE_TABLE_0 + data_pte_index * 4, 0);
+
+    place_at(&mut bus, PG_RING3_CODE_BASE, instruction);
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PG_PF_HANDLER_IP as u32 + 1);
+    assert_eq!(cpu.cr2, PG_DATA_BASE);
+
+    let sp = cpu.esp();
+    let error_code = read_word_at(&bus, PG_STACK_BASE + sp);
+    assert_eq!(error_code, 0x0006, "error code: not present, write, user");
+
+    let return_eip = read_dword_at(&bus, PG_STACK_BASE + sp + 4);
+    assert_eq!(
+        return_eip, expected_eip_after_fault,
+        "fault should restart at the segment prefix"
+    );
+}
+
+fn assert_rmw_user_fault_writes(instruction: &[u8], expected_eip_after_fault: u32) {
+    let mut cpu: I386 = I386::new();
+    assert_rmw_user_fault_writes_with_cpu(&mut cpu, instruction, expected_eip_after_fault);
+}
+
+fn assert_rmw_user_fault_writes_486(instruction: &[u8], expected_eip_after_fault: u32) {
+    let mut cpu: I386<{ cpu::CPU_MODEL_486 }> = I386::new();
+    assert_rmw_user_fault_writes_with_cpu(&mut cpu, instruction, expected_eip_after_fault);
+}
+
+#[test]
+fn paging_fault_user_inc_r_m8_reports_write() {
+    // ES: INC byte ptr [BX] -- 0x26 0xFE /0
+    assert_rmw_user_fault_writes(&[0x26, 0xFE, 0x07], 0);
+}
+
+#[test]
+fn paging_fault_user_inc_r_m16_reports_write() {
+    // ES: INC word ptr [BX] -- 0x26 0xFF /0
+    assert_rmw_user_fault_writes(&[0x26, 0xFF, 0x07], 0);
+}
+
+#[test]
+fn paging_fault_user_inc_r_m32_reports_write() {
+    // ES: INC dword ptr [BX] -- 0x26 0x66 0xFF /0
+    assert_rmw_user_fault_writes(&[0x26, 0x66, 0xFF, 0x07], 0);
+}
+
+#[test]
+fn paging_fault_user_dec_r_m8_reports_write() {
+    // ES: DEC byte ptr [BX] -- 0x26 0xFE /1
+    assert_rmw_user_fault_writes(&[0x26, 0xFE, 0x0F], 0);
+}
+
+#[test]
+fn paging_fault_user_or_r_m16_imm_reports_write() {
+    // ES: OR word ptr [BX], 0 -- 0x26 0x81 /1
+    assert_rmw_user_fault_writes(&[0x26, 0x81, 0x0F, 0x00, 0x00], 0);
+}
+
+#[test]
+fn paging_fault_user_or_r_m32_imm_reports_write() {
+    // ES: OR dword ptr [BX], 0 -- 0x26 0x66 0x81 /1
+    assert_rmw_user_fault_writes(&[0x26, 0x66, 0x81, 0x0F, 0x00, 0x00, 0x00, 0x00], 0);
+}
+
+#[test]
+fn paging_fault_user_or_r_m16_imm8_reports_write() {
+    // ES: OR word ptr [BX], 0 (sign-extended imm8) -- 0x26 0x83 /1
+    assert_rmw_user_fault_writes(&[0x26, 0x83, 0x0F, 0x00], 0);
+}
+
+#[test]
+fn paging_fault_user_add_mem_byte_reg_reports_write() {
+    // ES: ADD byte ptr [BX], CL -- 0x26 0x00 /CL
+    // ModRM 0x0F = mod=00 reg=001 (CL) rm=111 ([BX])
+    assert_rmw_user_fault_writes(&[0x26, 0x00, 0x0F], 0);
+}
+
+#[test]
+fn paging_fault_user_add_mem_word_reg_reports_write() {
+    // ES: ADD word ptr [BX], CX -- 0x26 0x01 /CX
+    assert_rmw_user_fault_writes(&[0x26, 0x01, 0x0F], 0);
+}
+
+#[test]
+fn paging_fault_user_xchg_mem_byte_reg_reports_write() {
+    // ES: XCHG byte ptr [BX], CL -- 0x26 0x86 /CL
+    assert_rmw_user_fault_writes(&[0x26, 0x86, 0x0F], 0);
+}
+
+#[test]
+fn paging_fault_user_xchg_mem_word_reg_reports_write() {
+    // ES: XCHG word ptr [BX], CX -- 0x26 0x87 /CX
+    assert_rmw_user_fault_writes(&[0x26, 0x87, 0x0F], 0);
+}
+
+#[test]
+fn paging_fault_user_cmpxchg_byte_reports_write() {
+    // ES: CMPXCHG byte ptr [BX], CL -- 0x26 0x0F 0xB0 /CL
+    // CMPXCHG always treated as a write because it conditionally writes; the
+    // architectural access is RMW so the W/R bit must be set on a fault.
+    // CMPXCHG is a 486+ instruction.
+    assert_rmw_user_fault_writes_486(&[0x26, 0x0F, 0xB0, 0x0F], 0);
+}
+
+#[test]
+fn paging_fault_user_xadd_byte_reports_write() {
+    // ES: XADD byte ptr [BX], CL -- 0x26 0x0F 0xC0 /CL
+    // XADD is a 486+ instruction.
+    assert_rmw_user_fault_writes_486(&[0x26, 0x0F, 0xC0, 0x0F], 0);
+}
+
+#[test]
+fn paging_fault_user_bts_imm_reports_write() {
+    // ES: BTS word ptr [BX], 0 -- 0x26 0x0F 0xBA /5 imm8
+    // ModRM 0x2F = mod=00 reg=101 (/5) rm=111 ([BX])
+    assert_rmw_user_fault_writes(&[0x26, 0x0F, 0xBA, 0x2F, 0x00], 0);
+}
+
+#[test]
+fn paging_fault_user_btr_imm_reports_write() {
+    // ES: BTR word ptr [BX], 0 -- 0x26 0x0F 0xBA /6 imm8
+    assert_rmw_user_fault_writes(&[0x26, 0x0F, 0xBA, 0x37, 0x00], 0);
+}
+
+#[test]
+fn paging_fault_user_btc_imm_reports_write() {
+    // ES: BTC word ptr [BX], 0 -- 0x26 0x0F 0xBA /7 imm8
+    assert_rmw_user_fault_writes(&[0x26, 0x0F, 0xBA, 0x3F, 0x00], 0);
+}
+
 /// On a 386, supervisor (CPL 0) can write to a page with R/W=0.
 #[test]
 fn paging_supervisor_writes_readonly_page() {

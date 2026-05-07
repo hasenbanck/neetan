@@ -928,13 +928,18 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     #[inline(always)]
-    fn seg_read_word_at(&mut self, bus: &mut impl common::Bus, delta: u32) -> u16 {
+    fn seg_read_word_at_with(
+        &mut self,
+        bus: &mut impl common::Bus,
+        delta: u32,
+        for_update: bool,
+    ) -> u16 {
         let offset = if self.address_size_override {
             self.eo32.wrapping_add(delta)
         } else {
             (self.eo32 as u16).wrapping_add(delta as u16) as u32
         };
-        if !self.check_segment_access(self.ea_seg, offset, 2, false, bus) {
+        if !self.check_segment_access(self.ea_seg, offset, 2, for_update, bus) {
             return 0;
         }
         let l0 = self.seg_addr(delta);
@@ -944,34 +949,49 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             l0 & 0xFFF <= 0xFFE && (offset as u16) <= 0xFFFE
         };
         if same_page {
-            let Some(a0) = self.translate_linear(l0, false, bus) else {
+            let Some(a0) = self.translate_linear(l0, for_update, bus) else {
                 return 0;
             };
             return bus.read_word(a0);
         }
         let l1 = self.seg_addr(delta.wrapping_add(1));
-        let Some(a0) = self.translate_linear(l0, false, bus) else {
+        let Some(a0) = self.translate_linear(l0, for_update, bus) else {
             return 0;
         };
-        let Some(a1) = self.translate_linear(l1, false, bus) else {
+        let Some(a1) = self.translate_linear(l1, for_update, bus) else {
             return 0;
         };
         bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8)
     }
 
     #[inline(always)]
-    fn seg_read_word(&mut self, bus: &mut impl common::Bus) -> u16 {
-        self.seg_read_word_at(bus, 0)
+    fn seg_read_word_at(&mut self, bus: &mut impl common::Bus, delta: u32) -> u16 {
+        self.seg_read_word_at_with(bus, delta, false)
     }
 
     #[inline(always)]
-    fn seg_read_dword_at(&mut self, bus: &mut impl common::Bus, delta: u32) -> u32 {
+    fn seg_read_word(&mut self, bus: &mut impl common::Bus) -> u16 {
+        self.seg_read_word_at_with(bus, 0, false)
+    }
+
+    #[inline(always)]
+    pub(super) fn seg_read_word_for_update(&mut self, bus: &mut impl common::Bus) -> u16 {
+        self.seg_read_word_at_with(bus, 0, true)
+    }
+
+    #[inline(always)]
+    fn seg_read_dword_at_with(
+        &mut self,
+        bus: &mut impl common::Bus,
+        delta: u32,
+        for_update: bool,
+    ) -> u32 {
         let offset = if self.address_size_override {
             self.eo32.wrapping_add(delta)
         } else {
             (self.eo32 as u16).wrapping_add(delta as u16) as u32
         };
-        if !self.check_segment_access(self.ea_seg, offset, 4, false, bus) {
+        if !self.check_segment_access(self.ea_seg, offset, 4, for_update, bus) {
             return 0;
         }
         let l0 = self.seg_addr(delta);
@@ -981,7 +1001,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             l0 & 0xFFF <= 0xFFC && (offset as u16) <= 0xFFFC
         };
         if same_page {
-            let Some(a0) = self.translate_linear(l0, false, bus) else {
+            let Some(a0) = self.translate_linear(l0, for_update, bus) else {
                 return 0;
             };
             return bus.read_dword(a0);
@@ -989,16 +1009,16 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let l1 = self.seg_addr(delta.wrapping_add(1));
         let l2 = self.seg_addr(delta.wrapping_add(2));
         let l3 = self.seg_addr(delta.wrapping_add(3));
-        let Some(a0) = self.translate_linear(l0, false, bus) else {
+        let Some(a0) = self.translate_linear(l0, for_update, bus) else {
             return 0;
         };
-        let Some(a1) = self.translate_linear(l1, false, bus) else {
+        let Some(a1) = self.translate_linear(l1, for_update, bus) else {
             return 0;
         };
-        let Some(a2) = self.translate_linear(l2, false, bus) else {
+        let Some(a2) = self.translate_linear(l2, for_update, bus) else {
             return 0;
         };
-        let Some(a3) = self.translate_linear(l3, false, bus) else {
+        let Some(a3) = self.translate_linear(l3, for_update, bus) else {
             return 0;
         };
         bus.read_byte(a0) as u32
@@ -1008,8 +1028,18 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     #[inline(always)]
+    fn seg_read_dword_at(&mut self, bus: &mut impl common::Bus, delta: u32) -> u32 {
+        self.seg_read_dword_at_with(bus, delta, false)
+    }
+
+    #[inline(always)]
     fn seg_read_dword(&mut self, bus: &mut impl common::Bus) -> u32 {
-        self.seg_read_dword_at(bus, 0)
+        self.seg_read_dword_at_with(bus, 0, false)
+    }
+
+    #[inline(always)]
+    pub(super) fn seg_read_dword_for_update(&mut self, bus: &mut impl common::Bus) -> u32 {
+        self.seg_read_dword_at_with(bus, 0, true)
     }
 
     #[inline(always)]
@@ -1111,37 +1141,64 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     #[inline(always)]
-    fn read_word_seg(&mut self, bus: &mut impl common::Bus, seg: SegReg32, offset: u32) -> u16 {
-        if !self.check_segment_access(seg, offset, 2, false, bus) {
+    fn read_word_seg_with(
+        &mut self,
+        bus: &mut impl common::Bus,
+        seg: SegReg32,
+        offset: u32,
+        for_update: bool,
+    ) -> u16 {
+        if !self.check_segment_access(seg, offset, 2, for_update, bus) {
             return 0;
         }
         let base = self.seg_base(seg);
         let l0 = base.wrapping_add(offset);
         if l0 & 0xFFF <= 0xFFE {
-            let Some(a0) = self.translate_linear(l0, false, bus) else {
+            let Some(a0) = self.translate_linear(l0, for_update, bus) else {
                 return 0;
             };
             return bus.read_word(a0);
         }
         let l1 = base.wrapping_add(offset.wrapping_add(1));
-        let Some(a0) = self.translate_linear(l0, false, bus) else {
+        let Some(a0) = self.translate_linear(l0, for_update, bus) else {
             return 0;
         };
-        let Some(a1) = self.translate_linear(l1, false, bus) else {
+        let Some(a1) = self.translate_linear(l1, for_update, bus) else {
             return 0;
         };
         bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8)
     }
 
     #[inline(always)]
-    fn read_dword_seg(&mut self, bus: &mut impl common::Bus, seg: SegReg32, offset: u32) -> u32 {
-        if !self.check_segment_access(seg, offset, 4, false, bus) {
+    fn read_word_seg(&mut self, bus: &mut impl common::Bus, seg: SegReg32, offset: u32) -> u16 {
+        self.read_word_seg_with(bus, seg, offset, false)
+    }
+
+    #[inline(always)]
+    pub(super) fn read_word_seg_for_update(
+        &mut self,
+        bus: &mut impl common::Bus,
+        seg: SegReg32,
+        offset: u32,
+    ) -> u16 {
+        self.read_word_seg_with(bus, seg, offset, true)
+    }
+
+    #[inline(always)]
+    fn read_dword_seg_with(
+        &mut self,
+        bus: &mut impl common::Bus,
+        seg: SegReg32,
+        offset: u32,
+        for_update: bool,
+    ) -> u32 {
+        if !self.check_segment_access(seg, offset, 4, for_update, bus) {
             return 0;
         }
         let base = self.seg_base(seg);
         let l0 = base.wrapping_add(offset);
         if l0 & 0xFFF <= 0xFFC {
-            let Some(a0) = self.translate_linear(l0, false, bus) else {
+            let Some(a0) = self.translate_linear(l0, for_update, bus) else {
                 return 0;
             };
             return bus.read_dword(a0);
@@ -1149,22 +1206,37 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let l1 = base.wrapping_add(offset.wrapping_add(1));
         let l2 = base.wrapping_add(offset.wrapping_add(2));
         let l3 = base.wrapping_add(offset.wrapping_add(3));
-        let Some(a0) = self.translate_linear(l0, false, bus) else {
+        let Some(a0) = self.translate_linear(l0, for_update, bus) else {
             return 0;
         };
-        let Some(a1) = self.translate_linear(l1, false, bus) else {
+        let Some(a1) = self.translate_linear(l1, for_update, bus) else {
             return 0;
         };
-        let Some(a2) = self.translate_linear(l2, false, bus) else {
+        let Some(a2) = self.translate_linear(l2, for_update, bus) else {
             return 0;
         };
-        let Some(a3) = self.translate_linear(l3, false, bus) else {
+        let Some(a3) = self.translate_linear(l3, for_update, bus) else {
             return 0;
         };
         bus.read_byte(a0) as u32
             | ((bus.read_byte(a1) as u32) << 8)
             | ((bus.read_byte(a2) as u32) << 16)
             | ((bus.read_byte(a3) as u32) << 24)
+    }
+
+    #[inline(always)]
+    fn read_dword_seg(&mut self, bus: &mut impl common::Bus, seg: SegReg32, offset: u32) -> u32 {
+        self.read_dword_seg_with(bus, seg, offset, false)
+    }
+
+    #[inline(always)]
+    pub(super) fn read_dword_seg_for_update(
+        &mut self,
+        bus: &mut impl common::Bus,
+        seg: SegReg32,
+        offset: u32,
+    ) -> u32 {
+        self.read_dword_seg_with(bus, seg, offset, true)
     }
 
     #[inline(always)]
@@ -1478,6 +1550,24 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8)
     }
 
+    pub(super) fn read_word_linear_for_update(
+        &mut self,
+        bus: &mut impl common::Bus,
+        addr: u32,
+    ) -> u16 {
+        if addr & 0xFFF <= 0xFFE {
+            let Some(a0) = self.translate_linear(addr, true, bus) else {
+                return 0;
+            };
+            return bus.read_word(a0);
+        }
+        let a0 = self.translate_linear(addr, true, bus).unwrap_or(0);
+        let a1 = self
+            .translate_linear(addr.wrapping_add(1), true, bus)
+            .unwrap_or(0);
+        bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8)
+    }
+
     fn write_word_linear(&mut self, bus: &mut impl common::Bus, addr: u32, value: u16) {
         if addr & 0xFFF <= 0xFFE {
             let Some(a0) = self.translate_linear(addr, true, bus) else {
@@ -1512,6 +1602,33 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             .unwrap_or(0);
         let a3 = self
             .translate_linear(addr.wrapping_add(3), false, bus)
+            .unwrap_or(0);
+        bus.read_byte(a0) as u32
+            | ((bus.read_byte(a1) as u32) << 8)
+            | ((bus.read_byte(a2) as u32) << 16)
+            | ((bus.read_byte(a3) as u32) << 24)
+    }
+
+    pub(super) fn read_dword_linear_for_update(
+        &mut self,
+        bus: &mut impl common::Bus,
+        addr: u32,
+    ) -> u32 {
+        if addr & 0xFFF <= 0xFFC {
+            let Some(a0) = self.translate_linear(addr, true, bus) else {
+                return 0;
+            };
+            return bus.read_dword(a0);
+        }
+        let a0 = self.translate_linear(addr, true, bus).unwrap_or(0);
+        let a1 = self
+            .translate_linear(addr.wrapping_add(1), true, bus)
+            .unwrap_or(0);
+        let a2 = self
+            .translate_linear(addr.wrapping_add(2), true, bus)
+            .unwrap_or(0);
+        let a3 = self
+            .translate_linear(addr.wrapping_add(3), true, bus)
             .unwrap_or(0);
         bus.read_byte(a0) as u32
             | ((bus.read_byte(a1) as u32) << 8)

@@ -292,12 +292,30 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
     }
 
+    pub(super) fn get_rm_word_for_update(&mut self, modrm: u8, bus: &mut impl common::Bus) -> u16 {
+        if modrm >= 0xC0 {
+            self.regs.word(self.rm_word(modrm))
+        } else {
+            self.calc_ea(modrm, bus);
+            self.seg_read_word_for_update(bus)
+        }
+    }
+
     pub(super) fn get_rm_dword(&mut self, modrm: u8, bus: &mut impl common::Bus) -> u32 {
         if modrm >= 0xC0 {
             self.regs.dword(self.rm_dword(modrm))
         } else {
             self.calc_ea(modrm, bus);
             self.seg_read_dword(bus)
+        }
+    }
+
+    pub(super) fn get_rm_dword_for_update(&mut self, modrm: u8, bus: &mut impl common::Bus) -> u32 {
+        if modrm >= 0xC0 {
+            self.regs.dword(self.rm_dword(modrm))
+        } else {
+            self.calc_ea(modrm, bus);
+            self.seg_read_dword_for_update(bus)
         }
     }
 
