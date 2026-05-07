@@ -258,7 +258,27 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.regs.byte(self.rm_byte(modrm))
         } else {
             self.calc_ea(modrm, bus);
-            let addr = self.translate_linear(self.ea, false, bus).unwrap_or(0);
+            if !self.check_segment_access(self.ea_seg, self.eo32, 1, false, bus) {
+                return 0;
+            }
+            let Some(addr) = self.translate_linear(self.ea, false, bus) else {
+                return 0;
+            };
+            bus.read_byte(addr)
+        }
+    }
+
+    pub(super) fn get_rm_byte_for_update(&mut self, modrm: u8, bus: &mut impl common::Bus) -> u8 {
+        if modrm >= 0xC0 {
+            self.regs.byte(self.rm_byte(modrm))
+        } else {
+            self.calc_ea(modrm, bus);
+            if !self.check_segment_access(self.ea_seg, self.eo32, 1, true, bus) {
+                return 0;
+            }
+            let Some(addr) = self.translate_linear(self.ea, true, bus) else {
+                return 0;
+            };
             bus.read_byte(addr)
         }
     }
