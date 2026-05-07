@@ -1294,7 +1294,11 @@ fn i386_ring3_segment_load_reads_supervisor_descriptor_table_pages() {
         TEST_PAGE_DIRECTORY_BASE,
         TEST_PAGE_TABLE_BASE | TEST_PAGE_PRESENT_WRITABLE_USER,
     );
-    set_identity_page_flags(&mut bus, PM_RING3_CODE_BASE, TEST_PAGE_PRESENT_WRITABLE_USER);
+    set_identity_page_flags(
+        &mut bus,
+        PM_RING3_CODE_BASE,
+        TEST_PAGE_PRESENT_WRITABLE_USER,
+    );
     set_identity_page_flags(
         &mut bus,
         PM_RING3_STACK_BASE,

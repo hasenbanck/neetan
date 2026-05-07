@@ -37,9 +37,9 @@ impl<T: Tracing> Pc9801Bus<T> {
                     // Rewrite the IRQ handler's IRET frame so it returns into
                     // the COPY/STOP vector first, with the original return
                     // frame stacked behind it.
-                    let orig_ip = self.read_word_direct(iret_base);
-                    let orig_cs = self.read_word_direct(iret_base + 0x02);
-                    let orig_flags = self.read_word_direct(iret_base + 0x04);
+                    let orig_ip = self.read_mem_word(iret_base);
+                    let orig_cs = self.read_mem_word(iret_base + 0x02);
+                    let orig_flags = self.read_mem_word(iret_base + 0x04);
                     self.write_mem_word(iret_base + 0x06, orig_ip);
                     self.write_mem_word(iret_base + 0x08, orig_cs);
                     self.write_mem_word(iret_base + 0x0A, orig_flags);
@@ -193,12 +193,12 @@ impl<T: Tracing> Pc9801Bus<T> {
             // Block until a key is available by rewinding the caller's return IP
             // in the IRET frame to re-execute the INT 18H instruction (2 bytes: CD 18).
             let base = iret_stack_base(cpu);
-            let caller_ip = self.read_word_direct(base);
+            let caller_ip = self.read_mem_word(base);
             self.write_mem_word(base, caller_ip.wrapping_sub(2));
 
             // Ensure IF is set in the IRET flags so hardware interrupts (especially
             // IRQ 1 keyboard) can fire during the wait loop.
-            let flags = self.read_word_direct(base + 4);
+            let flags = self.read_mem_word(base + 4);
             self.write_mem_word(base + 4, flags | 0x0200);
 
             // Burn enough cycles so the timeslice ends and the timer interrupt can fire.
