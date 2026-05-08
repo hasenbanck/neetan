@@ -6553,7 +6553,7 @@ fn i386_resumed_rep_movsd_source_page_fault_restarts_at_prefix() {
 
     let _ = cpu.run_for(1, &mut bus);
 
-    assert_eq!(cpu.ip(), 0x0004);
+    assert_eq!(cpu.ip(), 0x0000);
     assert_eq!(cpu.state.ecx(), 1);
     assert_eq!(
         read_dword_at(&bus, PM_DATA_BASE + destination_offset),
@@ -6617,7 +6617,10 @@ fn i386_resumed_rep_movsd_fault_preserves_high_eip() {
 
     let _ = cpu.run_for(1, &mut bus);
     assert_eq!(cpu.state.ecx(), 1);
-    assert_eq!(cpu.ip(), code_offset + 2);
+    // Per i486 PRM section 3.6: a paused REP leaves EIP at the prefix.
+    // F3 A5 (prefix + MOVSD opcode) starts at code_offset, so EIP must
+    // point at code_offset (and preserve the upper 16 bits), not past it.
+    assert_eq!(cpu.ip(), code_offset);
 
     cpu.step(&mut bus);
     cpu.step(&mut bus);

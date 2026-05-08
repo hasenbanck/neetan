@@ -209,6 +209,7 @@ impl I8086 {
                     RepType::RepE => 0,
                 };
                 self.regs.set_word(WordReg::CX, count);
+                self.ip = self.rep_restart_ip;
                 return;
             }
         }

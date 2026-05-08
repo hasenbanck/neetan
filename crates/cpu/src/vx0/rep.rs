@@ -489,6 +489,7 @@ impl<const MODEL: u8> VX0<MODEL> {
                     RepType::RepE => 0,
                 };
                 self.regs.set_word(WordReg::CX, count);
+                self.ip = self.rep_state.restart_ip;
                 return;
             }
 

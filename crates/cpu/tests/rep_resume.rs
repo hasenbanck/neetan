@@ -286,12 +286,59 @@ fn assert_rep_movsb_single_cycle_slice<H: RepCpuHarness>() {
 
     let _ = cpu.run_for(1, &mut bus);
 
-    assert_eq!(H::ip(&cpu), 0x0102);
+    assert_eq!(H::ip(&cpu), 0x0100);
     assert_eq!(H::cx(&cpu), 0x0003);
     assert_eq!(H::si(&cpu), 0x0301);
     assert_eq!(H::di(&cpu), 0x0401);
     assert_eq!(bus.peek(0x0400), 0x11);
     assert_eq!(bus.peek(0x0401), 0x00);
+}
+
+/// Verifies that across multiple paused REP slices the visible IP keeps
+/// pointing at the prefix.
+fn assert_rep_movsb_paused_ip_persists_across_slices<H: RepCpuHarness>() {
+    let mut bus = TestBus::new(None);
+
+    // rep movsb; hlt
+    place_code(&mut bus, 0x0000, 0x0100, &[0xF3, 0xA4, 0xF4]);
+    place_bytes(&mut bus, 0x0300, &[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+
+    let mut cpu = H::build_cpu();
+    H::set_state(&mut cpu, 0x0000, 0x0100, 0x0000, 0x0000, 0x0000, 0xFF00);
+    H::set_si(&mut cpu, 0x0300);
+    H::set_di(&mut cpu, 0x0400);
+    H::set_cx(&mut cpu, 0x0006);
+
+    // Each one-cycle slice runs at most one iteration before suspending.
+    // Across all suspended slices IP must remain at the prefix.
+    for expected_progress in 1..=5_u16 {
+        let _ = cpu.run_for(1, &mut bus);
+        assert_eq!(
+            H::ip(&cpu),
+            0x0100,
+            "after {expected_progress} iterations IP must point at the REP prefix"
+        );
+        assert_eq!(H::cx(&cpu), 0x0006 - expected_progress);
+        assert_eq!(H::si(&cpu), 0x0300 + expected_progress);
+        assert_eq!(H::di(&cpu), 0x0400 + expected_progress);
+    }
+
+    // Sixth (final) iteration drives CX to zero and lets the REP retire.
+    // Final IP is HLT-semantics-dependent and intentionally not asserted; the
+    // point of this test is the per-pause IP behaviour above.
+    let _ = cpu.run_for(50_000, &mut bus);
+    assert_eq!(H::cx(&cpu), 0x0000);
+    assert_eq!(
+        [
+            bus.peek(0x0400),
+            bus.peek(0x0401),
+            bus.peek(0x0402),
+            bus.peek(0x0403),
+            bus.peek(0x0404),
+            bus.peek(0x0405),
+        ],
+        [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]
+    );
 }
 
 fn assert_rep_movsb_irq_resume_after_iret<H: RepCpuHarness>() {
@@ -368,4 +415,9 @@ fn i286_rep_movsb_with_irq_resumes_after_iret() {
 #[test]
 fn i386_rep_movsb_with_irq_resumes_after_iret() {
     assert_rep_movsb_irq_resume_after_iret::<I386Harness>();
+}
+
+#[test]
+fn i386_rep_movsb_paused_ip_persists_across_slices() {
+    assert_rep_movsb_paused_ip_persists_across_slices::<I386Harness>();
 }
