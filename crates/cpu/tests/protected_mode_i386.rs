@@ -4774,7 +4774,7 @@ fn vm86_iret_cannot_change_iopl() {
 
 /// 32-bit IRETD in VM86 must clear ip_upper (bits 16–31 of EIP are always 0 in VM86).
 #[test]
-fn vm86_iretd_clears_ip_upper() {
+fn vm86_iretd_preserves_ip_upper() {
     let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
 
@@ -4782,11 +4782,11 @@ fn vm86_iretd_clears_ip_upper() {
     cpu.load_state(&state);
 
     // Push a 32-bit IRETD frame (IOPL=3 short path, operand-size override).
-    // Frame layout (popped in order): EIP, CS, EFLAGS
-    // Deliberately set high word of EIP to 0xDEAD to test that ip_upper is zeroed.
+    // Frame layout (popped in order): EIP, CS, EFLAGS.
+    // 32-bit IRET in V86 mode loads the full 32-bit EIP per the 386 PRM,
+    // even though instruction fetch only uses the low 16 bits.
     let new_eip: u32 = 0xDEAD_0010;
     let new_cs: u32 = 0x1000;
-    // EFLAGS: VM=1, IOPL=3 (must keep IOPL=3 ≥ 3 for the short-path check)
     let new_eflags: u32 = 0x0002_3202; // VM=1, IOPL=3, IF=1, bit1
 
     let vm86_stack_base: u32 = 0x20000;
@@ -4794,12 +4794,10 @@ fn vm86_iretd_clears_ip_upper() {
     write_dword_at(&mut bus, vm86_stack_base + sp - 12, new_eip);
     write_dword_at(&mut bus, vm86_stack_base + sp - 8, new_cs);
     write_dword_at(&mut bus, vm86_stack_base + sp - 4, new_eflags);
-    // Update SP to point to the frame
     let mut state = setup_vm86(&mut bus);
     state.set_esp(sp - 12);
     cpu.load_state(&state);
 
-    // 66h CF = 32-bit IRETD (operand-size override prefix + IRET opcode)
     place_code(&mut bus, 0x1000, 0x0000, &[0x66, 0xCF]);
 
     cpu.step(&mut bus);
@@ -4810,8 +4808,8 @@ fn vm86_iretd_clears_ip_upper() {
         "IP should be low 16 bits of new_eip"
     );
     assert_eq!(
-        cpu.ip_upper, 0,
-        "ip_upper must be 0 after IRETD in VM86: bits 16-31 of EIP are always 0"
+        cpu.ip_upper, 0xDEAD_0000,
+        "ip_upper must hold the upper 16 bits of EIP after a 32-bit V86 IRETD"
     );
 }
 
