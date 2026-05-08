@@ -2114,10 +2114,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
 
                 let new_cpl = self.cpl();
-                self.invalidate_segment_if_needed(SegReg32::DS, new_cpl);
-                self.invalidate_segment_if_needed(SegReg32::ES, new_cpl);
-                self.invalidate_segment_if_needed(SegReg32::FS, new_cpl);
-                self.invalidate_segment_if_needed(SegReg32::GS, new_cpl);
+                self.revalidate_data_segment(SegReg32::DS, new_cpl, bus);
+                self.revalidate_data_segment(SegReg32::ES, new_cpl, bus);
+                self.revalidate_data_segment(SegReg32::FS, new_cpl, bus);
+                self.revalidate_data_segment(SegReg32::GS, new_cpl, bus);
             } else {
                 if self.use_esp() {
                     self.regs.set_dword(DwordReg::ESP, sp.wrapping_add(8));
@@ -2159,10 +2159,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
 
                 let new_cpl = self.cpl();
-                self.invalidate_segment_if_needed(SegReg32::DS, new_cpl);
-                self.invalidate_segment_if_needed(SegReg32::ES, new_cpl);
-                self.invalidate_segment_if_needed(SegReg32::FS, new_cpl);
-                self.invalidate_segment_if_needed(SegReg32::GS, new_cpl);
+                self.revalidate_data_segment(SegReg32::DS, new_cpl, bus);
+                self.revalidate_data_segment(SegReg32::ES, new_cpl, bus);
+                self.revalidate_data_segment(SegReg32::FS, new_cpl, bus);
+                self.revalidate_data_segment(SegReg32::GS, new_cpl, bus);
             } else {
                 if self.use_esp() {
                     self.regs.set_dword(DwordReg::ESP, sp.wrapping_add(4));
@@ -2269,10 +2269,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
 
                 let new_cpl = self.cpl();
-                self.invalidate_segment_if_needed(SegReg32::DS, new_cpl);
-                self.invalidate_segment_if_needed(SegReg32::ES, new_cpl);
-                self.invalidate_segment_if_needed(SegReg32::FS, new_cpl);
-                self.invalidate_segment_if_needed(SegReg32::GS, new_cpl);
+                self.revalidate_data_segment(SegReg32::DS, new_cpl, bus);
+                self.revalidate_data_segment(SegReg32::ES, new_cpl, bus);
+                self.revalidate_data_segment(SegReg32::FS, new_cpl, bus);
+                self.revalidate_data_segment(SegReg32::GS, new_cpl, bus);
             } else {
                 let new_sp_val = sp.wrapping_add(8).wrapping_add(imm32);
                 if self.use_esp() {
@@ -2318,10 +2318,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
 
                 let new_cpl = self.cpl();
-                self.invalidate_segment_if_needed(SegReg32::DS, new_cpl);
-                self.invalidate_segment_if_needed(SegReg32::ES, new_cpl);
-                self.invalidate_segment_if_needed(SegReg32::FS, new_cpl);
-                self.invalidate_segment_if_needed(SegReg32::GS, new_cpl);
+                self.revalidate_data_segment(SegReg32::DS, new_cpl, bus);
+                self.revalidate_data_segment(SegReg32::ES, new_cpl, bus);
+                self.revalidate_data_segment(SegReg32::FS, new_cpl, bus);
+                self.revalidate_data_segment(SegReg32::GS, new_cpl, bus);
             } else {
                 let new_sp_val = sp.wrapping_add(4).wrapping_add(imm32);
                 if self.use_esp() {
@@ -2921,10 +2921,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
 
                 let new_cpl = self.cpl();
-                self.invalidate_segment_if_needed(SegReg32::DS, new_cpl);
-                self.invalidate_segment_if_needed(SegReg32::ES, new_cpl);
-                self.invalidate_segment_if_needed(SegReg32::FS, new_cpl);
-                self.invalidate_segment_if_needed(SegReg32::GS, new_cpl);
+                self.revalidate_data_segment(SegReg32::DS, new_cpl, bus);
+                self.revalidate_data_segment(SegReg32::ES, new_cpl, bus);
+                self.revalidate_data_segment(SegReg32::FS, new_cpl, bus);
+                self.revalidate_data_segment(SegReg32::GS, new_cpl, bus);
             } else {
                 if !self.load_cs_for_return(new_cs, new_eip, bus) {
                     return;
@@ -2973,10 +2973,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
 
                 let new_cpl = self.cpl();
-                self.invalidate_segment_if_needed(SegReg32::DS, new_cpl);
-                self.invalidate_segment_if_needed(SegReg32::ES, new_cpl);
-                self.invalidate_segment_if_needed(SegReg32::FS, new_cpl);
-                self.invalidate_segment_if_needed(SegReg32::GS, new_cpl);
+                self.revalidate_data_segment(SegReg32::DS, new_cpl, bus);
+                self.revalidate_data_segment(SegReg32::ES, new_cpl, bus);
+                self.revalidate_data_segment(SegReg32::FS, new_cpl, bus);
+                self.revalidate_data_segment(SegReg32::GS, new_cpl, bus);
             } else {
                 if !self.load_cs_for_return(new_cs, new_ip as u32, bus) {
                     return;

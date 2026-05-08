@@ -1736,6 +1736,9 @@ fn i386_keep_nonconforming_code_in_ds_when_dpl_sufficient() {
     let state = setup_protected_mode_with_ring3(&mut bus);
     cpu.load_state(&state);
 
+    // Replace GDT entry 2 (PM_DS_SEL) with a readable non-conforming code
+    // segment at DPL 3 so the cached and stored rights agree.
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 2, PM_DATA_BASE, 0xFFFF, 0xFB);
     cpu.state.seg_rights[cpu::SegReg32::DS as usize] = 0xFB;
 
     place_at(&mut bus, PM_CODE_BASE, &[0xCB]);
@@ -1762,6 +1765,9 @@ fn i386_keep_conforming_code_in_ds_on_return() {
     let state = setup_protected_mode_with_ring3(&mut bus);
     cpu.load_state(&state);
 
+    // Replace GDT entry 2 (PM_DS_SEL) with a readable conforming code segment
+    // at DPL 0 so the cached and stored rights agree.
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 2, PM_DATA_BASE, 0xFFFF, 0x9F);
     cpu.state.seg_rights[cpu::SegReg32::DS as usize] = 0x9F;
 
     place_at(&mut bus, PM_CODE_BASE, &[0xCB]);
@@ -7900,5 +7906,84 @@ fn vm86_non_hle_port_still_denied_by_iopb() {
     assert!(
         cpu.halted(),
         "OUT to non-HLE port 0x0060 must raise #GP even with HLE bypass enabled"
+    );
+}
+
+#[test]
+fn i386_iret_inter_privilege_reloads_data_segment_descriptor() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let mut state = setup_protected_mode_with_ring3(&mut bus);
+
+    // Kernel (CPL 0) holds DS = PM_RING3_DS_SEL. Legal: data DPL=3, max(CPL,RPL)=3.
+    state.set_ds(PM_RING3_DS_SEL);
+    state.seg_bases[cpu::SegReg32::DS as usize] = PM_DATA_BASE;
+    state.seg_rights[cpu::SegReg32::DS as usize] = 0xF3;
+    state.seg_limits[cpu::SegReg32::DS as usize] = 0xFFFF;
+
+    cpu.load_state(&state);
+
+    // Rewrite GDT entry 5 with a different base while it is cached at CPL 0.
+    const NEW_DS_BASE: u32 = PM_DATA_BASE + 0x1000;
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 5, NEW_DS_BASE, 0xFFFF, 0xF3);
+
+    place_at(&mut bus, PM_CODE_BASE, &[0xCF]); // IRET
+
+    let ring3_ip: u16 = 0x0100;
+    let sp = cpu.esp();
+    write_word_at(&mut bus, PM_STACK_BASE + sp, ring3_ip);
+    write_word_at(&mut bus, PM_STACK_BASE + sp + 2, PM_RING3_CS_SEL);
+    write_word_at(&mut bus, PM_STACK_BASE + sp + 4, 0x0202);
+    write_word_at(&mut bus, PM_STACK_BASE + sp + 6, 0xFF00);
+    write_word_at(&mut bus, PM_STACK_BASE + sp + 8, PM_RING3_SS_SEL);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.cs() & 3, 3, "IRET should land at ring 3");
+    assert_eq!(cpu.ds(), PM_RING3_DS_SEL, "DS selector preserved");
+    assert_eq!(
+        cpu.state.seg_bases[cpu::SegReg32::DS as usize],
+        NEW_DS_BASE,
+        "DS cached base must reflect the freshly read GDT descriptor"
+    );
+}
+
+#[test]
+fn i386_iret_inter_privilege_zeros_execute_only_code_in_data_register() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let mut state = setup_protected_mode_with_ring3(&mut bus);
+
+    // GDT entry 5 starts as a writable user data segment. Replace it with an
+    // execute-only conforming code segment (rights 0xFC: P=1, DPL=3, S=1,
+    // type=1100b -> code, conforming, not readable, not accessed).
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 5, PM_DATA_BASE, 0xFFFF, 0xFC);
+
+    // Pre-load DS at CPL 0 with the matching cached rights, simulating having
+    // loaded it before the descriptor was clobbered.
+    state.set_ds(PM_RING3_DS_SEL);
+    state.seg_bases[cpu::SegReg32::DS as usize] = PM_DATA_BASE;
+    state.seg_rights[cpu::SegReg32::DS as usize] = 0xFC;
+    state.seg_limits[cpu::SegReg32::DS as usize] = 0xFFFF;
+
+    cpu.load_state(&state);
+
+    place_at(&mut bus, PM_CODE_BASE, &[0xCF]); // IRET
+
+    let ring3_ip: u16 = 0x0100;
+    let sp = cpu.esp();
+    write_word_at(&mut bus, PM_STACK_BASE + sp, ring3_ip);
+    write_word_at(&mut bus, PM_STACK_BASE + sp + 2, PM_RING3_CS_SEL);
+    write_word_at(&mut bus, PM_STACK_BASE + sp + 4, 0x0202);
+    write_word_at(&mut bus, PM_STACK_BASE + sp + 6, 0xFF00);
+    write_word_at(&mut bus, PM_STACK_BASE + sp + 8, PM_RING3_SS_SEL);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.cs() & 3, 3, "IRET should land at ring 3");
+    assert_eq!(
+        cpu.ds(),
+        0,
+        "Execute-only code in DS must be zeroed on privilege change"
     );
 }
