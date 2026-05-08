@@ -539,6 +539,9 @@ impl<T: Tracing> Pc9801Bus<T> {
                 }
                 self.handle_mouse_timer_control_change(was_enabled);
             }
+            // Hi-reso 8255A mouse port range. Not decoded on the normal-mode
+            // machines we emulate.
+            0x0061 | 0x0063 | 0x0065 | 0x0067 => {}
             // Mouse interrupt timer setting.
             // Only bits 1:0 select frequency. Ignore writes with upper bits set
             // (games like jastrike write non-frequency values to this port).
