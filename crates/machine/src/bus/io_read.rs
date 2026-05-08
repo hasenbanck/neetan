@@ -552,6 +552,9 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x7FD9 => self.mouse_ppi.read_port_a(self.current_cycle),
             0x7FDB => self.mouse_ppi.read_port_b(),
             0x7FDD => self.mouse_ppi.read_port_c(),
+            // Hi-reso 8255A mouse port range. Not decoded on the normal-mode
+            // machines we emulate.
+            0x0061 | 0x0063 | 0x0065 | 0x0067 => 0xFF,
             // Mouse interrupt timer setting (write-only on PC-9801VM).
             0xBFDB => 0xFF,
 
