@@ -58,6 +58,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn interrupt_with_return_eip(
         &mut self,
         vector: u8,
@@ -65,6 +66,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         error_code: Option<u16>,
         is_software_int: bool,
         is_external: bool,
+        is_fault: bool,
         bus: &mut impl common::Bus,
     ) {
         self.rep_active = false;
@@ -94,12 +96,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 error_code,
                 is_software_int,
                 is_external,
+                is_fault,
                 bus,
             );
             self.supervisor_override = false;
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn interrupt_protected(
         &mut self,
         vector: u8,
@@ -107,6 +111,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         error_code: Option<u16>,
         is_software_int: bool,
         is_external: bool,
+        is_fault: bool,
         bus: &mut impl common::Bus,
     ) {
         let ext = is_external as u16;
@@ -185,6 +190,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             return_eip,
             error_code,
             ext,
+            is_fault,
             bus,
         );
     }
@@ -199,6 +205,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         return_eip: u32,
         error_code: Option<u16>,
         ext: u16,
+        is_fault: bool,
         bus: &mut impl common::Bus,
     ) {
         let Some(descriptor) = self.decode_descriptor(gate_selector, bus) else {
@@ -291,7 +298,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             let old_ds = self.sregs[SegReg32::DS as usize];
             let old_fs = self.sregs[SegReg32::FS as usize];
             let old_gs = self.sregs[SegReg32::GS as usize];
-            let old_eflags = self.eflags_upper | self.flags.compress() as u32;
+            let mut old_eflags = self.eflags_upper | self.flags.compress() as u32;
+            if is_fault {
+                // 386 PRM 9.7: faults push EFLAGS with RF=1 so that IRET back
+                // restarts the faulting instruction without immediately
+                // re-triggering an instruction breakpoint.
+                old_eflags |= 0x0001_0000;
+            }
             let old_cs = self.sregs[SegReg32::CS as usize];
 
             let ss_error_code = Self::segment_error_code(new_ss) + ext;
@@ -445,7 +458,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
         // Same-privilege interrupt.
         if is_386_gate {
-            let eflags = self.eflags_upper | self.flags.compress() as u32;
+            let mut eflags = self.eflags_upper | self.flags.compress() as u32;
+            if is_fault {
+                eflags |= 0x0001_0000;
+            }
             let cs = self.sregs[SegReg32::CS as usize];
             self.push_dword(bus, eflags);
             if self.fault_pending {
@@ -508,7 +524,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         } else {
             self.ip_upper | self.ip as u32
         };
-        self.interrupt_with_return_eip(vector, return_eip, None, false, true, bus);
+        self.interrupt_with_return_eip(vector, return_eip, None, false, true, false, bus);
     }
 
     pub(super) fn raise_software_interrupt(
@@ -528,7 +544,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.raise_fault_with_code(13, 0, bus);
             return;
         }
-        self.interrupt_with_return_eip(vector, return_eip, None, true, false, bus);
+        self.interrupt_with_return_eip(vector, return_eip, None, true, false, false, bus);
     }
 
     pub(super) fn raise_trap(&mut self, vector: u8, bus: &mut impl common::Bus) {
@@ -537,7 +553,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         } else {
             self.ip_upper | self.ip as u32
         };
-        self.interrupt_with_return_eip(vector, return_eip, None, false, false, bus);
+        self.interrupt_with_return_eip(vector, return_eip, None, false, false, false, bus);
     }
 
     pub(super) fn raise_fault(&mut self, vector: u8, bus: &mut impl common::Bus) {
@@ -551,7 +567,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             match self.check_double_fault(vector) {
                 DoubleFaultResult::Shutdown => return,
                 DoubleFaultResult::DoubleFault => {
-                    self.interrupt_with_return_eip(8, return_eip, Some(0), false, false, bus);
+                    self.interrupt_with_return_eip(8, return_eip, Some(0), false, false, true, bus);
                     self.trap_level = 0;
                     self.fault_pending = true;
                     return;
@@ -559,7 +575,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 DoubleFaultResult::Normal => {}
             }
         }
-        self.interrupt_with_return_eip(vector, return_eip, None, false, false, bus);
+        self.interrupt_with_return_eip(vector, return_eip, None, false, false, true, bus);
         self.trap_level = 0;
         self.fault_pending = saved_fault_pending || self.fault_pending;
     }
@@ -580,7 +596,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             match self.check_double_fault(vector) {
                 DoubleFaultResult::Shutdown => return,
                 DoubleFaultResult::DoubleFault => {
-                    self.interrupt_with_return_eip(8, return_eip, Some(0), false, false, bus);
+                    self.interrupt_with_return_eip(8, return_eip, Some(0), false, false, true, bus);
                     self.trap_level = 0;
                     self.fault_pending = true;
                     return;
@@ -588,7 +604,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 DoubleFaultResult::Normal => {}
             }
         }
-        self.interrupt_with_return_eip(vector, return_eip, Some(error_code), false, false, bus);
+        self.interrupt_with_return_eip(
+            vector,
+            return_eip,
+            Some(error_code),
+            false,
+            false,
+            true,
+            bus,
+        );
         self.trap_level = 0;
         self.fault_pending = saved_fault_pending || self.fault_pending;
     }

@@ -5601,6 +5601,57 @@ fn i386_div_by_zero_dword_raises_de() {
 }
 
 #[test]
+fn i386_fault_entry_pushes_eflags_with_rf_set() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    cpu.state.set_eax(0x0001);
+    cpu.state.set_ecx(0x0000);
+    place_at(&mut bus, PM_CODE_BASE, &[0xF6, 0xF1]); // DIV CL
+
+    cpu.step(&mut bus); // DIV CL -> #DE
+    cpu.step(&mut bus); // HLT in #DE handler
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_DE_HANDLER_IP as u32 + 1);
+
+    // #DE pushes no error code, frame is EIP, CS, EFLAGS at SP+0, +4, +8.
+    let sp = cpu.esp();
+    let pushed_eflags = read_dword_at(&bus, PM_STACK_BASE + sp + 8);
+    assert!(
+        pushed_eflags & 0x0001_0000 != 0,
+        "fault entry must push EFLAGS with RF=1, got {:#010x}",
+        pushed_eflags,
+    );
+}
+
+#[test]
+fn i386_software_int_does_not_push_rf() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_exception_handlers(&mut bus);
+    cpu.load_state(&state);
+
+    place_at(&mut bus, PM_CODE_BASE, &[0xCD, 0x00]); // INT 0 (software int, NOT a fault)
+
+    cpu.step(&mut bus); // INT 0 -> handler entry
+    cpu.step(&mut bus); // HLT in #DE handler
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PM_DE_HANDLER_IP as u32 + 1);
+
+    let sp = cpu.esp();
+    let pushed_eflags = read_dword_at(&bus, PM_STACK_BASE + sp + 8);
+    assert!(
+        pushed_eflags & 0x0001_0000 == 0,
+        "software INT must push EFLAGS with RF=0, got {:#010x}",
+        pushed_eflags,
+    );
+}
+
+#[test]
 fn i386_idiv_overflow_raises_de() {
     let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
