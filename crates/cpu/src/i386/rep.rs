@@ -184,6 +184,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.rep_operand_size_override = self.operand_size_override;
                 self.rep_address_size_override = self.address_size_override;
                 self.set_rep_count(count);
+                self.ip = self.rep_restart_ip;
+                self.ip_upper = self.rep_restart_ip_upper;
                 return;
             }
         }
