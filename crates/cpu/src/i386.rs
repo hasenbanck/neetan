@@ -1851,6 +1851,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let new_base = ndesc_base;
 
         let (
+            ntss_cr3,
             ntss_eip,
             ntss_eflags,
             ntss_eax,
@@ -1871,6 +1872,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         );
 
         if is_386_tss {
+            ntss_cr3 = self.read_dword_linear(bus, new_base.wrapping_add(28));
             ntss_eip = self.read_dword_linear(bus, new_base.wrapping_add(32));
             ntss_eflags = self.read_dword_linear(bus, new_base.wrapping_add(36));
             ntss_eax = self.read_dword_linear(bus, new_base.wrapping_add(40));
@@ -1889,6 +1891,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             ntss_gs = self.read_word_linear(bus, new_base.wrapping_add(92));
             ntss_ldt = self.read_word_linear(bus, new_base.wrapping_add(96));
         } else {
+            ntss_cr3 = 0;
             ntss_eip = self.read_word_linear(bus, new_base.wrapping_add(14)) as u32;
             ntss_eflags = self.read_word_linear(bus, new_base.wrapping_add(16)) as u32;
             ntss_eax = self.read_word_linear(bus, new_base.wrapping_add(18)) as u32;
@@ -1933,6 +1936,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let nlinear5 = naddr.wrapping_add(5);
         let nphys5 = self.translate_linear(nlinear5, false, bus).unwrap_or(0);
         self.tr_rights = bus.read_byte(nphys5);
+
+        // Load CR3 from the new 386 TSS while paging is enabled. The new task's
+        // page directory must be installed before any subsequent linear access
+        // (LDT load, segment descriptor reads) so those resolve against the
+        // new task's page tables.
+        if is_386_tss && self.is_paging_enabled() {
+            self.cr3 = ntss_cr3;
+            self.flush_tlb();
+        }
 
         // Load registers from new TSS.
         self.flags.expand(ntss_eflags as u16);
