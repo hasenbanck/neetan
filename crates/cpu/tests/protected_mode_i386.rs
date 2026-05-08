@@ -2635,6 +2635,57 @@ fn i386_task_switch_saves_and_restores_registers() {
 }
 
 #[test]
+fn i386_task_switch_cs_with_dpl_ne_rpl_raises_ts() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_extended(&mut bus);
+    cpu.load_state(&state);
+
+    let task2_ip: u16 = 0x0300;
+    // CS selector 0x0020 = GDT index 4 (DPL=3 ring3 code) with RPL=0.
+    // For non-conforming code, DPL must equal RPL, so this must raise #TS.
+    let bad_cs: u16 = 0x0020;
+    write_tss386(
+        &mut bus,
+        PM_TSS2_BASE,
+        0,
+        0xFFF0,
+        PM_SS_SEL,
+        task2_ip as u32,
+        0x0002,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        PM_DS_SEL,
+        bad_cs,
+        PM_SS_SEL,
+        PM_DS_SEL,
+        0,
+        0,
+        0,
+    );
+
+    bus.ram[(PM_CODE_BASE + task2_ip as u32) as usize] = 0xF4;
+
+    place_at(&mut bus, PM_CODE_BASE, &[0x9A, 0x00, 0x00, 0x48, 0x00]);
+
+    cpu.step(&mut bus); // CALL FAR -> task switch -> #TS
+    cpu.step(&mut bus); // HLT in #TS handler
+
+    assert!(cpu.halted(), "expected to land at the #TS handler HLT");
+    assert_eq!(
+        cpu.ip(),
+        PM_TS_HANDLER_IP as u32 + 1,
+        "should be at #TS handler"
+    );
+}
+
+#[test]
 fn i386_task_switch_loads_cr3_when_paging_enabled() {
     let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
