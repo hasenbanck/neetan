@@ -2245,6 +2245,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                         self.regs.word(WordReg::SP) as u32
                     };
                     let old_ss_base = self.seg_base(SegReg32::SS);
+                    let old_ss_is_32bit = self.seg_granularity[SegReg32::SS as usize] & 0x40 != 0;
 
                     self.load_task_data_segment(SegReg32::SS, tss_ss, target_dpl, bus);
                     if self.use_esp() {
@@ -2257,21 +2258,28 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                         self.push_dword(bus, saved_ss as u32);
                         self.push_dword(bus, saved_esp);
                         for i in (0..gate_count as u32).rev() {
-                            let param = self.read_dword_linear(
-                                bus,
-                                old_ss_base.wrapping_add(saved_esp.wrapping_add(i * 4)),
-                            );
+                            let offset = saved_esp.wrapping_add(i * 4);
+                            let offset = if old_ss_is_32bit {
+                                offset
+                            } else {
+                                offset & 0xFFFF
+                            };
+                            let param =
+                                self.read_dword_linear(bus, old_ss_base.wrapping_add(offset));
                             self.push_dword(bus, param);
                         }
                     } else {
                         self.push(bus, saved_ss);
                         self.push(bus, saved_esp as u16);
                         for i in (0..gate_count as u16).rev() {
-                            let param = self.read_word_linear(
-                                bus,
-                                old_ss_base
-                                    .wrapping_add((saved_esp as u16).wrapping_add(i * 2) as u32),
-                            );
+                            let offset = saved_esp.wrapping_add(i as u32 * 2);
+                            let offset = if old_ss_is_32bit {
+                                offset
+                            } else {
+                                offset & 0xFFFF
+                            };
+                            let param =
+                                self.read_word_linear(bus, old_ss_base.wrapping_add(offset));
                             self.push(bus, param);
                         }
                     }

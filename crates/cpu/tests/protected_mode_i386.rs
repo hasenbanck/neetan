@@ -7910,6 +7910,78 @@ fn vm86_non_hle_port_still_denied_by_iopb() {
 }
 
 #[test]
+fn i386_call_gate_param_copy_wraps_when_old_ss_is_16bit() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let mut state = setup_protected_mode_extended(&mut bus);
+    make_ring3_state(&mut state);
+    // SS is GDT entry 6 with default granularity (D=0, 16-bit stack).
+    state.set_esp(0xFFFC);
+    cpu.load_state(&state);
+
+    let gate_target_ip: u32 = 0x0000_0100;
+    write_gdt_gate(
+        &mut bus,
+        PM_GDT_BASE,
+        8,
+        gate_target_ip,
+        PM_CS_SEL,
+        2,
+        12, // 386/32-bit call gate
+        3,
+    );
+
+    bus.ram[(PM_CODE_BASE + gate_target_ip) as usize] = 0xF4;
+
+    // First parameter: starts at the very top of the 16-bit SS, last 4 bytes.
+    write_dword_at(&mut bus, PM_RING3_STACK_BASE + 0xFFFC, 0xAAAA_AAAA);
+    // Second parameter: must come from offset 0x0000 of SS after wrap.
+    write_dword_at(&mut bus, PM_RING3_STACK_BASE, 0xBBBB_BBBB);
+    // Trap value at the non-wrapped linear address. Reading this means we did
+    // not wrap mod 0x10000 the way a 16-bit SS requires.
+    write_dword_at(&mut bus, PM_RING3_STACK_BASE + 0x1_0000, 0xCCCC_CCCC);
+
+    place_at(
+        &mut bus,
+        PM_RING3_CODE_BASE,
+        &[0x9A, 0x00, 0x00, 0x40, 0x00], // CALL FAR 0x0040:0x0000 (gate selector 0x0040 = entry 8 RPL 0)
+    );
+
+    cpu.step(&mut bus); // CALL FAR through gate
+    cpu.step(&mut bus); // HLT at gate target
+
+    assert!(cpu.halted(), "expected to land at the HLT in the target");
+    assert_eq!(cpu.cs() & 3, 0, "should now be at ring 0");
+
+    // On the new ring 0 stack: params pushed in reverse order followed by
+    // the return frame (CS:EIP for a CALL through a 32-bit gate).
+    // Stack grows down, so top has the return EIP, then return CS, then
+    // the parameters in original (forward) order.
+    let sp = cpu.esp();
+    let ss_base = cpu.state.seg_bases[cpu::SegReg32::SS as usize];
+    let return_eip = read_dword_at(&bus, ss_base + sp);
+    let return_cs = read_dword_at(&bus, ss_base + sp + 4) & 0xFFFF;
+    let param0 = read_dword_at(&bus, ss_base + sp + 8);
+    let param1 = read_dword_at(&bus, ss_base + sp + 12);
+    let pushed_esp = read_dword_at(&bus, ss_base + sp + 16);
+    let pushed_ss = read_dword_at(&bus, ss_base + sp + 20) & 0xFFFF;
+
+    assert_eq!(return_eip, 5, "return EIP should follow the 5-byte CALL");
+    assert_eq!(return_cs, PM_RING3_CS_SEL as u32);
+    assert_eq!(param0, 0xAAAA_AAAA, "param 0 from SS:0xFFFC");
+    assert_eq!(
+        param1, 0xBBBB_BBBB,
+        "param 1 must be read from SS:0x0000 after a 16-bit wrap"
+    );
+    assert_ne!(
+        param1, 0xCCCC_CCCC,
+        "param 1 must not be read from the non-wrapped linear address"
+    );
+    assert_eq!(pushed_esp, 0xFFFC);
+    assert_eq!(pushed_ss, PM_RING3_SS_SEL as u32);
+}
+
+#[test]
 fn i386_iret_inter_privilege_reloads_data_segment_descriptor() {
     let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
