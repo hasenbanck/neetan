@@ -9,6 +9,10 @@ struct TestBus {
     irq_pending: bool,
     irq_vector: u8,
     io_log: Vec<(u16, u8)>,
+    /// Captures the un-masked physical address of every write reaching the bus.
+    /// Used by tests that assert the CPU passes 32-bit physical addresses
+    /// through to the bus without internal clamping.
+    write_address_log: Vec<u32>,
 }
 
 impl TestBus {
@@ -18,6 +22,7 @@ impl TestBus {
             irq_pending: false,
             irq_vector: 0,
             io_log: Vec::new(),
+            write_address_log: Vec::new(),
         }
     }
 }
@@ -28,6 +33,7 @@ impl common::Bus for TestBus {
     }
 
     fn write_byte(&mut self, address: u32, value: u8) {
+        self.write_address_log.push(address);
         self.ram[(address & ADDRESS_MASK) as usize] = value;
     }
 
@@ -2505,4 +2511,44 @@ fn supervisor_read_from_readonly_page_with_wp() {
         "WP only affects writes, reads should succeed"
     );
     assert_eq!(cpu.al(), 0xAB);
+}
+
+/// PC-9821AS/AP advertise a 32-bit address space at the machine layer
+/// (`MachineModel::address_mask` returns `0xFFFF_FFFF` for them, and the bus
+/// recognises the PEGC linear-frame-buffer high alias at `0xFFF0_0000-0xFFF7_FFFF`).
+/// Paging must therefore deliver high physical addresses to the bus unmodified;
+/// any internal clamp inside the CPU paging module would silently redirect
+/// 32-bit-aliased writes (e.g. Win95's PEGC framebuffer mapping) to the wrong
+/// destination. Mapping a linear page to physical `0xFFF0_5000` and writing
+/// through it must reach the bus with the high bits intact.
+#[test]
+fn paging_passes_high_physical_address_to_bus() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_paged_protected_mode(&mut bus);
+    cpu.load_state(&state);
+
+    // Remap the linear page covering DS:0x0000 (linear = PG_DATA_BASE = 0x10000)
+    // to physical 0xFFF0_5000 - a page-aligned address with bits 24..31 set.
+    const HIGH_PHYS_PAGE: u32 = 0xFFF0_5000;
+    let pte_index = PG_DATA_BASE >> 12;
+    write_dword_at(
+        &mut bus,
+        PG_PAGE_TABLE_0 + pte_index * 4,
+        HIGH_PHYS_PAGE | PTE_P | PTE_RW,
+    );
+
+    // MOV BYTE [0x0050], 0x42 ; C6 06 50 00 42
+    place_at(&mut bus, PG_CODE_BASE, &[0xC6, 0x06, 0x50, 0x00, 0x42]);
+    cpu.step(&mut bus);
+
+    let expected = HIGH_PHYS_PAGE | 0x50;
+    assert!(
+        bus.write_address_log.contains(&expected),
+        "bus.write_byte must be invoked with the full 32-bit physical address \
+         {:#010X}; observed writes: {:?}",
+        expected,
+        bus.write_address_log,
+    );
 }
