@@ -4919,6 +4919,56 @@ fn iret_cpl0_to_vm86_clocks_60() {
     );
 }
 
+/// 32-bit IRETD from CPL0 returning to VM86 must preserve the upper 16 bits of
+/// EIP popped from the stack frame, per the 386 PRM IRETD pseudocode (which
+/// pops a full 32-bit EIP regardless of the target mode). Mirror of the
+/// VM86->VM86 path tested by `vm86_iretd_preserves_ip_upper`.
+#[test]
+fn iret_cpl0_to_vm86_preserves_ip_upper() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode(&mut bus, 0xFFFF);
+
+    // Build a 9-dword CPL0->VM86 IRET stack frame with a non-zero upper EIP.
+    let stack_base: u32 = PM_STACK_BASE;
+    let initial_esp: u32 = 0xFFC0;
+    let frame_esp = initial_esp - 9 * 4;
+    let new_eip: u32 = 0x0001_5678;
+    write_dword_at(&mut bus, stack_base + frame_esp, new_eip);
+    write_dword_at(&mut bus, stack_base + frame_esp + 4, 0x1000);
+    write_dword_at(&mut bus, stack_base + frame_esp + 8, 0x0002_3202);
+    write_dword_at(&mut bus, stack_base + frame_esp + 12, 0xF000);
+    write_dword_at(&mut bus, stack_base + frame_esp + 16, 0x2000);
+    write_dword_at(&mut bus, stack_base + frame_esp + 20, 0x3000);
+    write_dword_at(&mut bus, stack_base + frame_esp + 24, 0x4000);
+    write_dword_at(&mut bus, stack_base + frame_esp + 28, 0x5000);
+    write_dword_at(&mut bus, stack_base + frame_esp + 32, 0x6000);
+    state.set_esp(frame_esp);
+
+    cpu.load_state(&state);
+
+    place_at(&mut bus, PM_CODE_BASE, &[0x66, 0xCF]);
+
+    cpu.step(&mut bus);
+
+    assert_ne!(
+        cpu.eflags_upper & 0x0002_0000,
+        0,
+        "VM bit should be set after IRETD to VM86"
+    );
+    assert_eq!(
+        cpu.ip() as u16,
+        new_eip as u16,
+        "IP low 16 bits should match the popped EIP"
+    );
+    assert_eq!(
+        cpu.ip_upper,
+        new_eip & 0xFFFF_0000,
+        "ip_upper must hold the upper 16 bits of EIP after a 32-bit IRETD from CPL0 to VM86"
+    );
+}
+
 /// 32-bit EAX IN (operand-size override) must consult the IOPB for both `port`
 /// and `port+2`. If `port+2` is denied, a #GP must be raised even though `port`
 /// is allowed.

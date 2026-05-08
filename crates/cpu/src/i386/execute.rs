@@ -2870,7 +2870,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.sregs[SegReg32::CS as usize] = new_cs;
                 self.set_real_segment_cache(SegReg32::CS, new_cs);
                 self.ip = new_eip as u16;
-                self.ip_upper = 0;
+                self.ip_upper = new_eip & 0xFFFF_0000;
 
                 self.sregs[SegReg32::SS as usize] = new_ss;
                 self.set_real_segment_cache(SegReg32::SS, new_ss);
