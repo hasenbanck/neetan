@@ -2247,7 +2247,59 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     let old_ss_base = self.seg_base(SegReg32::SS);
                     let old_ss_is_32bit = self.seg_granularity[SegReg32::SS as usize] & 0x40 != 0;
 
-                    self.load_task_data_segment(SegReg32::SS, tss_ss, target_dpl, bus);
+                    // Validate the new SS descriptor without committing it yet.
+                    if tss_ss & 0xFFFC == 0 {
+                        self.raise_fault_with_code(10, 0, bus);
+                        return false;
+                    }
+                    let Some(new_ss_desc) = self.decode_descriptor(tss_ss, bus) else {
+                        self.raise_fault_with_code(10, Self::segment_error_code(tss_ss), bus);
+                        return false;
+                    };
+                    let new_ss_rights = new_ss_desc.rights;
+                    if !Self::descriptor_is_segment(new_ss_rights)
+                        || !Self::descriptor_is_writable(new_ss_rights)
+                    {
+                        self.raise_fault_with_code(10, Self::segment_error_code(tss_ss), bus);
+                        return false;
+                    }
+                    let new_ss_dpl = Self::descriptor_dpl(new_ss_rights);
+                    let new_ss_rpl = tss_ss & 3;
+                    if new_ss_dpl != target_dpl || new_ss_rpl != target_dpl {
+                        self.raise_fault_with_code(10, Self::segment_error_code(tss_ss), bus);
+                        return false;
+                    }
+                    if !Self::descriptor_present(new_ss_rights) {
+                        self.raise_fault_with_code(10, Self::segment_error_code(tss_ss), bus);
+                        return false;
+                    }
+
+                    // Stack-space pre-check: verify the new stack has room for
+                    // the parameters plus the return frame (SS, ESP, CS, EIP)
+                    // before any state is mutated. Per 486 PRM CALL gate
+                    // pseudocode, raise #SS(0) when the stack is too small.
+                    let bytes_per_push: u32 = if is_386_gate { 4 } else { 2 };
+                    let total_push_bytes = bytes_per_push * (4 + gate_count as u32);
+                    let new_ss_d_bit = new_ss_desc.granularity & 0x40 != 0;
+                    let stack_top = if new_ss_d_bit {
+                        tss_esp
+                    } else {
+                        tss_esp & 0xFFFF
+                    };
+                    let stack_space_ok = if Self::descriptor_is_expand_down(new_ss_rights) {
+                        stack_top
+                            .checked_sub(total_push_bytes)
+                            .is_some_and(|new_esp| new_esp > new_ss_desc.limit)
+                    } else {
+                        stack_top >= total_push_bytes
+                    };
+                    if !stack_space_ok {
+                        self.raise_fault_with_code(12, 0, bus);
+                        return false;
+                    }
+
+                    self.set_accessed_bit(tss_ss, bus);
+                    self.set_loaded_segment_cache(SegReg32::SS, tss_ss, new_ss_desc);
                     if self.use_esp() {
                         self.regs.set_dword(crate::DwordReg::ESP, tss_esp);
                     } else {
