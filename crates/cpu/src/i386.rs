@@ -2098,6 +2098,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
             return;
         }
+        let dpl = Self::descriptor_dpl(rights);
+        let rpl = selector & 3;
+        if Self::descriptor_is_conforming_code(rights) {
+            if dpl > rpl {
+                self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
+                return;
+            }
+        } else if dpl != rpl {
+            self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
+            return;
+        }
         if !Self::descriptor_present(rights) {
             self.raise_fault_with_code(11, Self::segment_error_code(selector), bus);
             return;
@@ -2107,8 +2118,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             return;
         }
         self.set_accessed_bit(selector, bus);
-        let cpl = selector & 3;
-        let adjusted = (selector & !3) | cpl;
+        let adjusted = (selector & !3) | rpl;
         self.set_loaded_segment_cache(SegReg32::CS, adjusted, descriptor);
         self.ip = offset as u16;
         self.ip_upper = offset & 0xFFFF_0000;
