@@ -1366,7 +1366,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     /// MOV CRn, r32 (0F 22) - write to control register.
     /// On a 386, CR0 writable bits are: PE(0), MP(1), EM(2), TS(3), ET(4), PG(31).
-    /// On a 486, WP(16) is also writable.
+    /// On a 486, NE(5), WP(16), AM(18), NW(29) and CD(30) are also writable.
     /// Other bits are reserved and always read as 0.
     fn mov_cr_r32(&mut self, bus: &mut impl common::Bus) {
         if self.is_protected_mode() && self.cpl() != 0 {
@@ -1380,7 +1380,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             0 => {
                 let old_cr0 = self.cr0;
                 let cr0_mask = if CPU_MODEL == super::CPU_MODEL_486 {
-                    0x8001_001F // PG | WP | ET | TS | EM | MP | PE
+                    0xE005_003F // PG | CD | NW | AM | WP | NE | ET | TS | EM | MP | PE
                 } else {
                     0x8000_001F // PG | ET | TS | EM | MP | PE
                 };
