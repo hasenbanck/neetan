@@ -1430,6 +1430,10 @@ fn i386_ring3_task_switch_reads_supervisor_tss_descriptor() {
 
     enable_identity_paging(&mut bus, &mut state);
 
+    // The new task must run with the same identity-mapped page directory so
+    // GDT and TSS reads resolve correctly after CR3 is reloaded from the TSS.
+    write_dword_at(&mut bus, PM_TSS2_BASE + 28, TEST_PAGE_DIRECTORY_BASE);
+
     write_dword_at(
         &mut bus,
         TEST_PAGE_DIRECTORY_BASE,
@@ -2628,6 +2632,65 @@ fn i386_task_switch_saves_and_restores_registers() {
     assert_eq!(cpu.state.ebp(), 0x1357);
     assert_eq!(cpu.state.esi(), 0x2468);
     assert_eq!(cpu.state.edi(), 0x3579);
+}
+
+#[test]
+fn i386_task_switch_loads_cr3_when_paging_enabled() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let mut state = setup_protected_mode_extended(&mut bus);
+
+    // Two identity-mapped page directories pointing at the same page table,
+    // so the GDT and TSSes are reachable through either CR3.
+    enable_identity_paging(&mut bus, &mut state);
+    const NEW_TASK_CR3: u32 = 0xB_0000;
+    write_dword_at(
+        &mut bus,
+        NEW_TASK_CR3,
+        TEST_PAGE_TABLE_BASE | TEST_PAGE_PRESENT_WRITABLE,
+    );
+
+    let task2_ip: u16 = 0x0300;
+    write_tss386(
+        &mut bus,
+        PM_TSS2_BASE,
+        0,
+        0xFFF0,
+        PM_SS_SEL,
+        task2_ip as u32,
+        0x0002,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        PM_DS_SEL,
+        PM_CS_SEL,
+        PM_SS_SEL,
+        PM_DS_SEL,
+        0,
+        0,
+        0,
+    );
+    write_dword_at(&mut bus, PM_TSS2_BASE + 28, NEW_TASK_CR3);
+
+    bus.ram[(PM_CODE_BASE + task2_ip as u32) as usize] = 0xF4;
+
+    cpu.load_state(&state);
+
+    place_at(&mut bus, PM_CODE_BASE, &[0x9A, 0x00, 0x00, 0x48, 0x00]);
+
+    cpu.step(&mut bus); // CALL FAR -> task switch
+    cpu.step(&mut bus); // HLT in new task
+
+    assert!(cpu.halted());
+    assert_eq!(
+        cpu.cr3, NEW_TASK_CR3,
+        "task switch must load CR3 from the new TSS when paging is enabled"
+    );
 }
 
 #[test]
