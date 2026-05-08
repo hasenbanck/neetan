@@ -95,6 +95,77 @@ fn i486dx_cr0_after_reset() {
 }
 
 #[test]
+fn i486dx_cr0_writable_bits_round_trip() {
+    let mut cpu = make_486dx();
+    let mut bus = TestBus::new();
+
+    let cs: u16 = 0x1000;
+    let ip: u16 = 0x0000;
+    // 0x6005_0030: bit 30 (CD), 29 (NW), 18 (AM), 16 (WP), 5 (NE), 4 (ET).
+    // PG and PE are intentionally clear so paging/protection are not enabled.
+    place_code(
+        &mut bus,
+        cs,
+        ip,
+        &[
+            0x66, 0xB8, 0x30, 0x00, 0x05, 0x60, // MOV EAX, 0x6005_0030
+            0x0F, 0x22, 0xC0, // MOV CR0, EAX
+            0x66, 0x31, 0xDB, // XOR EBX, EBX
+            0x0F, 0x20, 0xC3, // MOV EBX, CR0
+        ],
+    );
+
+    let state = setup_state(cs, ip);
+    cpu.load_state(&state);
+
+    cpu.step(&mut bus); // MOV EAX
+    cpu.step(&mut bus); // MOV CR0, EAX
+    assert_eq!(
+        cpu.cr0, 0x6005_0030,
+        "486 must keep NE+AM+NW+CD+WP+ET when written to CR0"
+    );
+
+    cpu.step(&mut bus); // XOR EBX, EBX
+    cpu.step(&mut bus); // MOV EBX, CR0
+    assert_eq!(
+        cpu.ebx(),
+        0x6005_0030,
+        "MOV r32, CR0 must read back the same writable bits"
+    );
+}
+
+#[test]
+fn i486dx_cr0_reserved_bits_masked_off() {
+    let mut cpu = make_486dx();
+    let mut bus = TestBus::new();
+
+    let cs: u16 = 0x1000;
+    let ip: u16 = 0x0000;
+    // Try to set every CR0 bit except PE (bit 0) and PG (bit 31). The mask must
+    // strip bits 6-15, 17, 19-28 because those are reserved on 486.
+    place_code(
+        &mut bus,
+        cs,
+        ip,
+        &[
+            0x66, 0xB8, 0xFE, 0xFF, 0xFF, 0x7F, // MOV EAX, 0x7FFF_FFFE
+            0x0F, 0x22, 0xC0, // MOV CR0, EAX
+        ],
+    );
+
+    let state = setup_state(cs, ip);
+    cpu.load_state(&state);
+
+    cpu.step(&mut bus); // MOV EAX
+    cpu.step(&mut bus); // MOV CR0, EAX
+    // 0x7FFF_FFFE & 0xE005_003F = 0x6005_003E (PE was clear, PG was clear).
+    assert_eq!(
+        cpu.cr0, 0x6005_003E,
+        "CR0 reserved bits must be masked off on 486"
+    );
+}
+
+#[test]
 fn i486dx_bswap_eax() {
     let mut cpu = make_486dx();
     let mut bus = TestBus::new();
