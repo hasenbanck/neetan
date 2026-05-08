@@ -1513,23 +1513,45 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
     }
 
-    fn invalidate_segment_if_needed(&mut self, seg: SegReg32, new_cpl: u16) {
+    fn revalidate_data_segment(&mut self, seg: SegReg32, new_cpl: u16, bus: &mut impl common::Bus) {
         if !self.seg_valid[seg as usize] {
             return;
         }
-        let rights = self.seg_rights[seg as usize];
+        let selector = self.sregs[seg as usize];
+        if selector & 0xFFFC == 0 {
+            self.set_null_segment(seg, selector);
+            return;
+        }
+        let saved_supervisor_override = self.supervisor_override;
+        self.supervisor_override = true;
+        let descriptor = self.decode_descriptor(selector, bus);
+        self.supervisor_override = saved_supervisor_override;
+        let Some(descriptor) = descriptor else {
+            self.set_null_segment(seg, 0);
+            return;
+        };
+        let rights = descriptor.rights;
         if !Self::descriptor_is_segment(rights) {
             self.set_null_segment(seg, 0);
             return;
         }
-        if Self::descriptor_is_conforming_code(rights) {
+        if Self::descriptor_is_code(rights) && !Self::descriptor_is_readable(rights) {
+            self.set_null_segment(seg, 0);
             return;
         }
-        let dpl = Self::descriptor_dpl(rights);
-        let rpl = self.sregs[seg as usize] & 3;
-        if dpl < new_cpl || dpl < rpl {
+        if !Self::descriptor_present(rights) {
             self.set_null_segment(seg, 0);
+            return;
         }
+        if !Self::descriptor_is_conforming_code(rights) {
+            let dpl = Self::descriptor_dpl(rights);
+            let rpl = selector & 3;
+            if dpl < new_cpl || dpl < rpl {
+                self.set_null_segment(seg, 0);
+                return;
+            }
+        }
+        self.set_loaded_segment_cache(seg, selector, descriptor);
     }
 
     fn read_word_linear(&mut self, bus: &mut impl common::Bus, addr: u32) -> u16 {
