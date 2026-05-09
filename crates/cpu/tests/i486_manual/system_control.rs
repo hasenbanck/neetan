@@ -8,7 +8,6 @@
 //! gates straight out of the manual.
 
 use common::Cpu as _;
-use cpu::{CPU_MODEL_386, CPU_MODEL_486, I386};
 
 use super::setup::{
     GLOBAL_DESCRIPTOR_TABLE_BASE, HANDLER_GENERAL_PROTECTION_IP, HANDLER_INVALID_OPCODE_IP,
@@ -16,9 +15,9 @@ use super::setup::{
     RIGHTS_TSS_386_AVAILABLE, RING0_CODE_BASE, SELECTOR_PRIMARY_TSS, SELECTOR_RING0_CODE,
     SELECTOR_RING0_DATA, SELECTOR_RING0_STACK, SELECTOR_SECONDARY_TSS, SHARED_DATA_BASE,
     SYSTEM_TYPE_LDT, SYSTEM_TYPE_TSS_286_AVAILABLE, TASK_STATE_SEGMENT_SECONDARY_BASE,
-    TSS_286_LIMIT, TSS_MINIMUM_LIMIT, TestBus, place_at, place_code, promote_to_ring3,
-    read_byte_at, setup_protected_mode, setup_protected_mode_with_handlers, setup_vm86,
-    setup_vm86_with_iopl, write_segment_descriptor_16bit,
+    TSS_286_LIMIT, TSS_MINIMUM_LIMIT, TestBus, make_cpu_386, make_cpu_486, place_at, place_code,
+    promote_to_ring3, read_byte_at, setup_protected_mode, setup_protected_mode_with_handlers,
+    setup_vm86, setup_vm86_with_iopl, write_segment_descriptor_16bit,
 };
 
 const REAL_MODE_CODE_SEGMENT: u16 = 0xF000;
@@ -26,14 +25,6 @@ const REAL_MODE_CODE_OFFSET: u16 = 0x0000;
 const REAL_MODE_DATA_SEGMENT: u16 = 0x1000;
 const REAL_MODE_GDT_DESCRIPTOR_OFFSET: u16 = 0x0000;
 const REAL_MODE_IDT_DESCRIPTOR_OFFSET: u16 = 0x0010;
-
-fn make_cpu_386() -> I386<{ CPU_MODEL_386 }> {
-    I386::<{ CPU_MODEL_386 }>::new()
-}
-
-fn make_cpu_486() -> I386<{ CPU_MODEL_486 }> {
-    I386::<{ CPU_MODEL_486 }>::new()
-}
 
 // Place a 6-byte LGDT/LIDT operand (16-bit limit + 32-bit base) into RAM
 // at a linear address that the test code segment can reach via DS.

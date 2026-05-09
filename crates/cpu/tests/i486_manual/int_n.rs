@@ -12,13 +12,13 @@
 //!   bits 15..3: selector index (i.e. selector & 0xFFF8)
 
 use common::Cpu as _;
-use cpu::{CPU_MODEL_386, I386, I386State};
+use cpu::I386State;
 
 use super::setup::{
     HANDLER_GENERAL_PROTECTION_IP, HANDLER_SEGMENT_NOT_PRESENT_IP, INTERRUPT_DESCRIPTOR_TABLE_BASE,
-    RING0_CODE_BASE, SELECTOR_RING0_CODE, TestBus, place_at, place_code, promote_to_ring3,
-    setup_protected_mode_with_handlers, setup_vm86, setup_vm86_with_iopl, write_interrupt_gate_286,
-    write_interrupt_gate_386, write_trap_gate_386,
+    RING0_CODE_BASE, SELECTOR_RING0_CODE, TestBus, make_cpu_386, place_at, place_code,
+    promote_to_ring3, setup_protected_mode_with_handlers, setup_vm86, setup_vm86_with_iopl,
+    write_interrupt_gate_286, write_interrupt_gate_386, write_trap_gate_386,
 };
 
 const TEST_VECTOR: u8 = 0x42;
@@ -27,10 +27,6 @@ const LOW_VECTOR: u8 = 0x10;
 const TEST_VECTOR_HANDLER_IP: u16 = 0x9100;
 const TEST_VECTOR_TRAP_HANDLER_IP: u16 = 0x9200;
 const TEST_VECTOR_286_HANDLER_IP: u16 = 0x9300;
-
-fn make_cpu_386() -> I386<{ CPU_MODEL_386 }> {
-    I386::<{ CPU_MODEL_386 }>::new()
-}
 
 fn idt_selector_error_code(vector: u8, ext: u16) -> u16 {
     (vector as u16) * 8 + 2 + ext

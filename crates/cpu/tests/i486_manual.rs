@@ -20,3 +20,6 @@ mod popf_pushf;
 
 #[path = "i486_manual/cli_sti.rs"]
 mod cli_sti;
+
+#[path = "i486_manual/in_out.rs"]
+mod in_out;
