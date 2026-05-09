@@ -11,3 +11,6 @@ mod int_n;
 
 #[path = "i486_manual/int3_into_bound.rs"]
 mod int3_into_bound;
+
+#[path = "i486_manual/iret.rs"]
+mod iret;
