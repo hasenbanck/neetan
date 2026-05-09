@@ -209,7 +209,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     pub(super) fn movsb(&mut self, bus: &mut impl common::Bus) {
         let si = self.string_index_si();
         let di = self.string_index_di();
-        let src_linear = self.string_addr(self.default_base(SegReg32::DS), si);
+        let src_seg = self.default_seg(SegReg32::DS);
+        if !self.check_segment_access(src_seg, si, 1, false, bus) {
+            return;
+        }
+        if !self.check_segment_access(SegReg32::ES, di, 1, true, bus) {
+            return;
+        }
+        let src_linear = self.string_addr(self.seg_base(src_seg), si);
         let dst_linear = self.string_addr(self.seg_base(SegReg32::ES), di);
         let Some(src_phys) = self.translate_linear(src_linear, false, bus) else {
             return;
@@ -227,7 +234,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     pub(super) fn movsw(&mut self, bus: &mut impl common::Bus) {
         let si = self.string_index_si();
         let di = self.string_index_di();
-        let src_base = self.default_base(SegReg32::DS);
+        let src_seg = self.default_seg(SegReg32::DS);
+        let access_size = if self.operand_size_override { 4 } else { 2 };
+        if !self.check_segment_access(src_seg, si, access_size, false, bus) {
+            return;
+        }
+        if !self.check_segment_access(SegReg32::ES, di, access_size, true, bus) {
+            return;
+        }
+        let src_base = self.seg_base(src_seg);
         let dst_base = self.seg_base(SegReg32::ES);
         if self.operand_size_override {
             let Some(val) = self.string_read_dword(bus, src_base, si) else {
@@ -260,7 +275,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     pub(super) fn cmpsb(&mut self, bus: &mut impl common::Bus) {
         let si = self.string_index_si();
         let di = self.string_index_di();
-        let src_linear = self.string_addr(self.default_base(SegReg32::DS), si);
+        let src_seg = self.default_seg(SegReg32::DS);
+        if !self.check_segment_access(src_seg, si, 1, false, bus) {
+            return;
+        }
+        if !self.check_segment_access(SegReg32::ES, di, 1, false, bus) {
+            return;
+        }
+        let src_linear = self.string_addr(self.seg_base(src_seg), si);
         let dst_linear = self.string_addr(self.seg_base(SegReg32::ES), di);
         let Some(src_phys) = self.translate_linear(src_linear, false, bus) else {
             return;
@@ -279,7 +301,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     pub(super) fn cmpsw(&mut self, bus: &mut impl common::Bus) {
         let si = self.string_index_si();
         let di = self.string_index_di();
-        let src_base = self.default_base(SegReg32::DS);
+        let src_seg = self.default_seg(SegReg32::DS);
+        let access_size = if self.operand_size_override { 4 } else { 2 };
+        if !self.check_segment_access(src_seg, si, access_size, false, bus) {
+            return;
+        }
+        if !self.check_segment_access(SegReg32::ES, di, access_size, false, bus) {
+            return;
+        }
+        let src_base = self.seg_base(src_seg);
         let dst_base = self.seg_base(SegReg32::ES);
         if self.operand_size_override {
             let Some(src) = self.string_read_dword(bus, src_base, si) else {
@@ -313,6 +343,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     pub(super) fn stosb(&mut self, bus: &mut impl common::Bus) {
         let di = self.string_index_di();
+        if !self.check_segment_access(SegReg32::ES, di, 1, true, bus) {
+            return;
+        }
         let linear = self.string_addr(self.seg_base(SegReg32::ES), di);
         let al = self.regs.byte(ByteReg::AL);
         let Some(addr) = self.translate_linear(linear, true, bus) else {
@@ -325,6 +358,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     pub(super) fn stosw(&mut self, bus: &mut impl common::Bus) {
         let di = self.string_index_di();
+        let access_size = if self.operand_size_override { 4 } else { 2 };
+        if !self.check_segment_access(SegReg32::ES, di, access_size, true, bus) {
+            return;
+        }
         let base = self.seg_base(SegReg32::ES);
         if self.operand_size_override {
             if !self.string_write_dword(bus, base, di, self.regs.dword(DwordReg::EAX)) {
@@ -348,7 +385,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     pub(super) fn lodsb(&mut self, bus: &mut impl common::Bus) {
         let si = self.string_index_si();
-        let linear = self.string_addr(self.default_base(SegReg32::DS), si);
+        let src_seg = self.default_seg(SegReg32::DS);
+        if !self.check_segment_access(src_seg, si, 1, false, bus) {
+            return;
+        }
+        let linear = self.string_addr(self.seg_base(src_seg), si);
         let Some(addr) = self.translate_linear(linear, false, bus) else {
             return;
         };
@@ -360,7 +401,12 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     pub(super) fn lodsw(&mut self, bus: &mut impl common::Bus) {
         let si = self.string_index_si();
-        let base = self.default_base(SegReg32::DS);
+        let src_seg = self.default_seg(SegReg32::DS);
+        let access_size = if self.operand_size_override { 4 } else { 2 };
+        if !self.check_segment_access(src_seg, si, access_size, false, bus) {
+            return;
+        }
+        let base = self.seg_base(src_seg);
         if self.operand_size_override {
             let Some(val) = self.string_read_dword(bus, base, si) else {
                 return;
@@ -385,6 +431,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     pub(super) fn scasb(&mut self, bus: &mut impl common::Bus) {
         let di = self.string_index_di();
+        if !self.check_segment_access(SegReg32::ES, di, 1, false, bus) {
+            return;
+        }
         let linear = self.string_addr(self.seg_base(SegReg32::ES), di);
         let Some(addr) = self.translate_linear(linear, false, bus) else {
             return;
@@ -398,6 +447,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     pub(super) fn scasw(&mut self, bus: &mut impl common::Bus) {
         let di = self.string_index_di();
+        let access_size = if self.operand_size_override { 4 } else { 2 };
+        if !self.check_segment_access(SegReg32::ES, di, access_size, false, bus) {
+            return;
+        }
         let base = self.seg_base(SegReg32::ES);
         if self.operand_size_override {
             let Some(dst) = self.string_read_dword(bus, base, di) else {
@@ -429,6 +482,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             return;
         }
         let di = self.string_index_di();
+        if !self.check_segment_access(SegReg32::ES, di, 1, true, bus) {
+            return;
+        }
         let linear = self.string_addr(self.seg_base(SegReg32::ES), di);
         let val = bus.io_read_byte(port);
         let Some(addr) = self.translate_linear(linear, true, bus) else {
@@ -446,6 +502,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             return;
         }
         let di = self.string_index_di();
+        if !self.check_segment_access(SegReg32::ES, di, size as u32, true, bus) {
+            return;
+        }
         let base = self.seg_base(SegReg32::ES);
         if self.operand_size_override {
             let low = bus.io_read_word(port) as u32;
@@ -477,7 +536,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             return;
         }
         let si = self.string_index_si();
-        let linear = self.string_addr(self.default_base(SegReg32::DS), si);
+        let src_seg = self.default_seg(SegReg32::DS);
+        if !self.check_segment_access(src_seg, si, 1, false, bus) {
+            return;
+        }
+        let linear = self.string_addr(self.seg_base(src_seg), si);
         let Some(addr) = self.translate_linear(linear, false, bus) else {
             return;
         };
@@ -494,7 +557,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             return;
         }
         let si = self.string_index_si();
-        let base = self.default_base(SegReg32::DS);
+        let src_seg = self.default_seg(SegReg32::DS);
+        if !self.check_segment_access(src_seg, si, size as u32, false, bus) {
+            return;
+        }
+        let base = self.seg_base(src_seg);
         if self.operand_size_override {
             let Some(val) = self.string_read_dword(bus, base, si) else {
                 return;

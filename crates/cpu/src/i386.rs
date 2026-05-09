@@ -501,11 +501,6 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     #[inline(always)]
-    fn default_base(&self, seg: SegReg32) -> u32 {
-        self.seg_bases[self.default_seg(seg) as usize]
-    }
-
-    #[inline(always)]
     fn seg_base(&self, seg: SegReg32) -> u32 {
         self.seg_bases[seg as usize]
     }
