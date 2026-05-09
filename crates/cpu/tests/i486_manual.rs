@@ -14,3 +14,9 @@ mod int3_into_bound;
 
 #[path = "i486_manual/iret.rs"]
 mod iret;
+
+#[path = "i486_manual/popf_pushf.rs"]
+mod popf_pushf;
+
+#[path = "i486_manual/cli_sti.rs"]
+mod cli_sti;
