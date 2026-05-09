@@ -104,6 +104,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
         let is_cmps_scas = matches!(next, 0xA6 | 0xA7 | 0xAE | 0xAF);
 
+        // Snapshot CS:EIP at the start of the loop. A fault that fires inside
+        // an iteration (e.g. an IOPB-denied OUT, or a #PF during a memory
+        // access) is dispatched by raise_fault* via interrupt_with_return_eip,
+        // which moves CS:EIP to the handler but follows the saved/restore
+        // pattern that leaves fault_pending=false. Any change in CS:EIP across
+        // an iteration therefore signals "the iteration faulted; stop the
+        // REP loop so the handler is not effectively executed in a loop".
+        let initial_cs = self.sregs[SegReg32::CS as usize];
+        let initial_ip = self.ip;
+        let initial_ip_upper = self.ip_upper;
+
         loop {
             match next {
                 0x6C => self.insb(bus),
@@ -125,7 +136,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     return;
                 }
             }
-            if self.fault_pending {
+            if self.fault_pending
+                || self.sregs[SegReg32::CS as usize] != initial_cs
+                || self.ip != initial_ip
+                || self.ip_upper != initial_ip_upper
+            {
                 self.set_rep_count(count);
                 return;
             }
