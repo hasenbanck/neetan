@@ -1,6 +1,6 @@
 //! PUSHF / POPF / PUSHFD / POPFD privilege-level boundary tests.
 //!
-//! 80486 PRM Chapter 17 ("Mixing 16-Bit and 32-Bit Code") and the per-
+//! 80486 PRM Chapter 24 ("Mixing 16-Bit and 32-Bit Code") and the per-
 //! instruction reference for PUSHF/POPF. Coverage of the IOPL/IF mask rules:
 //!
 //! - Real mode: every flag bit writable.

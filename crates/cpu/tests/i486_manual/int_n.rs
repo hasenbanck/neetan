@@ -1,11 +1,11 @@
 //! INT n (opcode 0xCD) software interrupt dispatch tests.
 //!
-//! 80486 PRM Chapter 9 ("Exception and Interrupt Handling") and the INT n
+//! 80486 PRM Chapter 9 ("Exceptions and Interrupts") and the INT n
 //! reference. Covers gate-DPL gating, gate type matrix, present-bit, target
 //! descriptor checks, real-mode IVT path, and the VM86 IOPL gate (only
 //! relevant to INT n - INT 3 / INTO are exempt and live in int3_into_bound.rs).
 //!
-//! Selector error code layout (80486 PRM Figure 9-2):
+//! Selector error code layout (80486 PRM Figure 9-6):
 //!   bit 0: EXT (1 if external/hardware-delivered)
 //!   bit 1: IDT (1 if the lookup was through the IDT)
 //!   bit 2: TI  (1 if descriptor came from the LDT)
@@ -590,8 +590,8 @@ fn int_n_vm86_target_dpl_nonzero_raises_general_protection() {
     let mut state = setup_vm86(&mut bus);
 
     // Add a CPL=3 code descriptor at slot 5, then point INT 0x42 at it
-    // through a DPL=3 gate. Per 80486 PRM, VM86 -> non-zero target DPL is
-    // illegal: VM86 can only escape to ring 0.
+    // through a DPL=3 gate. Per 80486 PRM Section 9.9.13, VM86 -> non-zero
+    // target DPL is illegal: VM86 can only escape to ring 0.
     super::setup::write_segment_descriptor_16bit(
         &mut bus,
         super::setup::GLOBAL_DESCRIPTOR_TABLE_BASE,
