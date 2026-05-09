@@ -32,3 +32,6 @@ mod mov_sreg;
 
 #[path = "i486_manual/lds_les_lfs_lgs_lss.rs"]
 mod lds_les_lfs_lgs_lss;
+
+#[path = "i486_manual/i486_specific.rs"]
+mod i486_specific;
