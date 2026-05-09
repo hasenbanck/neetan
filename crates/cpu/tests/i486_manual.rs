@@ -5,3 +5,9 @@ mod setup;
 
 #[path = "i486_manual/system_control.rs"]
 mod system_control;
+
+#[path = "i486_manual/int_n.rs"]
+mod int_n;
+
+#[path = "i486_manual/int3_into_bound.rs"]
+mod int3_into_bound;
