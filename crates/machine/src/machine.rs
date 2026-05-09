@@ -1,4 +1,4 @@
-use common::{Bus, Cpu};
+use common::{Bus, Cpu, likely, unlikely};
 
 use crate::{CpuState, MachineState, NoTracing, Pc9801Bus, Tracing};
 
@@ -22,7 +22,7 @@ impl<C: Cpu, T: Tracing> Machine<C, T> {
     /// so that timer interrupts can fire and wake the CPU.
     pub fn run_for(&mut self, budget: u64) -> u64 {
         let mut total = 0u64;
-        while total < budget {
+        while likely(total < budget) {
             self.bus
                 .set_cpu_protected_mode_enabled(self.cpu.cr0() & 1 != 0);
             let remaining = budget - total;
@@ -32,6 +32,7 @@ impl<C: Cpu, T: Tracing> Machine<C, T> {
                 .set_cpu_protected_mode_enabled(self.cpu.cr0() & 1 != 0);
 
             if let Some(warm_ctx) = self.bus.take_reset_pending() {
+                std::hint::cold_path();
                 if self.bus.shutdown_requested() {
                     // System shutdown
                     break;
@@ -46,7 +47,7 @@ impl<C: Cpu, T: Tracing> Machine<C, T> {
                 continue;
             }
 
-            if self.bus.sasi_hle_pending() {
+            if unlikely(self.bus.sasi_hle_pending()) {
                 self.bus.set_hle_paging(self.cpu.cr0(), self.cpu.cr3());
                 self.bus.execute_sasi_hle(
                     self.cpu.segment_base(common::SegmentRegister::SS),
@@ -55,7 +56,7 @@ impl<C: Cpu, T: Tracing> Machine<C, T> {
                 continue;
             }
 
-            if self.bus.ide_hle_pending() {
+            if unlikely(self.bus.ide_hle_pending()) {
                 self.bus.set_hle_paging(self.cpu.cr0(), self.cpu.cr3());
                 self.bus.execute_ide_hle(
                     self.cpu.segment_base(common::SegmentRegister::SS),
@@ -64,7 +65,7 @@ impl<C: Cpu, T: Tracing> Machine<C, T> {
                 continue;
             }
 
-            if self.bus.fdd640k_hle_pending() {
+            if unlikely(self.bus.fdd640k_hle_pending()) {
                 self.bus.set_hle_paging(self.cpu.cr0(), self.cpu.cr3());
                 self.bus.execute_fdd640k_hle(
                     self.cpu.segment_base(common::SegmentRegister::SS),
@@ -73,7 +74,7 @@ impl<C: Cpu, T: Tracing> Machine<C, T> {
                 continue;
             }
 
-            if self.bus.bios_hle_pending() {
+            if unlikely(self.bus.bios_hle_pending()) {
                 self.bus.set_hle_paging(self.cpu.cr0(), self.cpu.cr3());
                 self.bus.execute_bios_hle(&mut self.cpu);
                 continue;
@@ -83,11 +84,11 @@ impl<C: Cpu, T: Tracing> Machine<C, T> {
             // cycles than the requested budget slice. In that case this
             // invocation is done; do not enter HLT event-advance logic with a
             // wrapped `budget - total`.
-            if total >= budget {
+            if unlikely(total >= budget) {
                 break;
             }
 
-            if self.cpu.halted() {
+            if unlikely(self.cpu.halted()) {
                 let current = self.bus.current_cycle();
                 let remaining = budget.saturating_sub(total);
 
@@ -123,6 +124,7 @@ impl<C: Cpu, T: Tracing> Machine<C, T> {
                 }
             }
         }
+
         total
     }
 }
