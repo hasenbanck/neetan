@@ -23,8 +23,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             0x02 => self.lar(bus),
             0x03 => self.lsl_instr(bus),
             0x06 => self.clts(bus),
-            0x08 if CPU_MODEL >= CPU_MODEL_486 => self.invd(),
-            0x09 if CPU_MODEL >= CPU_MODEL_486 => self.wbinvd(),
+            0x08 if CPU_MODEL >= CPU_MODEL_486 => self.invd(bus),
+            0x09 if CPU_MODEL >= CPU_MODEL_486 => self.wbinvd(bus),
 
             0x20 => self.mov_r32_cr(bus),
             0x21 => self.mov_r32_dr(bus),
@@ -1478,13 +1478,23 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.clk(Self::timing(22, 10));
     }
 
-    fn invd(&mut self) {
-        // INVD - invalidate cache (NOP: no cache simulation).
+    fn invd(&mut self, bus: &mut impl common::Bus) {
+        // INVD - invalidate cache (no cache simulation, but still #GP at
+        // CPL != 0 or in VM86, per 80486 PRM Chapter 26).
+        if self.is_protected_mode() && (self.is_virtual_mode() || self.cpl() != 0) {
+            self.raise_fault_with_code(13, 0, bus);
+            return;
+        }
         self.clk(4);
     }
 
-    fn wbinvd(&mut self) {
-        // WBINVD - write-back and invalidate cache (NOP: no cache simulation).
+    fn wbinvd(&mut self, bus: &mut impl common::Bus) {
+        // WBINVD - write-back and invalidate cache (no cache simulation,
+        // but still #GP at CPL != 0 or in VM86 per 80486 PRM Chapter 26).
+        if self.is_protected_mode() && (self.is_virtual_mode() || self.cpl() != 0) {
+            self.raise_fault_with_code(13, 0, bus);
+            return;
+        }
         self.clk(5);
     }
 
