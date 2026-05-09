@@ -1872,12 +1872,10 @@ fn ltr_with_low_two_bits_in_selector_ignored_for_lookup() {
 }
 
 #[test]
-fn smsw_register_form_returns_paging_bit_when_paging_enabled() {
+fn smsw_register_form_does_not_expose_paging_bit() {
     let mut cpu = make_cpu_386();
     let mut bus = TestBus::new();
 
-    // Build a real protected-mode setup with identity paging so CR0.PG=1
-    // is meaningful. Then SMSW EAX must report the full CR0 including PG.
     let mut state = setup_protected_mode(&mut bus, 0xFFFF);
     super::setup::enable_identity_paging(&mut bus, &mut state);
     cpu.load_state(&state);
@@ -1885,8 +1883,12 @@ fn smsw_register_form_returns_paging_bit_when_paging_enabled() {
     place_at(&mut bus, RING0_CODE_BASE, &[0x0F, 0x01, 0xE0]);
     cpu.step(&mut bus);
 
-    assert_eq!(cpu.eax() & 0x8000_0000, 0x8000_0000);
+    // 80486 PRM 26-268 documents SMSW only as `SMSW r/m16` storing the
+    // machine status word, i.e. the low 16 bits of CR0. PG is bit 31 and
+    // sits outside the MSW, so it is not observable via SMSW even when
+    // paging is enabled. Confirm the PE bit is reflected and PG is not.
     assert_eq!(cpu.eax() & 0x0000_0001, 0x0000_0001);
+    assert_eq!(cpu.eax() & 0xFFFF_0000, 0);
 }
 
 #[test]
