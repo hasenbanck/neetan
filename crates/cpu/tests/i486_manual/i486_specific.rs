@@ -1,16 +1,16 @@
 //! 486-specific instruction tests derived from the 80486 PRM.
 //!
 //! Covers BSWAP, CMPXCHG, XADD, INVLPG, WBINVD, INVD plus the 386 #UD
-//! coverage for each, and the CR0 reserved-bit masking that distinguishes
-//! the 386 (PE/MP/EM/TS/ET/PG only) from the 486 (additionally NE/WP/AM/
-//! NW/CD).
+//! coverage for each, the CR0 reserved-bit masking that distinguishes the
+//! 386 (PE/MP/EM/TS/ET/PG only) from the 486 (additionally NE/WP/AM/NW/CD),
+//! and the 486 #AC alignment-check four-corner matrix.
 
 use common::Cpu as _;
 
 use super::setup::{
-    HANDLER_GENERAL_PROTECTION_IP, HANDLER_INVALID_OPCODE_IP, RING0_CODE_BASE, SHARED_DATA_BASE,
-    TestBus, make_cpu_386, make_cpu_486, place_at, promote_to_ring3, setup_protected_mode,
-    setup_protected_mode_with_handlers,
+    HANDLER_ALIGNMENT_CHECK_IP, HANDLER_GENERAL_PROTECTION_IP, HANDLER_INVALID_OPCODE_IP,
+    RING0_CODE_BASE, RING3_CODE_BASE, SHARED_DATA_BASE, TestBus, make_cpu_386, make_cpu_486,
+    place_at, promote_to_ring3, setup_protected_mode, setup_protected_mode_with_handlers,
 };
 
 const REG_INDEX_EAX: u8 = 0;
@@ -1444,4 +1444,541 @@ fn invlpg_does_not_fault_when_address_translates_through_unmapped_page_on_486() 
         "INVLPG with no TLB entry must continue execution"
     );
     assert_eq!(cpu.ip(), 6, "after INVLPG then HLT, IP advances past HLT");
+}
+
+// 80486 PRM 6.3.5: alignment check (#AC, vector 17) requires CR0.AM=1,
+// EFLAGS.AC=1, and CPL=3 simultaneously. The four-corner matrix verifies
+// that any one missing condition suppresses the fault.
+
+const EFLAGS_AC: u32 = 1 << 18;
+
+const RING3_PROBE_OFFSET_ALIGNED: u16 = 0x100;
+const RING3_PROBE_OFFSET_MISALIGNED: u16 = 0x101;
+const RING3_PROBE_OFFSET_DWORD_MISALIGNED: u16 = 0x102;
+
+// MOV AX, [disp16] = 0x8B 0x06 disp16-low disp16-high.
+fn ring3_mov_ax_from_disp16(displacement: u16) -> [u8; 4] {
+    [0x8B, 0x06, displacement as u8, (displacement >> 8) as u8]
+}
+
+// MOV EAX, [disp16] = 0x66 0x8B 0x06 disp16-low disp16-high.
+fn ring3_mov_eax_from_disp16(displacement: u16) -> [u8; 5] {
+    [
+        0x66,
+        0x8B,
+        0x06,
+        displacement as u8,
+        (displacement >> 8) as u8,
+    ]
+}
+
+#[test]
+fn ac_word_access_misaligned_at_ring3_with_am_and_ac_set_raises_alignment_check_on_486() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    state.cr0 |= CR0_BIT_AM;
+    state.eflags_upper |= EFLAGS_AC;
+    promote_to_ring3(&mut state);
+    cpu.load_state(&state);
+
+    place_at(
+        &mut bus,
+        RING3_CODE_BASE,
+        &ring3_mov_ax_from_disp16(RING3_PROBE_OFFSET_MISALIGNED),
+    );
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), HANDLER_ALIGNMENT_CHECK_IP as u32 + 1);
+}
+
+#[test]
+fn ac_word_access_aligned_at_ring3_with_am_and_ac_set_does_not_fault_on_486() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    state.cr0 |= CR0_BIT_AM;
+    state.eflags_upper |= EFLAGS_AC;
+    promote_to_ring3(&mut state);
+    cpu.load_state(&state);
+
+    super::setup::write_word_at(
+        &mut bus,
+        SHARED_DATA_BASE + RING3_PROBE_OFFSET_ALIGNED as u32,
+        0xCAFE,
+    );
+    place_at(
+        &mut bus,
+        RING3_CODE_BASE,
+        &ring3_mov_ax_from_disp16(RING3_PROBE_OFFSET_ALIGNED),
+    );
+
+    cpu.step(&mut bus);
+
+    assert!(!cpu.halted());
+    assert_eq!(cpu.eax() & 0xFFFF, 0xCAFE);
+}
+
+#[test]
+fn ac_dword_access_misaligned_at_ring3_with_am_and_ac_set_raises_alignment_check_on_486() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    state.cr0 |= CR0_BIT_AM;
+    state.eflags_upper |= EFLAGS_AC;
+    promote_to_ring3(&mut state);
+    cpu.load_state(&state);
+
+    place_at(
+        &mut bus,
+        RING3_CODE_BASE,
+        &ring3_mov_eax_from_disp16(RING3_PROBE_OFFSET_DWORD_MISALIGNED),
+    );
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), HANDLER_ALIGNMENT_CHECK_IP as u32 + 1);
+}
+
+#[test]
+fn ac_dword_access_aligned_at_ring3_with_am_and_ac_set_does_not_fault_on_486() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    state.cr0 |= CR0_BIT_AM;
+    state.eflags_upper |= EFLAGS_AC;
+    promote_to_ring3(&mut state);
+    cpu.load_state(&state);
+
+    super::setup::write_dword_at(
+        &mut bus,
+        SHARED_DATA_BASE + RING3_PROBE_OFFSET_ALIGNED as u32,
+        0xCAFE_BABE,
+    );
+    place_at(
+        &mut bus,
+        RING3_CODE_BASE,
+        &ring3_mov_eax_from_disp16(RING3_PROBE_OFFSET_ALIGNED),
+    );
+
+    cpu.step(&mut bus);
+
+    assert!(!cpu.halted());
+    assert_eq!(cpu.eax(), 0xCAFE_BABE);
+}
+
+#[test]
+fn ac_dword_access_two_byte_aligned_at_ring3_raises_alignment_check_on_486() {
+    // 4-byte alignment requires the two low bits of the linear address to
+    // be zero. A 2-byte-aligned offset still violates 4-byte alignment.
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    state.cr0 |= CR0_BIT_AM;
+    state.eflags_upper |= EFLAGS_AC;
+    promote_to_ring3(&mut state);
+    cpu.load_state(&state);
+
+    let two_byte_aligned_offset: u16 = 0x102;
+    place_at(
+        &mut bus,
+        RING3_CODE_BASE,
+        &ring3_mov_eax_from_disp16(two_byte_aligned_offset),
+    );
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), HANDLER_ALIGNMENT_CHECK_IP as u32 + 1);
+}
+
+#[test]
+fn ac_byte_access_at_ring3_with_am_and_ac_set_does_not_fault_on_486() {
+    // Byte accesses are always aligned by definition.
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    state.cr0 |= CR0_BIT_AM;
+    state.eflags_upper |= EFLAGS_AC;
+    promote_to_ring3(&mut state);
+    cpu.load_state(&state);
+
+    bus.ram[(SHARED_DATA_BASE + RING3_PROBE_OFFSET_MISALIGNED as u32) as usize] = 0x77;
+    // MOV AL, [disp16] = 0xA0 disp16-low disp16-high.
+    place_at(
+        &mut bus,
+        RING3_CODE_BASE,
+        &[
+            0xA0,
+            RING3_PROBE_OFFSET_MISALIGNED as u8,
+            (RING3_PROBE_OFFSET_MISALIGNED >> 8) as u8,
+        ],
+    );
+
+    cpu.step(&mut bus);
+
+    assert!(!cpu.halted());
+    assert_eq!(cpu.eax() & 0xFF, 0x77);
+}
+
+#[test]
+fn ac_word_access_at_ring0_with_am_and_ac_set_does_not_fault_on_486() {
+    // Even with AM=AC=1 the CPL check must suppress #AC outside ring 3.
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    state.cr0 |= CR0_BIT_AM;
+    state.eflags_upper |= EFLAGS_AC;
+    cpu.load_state(&state);
+
+    super::setup::write_word_at(
+        &mut bus,
+        SHARED_DATA_BASE + RING3_PROBE_OFFSET_MISALIGNED as u32,
+        0x1234,
+    );
+    place_at(
+        &mut bus,
+        RING0_CODE_BASE,
+        &ring3_mov_ax_from_disp16(RING3_PROBE_OFFSET_MISALIGNED),
+    );
+
+    cpu.step(&mut bus);
+
+    assert!(!cpu.halted());
+    assert_eq!(cpu.eax() & 0xFFFF, 0x1234);
+}
+
+#[test]
+fn ac_word_access_at_ring3_without_am_does_not_fault_on_486() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    state.eflags_upper |= EFLAGS_AC;
+    promote_to_ring3(&mut state);
+    cpu.load_state(&state);
+
+    super::setup::write_word_at(
+        &mut bus,
+        SHARED_DATA_BASE + RING3_PROBE_OFFSET_MISALIGNED as u32,
+        0xBEEF,
+    );
+    place_at(
+        &mut bus,
+        RING3_CODE_BASE,
+        &ring3_mov_ax_from_disp16(RING3_PROBE_OFFSET_MISALIGNED),
+    );
+
+    cpu.step(&mut bus);
+
+    assert!(!cpu.halted());
+    assert_eq!(cpu.eax() & 0xFFFF, 0xBEEF);
+}
+
+#[test]
+fn ac_word_access_at_ring3_without_eflags_ac_does_not_fault_on_486() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    state.cr0 |= CR0_BIT_AM;
+    promote_to_ring3(&mut state);
+    cpu.load_state(&state);
+
+    super::setup::write_word_at(
+        &mut bus,
+        SHARED_DATA_BASE + RING3_PROBE_OFFSET_MISALIGNED as u32,
+        0xC0DE,
+    );
+    place_at(
+        &mut bus,
+        RING3_CODE_BASE,
+        &ring3_mov_ax_from_disp16(RING3_PROBE_OFFSET_MISALIGNED),
+    );
+
+    cpu.step(&mut bus);
+
+    assert!(!cpu.halted());
+    assert_eq!(cpu.eax() & 0xFFFF, 0xC0DE);
+}
+
+#[test]
+fn ac_misaligned_access_in_real_mode_does_not_fault_on_486() {
+    // Real mode CPL is reported as 0; #AC must not fire even with AM=AC=1.
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode(&mut bus, 0xFFFF);
+    state.cr0 = 0x0010 | CR0_BIT_AM; // PE=0, AM=1; this is real mode.
+    state.eflags_upper |= EFLAGS_AC;
+    cpu.load_state(&state);
+
+    super::setup::write_word_at(
+        &mut bus,
+        SHARED_DATA_BASE + RING3_PROBE_OFFSET_MISALIGNED as u32,
+        0x4242,
+    );
+    cpu.set_ds((SHARED_DATA_BASE >> 4) as u16);
+    cpu.state.seg_bases[cpu::SegReg32::DS as usize] = SHARED_DATA_BASE;
+    place_at(
+        &mut bus,
+        RING0_CODE_BASE,
+        &ring3_mov_ax_from_disp16(RING3_PROBE_OFFSET_MISALIGNED),
+    );
+
+    cpu.step(&mut bus);
+
+    assert!(!cpu.halted());
+    assert_eq!(cpu.eax() & 0xFFFF, 0x4242);
+}
+
+#[test]
+fn ac_misaligned_word_access_in_vm86_with_am_and_ac_raises_alignment_check_on_486() {
+    // VM86 reports CPL=3, so #AC fires when AM and AC are both set.
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = super::setup::setup_vm86(&mut bus);
+    super::setup::install_protected_mode_general_protection_handler(&mut bus);
+    super::setup::write_interrupt_gate_386(
+        &mut bus,
+        super::setup::INTERRUPT_DESCRIPTOR_TABLE_BASE,
+        17,
+        HANDLER_ALIGNMENT_CHECK_IP as u32,
+        super::setup::SELECTOR_RING0_CODE,
+        0,
+    );
+    bus.ram[(RING0_CODE_BASE + HANDLER_ALIGNMENT_CHECK_IP as u32) as usize] = 0xF4;
+    state.cr0 |= CR0_BIT_AM;
+    state.eflags_upper |= EFLAGS_AC;
+    state.gdt_limit = 5 * 8 - 1;
+    cpu.load_state(&state);
+
+    let probe_offset: u16 = 0x101;
+    place_at(
+        &mut bus,
+        0x0001_0000,
+        &ring3_mov_ax_from_disp16(probe_offset),
+    );
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), HANDLER_ALIGNMENT_CHECK_IP as u32 + 1);
+}
+
+#[test]
+fn ac_does_not_fire_on_386_even_with_am_and_ac_set() {
+    let mut cpu = make_cpu_386();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    // The 386 ignores writes to CR0.AM, but the bit can still be set
+    // directly in `state.cr0`. Verify the CPU model gate still suppresses
+    // the #AC fault.
+    state.cr0 |= CR0_BIT_AM;
+    state.eflags_upper |= EFLAGS_AC;
+    promote_to_ring3(&mut state);
+    cpu.load_state(&state);
+
+    super::setup::write_word_at(
+        &mut bus,
+        SHARED_DATA_BASE + RING3_PROBE_OFFSET_MISALIGNED as u32,
+        0xABCD,
+    );
+    place_at(
+        &mut bus,
+        RING3_CODE_BASE,
+        &ring3_mov_ax_from_disp16(RING3_PROBE_OFFSET_MISALIGNED),
+    );
+
+    cpu.step(&mut bus);
+
+    assert!(!cpu.halted());
+    assert_eq!(cpu.eax() & 0xFFFF, 0xABCD);
+}
+
+#[test]
+fn ac_misaligned_write_at_ring3_raises_alignment_check_on_486() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    state.cr0 |= CR0_BIT_AM;
+    state.eflags_upper |= EFLAGS_AC;
+    promote_to_ring3(&mut state);
+    cpu.load_state(&state);
+
+    cpu.set_eax(0x9999);
+
+    // MOV [disp16], AX = 0x89 0x06 disp16-low disp16-high.
+    place_at(
+        &mut bus,
+        RING3_CODE_BASE,
+        &[
+            0x89,
+            0x06,
+            RING3_PROBE_OFFSET_MISALIGNED as u8,
+            (RING3_PROBE_OFFSET_MISALIGNED >> 8) as u8,
+        ],
+    );
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), HANDLER_ALIGNMENT_CHECK_IP as u32 + 1);
+}
+
+#[test]
+fn ac_misaligned_push_at_ring3_raises_alignment_check_on_486() {
+    // Stack accesses also trigger #AC when SP becomes misaligned for the
+    // operand size.
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    state.cr0 |= CR0_BIT_AM;
+    state.eflags_upper |= EFLAGS_AC;
+    promote_to_ring3(&mut state);
+    state.set_esp(0x0FFF); // odd SP -> push of word writes to misaligned address
+    cpu.load_state(&state);
+
+    // PUSH AX = 0x50.
+    place_at(&mut bus, RING3_CODE_BASE, &[0x50]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), HANDLER_ALIGNMENT_CHECK_IP as u32 + 1);
+}
+
+#[test]
+fn popfd_writes_ac_bit_on_486() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    state.set_esp(0xF000);
+    cpu.load_state(&state);
+
+    // Pre-place a 32-bit FLAGS value with AC=1 on the stack.
+    let pushed: u32 = 0x0000_0002 | EFLAGS_AC;
+    super::setup::write_dword_at(&mut bus, SHARED_DATA_BASE.wrapping_add(0xF000), pushed);
+    cpu.state.seg_bases[cpu::SegReg32::SS as usize] = SHARED_DATA_BASE;
+
+    // POPFD = 0x66 0x9D.
+    place_at(&mut bus, RING0_CODE_BASE, &[0x66, 0x9D]);
+
+    cpu.step(&mut bus);
+
+    assert!(cpu.state.eflags_upper & EFLAGS_AC != 0);
+}
+
+#[test]
+fn popfd_does_not_write_ac_bit_on_386() {
+    // On the 386, AC (bit 18) is reserved and POPFD must not set it.
+    let mut cpu = make_cpu_386();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    state.set_esp(0xF000);
+    cpu.load_state(&state);
+
+    let pushed: u32 = 0x0000_0002 | EFLAGS_AC;
+    super::setup::write_dword_at(&mut bus, SHARED_DATA_BASE.wrapping_add(0xF000), pushed);
+    cpu.state.seg_bases[cpu::SegReg32::SS as usize] = SHARED_DATA_BASE;
+
+    place_at(&mut bus, RING0_CODE_BASE, &[0x66, 0x9D]);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.state.eflags_upper & EFLAGS_AC, 0);
+}
+
+#[test]
+fn popfd_clears_ac_bit_when_pushed_value_clears_it_on_486() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    state.eflags_upper |= EFLAGS_AC;
+    state.set_esp(0xF000);
+    cpu.load_state(&state);
+
+    let pushed: u32 = 0x0000_0002; // AC=0
+    super::setup::write_dword_at(&mut bus, SHARED_DATA_BASE.wrapping_add(0xF000), pushed);
+    cpu.state.seg_bases[cpu::SegReg32::SS as usize] = SHARED_DATA_BASE;
+
+    place_at(&mut bus, RING0_CODE_BASE, &[0x66, 0x9D]);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.state.eflags_upper & EFLAGS_AC, 0);
+}
+
+#[test]
+fn pushfd_includes_ac_bit_on_486() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    state.eflags_upper |= EFLAGS_AC;
+    state.set_esp(0xF008);
+    cpu.load_state(&state);
+
+    cpu.state.seg_bases[cpu::SegReg32::SS as usize] = SHARED_DATA_BASE;
+
+    // PUSHFD = 0x66 0x9C.
+    place_at(&mut bus, RING0_CODE_BASE, &[0x66, 0x9C]);
+
+    cpu.step(&mut bus);
+
+    let pushed = super::setup::read_dword_at(&bus, SHARED_DATA_BASE + (0xF008 - 4));
+    assert!(pushed & EFLAGS_AC != 0);
+}
+
+#[test]
+fn ac_misaligned_word_at_ring3_does_not_fault_when_ac_already_high_on_disabled_mask_on_486() {
+    // Sanity case: if EFLAGS.AC is set but CR0.AM=0, the access is allowed
+    // even though the linear address is misaligned. This complements the
+    // four-corner matrix.
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    state.eflags_upper |= EFLAGS_AC;
+    promote_to_ring3(&mut state);
+    cpu.load_state(&state);
+
+    super::setup::write_word_at(
+        &mut bus,
+        SHARED_DATA_BASE + RING3_PROBE_OFFSET_MISALIGNED as u32,
+        0xDEAD,
+    );
+    place_at(
+        &mut bus,
+        RING3_CODE_BASE,
+        &ring3_mov_ax_from_disp16(RING3_PROBE_OFFSET_MISALIGNED),
+    );
+
+    cpu.step(&mut bus);
+
+    assert!(!cpu.halted());
+    assert_eq!(cpu.eax() & 0xFFFF, 0xDEAD);
 }
