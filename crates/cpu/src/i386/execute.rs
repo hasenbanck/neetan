@@ -2897,7 +2897,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 let new_ss =
                     self.read_dword_linear(bus, ss_base.wrapping_add(sp.wrapping_add(16))) as u16;
 
-                let saved_cs = self.save_cs_state();
+                if let Some((vector, error_code)) =
+                    self.precheck_ss_for_inter_priv_iret(new_ss, new_rpl, bus)
+                {
+                    self.raise_fault_with_code(vector, error_code, bus);
+                    return;
+                }
+
                 if !self.load_cs_for_return(new_cs, new_eip, bus) {
                     return;
                 }
@@ -2911,7 +2917,6 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
 
                 if !self.load_segment(SegReg32::SS, new_ss, bus) {
-                    self.restore_cs_state(&saved_cs);
                     return;
                 }
                 if self.use_esp() {
@@ -2954,7 +2959,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 let new_sp = self.read_word_linear(bus, ss_base.wrapping_add(sp.wrapping_add(6)));
                 let new_ss = self.read_word_linear(bus, ss_base.wrapping_add(sp.wrapping_add(8)));
 
-                let saved_cs = self.save_cs_state();
+                if let Some((vector, error_code)) =
+                    self.precheck_ss_for_inter_priv_iret(new_ss, new_rpl, bus)
+                {
+                    self.raise_fault_with_code(vector, error_code, bus);
+                    return;
+                }
+
                 if !self.load_cs_for_return(new_cs, new_ip as u32, bus) {
                     return;
                 }
@@ -2963,7 +2974,6 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.flags.load_flags(new_flags, old_cpl, true);
 
                 if !self.load_segment(SegReg32::SS, new_ss, bus) {
-                    self.restore_cs_state(&saved_cs);
                     return;
                 }
                 if self.use_esp() {

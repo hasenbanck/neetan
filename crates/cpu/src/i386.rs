@@ -818,6 +818,45 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         true
     }
 
+    /// Validates a candidate SS for an inter-privilege IRET return without
+    /// committing any state. Returns the fault `(vector, error_code)` if the
+    /// selector would not be acceptable; returns `None` if the load would
+    /// succeed. Mirrors the SS-branch checks in [`load_protected_segment`].
+    ///
+    /// 80486 PRM IRET pseudocode validates SS before any CS or EIP commit, so
+    /// callers must run this *before* `load_cs_for_return` to keep faults
+    /// reportable with the original CS:EIP intact.
+    fn precheck_ss_for_inter_priv_iret(
+        &mut self,
+        selector: u16,
+        target_cpl: u16,
+        bus: &mut impl common::Bus,
+    ) -> Option<(u8, u16)> {
+        if selector & 0xFFFC == 0 {
+            return Some((13, 0));
+        }
+        let descriptor = match self.decode_descriptor(selector, bus) {
+            Some(d) => d,
+            None => return Some((13, Self::segment_error_code(selector))),
+        };
+        let rights = descriptor.rights;
+        let rpl = selector & 0x0003;
+        let dpl = Self::descriptor_dpl(rights);
+        if rpl != target_cpl {
+            return Some((13, Self::segment_error_code(selector)));
+        }
+        if !Self::descriptor_is_segment(rights) || !Self::descriptor_is_writable(rights) {
+            return Some((13, Self::segment_error_code(selector)));
+        }
+        if dpl != target_cpl {
+            return Some((13, Self::segment_error_code(selector)));
+        }
+        if !Self::descriptor_present(rights) {
+            return Some((12, Self::segment_error_code(selector)));
+        }
+        None
+    }
+
     fn load_cs_for_return(
         &mut self,
         selector: u16,
