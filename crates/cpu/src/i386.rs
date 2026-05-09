@@ -2422,7 +2422,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
 
                 self.set_accessed_bit(gate_selector, bus);
-                let adjusted = (gate_selector & !3) | target_dpl;
+                // Conforming targets preserve the calling CPL; non-conforming
+                // targets adopt the target's DPL as the new CPL.
+                let new_cpl = if Self::descriptor_is_conforming_code(tr) {
+                    cpl
+                } else {
+                    target_dpl
+                };
+                let adjusted = (gate_selector & !3) | new_cpl;
                 self.set_loaded_segment_cache(SegReg32::CS, adjusted, target_desc);
                 self.ip = gate_offset as u16;
                 self.ip_upper = gate_offset & 0xFFFF_0000;
