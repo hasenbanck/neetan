@@ -26,7 +26,7 @@ mod string_ops;
 
 use std::ops::{Deref, DerefMut};
 
-use common::Cpu as _;
+use common::{Cpu as _, likely, unlikely};
 pub use flags::I386Flags;
 pub use state::I386State;
 
@@ -398,7 +398,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     #[inline(always)]
     fn fetch(&mut self, bus: &mut impl common::Bus) -> u8 {
-        if self.fault_pending {
+        if unlikely(self.fault_pending) {
             return 0;
         }
         let eip = self.effective_eip();
@@ -408,7 +408,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         // typically have plenty of headroom, so this is essentially free
         // there. fault_pending is asserted here so the prefix-decode loop
         // terminates instead of dispatching a stray 0 opcode at the handler.
-        if eip > self.seg_limits[SegReg32::CS as usize] {
+        if unlikely(eip > self.seg_limits[SegReg32::CS as usize]) {
             self.raise_fault_with_code(13, 0, bus);
             self.fault_pending = true;
             return 0;
@@ -429,7 +429,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         // This ensures bytes already fetched before a REP string op
         // overwrites them are still seen correctly.
         let next_addr = addr.wrapping_add(1);
-        if next_addr & 0xFFF != 0 {
+        if likely(next_addr & 0xFFF != 0) {
             self.prefetch_addr = next_addr;
             self.prefetch_byte = bus.read_byte(next_addr);
             self.prefetch_valid = true;
@@ -442,10 +442,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     #[inline(always)]
     fn fetch_physical_address(&mut self, linear: u32, bus: &mut impl common::Bus) -> Option<u32> {
         let page = linear >> 12;
-        if self.fetch_page_valid
-            && self.fetch_page_tag == page
-            && (!self.is_user_page_access() || self.fetch_page_user)
-        {
+        if likely(
+            self.fetch_page_valid
+                && self.fetch_page_tag == page
+                && (!self.is_user_page_access() || self.fetch_page_user),
+        ) {
             return Some(self.fetch_page_phys | (linear & 0xFFF));
         }
 
@@ -464,10 +465,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     #[inline(always)]
     fn fetchword(&mut self, bus: &mut impl common::Bus) -> u16 {
-        if !self.fault_pending {
+        if likely(!self.fault_pending) {
             let eip = self.effective_eip();
             let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
-            if (linear & 0xFFF) <= 0xFFE {
+            if likely((linear & 0xFFF) <= 0xFFE) {
                 let Some(addr) = self.fetch_physical_address(linear, bus) else {
                     return 0;
                 };
@@ -483,10 +484,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     #[inline(always)]
     fn fetchdword(&mut self, bus: &mut impl common::Bus) -> u32 {
-        if !self.fault_pending {
+        if likely(!self.fault_pending) {
             let eip = self.effective_eip();
             let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
-            if (linear & 0xFFF) <= 0xFFC {
+            if likely((linear & 0xFFF) <= 0xFFC) {
                 let Some(addr) = self.fetch_physical_address(linear, bus) else {
                     return 0;
                 };
@@ -2545,14 +2546,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.prev_ip_upper = self.ip_upper;
         self.fault_pending = false;
 
-        if self.pending_irq != 0 {
+        if unlikely(self.pending_irq != 0) {
             self.check_interrupts(bus);
         }
-        if self.no_interrupt > 0 {
+        if unlikely(self.no_interrupt > 0) {
             self.no_interrupt -= 1;
         }
         let inhibit = self.inhibit_all > 0;
-        if self.inhibit_all > 0 {
+        if unlikely(inhibit) {
             self.inhibit_all -= 1;
         }
 
@@ -2573,10 +2574,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             // total length necessarily exceeds the limit.
             let mut prefix_count: u32 = 0;
             let mut opcode = self.fetch(bus);
-            while !self.fault_pending {
+            while likely(!self.fault_pending) {
                 match opcode {
                     0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 | 0x66 | 0x67 | 0xF0 => {
-                        if prefix_count >= 14 {
+                        if unlikely(prefix_count >= 14) {
                             self.raise_fault_with_code(13, 0, bus);
                             break;
                         }
@@ -2637,12 +2638,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                         opcode = self.fetch(bus);
                     }
                     _ => {
-                        if self.lock_prefix && opcode != 0x0F && !Self::is_lockable(opcode) {
+                        if unlikely(
+                            self.lock_prefix && opcode != 0x0F && !Self::is_lockable(opcode),
+                        ) {
                             self.raise_fault(6, bus);
-                        } else if self.lock_prefix
-                            && Self::is_lockable(opcode)
-                            && Self::lockable_modrm_is_register(self.peek_byte(bus))
-                        {
+                        } else if unlikely(
+                            self.lock_prefix
+                                && Self::is_lockable(opcode)
+                                && Self::lockable_modrm_is_register(self.peek_byte(bus)),
+                        ) {
                             // 80486 PRM 13.1.1: LOCK with a lockable opcode
                             // is still illegal when the destination operand
                             // is a register (ModR/M mod == 11b).
@@ -2656,11 +2660,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             }
         }
 
-        if tf_was_set && !self.fault_pending && !inhibit {
+        if unlikely(tf_was_set && !self.fault_pending && !inhibit) {
             self.raise_trap(1, bus);
         }
 
-        if self.debug_trap_pending && !self.fault_pending {
+        if unlikely(self.debug_trap_pending && !self.fault_pending) {
             self.debug_trap_pending = false;
             self.dr6 |= 0x8000; // BT (bit 15) - task switch debug trap
             self.raise_trap(1, bus);
