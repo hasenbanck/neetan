@@ -35,3 +35,6 @@ mod lds_les_lfs_lgs_lss;
 
 #[path = "i486_manual/i486_specific.rs"]
 mod i486_specific;
+
+#[path = "i486_manual/call_jmp_far.rs"]
+mod call_jmp_far;
