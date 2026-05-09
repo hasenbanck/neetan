@@ -115,6 +115,15 @@ macro_rules! impl_cpu_run_for {
                         bus.set_current_cycle(start_cycle + consumed);
                         return consumed;
                     }
+                } else {
+                    if bus.has_nmi() {
+                        self.pending_irq |= $crate::PENDING_NMI;
+                    }
+                    if bus.has_irq() {
+                        self.pending_irq |= $crate::PENDING_IRQ;
+                    } else {
+                        self.pending_irq &= !$crate::PENDING_IRQ;
+                    }
                 }
 
                 self.execute_one(bus);
