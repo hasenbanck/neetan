@@ -15,23 +15,19 @@
 //!   is not modifiable via POPFD - only IRET at CPL=0 sets it.
 
 use common::Cpu as _;
-use cpu::{CPU_MODEL_386, I386, I386State};
+use cpu::I386State;
 
 use super::setup::{
     HANDLER_GENERAL_PROTECTION_IP, INTERRUPT_DESCRIPTOR_TABLE_BASE,
     RIGHTS_RING0_CODE_READABLE_ACCESSED, RIGHTS_RING0_DATA_WRITABLE_ACCESSED, RING0_CODE_BASE,
-    RING0_STACK_BASE, RING3_CODE_BASE, RING3_STACK_BASE, SELECTOR_RING0_CODE, TestBus, place_at,
-    promote_to_ring3, read_dword_at, read_word_at, setup_protected_mode_with_handlers, setup_vm86,
-    setup_vm86_with_iopl, write_interrupt_gate_386,
+    RING0_STACK_BASE, RING3_CODE_BASE, RING3_STACK_BASE, SELECTOR_RING0_CODE, TestBus,
+    make_cpu_386, place_at, promote_to_ring3, read_dword_at, read_word_at,
+    setup_protected_mode_with_handlers, setup_vm86, setup_vm86_with_iopl, write_interrupt_gate_386,
 };
 
 const PUSHF_OPCODE: u8 = 0x9C;
 const POPF_OPCODE: u8 = 0x9D;
 const OPERAND_SIZE_PREFIX: u8 = 0x66;
-
-fn make_cpu_386() -> I386<{ CPU_MODEL_386 }> {
-    I386::<{ CPU_MODEL_386 }>::new()
-}
 
 fn install_vm86_gp_handler(bus: &mut TestBus, state: &mut I386State) {
     write_interrupt_gate_386(

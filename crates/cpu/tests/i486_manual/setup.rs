@@ -1,15 +1,11 @@
 //! Shared helpers for the i486-manual-derived test corpus.
 //!
-//! Reimplemented from the Intel 80486 Programmer's Reference Manual rather
-//! than copied from the legacy `protected_mode_i386.rs`. Test authors compose
-//! a CPU + bus + descriptor-table layout from these primitives.
-//!
 //! Identifiers are spelled out in full and constants are named after the
 //! manual sections they encode so tests do not embed magic hex.
 
 #![allow(dead_code)]
 
-use cpu::I386State;
+use cpu::{CPU_MODEL_386, CPU_MODEL_486, I386, I386State};
 
 // Memory layout used by setup_protected_mode and friends. Bases are chosen so
 // that no two regions overlap inside a 1 MiB test bus.
@@ -173,8 +169,15 @@ pub(crate) const TSS_MINIMUM_LIMIT: u32 = 0x67;
 pub(crate) const IO_PERMISSION_BITMAP_SENTINEL: u8 = 0xFF;
 pub(crate) const IO_PERMISSION_BITMAP_DENY_ALL: u16 = 0xFFFF;
 
-// Test bus: a flat 1 MiB memory with simple IRQ injection.
+pub(crate) fn make_cpu_386() -> I386<{ CPU_MODEL_386 }> {
+    I386::<{ CPU_MODEL_386 }>::new()
+}
 
+pub(crate) fn make_cpu_486() -> I386<{ CPU_MODEL_486 }> {
+    I386::<{ CPU_MODEL_486 }>::new()
+}
+
+/// Test bus: a flat 1 MiB memory with simple IRQ injection.
 pub(crate) struct TestBus {
     pub(crate) ram: Vec<u8>,
     pub(crate) irq_pending: bool,
@@ -289,8 +292,7 @@ pub(crate) fn write_dword_at(bus: &mut TestBus, linear_address: u32, value: u32)
     }
 }
 
-// Descriptor builders. Intel 80486 PRM Figure 5-3 (segment descriptor).
-
+/// Descriptor builders. Intel 80486 PRM Figure 5-3 (segment descriptor).
 pub(crate) fn write_segment_descriptor(
     bus: &mut TestBus,
     descriptor_table_base: u32,
@@ -330,10 +332,9 @@ pub(crate) fn write_segment_descriptor_16bit(
     );
 }
 
-// Gate descriptor (Intel 80486 PRM Figure 9-3): used for call gates,
-// interrupt gates, trap gates, and task gates. The parameter-count field
-// only applies to call gates.
-
+/// Gate descriptor (Intel 80486 PRM Figure 9-3): used for call gates,
+/// interrupt gates, trap gates, and task gates. The parameter-count field
+/// only applies to call gates.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn write_gate_descriptor(
     bus: &mut TestBus,
@@ -498,9 +499,8 @@ pub(crate) fn write_task_gate(
     bus.ram[descriptor_address + 7] = 0;
 }
 
-// 386 TSS image. Pass `None` for any field that should remain zero.
-// Intel 80486 PRM Figure 7-1.
-
+/// 386 TSS image. Pass `None` for any field that should remain zero.
+/// Intel 80486 PRM Figure 7-1.
 #[derive(Default, Clone, Copy)]
 pub(crate) struct Tss386Image {
     pub(crate) backlink: u16,
@@ -564,8 +564,7 @@ pub(crate) fn write_tss_386(bus: &mut TestBus, tss_base: u32, image: &Tss386Imag
     );
 }
 
-// 286 TSS layout: 44-byte fixed structure (Intel 80486 PRM Figure 7-9).
-
+/// 286 TSS layout: 44-byte fixed structure (Intel 80486 PRM Figure 7-9).
 #[derive(Default, Clone, Copy)]
 pub(crate) struct Tss286Image {
     pub(crate) backlink: u16,
@@ -625,10 +624,10 @@ pub(crate) fn write_tss_286(bus: &mut TestBus, tss_base: u32, image: &Tss286Imag
     }
 }
 
-// Build an I/O permission bitmap whose `allowed_ports` are clear (1 means
-// "deny" per Intel 80486 PRM 8.7). The bitmap occupies `bitmap_byte_count`
-// bytes followed by the mandatory 0xFF sentinel. Returns the total byte span
-// (bitmap + sentinel) so the caller can size the TSS limit correctly.
+/// Build an I/O permission bitmap whose `allowed_ports` are clear (1 means
+/// "deny" per Intel 80486 PRM 8.7). The bitmap occupies `bitmap_byte_count`
+/// bytes followed by the mandatory 0xFF sentinel. Returns the total byte span
+/// (bitmap + sentinel) so the caller can size the TSS limit correctly.
 pub(crate) fn build_io_permission_bitmap(
     bus: &mut TestBus,
     tss_base: u32,
@@ -652,9 +651,102 @@ pub(crate) fn build_io_permission_bitmap(
     bitmap_byte_count + 1
 }
 
-// Real-mode bare-bones state. Useful for tests that exercise instructions
-// before any descriptor table is set up.
+/// Default offset for the I/O permission bitmap inside the 386 TSS image:
+/// placed immediately after the fixed TSS fields ending at 0x67.
+pub(crate) const DEFAULT_IO_MAP_BASE_OFFSET: u16 = 0x68;
 
+/// Install an I/O permission bitmap into the TSS pointed at by `state.tr`.
+/// Updates the IO_MAP_BASE field, writes the bitmap (deny-all baseline with
+/// `allowed_ports` clearing their bits), writes the mandatory sentinel byte,
+/// and grows both the cached `tr_limit` and the GDT TSS-slot limit so the
+/// IOPB-fault path can read the bitmap and sentinel.
+pub(crate) fn install_io_permission_bitmap(
+    bus: &mut TestBus,
+    state: &mut I386State,
+    io_map_base_offset: u16,
+    bitmap_byte_count: u32,
+    allowed_ports: &[u16],
+) {
+    write_word_at(
+        bus,
+        state.tr_base + TSS_OFFSET_IO_MAP_BASE_FIELD,
+        io_map_base_offset,
+    );
+    let span = build_io_permission_bitmap(
+        bus,
+        state.tr_base,
+        io_map_base_offset,
+        bitmap_byte_count,
+        allowed_ports,
+    );
+    let new_limit = (io_map_base_offset as u32) + span - 1;
+    state.tr_limit = new_limit;
+    write_segment_descriptor_16bit(
+        bus,
+        GLOBAL_DESCRIPTOR_TABLE_BASE,
+        state.tr >> 3,
+        state.tr_base,
+        new_limit as u16,
+        state.tr_rights,
+    );
+}
+
+/// Convenience wrapper for protected-mode IOPB tests: full handler set plus
+/// an IOPB at DEFAULT_IO_MAP_BASE_OFFSET with the requested allow list.
+pub(crate) fn setup_protected_mode_with_iopb(
+    bus: &mut TestBus,
+    bitmap_byte_count: u32,
+    allowed_ports: &[u16],
+) -> I386State {
+    let mut state = setup_protected_mode_with_handlers(bus);
+    install_io_permission_bitmap(
+        bus,
+        &mut state,
+        DEFAULT_IO_MAP_BASE_OFFSET,
+        bitmap_byte_count,
+        allowed_ports,
+    );
+    state
+}
+
+/// Convenience wrapper for VM86 IOPB tests: enables VM86 at the requested
+/// IOPL and installs an IOPB at DEFAULT_IO_MAP_BASE_OFFSET. The VM86 setup
+/// does not include a #GP handler; tests that expect #GP must install one
+/// via `install_protected_mode_general_protection_handler` first.
+pub(crate) fn setup_vm86_with_iopl_and_iopb(
+    bus: &mut TestBus,
+    iopl: u8,
+    bitmap_byte_count: u32,
+    allowed_ports: &[u16],
+) -> I386State {
+    let mut state = setup_vm86_with_iopl(bus, iopl);
+    install_io_permission_bitmap(
+        bus,
+        &mut state,
+        DEFAULT_IO_MAP_BASE_OFFSET,
+        bitmap_byte_count,
+        allowed_ports,
+    );
+    state
+}
+
+/// Install a #GP handler at vector 13 pointing to HANDLER_GENERAL_PROTECTION_IP
+/// in the ring-0 code segment. The handler is a single HLT byte, allowing
+/// tests to detect the fault by checking `cpu.halted()` and `cpu.ip()`.
+pub(crate) fn install_protected_mode_general_protection_handler(bus: &mut TestBus) {
+    write_interrupt_gate_386(
+        bus,
+        INTERRUPT_DESCRIPTOR_TABLE_BASE,
+        13,
+        HANDLER_GENERAL_PROTECTION_IP as u32,
+        SELECTOR_RING0_CODE,
+        0,
+    );
+    bus.ram[(RING0_CODE_BASE + HANDLER_GENERAL_PROTECTION_IP as u32) as usize] = 0xF4;
+}
+
+/// Real-mode bare-bones state. Useful for tests that exercise instructions
+/// before any descriptor table is set up.
 pub(crate) fn make_real_mode_state() -> I386State {
     let mut state = I386State {
         ip: 0,
@@ -678,11 +770,10 @@ pub(crate) fn make_real_mode_state() -> I386State {
     state
 }
 
-// Standard protected-mode environment with a four-entry GDT (null, ring-0
-// code, ring-0 data, ring-0 stack), an IDT with a #GP handler that halts,
-// and CR0.PE=1. The data-segment limit is parameterised so tests that
-// exercise limit-enforcement edge cases can shrink it.
-
+/// Standard protected-mode environment with a four-entry GDT (null, ring-0
+/// code, ring-0 data, ring-0 stack), an IDT with a #GP handler that halts,
+/// and CR0.PE=1. The data-segment limit is parameterised so tests that
+/// exercise limit-enforcement edge cases can shrink it.
 pub(crate) fn setup_protected_mode(bus: &mut TestBus, data_segment_limit: u16) -> I386State {
     write_segment_descriptor_16bit(bus, GLOBAL_DESCRIPTOR_TABLE_BASE, 0, 0, 0, 0);
     write_segment_descriptor_16bit(
@@ -756,11 +847,10 @@ pub(crate) fn setup_protected_mode(bus: &mut TestBus, data_segment_limit: u16) -
     state
 }
 
-// Extended protected-mode environment with ring-3 segments, a primary 386
-// TSS for inter-privilege transitions, and exception handlers for #DE,
-// #UD, #BP, #OF, #BR, #DB, #DF, #TS, #NP, #SS, #GP, #PF, #AC. Each handler
-// is a single HLT byte so tests can identify the raised exception by IP.
-
+/// Extended protected-mode environment with ring-3 segments, a primary 386
+/// TSS for inter-privilege transitions, and exception handlers for #DE,
+/// #UD, #BP, #OF, #BR, #DB, #DF, #TS, #NP, #SS, #GP, #PF, #AC. Each handler
+/// is a single HLT byte so tests can identify the raised exception by IP.
 pub(crate) fn setup_protected_mode_with_handlers(bus: &mut TestBus) -> I386State {
     write_segment_descriptor_16bit(bus, GLOBAL_DESCRIPTOR_TABLE_BASE, 0, 0, 0, 0);
     write_segment_descriptor_16bit(
@@ -905,11 +995,10 @@ pub(crate) fn setup_protected_mode_with_handlers(bus: &mut TestBus) -> I386State
     state
 }
 
-// Promote the supplied protected-mode state into ring-3. The caller must
-// already have the ring-3 selectors present in the GDT (every helper above
-// arranges that). CS/SS/DS/ES are repointed at their ring-3 selectors with
-// matching descriptor caches.
-
+/// Promote the supplied protected-mode state into ring-3. The caller must
+/// already have the ring-3 selectors present in the GDT (every helper above
+/// arranges that). CS/SS/DS/ES are repointed at their ring-3 selectors with
+/// matching descriptor caches.
 pub(crate) fn promote_to_ring3(state: &mut I386State) {
     state.set_cs(SELECTOR_RING3_CODE);
     state.seg_bases[cpu::SegReg32::CS as usize] = RING3_CODE_BASE;
@@ -1042,9 +1131,8 @@ pub(crate) fn setup_vm86_with_iopl(bus: &mut TestBus, iopl: u8) -> I386State {
     state
 }
 
-// Identity paging across the entire 4 MiB covered by a single page table.
-// The single PDE points to PAGE_TABLE_BASE; PTEs map linear==physical.
-
+/// Identity paging across the entire 4 MiB covered by a single page table.
+/// The single PDE points to PAGE_TABLE_BASE; PTEs map linear==physical.
 pub(crate) fn enable_identity_paging(bus: &mut TestBus, state: &mut I386State) {
     write_dword_at(
         bus,
@@ -1116,9 +1204,8 @@ pub(crate) fn unmap_identity_page(bus: &mut TestBus, linear_address: u32) {
     write_dword_at(bus, PAGE_TABLE_BASE + entry_index * 4, entry_index << 12);
 }
 
-// Error-code decoders for assertion. Intel 80486 PRM Figure 9-2 (selector
-// error code) and Figure 5-9 (page-fault error code).
-
+/// Error-code decoders for assertion. Intel 80486 PRM Figure 9-2 (selector
+/// error code) and Figure 5-9 (page-fault error code).
 pub(crate) struct SelectorErrorCode {
     pub(crate) external: bool,
     pub(crate) idt: bool,

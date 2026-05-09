@@ -14,12 +14,12 @@
 //! next instruction.
 
 use common::Cpu as _;
-use cpu::{CPU_MODEL_386, I386, I386State};
+use cpu::I386State;
 
 use super::setup::{
     HANDLER_GENERAL_PROTECTION_IP, INTERRUPT_DESCRIPTOR_TABLE_BASE,
     RIGHTS_RING0_CODE_READABLE_ACCESSED, RIGHTS_RING0_DATA_WRITABLE_ACCESSED, RING0_CODE_BASE,
-    RING3_CODE_BASE, SELECTOR_RING0_CODE, TestBus, place_at, promote_to_ring3,
+    RING3_CODE_BASE, SELECTOR_RING0_CODE, TestBus, make_cpu_386, place_at, promote_to_ring3,
     setup_protected_mode_with_handlers, setup_vm86, setup_vm86_with_iopl, write_interrupt_gate_386,
 };
 
@@ -27,10 +27,6 @@ const CLI_OPCODE: u8 = 0xFA;
 const STI_OPCODE: u8 = 0xFB;
 const NOP_OPCODE: u8 = 0x90;
 const HLT_OPCODE: u8 = 0xF4;
-
-fn make_cpu_386() -> I386<{ CPU_MODEL_386 }> {
-    I386::<{ CPU_MODEL_386 }>::new()
-}
 
 fn install_vm86_gp_handler(bus: &mut TestBus, state: &mut I386State) {
     write_interrupt_gate_386(

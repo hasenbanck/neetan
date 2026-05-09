@@ -11,7 +11,7 @@
 //! CPL=0 -> VM86 transition the 32-bit form pops nine dwords total.
 
 use common::Cpu as _;
-use cpu::{CPU_MODEL_386, I386, I386State};
+use cpu::I386State;
 
 use super::setup::{
     ACCESS_DESCRIPTOR_CODE_OR_DATA, ACCESS_DPL_RING0, ACCESS_DPL_RING3, ACCESS_PRESENT,
@@ -23,8 +23,8 @@ use super::setup::{
     RING3_CODE_BASE, RING3_STACK_BASE, SELECTOR_RING0_CODE, SELECTOR_RING0_STACK,
     SELECTOR_RING3_CODE, SELECTOR_RING3_DATA, SELECTOR_RING3_STACK, SELECTOR_SECONDARY_TSS,
     SHARED_DATA_BASE, TASK_STATE_SEGMENT_BASE, TASK_STATE_SEGMENT_SECONDARY_BASE,
-    TSS_MINIMUM_LIMIT, TSS_OFFSET_LINK, TestBus, Tss386Image, place_at, promote_to_ring3,
-    read_dword_at, read_word_at, setup_protected_mode_with_handlers, setup_vm86,
+    TSS_MINIMUM_LIMIT, TSS_OFFSET_LINK, TestBus, Tss386Image, make_cpu_386, place_at,
+    promote_to_ring3, read_dword_at, read_word_at, setup_protected_mode_with_handlers, setup_vm86,
     setup_vm86_with_iopl, write_dword_at, write_segment_descriptor_16bit, write_tss_386,
     write_word_at,
 };
@@ -32,10 +32,6 @@ use super::setup::{
 const RETURN_IP: u16 = 0x2000;
 const RETURN_EIP: u32 = 0x0000_2000;
 const SECONDARY_TASK_EIP: u32 = 0x0000_3000;
-
-fn make_cpu_386() -> I386<{ CPU_MODEL_386 }> {
-    I386::<{ CPU_MODEL_386 }>::new()
-}
 
 fn install_target_hlt(bus: &mut TestBus, segment_base: u32, ip: u32) {
     bus.ram[(segment_base + ip) as usize] = 0xF4;

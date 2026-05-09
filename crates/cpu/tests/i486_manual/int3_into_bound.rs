@@ -10,19 +10,15 @@
 //!     leave the CPU unchanged.
 
 use common::Cpu as _;
-use cpu::{CPU_MODEL_386, I386, I386State};
+use cpu::I386State;
 
 use super::setup::{
     HANDLER_BOUND_RANGE_IP, HANDLER_BREAKPOINT_IP, HANDLER_GENERAL_PROTECTION_IP,
     HANDLER_OVERFLOW_IP, INTERRUPT_DESCRIPTOR_TABLE_BASE, RING0_CODE_BASE, SELECTOR_RING0_CODE,
-    SHARED_DATA_BASE, TestBus, place_at, place_code, promote_to_ring3,
+    SHARED_DATA_BASE, TestBus, make_cpu_386, place_at, place_code, promote_to_ring3,
     setup_protected_mode_with_handlers, setup_vm86_with_iopl, write_interrupt_gate_386,
     write_word_at,
 };
-
-fn make_cpu_386() -> I386<{ CPU_MODEL_386 }> {
-    I386::<{ CPU_MODEL_386 }>::new()
-}
 
 #[test]
 fn int3_pm_cpl0_dispatches_vector_3() {
