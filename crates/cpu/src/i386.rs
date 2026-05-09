@@ -953,7 +953,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             }
         }
 
-        // 80486 PRM 6.3.5: alignment check (#AC, vector 17) fires when
+        // 80486 PRM 9.9.16: alignment check (#AC, vector 17) fires when
         // CR0.AM=1, EFLAGS.AC=1, CPL=3, and the linear address is not
         // aligned to the access size. Instruction fetch and descriptor
         // accesses go through different paths and are exempt.

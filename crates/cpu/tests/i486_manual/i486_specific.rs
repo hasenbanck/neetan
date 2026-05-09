@@ -904,7 +904,7 @@ fn invd_raises_invalid_opcode_on_386() {
     assert_eq!(cpu.ip(), HANDLER_INVALID_OPCODE_IP as u32 + 1);
 }
 
-// CR0 reserved-bit masking. Per 80486 PRM Section 9.2.1, the 486 introduces
+// CR0 reserved-bit masking. Per 80486 PRM Section 21.3.4, the 486 introduces
 // the WP, NE, AM, NW, and CD writable bits. The 386 ignores writes to these
 // positions; the 486 retains them.
 
@@ -1026,7 +1026,7 @@ fn mov_to_cr0_clears_then_sets_pe_on_real_mode_setup_on_486() {
 
 #[test]
 fn lmsw_cannot_clear_pe_on_486() {
-    // Per 80486 PRM 9.2.4: LMSW writes only the low 4 bits, and cannot
+    // Per 80486 PRM Chapter 26 (LMSW page): LMSW writes only the low 4 bits, and cannot
     // clear PE once it has been set. Verify the implementation still
     // OR-preserves PE through the LMSW write.
     let mut cpu = make_cpu_486();
@@ -1446,7 +1446,7 @@ fn invlpg_does_not_fault_when_address_translates_through_unmapped_page_on_486() 
     assert_eq!(cpu.ip(), 6, "after INVLPG then HLT, IP advances past HLT");
 }
 
-// 80486 PRM 6.3.5: alignment check (#AC, vector 17) requires CR0.AM=1,
+// 80486 PRM 9.9.16: alignment check (#AC, vector 17) requires CR0.AM=1,
 // EFLAGS.AC=1, and CPL=3 simultaneously. The four-corner matrix verifies
 // that any one missing condition suppresses the fault.
 

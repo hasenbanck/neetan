@@ -58,7 +58,7 @@ pub(crate) const HANDLER_PAGE_FAULT_IP: u16 = 0x8100;
 pub(crate) const HANDLER_ALIGNMENT_CHECK_IP: u16 = 0x8200;
 
 // Access-rights byte components. Intel 80486 PRM Chapter 6 ("Protection")
-// for code/data; Chapter 7 for system descriptors.
+// for code/data; Table 6-1 for system descriptor types.
 
 pub(crate) const ACCESS_PRESENT: u8 = 0x80;
 pub(crate) const ACCESS_DPL_RING0: u8 = 0 << 5;
@@ -75,7 +75,7 @@ pub(crate) const ACCESS_TYPE_DATA_WRITABLE: u8 = 0x02;
 pub(crate) const ACCESS_TYPE_ACCESSED: u8 = 0x01;
 
 // System-descriptor type codes (the low 4 bits of the access byte when
-// ACCESS_DESCRIPTOR_SYSTEM is set). Intel 80486 PRM Table 7-1.
+// ACCESS_DESCRIPTOR_SYSTEM is set). Intel 80486 PRM Table 6-1.
 
 pub(crate) const SYSTEM_TYPE_TSS_286_AVAILABLE: u8 = 1;
 pub(crate) const SYSTEM_TYPE_LDT: u8 = 2;
@@ -292,7 +292,7 @@ pub(crate) fn write_dword_at(bus: &mut TestBus, linear_address: u32, value: u32)
     }
 }
 
-/// Descriptor builders. Intel 80486 PRM Figure 5-3 (segment descriptor).
+/// Descriptor builders. Intel 80486 PRM Figure 5-8 (segment descriptor).
 pub(crate) fn write_segment_descriptor(
     bus: &mut TestBus,
     descriptor_table_base: u32,
@@ -332,9 +332,10 @@ pub(crate) fn write_segment_descriptor_16bit(
     );
 }
 
-/// Gate descriptor (Intel 80486 PRM Figure 9-3): used for call gates,
-/// interrupt gates, trap gates, and task gates. The parameter-count field
-/// only applies to call gates.
+/// Gate descriptor: used for call gates, interrupt gates, trap gates,
+/// and task gates. Intel 80486 PRM Figure 6-5 (call gate), Figure 7-4
+/// (task gate), and Figure 9-2 (interrupt and trap gates). The
+/// parameter-count field only applies to call gates.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn write_gate_descriptor(
     bus: &mut TestBus,
@@ -564,7 +565,7 @@ pub(crate) fn write_tss_386(bus: &mut TestBus, tss_base: u32, image: &Tss386Imag
     );
 }
 
-/// 286 TSS layout: 44-byte fixed structure (Intel 80486 PRM Figure 7-9).
+/// 286 TSS layout: 44-byte fixed structure (Intel 80286 PRM).
 #[derive(Default, Clone, Copy)]
 pub(crate) struct Tss286Image {
     pub(crate) backlink: u16,
@@ -625,7 +626,7 @@ pub(crate) fn write_tss_286(bus: &mut TestBus, tss_base: u32, image: &Tss286Imag
 }
 
 /// Build an I/O permission bitmap whose `allowed_ports` are clear (1 means
-/// "deny" per Intel 80486 PRM 8.7). The bitmap occupies `bitmap_byte_count`
+/// "deny" per Intel 80486 PRM 8.3.2). The bitmap occupies `bitmap_byte_count`
 /// bytes followed by the mandatory 0xFF sentinel. Returns the total byte span
 /// (bitmap + sentinel) so the caller can size the TSS limit correctly.
 pub(crate) fn build_io_permission_bitmap(
@@ -1204,8 +1205,8 @@ pub(crate) fn unmap_identity_page(bus: &mut TestBus, linear_address: u32) {
     write_dword_at(bus, PAGE_TABLE_BASE + entry_index * 4, entry_index << 12);
 }
 
-/// Error-code decoders for assertion. Intel 80486 PRM Figure 9-2 (selector
-/// error code) and Figure 5-9 (page-fault error code).
+/// Error-code decoders for assertion. Intel 80486 PRM Figure 9-6 (selector
+/// error code) and Figure 9-7 (page-fault error code).
 pub(crate) struct SelectorErrorCode {
     pub(crate) external: bool,
     pub(crate) idt: bool,

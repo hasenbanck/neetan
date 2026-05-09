@@ -1,4 +1,4 @@
-//! Far CALL / JMP edge cases derived from the 80486 PRM Chapters 12 and 26.
+//! Far CALL / JMP edge cases derived from the 80486 PRM Chapters 6 and 26.
 //!
 //! Covers call gate parameter-count truncation, 16-bit vs 32-bit parameter
 //! copy across privilege change, ring-3 -> ring-0 stack-overflow on the new

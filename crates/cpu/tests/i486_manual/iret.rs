@@ -1,6 +1,6 @@
 //! IRET / IRETD return-from-interrupt dispatch tests.
 //!
-//! 80486 PRM Chapter 9 ("Exception and Interrupt Handling") and the IRET
+//! 80486 PRM Chapter 9 ("Exceptions and Interrupts") and the IRET
 //! reference. Covers same-privilege return, inter-privilege return, NT=1
 //! task-switch return, the CPL=0 -> VM86 transition, the VM86 IOPL gate, and
 //! real-mode 3-word frame handling.
