@@ -402,6 +402,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             return 0;
         }
         let eip = self.effective_eip();
+        // 80486 PRM Table 22-2: instruction execution crossing the CS limit
+        // (e.g. continuing past offset 0xFFFF in real mode or V86) raises
+        // #GP. Protected-mode descriptors honor the cached CS limit and
+        // typically have plenty of headroom, so this is essentially free
+        // there. fault_pending is asserted here so the prefix-decode loop
+        // terminates instead of dispatching a stray 0 opcode at the handler.
+        if eip > self.seg_limits[SegReg32::CS as usize] {
+            self.raise_fault_with_code(13, 0, bus);
+            self.fault_pending = true;
+            return 0;
+        }
         let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
         let Some(addr) = self.fetch_physical_address(linear, bus) else {
             self.prefetch_valid = false;
@@ -583,6 +594,29 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             return false;
         }
         true
+    }
+
+    /// Reads the next instruction byte from CS:IP without advancing IP.
+    /// Used to inspect a ModR/M byte before deciding how to dispatch.
+    fn peek_byte(&mut self, bus: &mut impl common::Bus) -> u8 {
+        let eip = self.effective_eip();
+        let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
+        let Some(addr) = self.fetch_physical_address(linear, bus) else {
+            return 0;
+        };
+        if self.prefetch_valid && self.prefetch_addr == addr {
+            self.prefetch_byte
+        } else {
+            bus.read_byte(addr)
+        }
+    }
+
+    /// Returns `true` when a ModR/M byte selects a register operand
+    /// (mod == 11b). The lockable opcodes that take a ModR/M byte (one-byte
+    /// forms only) require a memory destination.
+    #[inline(always)]
+    fn lockable_modrm_is_register(modrm: u8) -> bool {
+        modrm & 0xC0 == 0xC0
     }
 
     fn is_lockable(opcode: u8) -> bool {
@@ -2533,8 +2567,23 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         if self.rep_active {
             self.continue_rep(bus);
         } else {
+            // 80486 PRM 9.9.13: instructions longer than 15 bytes raise #GP.
+            // Track prefix bytes consumed and bail if a 15th would be next:
+            // a 15-byte all-prefix run still requires an opcode byte, so the
+            // total length necessarily exceeds the limit.
+            let mut prefix_count: u32 = 0;
             let mut opcode = self.fetch(bus);
             while !self.fault_pending {
+                match opcode {
+                    0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 | 0x66 | 0x67 | 0xF0 => {
+                        if prefix_count >= 14 {
+                            self.raise_fault_with_code(13, 0, bus);
+                            break;
+                        }
+                        prefix_count += 1;
+                    }
+                    _ => {}
+                }
                 match opcode {
                     0x26 => {
                         self.seg_prefix = true;
@@ -2589,6 +2638,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     }
                     _ => {
                         if self.lock_prefix && opcode != 0x0F && !Self::is_lockable(opcode) {
+                            self.raise_fault(6, bus);
+                        } else if self.lock_prefix
+                            && Self::is_lockable(opcode)
+                            && Self::lockable_modrm_is_register(self.peek_byte(bus))
+                        {
+                            // 80486 PRM 13.1.1: LOCK with a lockable opcode
+                            // is still illegal when the destination operand
+                            // is a register (ModR/M mod == 11b).
                             self.raise_fault(6, bus);
                         } else {
                             self.dispatch(opcode, bus);

@@ -1982,3 +1982,103 @@ fn ac_misaligned_word_at_ring3_does_not_fault_when_ac_already_high_on_disabled_m
     assert!(!cpu.halted());
     assert_eq!(cpu.eax() & 0xFFFF, 0xDEAD);
 }
+
+#[test]
+fn bswap_eax_swaps_bytes_in_real_mode_on_486() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = cpu::I386State::default();
+    state.set_cs(0xF000);
+    state.seg_bases[cpu::SegReg32::CS as usize] = 0x000F_0000;
+    state.seg_limits = [0xFFFF; 6];
+    state.seg_rights[cpu::SegReg32::CS as usize] =
+        super::setup::RIGHTS_RING0_CODE_READABLE_ACCESSED;
+    state.seg_valid = [true, true, true, true, false, false];
+    cpu.load_state(&state);
+    cpu.set_eax(0x1122_3344);
+
+    place_at(&mut bus, 0x000F_0000, &[0x66, 0x0F, 0xC8, HALT_OPCODE]);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.eax(), 0x4433_2211);
+}
+
+#[test]
+fn cmpxchg_dword_match_writes_source_to_destination_in_real_mode_on_486() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = cpu::I386State::default();
+    state.set_cs(0xF000);
+    state.seg_bases[cpu::SegReg32::CS as usize] = 0x000F_0000;
+    state.set_ds(0x1000);
+    state.seg_bases[cpu::SegReg32::DS as usize] = 0x0001_0000;
+    state.seg_limits = [0xFFFF; 6];
+    state.seg_rights[cpu::SegReg32::CS as usize] =
+        super::setup::RIGHTS_RING0_CODE_READABLE_ACCESSED;
+    state.seg_rights[cpu::SegReg32::DS as usize] =
+        super::setup::RIGHTS_RING0_DATA_WRITABLE_ACCESSED;
+    state.seg_valid = [true, true, true, true, false, false];
+    cpu.load_state(&state);
+
+    let memory_offset: u16 = 0x100;
+    let memory_address = 0x0001_0000u32 + memory_offset as u32;
+    bus.ram[memory_address as usize] = 0x78;
+    bus.ram[memory_address as usize + 1] = 0x56;
+    bus.ram[memory_address as usize + 2] = 0x34;
+    bus.ram[memory_address as usize + 3] = 0x12;
+    cpu.set_eax(0x1234_5678);
+    cpu.set_ecx(0xCAFE_BABE);
+
+    let mut code: Vec<u8> = vec![0x66, 0x0F, 0xB1];
+    modrm_memory_disp16(REG_INDEX_ECX, memory_offset, &mut code);
+    code.push(HALT_OPCODE);
+    place_at(&mut bus, 0x000F_0000, &code);
+
+    cpu.step(&mut bus);
+
+    assert!(cpu.state.flags.zf());
+    assert_eq!(bus.ram[memory_address as usize], 0xBE);
+    assert_eq!(bus.ram[memory_address as usize + 1], 0xBA);
+    assert_eq!(bus.ram[memory_address as usize + 2], 0xFE);
+    assert_eq!(bus.ram[memory_address as usize + 3], 0xCA);
+}
+
+#[test]
+fn xadd_dword_swaps_and_adds_in_real_mode_on_486() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = cpu::I386State::default();
+    state.set_cs(0xF000);
+    state.seg_bases[cpu::SegReg32::CS as usize] = 0x000F_0000;
+    state.seg_limits = [0xFFFF; 6];
+    state.seg_rights[cpu::SegReg32::CS as usize] =
+        super::setup::RIGHTS_RING0_CODE_READABLE_ACCESSED;
+    state.seg_valid = [true, true, true, true, false, false];
+    cpu.load_state(&state);
+    cpu.set_eax(0x0000_0001);
+    cpu.set_ecx(0x0000_0002);
+
+    // 66 0F C1 C8 = XADD ECX, EAX (ModR/M C8 = mod=11, r=ECX, r/m=EAX).
+    place_at(
+        &mut bus,
+        0x000F_0000,
+        &[
+            0x66,
+            0x0F,
+            0xC1,
+            modrm_register(REG_INDEX_ECX, REG_INDEX_EAX),
+            HALT_OPCODE,
+        ],
+    );
+
+    cpu.step(&mut bus);
+
+    // ModR/M C8 selects r/m=EAX (destination) and reg=ECX (source). XADD
+    // computes DEST = SRC + DEST and SRC = old DEST.
+    assert_eq!(cpu.eax(), 0x0000_0003);
+    assert_eq!(cpu.ecx(), 0x0000_0001);
+}

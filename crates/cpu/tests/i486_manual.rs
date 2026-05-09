@@ -41,3 +41,18 @@ mod call_jmp_far;
 
 #[path = "i486_manual/long_tail.rs"]
 mod long_tail;
+
+#[path = "i486_manual/real_mode_addressing.rs"]
+mod real_mode_addressing;
+
+#[path = "i486_manual/real_mode_instruction_semantics.rs"]
+mod real_mode_instruction_semantics;
+
+#[path = "i486_manual/v86_addressing_and_faults.rs"]
+mod v86_addressing_and_faults;
+
+#[path = "i486_manual/v86_mode_transitions.rs"]
+mod v86_mode_transitions;
+
+#[path = "i486_manual/mixed_16_32.rs"]
+mod mixed_16_32;

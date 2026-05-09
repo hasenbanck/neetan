@@ -2,7 +2,7 @@ use super::{I386, flags::I386Flags, fpu::X87State};
 use crate::{ByteReg, DwordReg, RegisterFile32, SegReg32};
 
 /// Snapshot of all I386 CPU registers and flags.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct I386State {
     /// General-purpose register file (32-bit).
     pub regs: RegisterFile32,
@@ -70,6 +70,51 @@ pub struct I386State {
     pub stored_cpl: u16,
     /// x87 FPU state.
     pub fpu: X87State,
+}
+
+impl Default for I386State {
+    /// Returns a state matching the i386/i486 post-reset defaults that
+    /// matter for typical test scaffolding. Most fields are zero, but
+    /// `idt_limit` is initialised to 0x3FF (256 entries x 4 bytes - 1)
+    /// per 80486 PRM 22.5 so real-mode INT n through the default IVT
+    /// dispatches normally.
+    fn default() -> Self {
+        Self {
+            regs: RegisterFile32::default(),
+            sregs: [0; 6],
+            ip: 0,
+            ip_upper: 0,
+            flags: I386Flags::default(),
+            eflags_upper: 0,
+            cr0: 0,
+            cr2: 0,
+            cr3: 0,
+            dr0: 0,
+            dr1: 0,
+            dr2: 0,
+            dr3: 0,
+            dr6: 0,
+            dr7: 0,
+            gdt_base: 0,
+            gdt_limit: 0,
+            idt_base: 0,
+            idt_limit: 0x03FF,
+            seg_bases: [0; 6],
+            seg_limits: [0; 6],
+            seg_rights: [0; 6],
+            seg_granularity: [0; 6],
+            seg_valid: [false; 6],
+            ldtr: 0,
+            ldtr_base: 0,
+            ldtr_limit: 0,
+            tr: 0,
+            tr_base: 0,
+            tr_limit: 0,
+            tr_rights: 0,
+            stored_cpl: 0,
+            fpu: X87State::default(),
+        }
+    }
 }
 
 impl I386State {
