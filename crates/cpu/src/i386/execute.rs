@@ -2356,9 +2356,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
         let penalty = self.sp_penalty();
         if self.operand_size_override {
-            // PUSHFD: bits 18-31 always push as 0, RF (bit 16) cleared.
-            // Only VM (bit 17) is included from upper bits.
-            let flags_val = (self.eflags_upper & 0x0002_0000) | self.flags.compress() as u32;
+            // PUSHFD: RF (bit 16) is masked. VM (bit 17) is always included.
+            // AC (bit 18, 486+) is included; remaining bits 19-31 push as 0.
+            let upper_mask: u32 = if CPU_MODEL >= CPU_MODEL_486 {
+                0x0006_0000 // VM | AC
+            } else {
+                0x0002_0000 // VM
+            };
+            let flags_val = (self.eflags_upper & upper_mask) | self.flags.compress() as u32;
             self.push_dword(bus, flags_val);
         } else {
             let flags_val = self.flags.compress();
@@ -2389,10 +2394,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         if self.operand_size_override {
             let val = self.pop_dword(bus);
             self.flags.load_flags(val as u16, cpl, pm);
-            // Bits 18-31 are reserved and not writable via POPFD.
             // VM (bit 17) is not modifiable via POPFD (only IRET at CPL=0).
             // RF (bit 16) is always cleared by POPFD.
+            // AC (bit 18, 486+) follows the popped value.
             self.eflags_upper &= !0x0001_0000;
+            if CPU_MODEL >= CPU_MODEL_486 {
+                self.eflags_upper = (self.eflags_upper & !0x0004_0000) | (val & 0x0004_0000);
+            }
         } else {
             let val = self.pop(bus);
             self.flags.load_flags(val, cpl, pm);
