@@ -3,8 +3,6 @@
 //! Identifiers are spelled out in full and constants are named after the
 //! manual sections they encode so tests do not embed magic hex.
 
-#![allow(dead_code)]
-
 use cpu::{CPU_MODEL_386, CPU_MODEL_486, I386, I386State};
 
 // Memory layout used by setup_protected_mode and friends. Bases are chosen so
@@ -27,7 +25,6 @@ pub(crate) const PAGE_TABLE_BASE: u32 = 0x000A_1000;
 
 // Selectors. Slot index is selector >> 3; the low two bits hold the RPL.
 
-pub(crate) const SELECTOR_NULL: u16 = 0x0000;
 pub(crate) const SELECTOR_RING0_CODE: u16 = 0x0008;
 pub(crate) const SELECTOR_RING0_DATA: u16 = 0x0010;
 pub(crate) const SELECTOR_RING0_STACK: u16 = 0x0018;
@@ -62,15 +59,12 @@ pub(crate) const HANDLER_ALIGNMENT_CHECK_IP: u16 = 0x8200;
 
 pub(crate) const ACCESS_PRESENT: u8 = 0x80;
 pub(crate) const ACCESS_DPL_RING0: u8 = 0 << 5;
-pub(crate) const ACCESS_DPL_RING1: u8 = 1 << 5;
-pub(crate) const ACCESS_DPL_RING2: u8 = 2 << 5;
 pub(crate) const ACCESS_DPL_RING3: u8 = 3 << 5;
 pub(crate) const ACCESS_DESCRIPTOR_CODE_OR_DATA: u8 = 0x10;
 pub(crate) const ACCESS_DESCRIPTOR_SYSTEM: u8 = 0x00;
 pub(crate) const ACCESS_TYPE_CODE: u8 = 0x08;
 pub(crate) const ACCESS_TYPE_CODE_CONFORMING: u8 = 0x04;
 pub(crate) const ACCESS_TYPE_CODE_READABLE: u8 = 0x02;
-pub(crate) const ACCESS_TYPE_DATA_EXPAND_DOWN: u8 = 0x04;
 pub(crate) const ACCESS_TYPE_DATA_WRITABLE: u8 = 0x02;
 pub(crate) const ACCESS_TYPE_ACCESSED: u8 = 0x01;
 
@@ -125,15 +119,12 @@ pub(crate) const RIGHTS_TSS_386_BUSY: u8 =
 
 pub(crate) const GRANULARITY_PAGE: u8 = 0x80;
 pub(crate) const GRANULARITY_BIG_OR_DEFAULT32: u8 = 0x40;
-pub(crate) const GRANULARITY_AVAILABLE_BIT: u8 = 0x10;
 
 // Page-table entry bits per 80486 PRM Chapter 5.
 
 pub(crate) const PAGE_PRESENT: u32 = 0x001;
 pub(crate) const PAGE_WRITABLE: u32 = 0x002;
-pub(crate) const PAGE_USER: u32 = 0x004;
 pub(crate) const PAGE_PRESENT_WRITABLE: u32 = PAGE_PRESENT | PAGE_WRITABLE;
-pub(crate) const PAGE_PRESENT_WRITABLE_USER: u32 = PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
 
 // TSS layout offsets (Intel 80486 PRM Figure 7-1, 32-bit TSS).
 
@@ -162,7 +153,6 @@ pub(crate) const TSS_OFFSET_DS: u32 = 0x54;
 pub(crate) const TSS_OFFSET_FS: u32 = 0x58;
 pub(crate) const TSS_OFFSET_GS: u32 = 0x5C;
 pub(crate) const TSS_OFFSET_LDT: u32 = 0x60;
-pub(crate) const TSS_OFFSET_DEBUG_TRAP_AND_IO_MAP_BASE: u32 = 0x64;
 pub(crate) const TSS_OFFSET_IO_MAP_BASE_FIELD: u32 = 0x66;
 pub(crate) const TSS_MINIMUM_LIMIT: u32 = 0x67;
 
@@ -195,11 +185,6 @@ impl TestBus {
             io_read_default: 0xFF,
             io_write_log: Vec::new(),
         }
-    }
-
-    pub(crate) fn pending_irq(&mut self, vector: u8) {
-        self.irq_pending = true;
-        self.irq_vector = vector;
     }
 }
 
@@ -275,10 +260,6 @@ pub(crate) fn read_dword_at(bus: &TestBus, linear_address: u32) -> u32 {
         value |= (bus.ram[linear_address as usize + index] as u32) << (index * 8);
     }
     value
-}
-
-pub(crate) fn write_byte_at(bus: &mut TestBus, linear_address: u32, value: u8) {
-    bus.ram[linear_address as usize] = value;
 }
 
 pub(crate) fn write_word_at(bus: &mut TestBus, linear_address: u32, value: u16) {
@@ -481,25 +462,6 @@ pub(crate) fn write_call_gate_286(
     );
 }
 
-pub(crate) fn write_task_gate(
-    bus: &mut TestBus,
-    interrupt_descriptor_table_base: u32,
-    vector: u8,
-    target_tss_selector: u16,
-    gate_dpl: u8,
-) {
-    let descriptor_address = (interrupt_descriptor_table_base + (vector as u32) * 8) as usize;
-    bus.ram[descriptor_address] = 0;
-    bus.ram[descriptor_address + 1] = 0;
-    bus.ram[descriptor_address + 2] = target_tss_selector as u8;
-    bus.ram[descriptor_address + 3] = (target_tss_selector >> 8) as u8;
-    bus.ram[descriptor_address + 4] = 0;
-    bus.ram[descriptor_address + 5] =
-        ACCESS_PRESENT | ((gate_dpl & 3) << 5) | ACCESS_DESCRIPTOR_SYSTEM | SYSTEM_TYPE_TASK_GATE;
-    bus.ram[descriptor_address + 6] = 0;
-    bus.ram[descriptor_address + 7] = 0;
-}
-
 /// 386 TSS image. Pass `None` for any field that should remain zero.
 /// Intel 80486 PRM Figure 7-1.
 #[derive(Default, Clone, Copy)]
@@ -565,65 +527,7 @@ pub(crate) fn write_tss_386(bus: &mut TestBus, tss_base: u32, image: &Tss386Imag
     );
 }
 
-/// 286 TSS layout: 44-byte fixed structure (Intel 80286 PRM).
-#[derive(Default, Clone, Copy)]
-pub(crate) struct Tss286Image {
-    pub(crate) backlink: u16,
-    pub(crate) sp0: u16,
-    pub(crate) ss0: u16,
-    pub(crate) sp1: u16,
-    pub(crate) ss1: u16,
-    pub(crate) sp2: u16,
-    pub(crate) ss2: u16,
-    pub(crate) ip: u16,
-    pub(crate) flags: u16,
-    pub(crate) ax: u16,
-    pub(crate) cx: u16,
-    pub(crate) dx: u16,
-    pub(crate) bx: u16,
-    pub(crate) sp: u16,
-    pub(crate) bp: u16,
-    pub(crate) si: u16,
-    pub(crate) di: u16,
-    pub(crate) es: u16,
-    pub(crate) cs: u16,
-    pub(crate) ss: u16,
-    pub(crate) ds: u16,
-    pub(crate) ldt: u16,
-}
-
 pub(crate) const TSS_286_LIMIT: u32 = 43;
-
-pub(crate) fn write_tss_286(bus: &mut TestBus, tss_base: u32, image: &Tss286Image) {
-    let mut offset = tss_base;
-    for value in [
-        image.backlink,
-        image.sp0,
-        image.ss0,
-        image.sp1,
-        image.ss1,
-        image.sp2,
-        image.ss2,
-        image.ip,
-        image.flags,
-        image.ax,
-        image.cx,
-        image.dx,
-        image.bx,
-        image.sp,
-        image.bp,
-        image.si,
-        image.di,
-        image.es,
-        image.cs,
-        image.ss,
-        image.ds,
-        image.ldt,
-    ] {
-        write_word_at(bus, offset, value);
-        offset += 2;
-    }
-}
 
 /// Build an I/O permission bitmap whose `allowed_ports` are clear (1 means
 /// "deny" per Intel 80486 PRM 8.3.2). The bitmap occupies `bitmap_byte_count`
@@ -1151,46 +1055,6 @@ pub(crate) fn enable_identity_paging(bus: &mut TestBus, state: &mut I386State) {
     state.cr3 = PAGE_DIRECTORY_BASE;
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct PageMapping {
-    pub(crate) linear_address: u32,
-    pub(crate) physical_address: u32,
-    pub(crate) present: bool,
-    pub(crate) writable: bool,
-    pub(crate) user: bool,
-}
-
-pub(crate) fn build_page_table_with_perms(
-    bus: &mut TestBus,
-    state: &mut I386State,
-    mappings: &[PageMapping],
-) {
-    write_dword_at(
-        bus,
-        PAGE_DIRECTORY_BASE,
-        PAGE_TABLE_BASE | PAGE_PRESENT_WRITABLE_USER,
-    );
-    for entry_index in 0..1024u32 {
-        write_dword_at(bus, PAGE_TABLE_BASE + entry_index * 4, 0);
-    }
-    for mapping in mappings {
-        let entry_index = (mapping.linear_address >> 12) & 0x3FF;
-        let mut entry = mapping.physical_address & 0xFFFF_F000;
-        if mapping.present {
-            entry |= PAGE_PRESENT;
-        }
-        if mapping.writable {
-            entry |= PAGE_WRITABLE;
-        }
-        if mapping.user {
-            entry |= PAGE_USER;
-        }
-        write_dword_at(bus, PAGE_TABLE_BASE + entry_index * 4, entry);
-    }
-    state.cr0 |= 0x8000_0000;
-    state.cr3 = PAGE_DIRECTORY_BASE;
-}
-
 pub(crate) fn set_identity_page_flags(bus: &mut TestBus, linear_address: u32, flags: u32) {
     let entry_index = (linear_address >> 12) & 0x3FF;
     write_dword_at(
@@ -1198,41 +1062,4 @@ pub(crate) fn set_identity_page_flags(bus: &mut TestBus, linear_address: u32, fl
         PAGE_TABLE_BASE + entry_index * 4,
         (entry_index << 12) | flags,
     );
-}
-
-pub(crate) fn unmap_identity_page(bus: &mut TestBus, linear_address: u32) {
-    let entry_index = (linear_address >> 12) & 0x3FF;
-    write_dword_at(bus, PAGE_TABLE_BASE + entry_index * 4, entry_index << 12);
-}
-
-/// Error-code decoders for assertion. Intel 80486 PRM Figure 9-6 (selector
-/// error code) and Figure 9-7 (page-fault error code).
-pub(crate) struct SelectorErrorCode {
-    pub(crate) external: bool,
-    pub(crate) idt: bool,
-    pub(crate) table_indicator: bool,
-    pub(crate) selector_index: u16,
-}
-
-pub(crate) fn decode_selector_error_code(error_code: u16) -> SelectorErrorCode {
-    SelectorErrorCode {
-        external: (error_code & 0x0001) != 0,
-        idt: (error_code & 0x0002) != 0,
-        table_indicator: (error_code & 0x0004) != 0,
-        selector_index: error_code & 0xFFF8,
-    }
-}
-
-pub(crate) struct PageFaultErrorCode {
-    pub(crate) present: bool,
-    pub(crate) write: bool,
-    pub(crate) user: bool,
-}
-
-pub(crate) fn decode_page_fault_error_code(error_code: u32) -> PageFaultErrorCode {
-    PageFaultErrorCode {
-        present: (error_code & 0x0001) != 0,
-        write: (error_code & 0x0002) != 0,
-        user: (error_code & 0x0004) != 0,
-    }
 }
