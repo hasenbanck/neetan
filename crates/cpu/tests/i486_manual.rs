@@ -23,3 +23,6 @@ mod cli_sti;
 
 #[path = "i486_manual/in_out.rs"]
 mod in_out;
+
+#[path = "i486_manual/lar_lsl.rs"]
+mod lar_lsl;
