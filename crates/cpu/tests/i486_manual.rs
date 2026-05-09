@@ -26,3 +26,9 @@ mod in_out;
 
 #[path = "i486_manual/lar_lsl.rs"]
 mod lar_lsl;
+
+#[path = "i486_manual/mov_sreg.rs"]
+mod mov_sreg;
+
+#[path = "i486_manual/lds_les_lfs_lgs_lss.rs"]
+mod lds_les_lfs_lgs_lss;
