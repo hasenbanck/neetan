@@ -38,3 +38,6 @@ mod i486_specific;
 
 #[path = "i486_manual/call_jmp_far.rs"]
 mod call_jmp_far;
+
+#[path = "i486_manual/long_tail.rs"]
+mod long_tail;
