@@ -1356,3 +1356,21 @@ impl Scheduler {
         due
     }
 }
+
+/// Likely condition.
+#[inline(always)]
+pub const fn likely(b: bool) -> bool {
+    if !b {
+        core::hint::cold_path();
+    }
+    b
+}
+
+/// Unlikely condition.
+#[inline(always)]
+pub const fn unlikely(b: bool) -> bool {
+    if b {
+        core::hint::cold_path();
+    }
+    b
+}
