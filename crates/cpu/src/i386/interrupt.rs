@@ -71,6 +71,21 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     ) {
         self.rep_active = false;
         if !self.is_protected_mode() {
+            // 80486 PRM 22.5 item 21 / Table 22-2: a vector beyond the IDTR
+            // limit raises #DF; if #DF itself would also be out of range,
+            // the processor shuts down.
+            let addr = (vector as u32) * 4;
+            let idt_limit = self.idt_limit as u32;
+            if addr + 3 > idt_limit {
+                let df_addr = 8u32 * 4;
+                if df_addr + 3 > idt_limit {
+                    self.shutdown = true;
+                    return;
+                }
+                self.interrupt_with_return_eip(8, return_eip, Some(0), false, false, true, bus);
+                return;
+            }
+
             let flags_val = self.flags.compress();
             self.push(bus, flags_val);
             self.flags.tf = false;
@@ -80,7 +95,6 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.push(bus, cs);
             self.push(bus, return_eip as u16);
 
-            let addr = (vector as u32) * 4;
             let dest_ip = bus.read_word(addr);
             let dest_cs = bus.read_word(addr + 2);
             if !self.load_segment(SegReg32::CS, dest_cs, bus) {

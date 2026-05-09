@@ -4101,7 +4101,12 @@ fn real_mode_stale_ip_upper() -> cpu::I386State {
 
     state.set_cs(0x0000);
     state.seg_bases[cpu::SegReg32::CS as usize] = 0x00000;
-    state.seg_limits[cpu::SegReg32::CS as usize] = 0xFFFF;
+    // "Big real mode": the test exercises a stale ip_upper that puts the
+    // effective EIP at 0x10000, which a strict real-mode CS limit (0xFFFF)
+    // would reject during fetch. Model the CS descriptor cache having
+    // retained a larger limit from a prior protected-mode load so the
+    // fetch succeeds and the JMP/CALL/RET ip_upper clearing can be tested.
+    state.seg_limits[cpu::SegReg32::CS as usize] = 0xFFFF_FFFF;
     state.seg_rights[cpu::SegReg32::CS as usize] = 0x9B;
 
     state.set_ss(0x0000);
@@ -4414,7 +4419,11 @@ fn i386_pm_to_real_mode_jmp_far_clears_ip_upper() {
     let gdt_base: u32 = 0x80000;
     let code_base: u32 = 0x50000;
     write_gdt_entry16(&mut bus, gdt_base, 0, 0, 0, 0); // Null.
-    write_gdt_entry16(&mut bus, gdt_base, 1, code_base, 0xFFFF, 0x9B); // CS.
+    // CS uses limit 0xFFFFF with G=1 so the test's 32-bit JMP to EIP
+    // = 0x10006 stays within the segment limit; otherwise the fetch-side
+    // CS-limit check (added per 80486 PRM Table 22-2) would #GP before
+    // we get to test the CR0.PE clear and subsequent JMP FAR.
+    write_gdt_entry(&mut bus, gdt_base, 1, code_base, 0x000F_FFFF, 0x9B, 0x80);
     write_gdt_entry16(&mut bus, gdt_base, 2, 0x00000, 0xFFFF, 0x93); // DS/SS.
 
     // Start in PM at code_base:0x0000.
@@ -4426,8 +4435,9 @@ fn i386_pm_to_real_mode_jmp_far_clears_ip_upper() {
     };
     state.set_cs(0x0008);
     state.seg_bases[cpu::SegReg32::CS as usize] = code_base;
-    state.seg_limits[cpu::SegReg32::CS as usize] = 0xFFFF;
+    state.seg_limits[cpu::SegReg32::CS as usize] = 0xFFFF_FFFF;
     state.seg_rights[cpu::SegReg32::CS as usize] = 0x9B;
+    state.seg_granularity[cpu::SegReg32::CS as usize] = 0x80;
     state.set_ss(0x0010);
     state.seg_bases[cpu::SegReg32::SS as usize] = 0x00000;
     state.seg_limits[cpu::SegReg32::SS as usize] = 0xFFFF;

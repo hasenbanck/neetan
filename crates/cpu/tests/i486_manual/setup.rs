@@ -1063,3 +1063,125 @@ pub(crate) fn set_identity_page_flags(bus: &mut TestBus, linear_address: u32, fl
         (entry_index << 12) | flags,
     );
 }
+
+/// Real-mode environment with single-HLT IVT handlers installed for the
+/// exceptions most commonly raised by Chapter 22 edge-case tests: #DE (0),
+/// #UD (6), #DF (8), #SS (12), and #GP (13). Each handler lives at a
+/// distinct linear address inside the same code segment (CS=0xF000) used
+/// by the test's instruction stream, but in a non-overlapping offset window
+/// so tests can identify the raised vector by IP. The handler vector is
+/// returned only implicitly via the constants below.
+pub(crate) const REAL_MODE_HANDLER_SEGMENT: u16 = 0x2000;
+pub(crate) const REAL_MODE_HANDLER_BASE: u32 = 0x0002_0000;
+pub(crate) const REAL_MODE_HANDLER_DIVIDE_ERROR_OFFSET: u16 = 0x0100;
+pub(crate) const REAL_MODE_HANDLER_INVALID_OPCODE_OFFSET: u16 = 0x0200;
+pub(crate) const REAL_MODE_HANDLER_DOUBLE_FAULT_OFFSET: u16 = 0x0300;
+pub(crate) const REAL_MODE_HANDLER_STACK_FAULT_OFFSET: u16 = 0x0400;
+pub(crate) const REAL_MODE_HANDLER_GENERAL_PROTECTION_OFFSET: u16 = 0x0500;
+pub(crate) const REAL_MODE_HANDLER_BOUND_RANGE_OFFSET: u16 = 0x0600;
+
+/// Install a single IVT entry pointing at (segment:offset). Used by
+/// `setup_real_mode_with_ivt_handlers` and tests that need extra handlers.
+pub(crate) fn install_real_mode_ivt_entry(
+    bus: &mut TestBus,
+    vector: u8,
+    handler_segment: u16,
+    handler_offset: u16,
+) {
+    let entry_address = (vector as usize) * 4;
+    bus.ram[entry_address] = handler_offset as u8;
+    bus.ram[entry_address + 1] = (handler_offset >> 8) as u8;
+    bus.ram[entry_address + 2] = handler_segment as u8;
+    bus.ram[entry_address + 3] = (handler_segment >> 8) as u8;
+}
+
+/// Real-mode setup with IVT handlers wired for the common exceptions. The
+/// handlers each occupy a single HLT byte at REAL_MODE_HANDLER_BASE plus
+/// the per-exception offset so tests can identify which fault fired by
+/// reading `cpu.ip()` against `(handler_offset + 1)`.
+pub(crate) fn setup_real_mode_with_ivt_handlers(bus: &mut TestBus) -> I386State {
+    let handler_entries: &[(u8, u16)] = &[
+        (0, REAL_MODE_HANDLER_DIVIDE_ERROR_OFFSET),
+        (5, REAL_MODE_HANDLER_BOUND_RANGE_OFFSET),
+        (6, REAL_MODE_HANDLER_INVALID_OPCODE_OFFSET),
+        (8, REAL_MODE_HANDLER_DOUBLE_FAULT_OFFSET),
+        (12, REAL_MODE_HANDLER_STACK_FAULT_OFFSET),
+        (13, REAL_MODE_HANDLER_GENERAL_PROTECTION_OFFSET),
+    ];
+    for &(vector, handler_offset) in handler_entries {
+        install_real_mode_ivt_entry(bus, vector, REAL_MODE_HANDLER_SEGMENT, handler_offset);
+        bus.ram[(REAL_MODE_HANDLER_BASE + handler_offset as u32) as usize] = 0xF4;
+    }
+
+    make_real_mode_state()
+}
+
+// Mixed 16/32-bit protected-mode setup. Adds a 16-bit code segment alongside
+// the 32-bit one used by `setup_protected_mode_with_handlers` so tests can
+// transition between them via call gates and prefix overrides.
+
+pub(crate) const SELECTOR_RING0_CODE_16BIT: u16 = 0x0050;
+pub(crate) const SELECTOR_RING0_DATA_16BIT_STACK: u16 = 0x0058;
+pub(crate) const RING0_CODE_16BIT_BASE: u32 = 0x0004_0000;
+pub(crate) const RING0_STACK_16BIT_BASE: u32 = 0x0003_0000;
+
+/// Protected-mode environment with both a 16-bit and a 32-bit ring-0 code
+/// segment. The 32-bit code segment lives at SELECTOR_RING0_CODE (slot 1,
+/// base RING0_CODE_BASE) and has the D-bit set; the 32-bit stack segment
+/// at SELECTOR_RING0_STACK (slot 3) has the B-bit set. The 16-bit code
+/// segment lives at SELECTOR_RING0_CODE_16BIT (slot 10, base
+/// RING0_CODE_16BIT_BASE) with the D-bit clear. A separate 16-bit stack
+/// segment at SELECTOR_RING0_DATA_16BIT_STACK (slot 11, base
+/// RING0_STACK_16BIT_BASE) lets tests exercise the SS B-bit.
+pub(crate) fn setup_protected_mode_mixed_widths(bus: &mut TestBus) -> I386State {
+    let mut state = setup_protected_mode_with_handlers(bus);
+
+    // Promote the default ring-0 code segment (slot 1) to 32-bit by setting
+    // the D-bit, and the ring-0 stack segment (slot 3) to 32-bit by setting
+    // the B-bit. The remaining segments (data, ring-3 mirrors) stay 16-bit
+    // so tests that need 16-bit data accesses still work.
+    write_segment_descriptor(
+        bus,
+        GLOBAL_DESCRIPTOR_TABLE_BASE,
+        1,
+        RING0_CODE_BASE,
+        0xFFFF,
+        RIGHTS_RING0_CODE_READABLE_ACCESSED,
+        GRANULARITY_BIG_OR_DEFAULT32,
+    );
+    write_segment_descriptor(
+        bus,
+        GLOBAL_DESCRIPTOR_TABLE_BASE,
+        3,
+        RING0_STACK_BASE,
+        0x000F_FFFF,
+        RIGHTS_RING0_DATA_WRITABLE_ACCESSED,
+        GRANULARITY_PAGE | GRANULARITY_BIG_OR_DEFAULT32,
+    );
+    state.seg_granularity[cpu::SegReg32::CS as usize] = GRANULARITY_BIG_OR_DEFAULT32;
+    state.seg_granularity[cpu::SegReg32::SS as usize] =
+        GRANULARITY_PAGE | GRANULARITY_BIG_OR_DEFAULT32;
+    state.seg_limits[cpu::SegReg32::SS as usize] = 0xFFFF_FFFF;
+
+    write_segment_descriptor_16bit(
+        bus,
+        GLOBAL_DESCRIPTOR_TABLE_BASE,
+        SELECTOR_RING0_CODE_16BIT >> 3,
+        RING0_CODE_16BIT_BASE,
+        0xFFFF,
+        RIGHTS_RING0_CODE_READABLE_ACCESSED,
+    );
+    write_segment_descriptor_16bit(
+        bus,
+        GLOBAL_DESCRIPTOR_TABLE_BASE,
+        SELECTOR_RING0_DATA_16BIT_STACK >> 3,
+        RING0_STACK_16BIT_BASE,
+        0xFFFF,
+        RIGHTS_RING0_DATA_WRITABLE_ACCESSED,
+    );
+
+    let last_slot_index = SELECTOR_RING0_DATA_16BIT_STACK >> 3;
+    state.gdt_limit = (last_slot_index + 1) * 8 - 1;
+
+    state
+}
