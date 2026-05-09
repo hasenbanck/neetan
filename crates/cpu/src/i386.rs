@@ -918,45 +918,68 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         if !self.is_protected_mode() {
             return true;
         }
-        if self.is_virtual_mode() {
-            return true;
-        }
 
-        if !self.seg_valid[seg as usize] {
-            let vector = if seg == SegReg32::SS { 12 } else { 13 };
-            self.raise_fault_with_code(vector, 0, bus);
-            return false;
-        }
-
-        let rights = self.seg_rights[seg as usize];
-        let end = offset.saturating_add(size.saturating_sub(1));
-        let wrapped = offset.checked_add(size.saturating_sub(1)).is_none();
-        let limit = self.seg_limits[seg as usize];
-        if Self::descriptor_is_expand_down(rights) {
-            let upper = if self.seg_granularity[seg as usize] & 0x40 != 0 {
-                0xFFFF_FFFF
-            } else {
-                0xFFFF
-            };
-            if offset <= limit || end > upper || wrapped {
-                self.raise_fault_with_code(if seg == SegReg32::SS { 12 } else { 13 }, 0, bus);
-                return false;
-            }
-        } else if end > limit || wrapped {
-            self.raise_fault_with_code(if seg == SegReg32::SS { 12 } else { 13 }, 0, bus);
-            return false;
-        }
-
-        if write {
-            if !Self::descriptor_is_writable(rights) {
+        if !self.is_virtual_mode() {
+            if !self.seg_valid[seg as usize] {
                 let vector = if seg == SegReg32::SS { 12 } else { 13 };
                 self.raise_fault_with_code(vector, 0, bus);
                 return false;
             }
-        } else if !Self::descriptor_is_readable(rights) {
-            let vector = if seg == SegReg32::SS { 12 } else { 13 };
-            self.raise_fault_with_code(vector, 0, bus);
-            return false;
+
+            let rights = self.seg_rights[seg as usize];
+            let end = offset.saturating_add(size.saturating_sub(1));
+            let wrapped = offset.checked_add(size.saturating_sub(1)).is_none();
+            let limit = self.seg_limits[seg as usize];
+            if Self::descriptor_is_expand_down(rights) {
+                let upper = if self.seg_granularity[seg as usize] & 0x40 != 0 {
+                    0xFFFF_FFFF
+                } else {
+                    0xFFFF
+                };
+                if offset <= limit || end > upper || wrapped {
+                    self.raise_fault_with_code(if seg == SegReg32::SS { 12 } else { 13 }, 0, bus);
+                    return false;
+                }
+            } else if end > limit || wrapped {
+                self.raise_fault_with_code(if seg == SegReg32::SS { 12 } else { 13 }, 0, bus);
+                return false;
+            }
+
+            if write {
+                if !Self::descriptor_is_writable(rights) {
+                    let vector = if seg == SegReg32::SS { 12 } else { 13 };
+                    self.raise_fault_with_code(vector, 0, bus);
+                    return false;
+                }
+            } else if !Self::descriptor_is_readable(rights) {
+                let vector = if seg == SegReg32::SS { 12 } else { 13 };
+                self.raise_fault_with_code(vector, 0, bus);
+                return false;
+            }
+        }
+
+        // 80486 PRM 6.3.5: alignment check (#AC, vector 17) fires when
+        // CR0.AM=1, EFLAGS.AC=1, CPL=3, and the linear address is not
+        // aligned to the access size. Instruction fetch and descriptor
+        // accesses go through different paths and are exempt.
+        if CPU_MODEL >= CPU_MODEL_486
+            && (self.cr0 & 0x0004_0000) != 0
+            && (self.eflags_upper & 0x0004_0000) != 0
+            && self.cpl() == 3
+        {
+            let alignment_mask = match size {
+                2 => 1,
+                4 => 3,
+                8 => 7,
+                _ => 0,
+            };
+            if alignment_mask != 0 {
+                let linear = self.seg_base(seg).wrapping_add(offset);
+                if linear & alignment_mask != 0 {
+                    self.raise_fault_with_code(17, 0, bus);
+                    return false;
+                }
+            }
         }
 
         true
