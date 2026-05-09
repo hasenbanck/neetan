@@ -2581,9 +2581,23 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             return;
         }
         self.calc_ea(modrm, bus);
+        // Snapshot CS:EIP so a fault inside the pointer fetch aborts the
+        // instruction without committing the segment-register or
+        // destination-register update. raise_fault restores fault_pending
+        // to its pre-instruction value after a clean dispatch, so it does
+        // not survive as a signal here.
+        let initial_cs = self.sregs[SegReg32::CS as usize];
+        let initial_ip = self.ip;
+        let initial_ip_upper = self.ip_upper;
         if self.operand_size_override {
             let offset = self.seg_read_dword(bus);
             let segment = self.seg_read_word_at(bus, 4);
+            if self.sregs[SegReg32::CS as usize] != initial_cs
+                || self.ip != initial_ip
+                || self.ip_upper != initial_ip_upper
+            {
+                return;
+            }
             if !self.load_segment(SegReg32::ES, segment, bus) {
                 return;
             }
@@ -2594,6 +2608,12 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
         let offset = self.seg_read_word(bus);
         let segment = self.seg_read_word_at(bus, 2);
+        if self.sregs[SegReg32::CS as usize] != initial_cs
+            || self.ip != initial_ip
+            || self.ip_upper != initial_ip_upper
+        {
+            return;
+        }
         if !self.load_segment(SegReg32::ES, segment, bus) {
             return;
         }
@@ -2609,9 +2629,18 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             return;
         }
         self.calc_ea(modrm, bus);
+        let initial_cs = self.sregs[SegReg32::CS as usize];
+        let initial_ip = self.ip;
+        let initial_ip_upper = self.ip_upper;
         if self.operand_size_override {
             let offset = self.seg_read_dword(bus);
             let segment = self.seg_read_word_at(bus, 4);
+            if self.sregs[SegReg32::CS as usize] != initial_cs
+                || self.ip != initial_ip
+                || self.ip_upper != initial_ip_upper
+            {
+                return;
+            }
             if !self.load_segment(SegReg32::DS, segment, bus) {
                 return;
             }
@@ -2622,6 +2651,12 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
         let offset = self.seg_read_word(bus);
         let segment = self.seg_read_word_at(bus, 2);
+        if self.sregs[SegReg32::CS as usize] != initial_cs
+            || self.ip != initial_ip
+            || self.ip_upper != initial_ip_upper
+        {
+            return;
+        }
         if !self.load_segment(SegReg32::DS, segment, bus) {
             return;
         }
