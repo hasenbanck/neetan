@@ -762,6 +762,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             let reg = self.reg_word(modrm);
             self.regs.set_word(reg, offset);
         }
+        self.inhibit_all = 1;
         self.clk(Self::timing(7, 6));
     }
 
