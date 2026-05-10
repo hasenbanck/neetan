@@ -1115,7 +1115,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                         return;
                     }
                     let Some(descriptor) = self.decode_descriptor(selector, bus) else {
-                        self.raise_fault_with_code(13, selector & 0xFFFC, bus);
+                        if !self.fault_pending {
+                            self.raise_fault_with_code(13, selector & 0xFFFC, bus);
+                        }
                         return;
                     };
                     let desc_type = descriptor.rights & 0x0F;
@@ -1151,7 +1153,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     return;
                 }
                 let Some(descriptor) = self.decode_descriptor(selector, bus) else {
-                    self.raise_fault_with_code(13, selector & 0xFFFC, bus);
+                    if !self.fault_pending {
+                        self.raise_fault_with_code(13, selector & 0xFFFC, bus);
+                    }
                     return;
                 };
                 let desc_type = descriptor.rights & 0x0F;
@@ -1168,15 +1172,23 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     self.raise_fault_with_code(10, selector & 0xFFFC, bus);
                     return;
                 }
+                // Probe the descriptor byte's physical address before any TR
+                // commit, so a fault during the busy-bit RMW leaves TR
+                // unchanged and the instruction is restartable.
+                let busy_bit_phys = if let Some(addr) = self.descriptor_addr_checked(selector) {
+                    let linear = addr.wrapping_add(5);
+                    let Some(phys) = self.translate_linear(linear, true, bus) else {
+                        return;
+                    };
+                    Some(phys)
+                } else {
+                    None
+                };
                 self.tr = selector;
                 self.tr_base = descriptor.base;
                 self.tr_limit = descriptor.limit;
-                self.tr_rights = descriptor.rights;
-                // Mark TSS as busy by setting bit 1 of type field.
-                self.tr_rights |= 0x02;
-                if let Some(addr) = self.descriptor_addr_checked(selector) {
-                    let linear = addr.wrapping_add(5);
-                    let phys = self.translate_linear(linear, true, bus).unwrap_or(0);
+                self.tr_rights = descriptor.rights | 0x02;
+                if let Some(phys) = busy_bit_phys {
                     let r = bus.read_byte(phys);
                     bus.write_byte(phys, r | 0x02);
                 }

@@ -1,6 +1,8 @@
 use super::I386;
 use crate::{ByteReg, DwordReg, SegReg32, WordReg};
 
+type ProbedDwordWrite = (u32, Option<(u32, u32, u32)>);
+
 impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     #[inline(always)]
     fn string_index_si(&self) -> u32 {
@@ -106,6 +108,31 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         offset: u32,
         value: u16,
     ) -> bool {
+        let Some((a0, cross)) = self.string_probe_write_word(bus, base, offset) else {
+            return false;
+        };
+        match cross {
+            None => bus.write_word(a0, value),
+            Some(a1) => {
+                bus.write_byte(a0, value as u8);
+                bus.write_byte(a1, (value >> 8) as u8);
+            }
+        }
+        true
+    }
+
+    /// Translates a word-sized destination for a string write without
+    /// performing the write. On the contiguous fast path returns
+    /// `Some((a0, None))`; on a cross-page split returns
+    /// `Some((a0, Some(a1)))`. Returns `None` if either translation
+    /// faulted (the fault is already raised).
+    #[inline(always)]
+    fn string_probe_write_word(
+        &mut self,
+        bus: &mut impl common::Bus,
+        base: u32,
+        offset: u32,
+    ) -> Option<(u32, Option<u32>)> {
         let l0 = self.string_addr_delta(base, offset, 0);
         let same_page = if self.address_size_override {
             l0 & 0xFFF <= 0xFFE
@@ -113,22 +140,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             l0 & 0xFFF <= 0xFFE && (offset as u16) <= 0xFFFE
         };
         if same_page {
-            let Some(a0) = self.translate_linear(l0, true, bus) else {
-                return false;
-            };
-            bus.write_word(a0, value);
-            return true;
+            let a0 = self.translate_linear(l0, true, bus)?;
+            return Some((a0, None));
         }
         let l1 = self.string_addr_delta(base, offset, 1);
-        let Some(a0) = self.translate_linear(l0, true, bus) else {
-            return false;
-        };
-        let Some(a1) = self.translate_linear(l1, true, bus) else {
-            return false;
-        };
-        bus.write_byte(a0, value as u8);
-        bus.write_byte(a1, (value >> 8) as u8);
-        true
+        let a0 = self.translate_linear(l0, true, bus)?;
+        let a1 = self.translate_linear(l1, true, bus)?;
+        Some((a0, Some(a1)))
     }
 
     #[inline(always)]
@@ -171,6 +189,30 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         offset: u32,
         value: u32,
     ) -> bool {
+        let Some((a0, cross)) = self.string_probe_write_dword(bus, base, offset) else {
+            return false;
+        };
+        match cross {
+            None => bus.write_dword(a0, value),
+            Some((a1, a2, a3)) => {
+                bus.write_byte(a0, value as u8);
+                bus.write_byte(a1, (value >> 8) as u8);
+                bus.write_byte(a2, (value >> 16) as u8);
+                bus.write_byte(a3, (value >> 24) as u8);
+            }
+        }
+        true
+    }
+
+    /// Translates a dword-sized destination for a string write without
+    /// performing the write. See [`string_probe_write_word`].
+    #[inline(always)]
+    fn string_probe_write_dword(
+        &mut self,
+        bus: &mut impl common::Bus,
+        base: u32,
+        offset: u32,
+    ) -> Option<ProbedDwordWrite> {
         let l0 = self.string_addr_delta(base, offset, 0);
         let same_page = if self.address_size_override {
             l0 & 0xFFF <= 0xFFC
@@ -178,32 +220,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             l0 & 0xFFF <= 0xFFC && (offset as u16) <= 0xFFFC
         };
         if same_page {
-            let Some(a0) = self.translate_linear(l0, true, bus) else {
-                return false;
-            };
-            bus.write_dword(a0, value);
-            return true;
+            let a0 = self.translate_linear(l0, true, bus)?;
+            return Some((a0, None));
         }
         let l1 = self.string_addr_delta(base, offset, 1);
         let l2 = self.string_addr_delta(base, offset, 2);
         let l3 = self.string_addr_delta(base, offset, 3);
-        let Some(a0) = self.translate_linear(l0, true, bus) else {
-            return false;
-        };
-        let Some(a1) = self.translate_linear(l1, true, bus) else {
-            return false;
-        };
-        let Some(a2) = self.translate_linear(l2, true, bus) else {
-            return false;
-        };
-        let Some(a3) = self.translate_linear(l3, true, bus) else {
-            return false;
-        };
-        bus.write_byte(a0, value as u8);
-        bus.write_byte(a1, (value >> 8) as u8);
-        bus.write_byte(a2, (value >> 16) as u8);
-        bus.write_byte(a3, (value >> 24) as u8);
-        true
+        let a0 = self.translate_linear(l0, true, bus)?;
+        let a1 = self.translate_linear(l1, true, bus)?;
+        let a2 = self.translate_linear(l2, true, bus)?;
+        let a3 = self.translate_linear(l3, true, bus)?;
+        Some((a0, Some((a1, a2, a3))))
     }
 
     pub(super) fn movsb(&mut self, bus: &mut impl common::Bus) {
@@ -486,10 +513,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             return;
         }
         let linear = self.string_addr(self.seg_base(SegReg32::ES), di);
-        let val = bus.io_read_byte(port);
         let Some(addr) = self.translate_linear(linear, true, bus) else {
             return;
         };
+        let val = bus.io_read_byte(port);
         bus.write_byte(addr, val);
         self.string_advance_di(1);
         self.clk(Self::timing(15, 17));
@@ -507,17 +534,33 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
         let base = self.seg_base(SegReg32::ES);
         if self.operand_size_override {
+            let Some((a0, cross)) = self.string_probe_write_dword(bus, base, di) else {
+                return;
+            };
             let low = bus.io_read_word(port) as u32;
             let high = bus.io_read_word(port.wrapping_add(2)) as u32;
             let val = low | (high << 16);
-            if !self.string_write_dword(bus, base, di, val) {
-                return;
+            match cross {
+                None => bus.write_dword(a0, val),
+                Some((a1, a2, a3)) => {
+                    bus.write_byte(a0, val as u8);
+                    bus.write_byte(a1, (val >> 8) as u8);
+                    bus.write_byte(a2, (val >> 16) as u8);
+                    bus.write_byte(a3, (val >> 24) as u8);
+                }
             }
             self.string_advance_di(4);
         } else {
-            let val = bus.io_read_word(port);
-            if !self.string_write_word(bus, base, di, val) {
+            let Some((a0, cross)) = self.string_probe_write_word(bus, base, di) else {
                 return;
+            };
+            let val = bus.io_read_word(port);
+            match cross {
+                None => bus.write_word(a0, val),
+                Some(a1) => {
+                    bus.write_byte(a0, val as u8);
+                    bus.write_byte(a1, (val >> 8) as u8);
+                }
             }
             self.string_advance_di(2);
         }

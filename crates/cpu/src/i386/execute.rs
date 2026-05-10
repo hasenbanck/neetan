@@ -1205,10 +1205,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let penalty = self.sp_penalty();
         if self.operand_size_override {
             let dreg = DwordReg::from_index(reg as u8);
-            let val = self.pop_dword(bus);
+            let Some(val) = self.pop_dword(bus) else {
+                return;
+            };
             self.regs.set_dword(dreg, val);
         } else {
-            let val = self.pop(bus);
+            let Some(val) = self.pop(bus) else {
+                return;
+            };
             self.regs.set_word(reg, val);
         }
         self.clk(Self::timing(4, 4) + penalty);
@@ -1331,13 +1335,48 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     fn popa(&mut self, bus: &mut impl common::Bus) {
         let penalty = self.sp_penalty();
         if self.operand_size_override {
-            let edi = self.pop_dword(bus);
+            // Probe the entire stack window before any commit: snapshot
+            // SP, peek 8 dwords, restore SP, then commit registers in the
+            // final block. If any peek faults, no register has changed.
+            let saved_sp = if self.use_esp() {
+                self.regs.dword(DwordReg::ESP)
+            } else {
+                self.regs.word(WordReg::SP) as u32
+            };
+            let Some(edi) = self.pop_dword(bus) else {
+                return;
+            };
+            let Some(esi) = self.pop_dword(bus) else {
+                self.commit_sp(saved_sp);
+                return;
+            };
+            let Some(ebp) = self.pop_dword(bus) else {
+                self.commit_sp(saved_sp);
+                return;
+            };
+            let Some(popped_esp) = self.pop_dword(bus) else {
+                self.commit_sp(saved_sp);
+                return;
+            };
+            let Some(ebx) = self.pop_dword(bus) else {
+                self.commit_sp(saved_sp);
+                return;
+            };
+            let Some(edx) = self.pop_dword(bus) else {
+                self.commit_sp(saved_sp);
+                return;
+            };
+            let Some(ecx) = self.pop_dword(bus) else {
+                self.commit_sp(saved_sp);
+                return;
+            };
+            let Some(eax) = self.pop_dword(bus) else {
+                self.commit_sp(saved_sp);
+                return;
+            };
             self.regs.set_dword(DwordReg::EDI, edi);
-            let esi = self.pop_dword(bus);
             self.regs.set_dword(DwordReg::ESI, esi);
-            let ebp = self.pop_dword(bus);
             self.regs.set_dword(DwordReg::EBP, ebp);
-            let popped_esp = self.pop_dword(bus);
             if !self.use_esp() {
                 // i386-specific POPAD quirk: with a 16-bit stack address size
                 // the ESP slot is popped into ESP in full, and only then is SP
@@ -1348,29 +1387,53 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 let new_esp = (popped_esp & 0xFFFF_0000) | sp_after as u32;
                 self.regs.set_dword(DwordReg::ESP, new_esp);
             }
-            let ebx = self.pop_dword(bus);
             self.regs.set_dword(DwordReg::EBX, ebx);
-            let edx = self.pop_dword(bus);
             self.regs.set_dword(DwordReg::EDX, edx);
-            let ecx = self.pop_dword(bus);
             self.regs.set_dword(DwordReg::ECX, ecx);
-            let eax = self.pop_dword(bus);
             self.regs.set_dword(DwordReg::EAX, eax);
         } else {
-            let iy = self.pop(bus);
+            let saved_sp = if self.use_esp() {
+                self.regs.dword(DwordReg::ESP)
+            } else {
+                self.regs.word(WordReg::SP) as u32
+            };
+            let Some(iy) = self.pop(bus) else {
+                return;
+            };
+            let Some(ix) = self.pop(bus) else {
+                self.commit_sp(saved_sp);
+                return;
+            };
+            let Some(bp) = self.pop(bus) else {
+                self.commit_sp(saved_sp);
+                return;
+            };
+            let Some(_discard) = self.pop(bus) else {
+                self.commit_sp(saved_sp);
+                return;
+            };
+            let Some(bw) = self.pop(bus) else {
+                self.commit_sp(saved_sp);
+                return;
+            };
+            let Some(dw) = self.pop(bus) else {
+                self.commit_sp(saved_sp);
+                return;
+            };
+            let Some(cw) = self.pop(bus) else {
+                self.commit_sp(saved_sp);
+                return;
+            };
+            let Some(aw) = self.pop(bus) else {
+                self.commit_sp(saved_sp);
+                return;
+            };
             self.regs.set_word(WordReg::DI, iy);
-            let ix = self.pop(bus);
             self.regs.set_word(WordReg::SI, ix);
-            let bp = self.pop(bus);
             self.regs.set_word(WordReg::BP, bp);
-            let _discard = self.pop(bus);
-            let bw = self.pop(bus);
             self.regs.set_word(WordReg::BX, bw);
-            let dw = self.pop(bus);
             self.regs.set_word(WordReg::DX, dw);
-            let cw = self.pop(bus);
             self.regs.set_word(WordReg::CX, cw);
-            let aw = self.pop(bus);
             self.regs.set_word(WordReg::AX, aw);
         }
         self.clk(Self::timing(24, 9) + penalty);
@@ -1811,10 +1874,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let modrm = self.fetch(bus);
         let sp_pen = self.sp_penalty();
         if self.operand_size_override {
-            let val = self.pop_dword(bus);
+            let Some(val) = self.pop_dword(bus) else {
+                return;
+            };
             self.put_rm_dword(modrm, val, bus);
         } else {
-            let val = self.pop(bus);
+            let Some(val) = self.pop(bus) else {
+                return;
+            };
             self.put_rm_word(modrm, val, bus);
         }
         if modrm >= 0xC0 {
@@ -2062,11 +2129,16 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     fn ret_near(&mut self, bus: &mut impl common::Bus) {
         let penalty = self.sp_penalty();
         if self.operand_size_override {
-            let eip = self.pop_dword(bus);
+            let Some(eip) = self.pop_dword(bus) else {
+                return;
+            };
             self.ip = eip as u16;
             self.ip_upper = eip & 0xFFFF_0000;
         } else {
-            self.ip = self.pop(bus);
+            let Some(ip) = self.pop(bus) else {
+                return;
+            };
+            self.ip = ip;
             self.ip_upper = 0;
         }
         match CPU_MODEL {
@@ -2085,11 +2157,16 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let penalty = self.sp_penalty();
         let imm = self.fetchword(bus);
         if self.operand_size_override {
-            let eip = self.pop_dword(bus);
+            let Some(eip) = self.pop_dword(bus) else {
+                return;
+            };
             self.ip = eip as u16;
             self.ip_upper = eip & 0xFFFF_0000;
         } else {
-            self.ip = self.pop(bus);
+            let Some(ip) = self.pop(bus) else {
+                return;
+            };
+            self.ip = ip;
             self.ip_upper = 0;
         }
         if self.use_esp() {
@@ -2116,16 +2193,25 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
         if !self.is_protected_mode() || self.is_virtual_mode() {
             if self.operand_size_override {
-                let eip = self.pop_dword(bus);
-                let cs = self.pop_dword(bus) as u16;
+                let Some(eip) = self.pop_dword(bus) else {
+                    return;
+                };
+                let Some(cs_dword) = self.pop_dword(bus) else {
+                    return;
+                };
+                let cs = cs_dword as u16;
                 if !self.load_segment(SegReg32::CS, cs, bus) {
                     return;
                 }
                 self.ip = eip as u16;
                 self.ip_upper = eip & 0xFFFF_0000;
             } else {
-                let ip = self.pop(bus);
-                let cs = self.pop(bus);
+                let Some(ip) = self.pop(bus) else {
+                    return;
+                };
+                let Some(cs) = self.pop(bus) else {
+                    return;
+                };
                 if !self.load_segment(SegReg32::CS, cs, bus) {
                     return;
                 }
@@ -2306,16 +2392,25 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
         if !self.is_protected_mode() || self.is_virtual_mode() {
             if self.operand_size_override {
-                let eip = self.pop_dword(bus);
-                let cs = self.pop_dword(bus) as u16;
+                let Some(eip) = self.pop_dword(bus) else {
+                    return;
+                };
+                let Some(cs_dword) = self.pop_dword(bus) else {
+                    return;
+                };
+                let cs = cs_dword as u16;
                 if !self.load_segment(SegReg32::CS, cs, bus) {
                     return;
                 }
                 self.ip = eip as u16;
                 self.ip_upper = eip & 0xFFFF_0000;
             } else {
-                let ip = self.pop(bus);
-                let cs = self.pop(bus);
+                let Some(ip) = self.pop(bus) else {
+                    return;
+                };
+                let Some(cs) = self.pop(bus) else {
+                    return;
+                };
                 if !self.load_segment(SegReg32::CS, cs, bus) {
                     return;
                 }
@@ -2541,7 +2636,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let cpl = self.cpl();
         let pm = self.is_protected_mode();
         if self.operand_size_override {
-            let val = self.pop_dword(bus);
+            let Some(val) = self.pop_dword(bus) else {
+                return;
+            };
             self.flags.load_flags(val as u16, cpl, pm);
             // VM (bit 17) is not modifiable via POPFD (only IRET at CPL=0).
             // RF (bit 16) is not modified by POPFD.
@@ -2550,7 +2647,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.eflags_upper = (self.eflags_upper & !0x0004_0000) | (val & 0x0004_0000);
             }
         } else {
-            let val = self.pop(bus);
+            let Some(val) = self.pop(bus) else {
+                return;
+            };
             self.flags.load_flags(val, cpl, pm);
         }
         let base = match CPU_MODEL {
@@ -2868,10 +2967,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             let frame_ptr = self.regs.dword(DwordReg::ESP);
             if self.use_esp() {
                 if level > 0 {
+                    // Walk the previous frame chain into a local without
+                    // mutating EBP, so a faulting read leaves EBP at its
+                    // entry value rather than partially walked.
+                    let mut walk = ebp_val;
                     for _ in 1..level {
-                        let ebp = self.regs.dword(DwordReg::EBP).wrapping_sub(4);
-                        self.regs.set_dword(DwordReg::EBP, ebp);
-                        let Some(val) = self.read_dword_seg(bus, SegReg32::SS, ebp) else {
+                        walk = walk.wrapping_sub(4);
+                        let Some(val) = self.read_dword_seg(bus, SegReg32::SS, walk) else {
                             return;
                         };
                         self.push_dword(bus, val);
@@ -2883,10 +2985,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.regs.set_dword(DwordReg::ESP, esp);
             } else {
                 if level > 0 {
+                    let mut walk = ebp_val as u16;
                     for _ in 1..level {
-                        let bp = self.regs.word(WordReg::BP).wrapping_sub(4);
-                        self.regs.set_word(WordReg::BP, bp);
-                        let Some(val) = self.read_dword_seg(bus, SegReg32::SS, bp as u32) else {
+                        walk = walk.wrapping_sub(4);
+                        let Some(val) = self.read_dword_seg(bus, SegReg32::SS, walk as u32) else {
                             return;
                         };
                         self.push_dword(bus, val);
@@ -2911,10 +3013,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.push(bus, bp);
             let frame_ptr = self.regs.word(WordReg::SP);
             if level > 0 {
+                let mut walk = bp;
                 for _ in 1..level {
-                    let bp_val = self.regs.word(WordReg::BP).wrapping_sub(2);
-                    self.regs.set_word(WordReg::BP, bp_val);
-                    let Some(val) = self.read_word_seg(bus, SegReg32::SS, bp_val as u32) else {
+                    walk = walk.wrapping_sub(2);
+                    let Some(val) = self.read_word_seg(bus, SegReg32::SS, walk as u32) else {
                         return;
                     };
                     self.push(bus, val);
@@ -2945,10 +3047,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
         let penalty = self.sp_penalty();
         if self.operand_size_override {
-            let val = self.pop_dword(bus);
+            let Some(val) = self.pop_dword(bus) else {
+                return;
+            };
             self.regs.set_dword(DwordReg::EBP, val);
         } else {
-            let val = self.pop(bus);
+            let Some(val) = self.pop(bus) else {
+                return;
+            };
             self.regs.set_word(WordReg::BP, val);
         }
         self.clk(Self::timing(4, 5) + penalty);
@@ -2983,9 +3089,16 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
         if !self.is_protected_mode() {
             if self.operand_size_override {
-                let eip = self.pop_dword(bus);
-                let cs = self.pop_dword(bus) as u16;
-                let eflags = self.pop_dword(bus);
+                let Some(eip) = self.pop_dword(bus) else {
+                    return;
+                };
+                let Some(cs_dword) = self.pop_dword(bus) else {
+                    return;
+                };
+                let cs = cs_dword as u16;
+                let Some(eflags) = self.pop_dword(bus) else {
+                    return;
+                };
                 if !self.load_segment(SegReg32::CS, cs, bus) {
                     return;
                 }
@@ -2993,9 +3106,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.ip_upper = eip & 0xFFFF_0000;
                 self.flags.load_flags(eflags as u16, 0, false);
             } else {
-                let ip = self.pop(bus);
-                let cs = self.pop(bus);
-                let flags_val = self.pop(bus);
+                let Some(ip) = self.pop(bus) else {
+                    return;
+                };
+                let Some(cs) = self.pop(bus) else {
+                    return;
+                };
+                let Some(flags_val) = self.pop(bus) else {
+                    return;
+                };
                 if !self.load_segment(SegReg32::CS, cs, bus) {
                     return;
                 }
@@ -3014,9 +3133,16 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             }
 
             if self.operand_size_override {
-                let new_eip = self.pop_dword(bus);
-                let new_cs = self.pop_dword(bus) as u16;
-                let new_eflags = self.pop_dword(bus);
+                let Some(new_eip) = self.pop_dword(bus) else {
+                    return;
+                };
+                let Some(new_cs_dword) = self.pop_dword(bus) else {
+                    return;
+                };
+                let new_cs = new_cs_dword as u16;
+                let Some(new_eflags) = self.pop_dword(bus) else {
+                    return;
+                };
 
                 self.sregs[SegReg32::CS as usize] = new_cs;
                 self.set_real_segment_cache(SegReg32::CS, new_cs);
@@ -3025,9 +3151,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.flags.load_flags(new_eflags as u16, 3, true);
                 self.eflags_upper = (new_eflags & 0x00FF_0000) | 0x0002_0000;
             } else {
-                let new_ip = self.pop(bus);
-                let new_cs = self.pop(bus);
-                let new_flags = self.pop(bus);
+                let Some(new_ip) = self.pop(bus) else {
+                    return;
+                };
+                let Some(new_cs) = self.pop(bus) else {
+                    return;
+                };
+                let Some(new_flags) = self.pop(bus) else {
+                    return;
+                };
 
                 self.sregs[SegReg32::CS as usize] = new_cs;
                 self.set_real_segment_cache(SegReg32::CS, new_cs);
