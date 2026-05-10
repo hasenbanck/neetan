@@ -3095,8 +3095,8 @@ fn i386_pushfd_popfd_upper_eflags() {
     state.seg_granularity[cpu::SegReg32::SS as usize] = 0x40;
     state.seg_limits[cpu::SegReg32::SS as usize] = 0xFFFF_FFFF;
     state.set_esp(0x0001_0000);
-    // Set bits 18-31 in upper EFLAGS (simulating hardware state).
-    state.eflags_upper = 0xFFFC_0000;
+    // Set bits 18-31 and RF in upper EFLAGS (simulating hardware state).
+    state.eflags_upper = 0xFFFD_0000;
     cpu.load_state(&state);
 
     // 66 9C = PUSHFD, 66 9D = POPFD
@@ -3125,7 +3125,7 @@ fn i386_pushfd_popfd_upper_eflags() {
     assert_eq!(
         cpu.state.eflags_upper & 0x0001_0000,
         0,
-        "POPFD should clear RF (bit 16)"
+        "POPFD should not restore RF from the stack image"
     );
 }
 
