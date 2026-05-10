@@ -303,7 +303,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             };
 
             let old_ss = self.sregs[SegReg32::SS as usize];
-            let old_sp = if self.use_esp() {
+            let old_sp = if from_vm86 || self.use_esp() {
                 self.regs.dword(crate::DwordReg::ESP)
             } else {
                 self.regs.word(crate::WordReg::SP) as u32
