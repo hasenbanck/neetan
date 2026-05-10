@@ -1777,6 +1777,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     fn switch_task(&mut self, ntask: u16, task_type: TaskType, bus: &mut impl common::Bus) {
+        let saved_supervisor_override = self.supervisor_override;
+        self.supervisor_override = true;
+        self.switch_task_inner(ntask, task_type, bus);
+        self.supervisor_override = saved_supervisor_override;
+    }
+
+    fn switch_task_inner(&mut self, ntask: u16, task_type: TaskType, bus: &mut impl common::Bus) {
         if ntask & 0x0004 != 0 {
             self.raise_fault_with_code(10, Self::segment_error_code(ntask), bus);
             return;

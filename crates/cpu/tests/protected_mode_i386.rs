@@ -1473,6 +1473,87 @@ fn i386_ring3_task_switch_reads_supervisor_tss_descriptor() {
 }
 
 #[test]
+fn i386_ring3_task_switch_accesses_supervisor_tss_body() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let mut state = setup_protected_mode_with_ring3(&mut bus);
+    make_ring3_state(&mut state);
+
+    let task2_sel: u16 = 0x0048;
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 9, PM_TSS2_BASE, 103, 0xE9);
+    state.gdt_limit = 10 * 8 - 1;
+
+    let task2_ip: u32 = 0x0500;
+    write_tss386(
+        &mut bus,
+        PM_TSS2_BASE,
+        0,
+        0xFFF0,
+        PM_SS_SEL,
+        task2_ip,
+        0x0002,
+        0,
+        0,
+        0,
+        0,
+        0xFFF0,
+        0,
+        0,
+        0,
+        PM_DS_SEL,
+        PM_CS_SEL,
+        PM_SS_SEL,
+        PM_DS_SEL,
+        0,
+        0,
+        0,
+    );
+
+    bus.ram[(PM_CODE_BASE + task2_ip) as usize] = 0xF4;
+
+    enable_identity_paging(&mut bus, &mut state);
+
+    write_dword_at(&mut bus, PM_TSS2_BASE + 28, TEST_PAGE_DIRECTORY_BASE);
+
+    write_dword_at(
+        &mut bus,
+        TEST_PAGE_DIRECTORY_BASE,
+        TEST_PAGE_TABLE_BASE | TEST_PAGE_PRESENT_WRITABLE_USER,
+    );
+    set_identity_page_flags(
+        &mut bus,
+        PM_RING3_CODE_BASE,
+        TEST_PAGE_PRESENT_WRITABLE_USER,
+    );
+    set_identity_page_flags(
+        &mut bus,
+        PM_RING3_STACK_BASE,
+        TEST_PAGE_PRESENT_WRITABLE_USER,
+    );
+    set_identity_page_flags(&mut bus, PM_DATA_BASE, TEST_PAGE_PRESENT_WRITABLE_USER);
+    set_identity_page_flags(&mut bus, PM_CODE_BASE, TEST_PAGE_PRESENT_WRITABLE_USER);
+    set_identity_page_flags(&mut bus, PM_STACK_BASE, TEST_PAGE_PRESENT_WRITABLE_USER);
+    set_identity_page_flags(&mut bus, PM_GDT_BASE, TEST_PAGE_PRESENT_WRITABLE);
+    set_identity_page_flags(&mut bus, PM_TSS_BASE, TEST_PAGE_PRESENT_WRITABLE);
+    set_identity_page_flags(&mut bus, PM_TSS2_BASE, TEST_PAGE_PRESENT_WRITABLE);
+
+    cpu.load_state(&state);
+    place_at(
+        &mut bus,
+        PM_RING3_CODE_BASE,
+        &[0xEA, 0x00, 0x00, task2_sel as u8, (task2_sel >> 8) as u8],
+    );
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.cs(), PM_CS_SEL);
+    assert_eq!(cpu.ip(), task2_ip + 1);
+    assert_eq!(cpu.cs() & 3, 0);
+}
+
+#[test]
 fn i386_ret_far_inter_privilege_ring0_to_ring3() {
     let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
