@@ -253,66 +253,74 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
     }
 
-    pub(super) fn get_rm_byte(&mut self, modrm: u8, bus: &mut impl common::Bus) -> u8 {
+    pub(super) fn get_rm_byte(&mut self, modrm: u8, bus: &mut impl common::Bus) -> Option<u8> {
         if modrm >= 0xC0 {
-            self.regs.byte(self.rm_byte(modrm))
+            Some(self.regs.byte(self.rm_byte(modrm)))
         } else {
             self.calc_ea(modrm, bus);
             if !self.check_segment_access(self.ea_seg, self.eo32, 1, false, bus) {
-                return 0;
+                return None;
             }
-            let Some(addr) = self.translate_linear(self.ea, false, bus) else {
-                return 0;
-            };
-            bus.read_byte(addr)
+            let addr = self.translate_linear(self.ea, false, bus)?;
+            Some(bus.read_byte(addr))
         }
     }
 
-    pub(super) fn get_rm_byte_for_update(&mut self, modrm: u8, bus: &mut impl common::Bus) -> u8 {
+    pub(super) fn get_rm_byte_for_update(
+        &mut self,
+        modrm: u8,
+        bus: &mut impl common::Bus,
+    ) -> Option<u8> {
         if modrm >= 0xC0 {
-            self.regs.byte(self.rm_byte(modrm))
+            Some(self.regs.byte(self.rm_byte(modrm)))
         } else {
             self.calc_ea(modrm, bus);
             if !self.check_segment_access(self.ea_seg, self.eo32, 1, true, bus) {
-                return 0;
+                return None;
             }
-            let Some(addr) = self.translate_linear(self.ea, true, bus) else {
-                return 0;
-            };
-            bus.read_byte(addr)
+            let addr = self.translate_linear(self.ea, true, bus)?;
+            Some(bus.read_byte(addr))
         }
     }
 
-    pub(super) fn get_rm_word(&mut self, modrm: u8, bus: &mut impl common::Bus) -> u16 {
+    pub(super) fn get_rm_word(&mut self, modrm: u8, bus: &mut impl common::Bus) -> Option<u16> {
         if modrm >= 0xC0 {
-            self.regs.word(self.rm_word(modrm))
+            Some(self.regs.word(self.rm_word(modrm)))
         } else {
             self.calc_ea(modrm, bus);
             self.seg_read_word(bus)
         }
     }
 
-    pub(super) fn get_rm_word_for_update(&mut self, modrm: u8, bus: &mut impl common::Bus) -> u16 {
+    pub(super) fn get_rm_word_for_update(
+        &mut self,
+        modrm: u8,
+        bus: &mut impl common::Bus,
+    ) -> Option<u16> {
         if modrm >= 0xC0 {
-            self.regs.word(self.rm_word(modrm))
+            Some(self.regs.word(self.rm_word(modrm)))
         } else {
             self.calc_ea(modrm, bus);
             self.seg_read_word_for_update(bus)
         }
     }
 
-    pub(super) fn get_rm_dword(&mut self, modrm: u8, bus: &mut impl common::Bus) -> u32 {
+    pub(super) fn get_rm_dword(&mut self, modrm: u8, bus: &mut impl common::Bus) -> Option<u32> {
         if modrm >= 0xC0 {
-            self.regs.dword(self.rm_dword(modrm))
+            Some(self.regs.dword(self.rm_dword(modrm)))
         } else {
             self.calc_ea(modrm, bus);
             self.seg_read_dword(bus)
         }
     }
 
-    pub(super) fn get_rm_dword_for_update(&mut self, modrm: u8, bus: &mut impl common::Bus) -> u32 {
+    pub(super) fn get_rm_dword_for_update(
+        &mut self,
+        modrm: u8,
+        bus: &mut impl common::Bus,
+    ) -> Option<u32> {
         if modrm >= 0xC0 {
-            self.regs.dword(self.rm_dword(modrm))
+            Some(self.regs.dword(self.rm_dword(modrm)))
         } else {
             self.calc_ea(modrm, bus);
             self.seg_read_dword_for_update(bus)

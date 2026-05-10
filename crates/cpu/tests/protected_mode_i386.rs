@@ -6643,6 +6643,49 @@ fn i386_rep_movsd() {
 }
 
 #[test]
+fn i386_page_faulting_moffs_load_preserves_destination_register() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let mut state = setup_protected_mode_with_exception_handlers(&mut bus);
+    enable_identity_paging(&mut bus, &mut state);
+
+    let source_offset = 0x3000u32;
+    let source_linear = PM_DATA_BASE + source_offset;
+    unmap_identity_page(&mut bus, source_linear);
+
+    cpu.load_state(&state);
+    cpu.state.set_eax(0x89AB_CDEF);
+
+    place_at(
+        &mut bus,
+        PM_CODE_BASE,
+        &[
+            0x67,
+            0x66,
+            0xA1,
+            source_offset as u8,
+            (source_offset >> 8) as u8,
+            (source_offset >> 16) as u8,
+            (source_offset >> 24) as u8,
+        ],
+    );
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.state.eax(), 0x89AB_CDEF);
+    assert_eq!(cpu.ip(), PM_PAGE_FAULT_HANDLER_IP as u32);
+    assert_eq!(cpu.cr2, source_linear);
+
+    let stack_pointer = cpu.esp();
+    assert_eq!(read_dword_at(&bus, PM_STACK_BASE + stack_pointer), 0);
+    assert_eq!(read_dword_at(&bus, PM_STACK_BASE + stack_pointer + 4), 0);
+    assert_eq!(
+        read_dword_at(&bus, PM_STACK_BASE + stack_pointer + 8) as u16,
+        PM_CS_SEL
+    );
+}
+
+#[test]
 fn i386_rep_movsd_source_page_fault_preserves_restart_state() {
     let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
