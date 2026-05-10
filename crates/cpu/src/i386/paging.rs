@@ -30,6 +30,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         write: bool,
         bus: &mut impl common::Bus,
     ) -> Option<u32> {
+        if self.fault_pending {
+            return None;
+        }
         if !self.is_paging_enabled() {
             return Some(linear);
         }

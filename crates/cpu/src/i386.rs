@@ -949,6 +949,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         write: bool,
         bus: &mut impl common::Bus,
     ) -> bool {
+        if self.fault_pending {
+            return false;
+        }
         if !self.is_protected_mode() {
             return true;
         }
