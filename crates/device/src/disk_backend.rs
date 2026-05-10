@@ -153,14 +153,18 @@ mod tests {
     use super::*;
 
     fn tempfile_with(bytes: &[u8]) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir();
         let unique = format!(
-            "neetan_disk_backend_test_{}_{}.tmp",
+            "neetan_disk_backend_test_{}_{}_{}.tmp",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            counter,
         );
         let path = dir.join(unique);
         std::fs::write(&path, bytes).expect("write temp file");
