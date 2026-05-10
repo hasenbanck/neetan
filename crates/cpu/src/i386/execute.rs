@@ -2388,6 +2388,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.raise_fault_with_code(13, 0, bus);
             return;
         }
+        self.preserve_resume_flag = true;
         let penalty = self.sp_penalty();
         let cpl = self.cpl();
         let pm = self.is_protected_mode();
@@ -2395,9 +2396,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             let val = self.pop_dword(bus);
             self.flags.load_flags(val as u16, cpl, pm);
             // VM (bit 17) is not modifiable via POPFD (only IRET at CPL=0).
-            // RF (bit 16) is always cleared by POPFD.
+            // RF (bit 16) is not modified by POPFD.
             // AC (bit 18, 486+) follows the popped value.
-            self.eflags_upper &= !0x0001_0000;
             if CPU_MODEL >= CPU_MODEL_486 {
                 self.eflags_upper = (self.eflags_upper & !0x0004_0000) | (val & 0x0004_0000);
             }
@@ -2802,6 +2802,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     fn iret(&mut self, bus: &mut impl common::Bus) {
+        self.preserve_resume_flag = true;
         let penalty = self.sp_penalty();
 
         if !self.is_protected_mode() {

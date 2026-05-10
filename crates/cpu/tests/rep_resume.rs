@@ -1,9 +1,17 @@
 use common::Cpu as _;
-use cpu::{I286, I286State, I386, I386State, V30State, VX0};
+use cpu::{I286, I286State, I386, I386State, SegReg32, V30State, VX0};
 
 const RAM_SIZE: usize = 1024 * 1024;
 const ADDRESS_MASK: u32 = 0x000F_FFFF;
 const IRQ_VECTOR: u8 = 0x20;
+const PM_GDT_BASE: u32 = 0x80000;
+const PM_IDT_BASE: u32 = 0x90000;
+const PM_CODE_SELECTOR: u16 = 0x0008;
+const PM_DATA_SELECTOR: u16 = 0x0010;
+const PM_CODE_BASE: u32 = 0x1000;
+const PM_IRQ_HANDLER: u32 = 0x2000;
+const PM_IRQ_MARKER: u32 = 0x0500;
+const PM_STACK_TOP: u32 = 0x70000;
 
 struct TestBus {
     ram: Vec<u8>,
@@ -95,6 +103,81 @@ fn place_bytes(bus: &mut TestBus, address: u32, bytes: &[u8]) {
     for (index, byte) in bytes.iter().enumerate() {
         bus.poke(address.wrapping_add(index as u32), *byte);
     }
+}
+
+fn read_dword(bus: &TestBus, address: u32) -> u32 {
+    u32::from(bus.peek(address))
+        | (u32::from(bus.peek(address.wrapping_add(1))) << 8)
+        | (u32::from(bus.peek(address.wrapping_add(2))) << 16)
+        | (u32::from(bus.peek(address.wrapping_add(3))) << 24)
+}
+
+fn write_dword(bus: &mut TestBus, address: u32, value: u32) {
+    bus.poke(address, value as u8);
+    bus.poke(address.wrapping_add(1), (value >> 8) as u8);
+    bus.poke(address.wrapping_add(2), (value >> 16) as u8);
+    bus.poke(address.wrapping_add(3), (value >> 24) as u8);
+}
+
+fn write_descriptor(
+    bus: &mut TestBus,
+    table_base: u32,
+    entry_index: u16,
+    base: u32,
+    limit: u32,
+    rights: u8,
+    granularity: u8,
+) {
+    let address = table_base + u32::from(entry_index) * 8;
+    bus.poke(address, limit as u8);
+    bus.poke(address + 1, (limit >> 8) as u8);
+    bus.poke(address + 2, base as u8);
+    bus.poke(address + 3, (base >> 8) as u8);
+    bus.poke(address + 4, (base >> 16) as u8);
+    bus.poke(address + 5, rights);
+    bus.poke(address + 6, granularity | (((limit >> 16) as u8) & 0x0F));
+    bus.poke(address + 7, (base >> 24) as u8);
+}
+
+fn write_interrupt_gate(bus: &mut TestBus, vector: u8, offset: u32, selector: u16, gate_type: u8) {
+    let address = PM_IDT_BASE + u32::from(vector) * 8;
+    bus.poke(address, offset as u8);
+    bus.poke(address + 1, (offset >> 8) as u8);
+    bus.poke(address + 2, selector as u8);
+    bus.poke(address + 3, (selector >> 8) as u8);
+    bus.poke(address + 4, 0);
+    bus.poke(address + 5, 0x80 | gate_type);
+    bus.poke(address + 6, (offset >> 16) as u8);
+    bus.poke(address + 7, (offset >> 24) as u8);
+}
+
+fn setup_i386_flat_protected_mode(bus: &mut TestBus) -> I386State {
+    write_descriptor(bus, PM_GDT_BASE, 0, 0, 0, 0, 0);
+    write_descriptor(bus, PM_GDT_BASE, 1, 0, 0xF_FFFF, 0x9B, 0xC0);
+    write_descriptor(bus, PM_GDT_BASE, 2, 0, 0xF_FFFF, 0x93, 0xC0);
+    write_interrupt_gate(bus, IRQ_VECTOR, PM_IRQ_HANDLER, PM_CODE_SELECTOR, 14);
+
+    let mut state = I386State {
+        cr0: 1,
+        gdt_base: PM_GDT_BASE,
+        gdt_limit: 3 * 8 - 1,
+        idt_base: PM_IDT_BASE,
+        idt_limit: 256 * 8 - 1,
+        ..Default::default()
+    };
+    state.set_cs(PM_CODE_SELECTOR);
+    state.set_ds(PM_DATA_SELECTOR);
+    state.set_es(PM_DATA_SELECTOR);
+    state.set_ss(PM_DATA_SELECTOR);
+    state.set_eip(PM_CODE_BASE);
+    state.set_esp(PM_STACK_TOP);
+    state.set_eflags(0x0000_0202);
+    state.seg_limits = [0xFFFF_FFFF; 6];
+    state.seg_rights = [0x93; 6];
+    state.seg_rights[SegReg32::CS as usize] = 0x9B;
+    state.seg_granularity = [0xC0; 6];
+    state.seg_valid = [true, true, true, true, true, true];
+    state
 }
 
 fn set_interrupt_vector(bus: &mut TestBus, vector: u8, target_segment: u16, target_offset: u16) {
@@ -385,6 +468,57 @@ fn assert_rep_movsb_irq_resume_after_iret<H: RepCpuHarness>() {
         [0x11, 0x22, 0x33, 0x44]
     );
     assert_eq!(H::cx(&cpu), 0x0000);
+}
+
+#[test]
+fn i386_protected_rep_movsd_backward_with_irq_resumes_after_iret() {
+    let count = 0x12u32;
+    let source = 0x3000u32;
+    let destination = 0x4000u32;
+    let source_end = source + (count - 1) * 4;
+    let destination_end = destination + (count - 1) * 4;
+
+    let mut bus = TestBus::new(Some(destination_end));
+    let state = setup_i386_flat_protected_mode(&mut bus);
+
+    let mut code = vec![0xFD, 0xBE];
+    code.extend_from_slice(&source_end.to_le_bytes());
+    code.push(0xBF);
+    code.extend_from_slice(&destination_end.to_le_bytes());
+    code.push(0xB9);
+    code.extend_from_slice(&count.to_le_bytes());
+    code.extend_from_slice(&[0xF3, 0xA5, 0xFC, 0xF4]);
+    place_bytes(&mut bus, PM_CODE_BASE, &code);
+
+    // mov dword [PM_IRQ_MARKER], 1; iretd
+    let mut handler = vec![0xC7, 0x05];
+    handler.extend_from_slice(&PM_IRQ_MARKER.to_le_bytes());
+    handler.extend_from_slice(&1u32.to_le_bytes());
+    handler.push(0xCF);
+    place_bytes(&mut bus, PM_IRQ_HANDLER, &handler);
+
+    for index in 0..count {
+        write_dword(&mut bus, source + index * 4, 0xA500_0000 | (index * 0x0101));
+    }
+
+    let mut cpu: I386 = I386::new();
+    cpu.load_state(&state);
+    let _ = cpu.run_for(50_000, &mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(bus.irq_ack_count, 1);
+    assert_eq!(read_dword(&bus, PM_IRQ_MARKER), 1);
+    for index in 0..count {
+        assert_eq!(
+            read_dword(&bus, destination + index * 4),
+            0xA500_0000 | (index * 0x0101),
+            "dword {index} should be copied after the interrupted reverse REP MOVSD"
+        );
+    }
+    assert_eq!(cpu.state.ecx(), 0);
+    assert_eq!(cpu.state.esi(), source.wrapping_sub(4));
+    assert_eq!(cpu.state.edi(), destination.wrapping_sub(4));
+    assert!(!cpu.state.flags.df);
 }
 
 #[test]

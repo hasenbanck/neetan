@@ -307,6 +307,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.pending_irq = 0;
         self.no_interrupt = 0;
         self.inhibit_all = 0;
+        self.preserve_resume_flag = false;
         self.rep_active = false;
         self.rep_completed = false;
         self.rep_ip_upper = 0;

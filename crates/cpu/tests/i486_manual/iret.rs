@@ -1095,6 +1095,62 @@ fn iret_pm_at_cpl0_with_eflags_vm_enters_vm86() {
 }
 
 #[test]
+fn iret_pm_at_cpl0_to_vm86_preserves_rf_until_next_instruction() {
+    let mut cpu = make_cpu_386();
+    let mut bus = TestBus::new();
+
+    let mut state = make_pm_state_with_32bit_stack(&mut bus);
+    state.set_eax(0x0000_4300);
+    cpu.load_state(&state);
+
+    let target_eip: u32 = 0x0000_0100;
+    let target_cs: u16 = 0x1000;
+    let target_eflags: u32 = 0x0003_3202; // VM=1, RF=1, IOPL=3, IF=1
+    let target_esp: u32 = 0x0000_FF00;
+    let target_ss: u16 = 0x2000;
+
+    let sp = cpu.esp();
+    write_dword_at(&mut bus, RING0_STACK_BASE + sp, target_eip);
+    write_dword_at(&mut bus, RING0_STACK_BASE + sp + 4, target_cs as u32);
+    write_dword_at(&mut bus, RING0_STACK_BASE + sp + 8, target_eflags);
+    write_dword_at(&mut bus, RING0_STACK_BASE + sp + 12, target_esp);
+    write_dword_at(&mut bus, RING0_STACK_BASE + sp + 16, target_ss as u32);
+    write_dword_at(&mut bus, RING0_STACK_BASE + sp + 20, 0x3000);
+    write_dword_at(&mut bus, RING0_STACK_BASE + sp + 24, 0x4000);
+    write_dword_at(&mut bus, RING0_STACK_BASE + sp + 28, 0x5000);
+    write_dword_at(&mut bus, RING0_STACK_BASE + sp + 32, 0x6000);
+
+    place_at(&mut bus, RING0_CODE_BASE, &[0x66, 0xCF]);
+    place_at(
+        &mut bus,
+        ((target_cs as u32) << 4) + target_eip,
+        &[0x80, 0xFC, 0x43],
+    );
+
+    cpu.step(&mut bus);
+
+    assert_ne!(
+        cpu.state.eflags_upper & 0x0001_0000,
+        0,
+        "IRETD loads RF from the VM86 return frame"
+    );
+    assert_ne!(
+        cpu.state.eflags_upper & 0x0002_0000,
+        0,
+        "IRETD enters VM86 before the guest instruction runs"
+    );
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.ip(), target_eip + 3);
+    assert_eq!(
+        cpu.state.eflags_upper & 0x0001_0000,
+        0,
+        "the instruction after IRETD clears RF when it completes"
+    );
+}
+
+#[test]
 fn iret_pm_at_cpl0_to_vm86_loads_segment_caches_via_real_mode() {
     let mut cpu = make_cpu_386();
     let mut bus = TestBus::new();

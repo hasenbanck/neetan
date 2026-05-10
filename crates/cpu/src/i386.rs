@@ -37,6 +37,8 @@ pub const CPU_MODEL_386: u8 = 0;
 /// CPU model constant for Intel 80486DX.
 pub const CPU_MODEL_486: u8 = 1;
 
+const EFLAGS_RESUME_FLAG: u32 = 0x0001_0000;
+
 #[derive(Clone, Copy)]
 struct SegmentDescriptor {
     base: u32,
@@ -74,6 +76,7 @@ pub struct I386<const CPU_MODEL: u8 = { CPU_MODEL_386 }> {
     pending_irq: u8,
     no_interrupt: u8,
     inhibit_all: u8,
+    preserve_resume_flag: bool,
 
     rep_ip: u16,
     rep_ip_upper: u32,
@@ -155,6 +158,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             pending_irq: 0,
             no_interrupt: 0,
             inhibit_all: 0,
+            preserve_resume_flag: false,
             rep_ip: 0,
             rep_ip_upper: 0,
             rep_restart_ip: 0,
@@ -2041,6 +2045,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         // Load registers from new TSS.
         self.flags.expand(ntss_eflags as u16);
         self.eflags_upper = ntss_eflags & 0xFFFF_0000;
+        self.preserve_resume_flag = true;
         self.regs.set_dword(crate::DwordReg::EAX, ntss_eax);
         self.regs.set_dword(crate::DwordReg::ECX, ntss_ecx);
         self.regs.set_dword(crate::DwordReg::EDX, ntss_edx);
@@ -2545,9 +2550,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.prev_ip = self.ip;
         self.prev_ip_upper = self.ip_upper;
         self.fault_pending = false;
+        self.preserve_resume_flag = false;
 
         if unlikely(self.pending_irq != 0) {
             self.check_interrupts(bus);
+            self.preserve_resume_flag = false;
         }
         if unlikely(self.no_interrupt > 0) {
             self.no_interrupt -= 1;
@@ -2660,6 +2667,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             }
         }
 
+        if likely(!self.preserve_resume_flag && !self.rep_active) {
+            self.eflags_upper &= !EFLAGS_RESUME_FLAG;
+        }
+
         if unlikely(tf_was_set && !self.fault_pending && !inhibit) {
             self.raise_trap(1, bus);
         }
@@ -2733,6 +2744,7 @@ impl<const CPU_MODEL: u8> common::Cpu for I386<CPU_MODEL> {
         self.pending_irq = 0;
         self.no_interrupt = 0;
         self.inhibit_all = 0;
+        self.preserve_resume_flag = false;
         self.rep_active = false;
         self.rep_completed = false;
         self.rep_ip_upper = 0;

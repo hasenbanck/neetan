@@ -11,8 +11,9 @@
 //! - VM86 IOPL=3: PUSHF/POPF behave as the protected-mode CPL=3 forms; IF
 //!   writable, IOPL preserved.
 //! - VM86 IOPL<3: PUSHF and POPF (and PUSHFD/POPFD) raise #GP(0).
-//! - PUSHFD/POPFD: bit 16 (RF) always cleared on push and on pop; VM (bit 17)
-//!   is not modifiable via POPFD - only IRET at CPL=0 sets it.
+//! - PUSHFD: bit 16 (RF) is cleared in the pushed image; POPF/POPFD do not
+//!   modify RF and do not perform the normal post-instruction RF clear.
+//!   VM (bit 17) is not modifiable via POPFD - only IRET at CPL=0 sets it.
 
 use common::Cpu as _;
 use cpu::I386State;
@@ -662,7 +663,7 @@ fn popf_vm86_iopl0_raises_gp() {
 }
 
 #[test]
-fn popfd_pm_clears_rf_bit() {
+fn popfd_pm_preserves_rf_bit() {
     let mut cpu = make_cpu_386();
     let mut bus = TestBus::new();
 
@@ -671,8 +672,8 @@ fn popfd_pm_clears_rf_bit() {
     cpu.load_state(&state);
 
     let sp = state.esp();
-    // Push RF=1 in the image; POPFD must clear RF.
-    push_dword_at_sp(&mut bus, RING0_STACK_BASE, sp - 4, 0x0001_0202);
+    // Push RF=0 in the image; POPFD must leave the current RF set.
+    push_dword_at_sp(&mut bus, RING0_STACK_BASE, sp - 4, 0x0000_0202);
     cpu.state.set_esp(sp - 4);
 
     place_at(
@@ -685,8 +686,8 @@ fn popfd_pm_clears_rf_bit() {
 
     assert_eq!(
         cpu.state.eflags_upper & 0x0001_0000,
-        0,
-        "POPFD always clears RF"
+        0x0001_0000,
+        "POPFD leaves RF unchanged"
     );
 }
 
