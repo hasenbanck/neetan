@@ -9,7 +9,6 @@ use crate::Tracing;
 impl<T: Tracing> Pc9801Bus<T> {
     pub(super) fn hle_int08h(&mut self, cpu: &mut impl Cpu) {
         if !self.bios_interval_timer_active {
-            self.pic.write_port0(0, 0x20);
             return;
         }
 
@@ -30,8 +29,8 @@ impl<T: Tracing> Pc9801Bus<T> {
             self.pic.state.chips[0].imr |= 0x01;
             self.pic.invalidate_irq_cache();
 
-            // Send EOI before the callback (matching real BIOS order).
-            self.pic.write_port0(0, 0x20);
+            // The ROM stub sends EOI before entering HLE so protected/V86
+            // monitors can see the guest PIC write.
 
             // Fire the user callback by chaining the IRET frame.
             // The real BIOS invokes `INT 07H` which pushes FLAGS and
@@ -50,10 +49,9 @@ impl<T: Tracing> Pc9801Bus<T> {
             return;
         }
 
-        // Non-zero result: send EOI then reload PIT counter via INT 1CH AH=03H.
-        // The real BIOS issues `MOV AH,03H; INT 1CH` so software hooks on INT 1CH
-        // can intercept. We call the handler directly since the IVT points to our stub.
-        self.pic.write_port0(0, 0x20);
+        // Non-zero result: reload PIT counter via INT 1CH AH=03H. The real BIOS
+        // issues `MOV AH,03H; INT 1CH` so software hooks on INT 1CH can intercept.
+        // We call the handler directly since the IVT points to our stub.
         if new_count != 0 {
             self.int1ch_continue_interval_timer();
         }
