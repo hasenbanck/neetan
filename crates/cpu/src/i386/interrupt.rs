@@ -219,12 +219,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus: &mut impl common::Bus,
     ) {
         let Some(descriptor) = self.decode_descriptor(gate_selector, bus) else {
-            self.raise_fault_with_code(13, Self::segment_error_code(gate_selector) + ext, bus);
+            if !self.fault_pending {
+                self.raise_fault_with_code(13, Self::segment_error_code(gate_selector) + ext, bus);
+            }
             return;
         };
-        if self.fault_pending {
-            return;
-        }
 
         let rights = descriptor.rights;
         if !Self::descriptor_is_code(rights) || !Self::descriptor_is_segment(rights) {
@@ -324,12 +323,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 return;
             }
             let Some(ss_descriptor) = self.decode_descriptor(new_ss, bus) else {
-                self.raise_fault_with_code(10, ss_error_code, bus);
+                if !self.fault_pending {
+                    self.raise_fault_with_code(10, ss_error_code, bus);
+                }
                 return;
             };
-            if self.fault_pending {
-                return;
-            }
             let ss_rights = ss_descriptor.rights;
             let ss_dpl = Self::descriptor_dpl(ss_rights);
             let ss_rpl = new_ss & 0x0003;
@@ -345,7 +343,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.raise_fault_with_code(12, ss_error_code, bus);
                 return;
             }
-            self.set_accessed_bit(new_ss, bus);
+            if self.set_accessed_bit(new_ss, bus).is_none() {
+                return;
+            }
             self.set_loaded_segment_cache(SegReg32::SS, new_ss, ss_descriptor);
             self.eflags_upper &= !0x0003_0000; // Clear RF and VM before setting ESP.
             if self.use_esp() {
@@ -446,7 +446,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
             }
 
-            self.set_accessed_bit(gate_selector, bus);
+            if self.set_accessed_bit(gate_selector, bus).is_none() {
+                return;
+            }
             let adjusted_selector = (gate_selector & !3) | new_dpl;
             self.set_loaded_segment_cache(SegReg32::CS, adjusted_selector, descriptor);
             self.ip = gate_ip as u16;
@@ -515,7 +517,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             }
         }
 
-        self.set_accessed_bit(gate_selector, bus);
+        if self.set_accessed_bit(gate_selector, bus).is_none() {
+            return;
+        }
         let adjusted_selector = (gate_selector & !3) | cpl;
         self.set_loaded_segment_cache(SegReg32::CS, adjusted_selector, descriptor);
         self.ip = gate_ip as u16;

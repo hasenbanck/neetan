@@ -193,52 +193,77 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
     }
 
-    pub(super) fn fpu_read_u16(&self, bus: &mut impl common::Bus) -> u16 {
-        bus.read_word(self.ea)
+    pub(super) fn fpu_read_u16(&mut self, bus: &mut impl common::Bus) -> Option<u16> {
+        self.read_word_linear(bus, self.ea)
     }
 
-    pub(super) fn fpu_read_u32(&self, bus: &mut impl common::Bus) -> u32 {
-        let lo = bus.read_word(self.ea) as u32;
-        let hi = bus.read_word(self.ea.wrapping_add(2)) as u32;
-        lo | (hi << 16)
+    pub(super) fn fpu_read_u32(&mut self, bus: &mut impl common::Bus) -> Option<u32> {
+        let ea = self.ea;
+        let lo = self.read_word_linear(bus, ea)? as u32;
+        let hi = self.read_word_linear(bus, ea.wrapping_add(2))? as u32;
+        Some(lo | (hi << 16))
     }
 
-    pub(super) fn fpu_read_u64(&self, bus: &mut impl common::Bus) -> u64 {
-        let w0 = bus.read_word(self.ea) as u64;
-        let w1 = bus.read_word(self.ea.wrapping_add(2)) as u64;
-        let w2 = bus.read_word(self.ea.wrapping_add(4)) as u64;
-        let w3 = bus.read_word(self.ea.wrapping_add(6)) as u64;
-        w0 | (w1 << 16) | (w2 << 32) | (w3 << 48)
+    pub(super) fn fpu_read_u64(&mut self, bus: &mut impl common::Bus) -> Option<u64> {
+        let ea = self.ea;
+        let w0 = self.read_word_linear(bus, ea)? as u64;
+        let w1 = self.read_word_linear(bus, ea.wrapping_add(2))? as u64;
+        let w2 = self.read_word_linear(bus, ea.wrapping_add(4))? as u64;
+        let w3 = self.read_word_linear(bus, ea.wrapping_add(6))? as u64;
+        Some(w0 | (w1 << 16) | (w2 << 32) | (w3 << 48))
     }
 
-    pub(super) fn fpu_read_tbyte(&self, bus: &mut impl common::Bus) -> [u8; 10] {
+    pub(super) fn fpu_read_tbyte(&mut self, bus: &mut impl common::Bus) -> Option<[u8; 10]> {
+        let ea = self.ea;
+        // Translate every byte first so a partial fault doesn't mutate the
+        // FPU stack via fpu_push later.
+        let mut phys = [0u32; 10];
+        for (i, slot) in phys.iter_mut().enumerate() {
+            *slot = self.translate_linear(ea.wrapping_add(i as u32), false, bus)?;
+        }
         let mut bytes = [0u8; 10];
         for (i, byte) in bytes.iter_mut().enumerate() {
-            *byte = bus.read_byte(self.ea.wrapping_add(i as u32));
+            *byte = bus.read_byte(phys[i]);
         }
-        bytes
+        Some(bytes)
     }
 
-    pub(super) fn fpu_write_u16(&self, bus: &mut impl common::Bus, value: u16) {
-        bus.write_word(self.ea, value);
+    pub(super) fn fpu_write_u16(&mut self, bus: &mut impl common::Bus, value: u16) -> Option<()> {
+        let ea = self.ea;
+        self.write_word_linear(bus, ea, value)
     }
 
-    pub(super) fn fpu_write_u32(&self, bus: &mut impl common::Bus, value: u32) {
-        bus.write_word(self.ea, value as u16);
-        bus.write_word(self.ea.wrapping_add(2), (value >> 16) as u16);
+    pub(super) fn fpu_write_u32(&mut self, bus: &mut impl common::Bus, value: u32) -> Option<()> {
+        let ea = self.ea;
+        self.write_word_linear(bus, ea, value as u16)?;
+        self.write_word_linear(bus, ea.wrapping_add(2), (value >> 16) as u16)
     }
 
-    pub(super) fn fpu_write_u64(&self, bus: &mut impl common::Bus, value: u64) {
-        bus.write_word(self.ea, value as u16);
-        bus.write_word(self.ea.wrapping_add(2), (value >> 16) as u16);
-        bus.write_word(self.ea.wrapping_add(4), (value >> 32) as u16);
-        bus.write_word(self.ea.wrapping_add(6), (value >> 48) as u16);
+    pub(super) fn fpu_write_u64(&mut self, bus: &mut impl common::Bus, value: u64) -> Option<()> {
+        let ea = self.ea;
+        self.write_word_linear(bus, ea, value as u16)?;
+        self.write_word_linear(bus, ea.wrapping_add(2), (value >> 16) as u16)?;
+        self.write_word_linear(bus, ea.wrapping_add(4), (value >> 32) as u16)?;
+        self.write_word_linear(bus, ea.wrapping_add(6), (value >> 48) as u16)
     }
 
-    pub(super) fn fpu_write_tbyte(&self, bus: &mut impl common::Bus, bytes: &[u8; 10]) {
+    pub(super) fn fpu_write_tbyte(
+        &mut self,
+        bus: &mut impl common::Bus,
+        bytes: &[u8; 10],
+    ) -> Option<()> {
+        let ea = self.ea;
+        // Translate every byte first; only commit writes once all
+        // translations succeed so a fault leaves the destination
+        // memory unchanged.
+        let mut phys = [0u32; 10];
+        for (i, slot) in phys.iter_mut().enumerate() {
+            *slot = self.translate_linear(ea.wrapping_add(i as u32), true, bus)?;
+        }
         for (i, &byte) in bytes.iter().enumerate() {
-            bus.write_byte(self.ea.wrapping_add(i as u32), byte);
+            bus.write_byte(phys[i], byte);
         }
+        Some(())
     }
 
     pub(super) fn fpu_init(&mut self) {

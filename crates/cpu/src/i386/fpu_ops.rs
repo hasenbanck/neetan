@@ -14,7 +14,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     pub(super) fn fpu_fldcw(&mut self, bus: &mut impl common::Bus) {
-        let cw = self.fpu_read_u16(bus);
+        let Some(cw) = self.fpu_read_u16(bus) else {
+            return;
+        };
         self.state.fpu.control_word = cw;
         self.fpu_update_es();
         self.clk(Self::timing(19, 4));
@@ -22,13 +24,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     pub(super) fn fpu_fnstcw(&mut self, bus: &mut impl common::Bus) {
         let cw = self.state.fpu.control_word;
-        self.fpu_write_u16(bus, cw);
+        if self.fpu_write_u16(bus, cw).is_none() {
+            return;
+        }
         self.clk(Self::timing(15, 3));
     }
 
     pub(super) fn fpu_fnstsw_m16(&mut self, bus: &mut impl common::Bus) {
         let sw = self.state.fpu.status_word;
-        self.fpu_write_u16(bus, sw);
+        if self.fpu_write_u16(bus, sw).is_none() {
+            return;
+        }
         self.clk(Self::timing(15, 3));
     }
 
@@ -71,7 +77,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     pub(super) fn fpu_fld_m32(&mut self, bus: &mut impl common::Bus) {
-        let raw = self.fpu_read_u32(bus);
+        let Some(raw) = self.fpu_read_u32(bus) else {
+            return;
+        };
         let val = f32::from_bits(raw);
         let mut ef = ExceptionFlags::default();
         let fp = Fp80::from_f32(val, &mut ef);
@@ -81,7 +89,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     pub(super) fn fpu_fld_m64(&mut self, bus: &mut impl common::Bus) {
-        let raw = self.fpu_read_u64(bus);
+        let Some(raw) = self.fpu_read_u64(bus) else {
+            return;
+        };
         let val = f64::from_bits(raw);
         let mut ef = ExceptionFlags::default();
         let fp = Fp80::from_f64(val, &mut ef);
@@ -91,7 +101,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     pub(super) fn fpu_fld_m80(&mut self, bus: &mut impl common::Bus) {
-        let bytes = self.fpu_read_tbyte(bus);
+        let Some(bytes) = self.fpu_read_tbyte(bus) else {
+            return;
+        };
         let fp = Fp80::from_le_bytes(bytes);
         self.fpu_push(fp);
         self.clk(Self::timing(44, 6));
@@ -117,7 +129,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             if masked {
                 let bits = Fp80::INDEFINITE
                     .to_f32(self.fpu_rounding_mode(), &mut ExceptionFlags::default());
-                self.fpu_write_u32(bus, bits.to_bits());
+                if self.fpu_write_u32(bus, bits.to_bits()).is_none() {
+                    return;
+                }
             }
             self.clk(Self::timing(44, 7));
             return;
@@ -126,7 +140,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let mut ef = ExceptionFlags::default();
         let f = val.to_f32(self.fpu_rounding_mode(), &mut ef);
         self.fpu_check_result(&ef);
-        self.fpu_write_u32(bus, f.to_bits());
+        if self.fpu_write_u32(bus, f.to_bits()).is_none() {
+            return;
+        }
         self.clk(Self::timing(44, 7));
     }
 
@@ -136,7 +152,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             if masked {
                 let bits = Fp80::INDEFINITE
                     .to_f64(self.fpu_rounding_mode(), &mut ExceptionFlags::default());
-                self.fpu_write_u64(bus, bits.to_bits());
+                if self.fpu_write_u64(bus, bits.to_bits()).is_none() {
+                    return;
+                }
             }
             self.clk(Self::timing(45, 8));
             return;
@@ -145,7 +163,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let mut ef = ExceptionFlags::default();
         let f = val.to_f64(self.fpu_rounding_mode(), &mut ef);
         self.fpu_check_result(&ef);
-        self.fpu_write_u64(bus, f.to_bits());
+        if self.fpu_write_u64(bus, f.to_bits()).is_none() {
+            return;
+        }
         self.clk(Self::timing(45, 8));
     }
 
@@ -165,26 +185,38 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     pub(super) fn fpu_fstp_m32(&mut self, bus: &mut impl common::Bus) {
         self.fpu_fst_m32(bus);
+        if self.fault_pending {
+            return;
+        }
         self.fpu_pop();
     }
 
     pub(super) fn fpu_fstp_m64(&mut self, bus: &mut impl common::Bus) {
         self.fpu_fst_m64(bus);
+        if self.fault_pending {
+            return;
+        }
         self.fpu_pop();
     }
 
     pub(super) fn fpu_fstp_m80(&mut self, bus: &mut impl common::Bus) {
         if self.fpu_check_underflow(0) {
             let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
-                self.fpu_write_tbyte(bus, &Fp80::INDEFINITE.to_le_bytes());
+            if masked
+                && self
+                    .fpu_write_tbyte(bus, &Fp80::INDEFINITE.to_le_bytes())
+                    .is_none()
+            {
+                return;
             }
             self.fpu_pop();
             self.clk(Self::timing(53, 6));
             return;
         }
         let val = self.fpu_st(0);
-        self.fpu_write_tbyte(bus, &val.to_le_bytes());
+        if self.fpu_write_tbyte(bus, &val.to_le_bytes()).is_none() {
+            return;
+        }
         self.fpu_pop();
         self.clk(Self::timing(53, 6));
     }
@@ -195,22 +227,28 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     pub(super) fn fpu_fild_m16(&mut self, bus: &mut impl common::Bus) {
-        let raw = self.fpu_read_u16(bus) as i16;
-        let fp = Fp80::from_i16(raw);
+        let Some(raw) = self.fpu_read_u16(bus) else {
+            return;
+        };
+        let fp = Fp80::from_i16(raw as i16);
         self.fpu_push(fp);
         self.clk(Self::timing(61, 13));
     }
 
     pub(super) fn fpu_fild_m32(&mut self, bus: &mut impl common::Bus) {
-        let raw = self.fpu_read_u32(bus) as i32;
-        let fp = Fp80::from_i32(raw);
+        let Some(raw) = self.fpu_read_u32(bus) else {
+            return;
+        };
+        let fp = Fp80::from_i32(raw as i32);
         self.fpu_push(fp);
         self.clk(Self::timing(45, 9));
     }
 
     pub(super) fn fpu_fild_m64(&mut self, bus: &mut impl common::Bus) {
-        let raw = self.fpu_read_u64(bus) as i64;
-        let fp = Fp80::from_i64(raw);
+        let Some(raw) = self.fpu_read_u64(bus) else {
+            return;
+        };
+        let fp = Fp80::from_i64(raw as i64);
         self.fpu_push(fp);
         self.clk(Self::timing(56, 10));
     }
@@ -218,8 +256,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     pub(super) fn fpu_fist_m16(&mut self, bus: &mut impl common::Bus) {
         if self.fpu_check_underflow(0) {
             let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
-                self.fpu_write_u16(bus, 0x8000u16);
+            if masked && self.fpu_write_u16(bus, 0x8000u16).is_none() {
+                return;
             }
             self.clk(Self::timing(82, 29));
             return;
@@ -228,15 +266,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let mut ef = ExceptionFlags::default();
         let i = val.to_i16(self.fpu_rounding_mode(), &mut ef);
         self.fpu_check_result(&ef);
-        self.fpu_write_u16(bus, i as u16);
+        if self.fpu_write_u16(bus, i as u16).is_none() {
+            return;
+        }
         self.clk(Self::timing(82, 29));
     }
 
     pub(super) fn fpu_fist_m32(&mut self, bus: &mut impl common::Bus) {
         if self.fpu_check_underflow(0) {
             let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
-                self.fpu_write_u32(bus, 0x8000_0000u32);
+            if masked && self.fpu_write_u32(bus, 0x8000_0000u32).is_none() {
+                return;
             }
             self.clk(Self::timing(79, 28));
             return;
@@ -245,25 +285,33 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let mut ef = ExceptionFlags::default();
         let i = val.to_i32(self.fpu_rounding_mode(), &mut ef);
         self.fpu_check_result(&ef);
-        self.fpu_write_u32(bus, i as u32);
+        if self.fpu_write_u32(bus, i as u32).is_none() {
+            return;
+        }
         self.clk(Self::timing(79, 28));
     }
 
     pub(super) fn fpu_fistp_m16(&mut self, bus: &mut impl common::Bus) {
         self.fpu_fist_m16(bus);
+        if self.fault_pending {
+            return;
+        }
         self.fpu_pop();
     }
 
     pub(super) fn fpu_fistp_m32(&mut self, bus: &mut impl common::Bus) {
         self.fpu_fist_m32(bus);
+        if self.fault_pending {
+            return;
+        }
         self.fpu_pop();
     }
 
     pub(super) fn fpu_fistp_m64(&mut self, bus: &mut impl common::Bus) {
         if self.fpu_check_underflow(0) {
             let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
-                self.fpu_write_u64(bus, 0x8000_0000_0000_0000u64);
+            if masked && self.fpu_write_u64(bus, 0x8000_0000_0000_0000u64).is_none() {
+                return;
             }
             self.fpu_pop();
             self.clk(Self::timing(80, 28));
@@ -273,13 +321,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let mut ef = ExceptionFlags::default();
         let i = val.to_i64(self.fpu_rounding_mode(), &mut ef);
         self.fpu_check_result(&ef);
-        self.fpu_write_u64(bus, i as u64);
+        if self.fpu_write_u64(bus, i as u64).is_none() {
+            return;
+        }
         self.fpu_pop();
         self.clk(Self::timing(80, 28));
     }
 
     pub(super) fn fpu_fbld(&mut self, bus: &mut impl common::Bus) {
-        let bytes = self.fpu_read_tbyte(bus);
+        let Some(bytes) = self.fpu_read_tbyte(bus) else {
+            return;
+        };
         let mut ef = ExceptionFlags::default();
         let fp = Fp80::from_bcd(bytes, &mut ef);
         self.fpu_check_result(&ef);
@@ -290,11 +342,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     pub(super) fn fpu_fbstp(&mut self, bus: &mut impl common::Bus) {
         if self.fpu_check_underflow(0) {
             let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
-                self.fpu_write_tbyte(
-                    bus,
-                    &[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0xFF, 0xFF],
-                );
+            if masked
+                && self
+                    .fpu_write_tbyte(
+                        bus,
+                        &[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0xFF, 0xFF],
+                    )
+                    .is_none()
+            {
+                return;
             }
             self.fpu_pop();
             self.clk(Self::timing(512, 172));
@@ -304,7 +360,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let mut ef = ExceptionFlags::default();
         let bcd = val.to_bcd(self.fpu_rounding_mode(), &mut ef);
         self.fpu_check_result(&ef);
-        self.fpu_write_tbyte(bus, &bcd);
+        if self.fpu_write_tbyte(bus, &bcd).is_none() {
+            return;
+        }
         self.fpu_pop();
         self.clk(Self::timing(512, 172));
     }
@@ -438,7 +496,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.clk(Self::timing(t387, t486));
             return;
         }
-        let raw = self.fpu_read_u32(bus);
+        let Some(raw) = self.fpu_read_u32(bus) else {
+            return;
+        };
         let val = f32::from_bits(raw);
         let mut ef = ExceptionFlags::default();
         let b = Fp80::from_f32(val, &mut ef);
@@ -466,7 +526,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.clk(Self::timing(t387, t486));
             return;
         }
-        let raw = self.fpu_read_u64(bus);
+        let Some(raw) = self.fpu_read_u64(bus) else {
+            return;
+        };
         let val = f64::from_bits(raw);
         let mut ef = ExceptionFlags::default();
         let b = Fp80::from_f64(val, &mut ef);
@@ -494,8 +556,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.clk(Self::timing(t387, t486));
             return;
         }
-        let raw = self.fpu_read_u32(bus) as i32;
-        let b = Fp80::from_i32(raw);
+        let Some(raw) = self.fpu_read_u32(bus) else {
+            return;
+        };
+        let b = Fp80::from_i32(raw as i32);
         let a = self.fpu_st(0);
         let rc = self.fpu_rounding_mode();
         let pc = self.fpu_precision();
@@ -521,8 +585,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.clk(Self::timing(t387, t486));
             return;
         }
-        let raw = self.fpu_read_u16(bus) as i16;
-        let b = Fp80::from_i16(raw);
+        let Some(raw) = self.fpu_read_u16(bus) else {
+            return;
+        };
+        let b = Fp80::from_i16(raw as i16);
         let a = self.fpu_st(0);
         let rc = self.fpu_rounding_mode();
         let pc = self.fpu_precision();
@@ -897,7 +963,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.clk(Self::timing(26, 4));
             return;
         }
-        let raw = self.fpu_read_u32(bus);
+        let Some(raw) = self.fpu_read_u32(bus) else {
+            return;
+        };
         let val = f32::from_bits(raw);
         let mut ef = ExceptionFlags::default();
         let b = Fp80::from_f32(val, &mut ef);
@@ -914,7 +982,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.clk(Self::timing(31, 4));
             return;
         }
-        let raw = self.fpu_read_u64(bus);
+        let Some(raw) = self.fpu_read_u64(bus) else {
+            return;
+        };
         let val = f64::from_bits(raw);
         let mut ef = ExceptionFlags::default();
         let b = Fp80::from_f64(val, &mut ef);
@@ -942,11 +1012,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     pub(super) fn fpu_fcomp_m32(&mut self, bus: &mut impl common::Bus) {
         self.fpu_fcom_m32(bus);
+        if self.fault_pending {
+            return;
+        }
         self.fpu_pop();
     }
 
     pub(super) fn fpu_fcomp_m64(&mut self, bus: &mut impl common::Bus) {
         self.fpu_fcom_m64(bus);
+        if self.fault_pending {
+            return;
+        }
         self.fpu_pop();
     }
 
@@ -1019,8 +1095,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.clk(Self::timing(56, 15));
             return;
         }
-        let raw = self.fpu_read_u32(bus) as i32;
-        let b = Fp80::from_i32(raw);
+        let Some(raw) = self.fpu_read_u32(bus) else {
+            return;
+        };
+        let b = Fp80::from_i32(raw as i32);
         let a = self.fpu_st(0);
         let mut ef = ExceptionFlags::default();
         let ordering = a.compare(b, &mut ef);
@@ -1035,8 +1113,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.clk(Self::timing(71, 16));
             return;
         }
-        let raw = self.fpu_read_u16(bus) as i16;
-        let b = Fp80::from_i16(raw);
+        let Some(raw) = self.fpu_read_u16(bus) else {
+            return;
+        };
+        let b = Fp80::from_i16(raw as i16);
         let a = self.fpu_st(0);
         let mut ef = ExceptionFlags::default();
         let ordering = a.compare(b, &mut ef);
@@ -1047,11 +1127,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     pub(super) fn fpu_ficomp_m32(&mut self, bus: &mut impl common::Bus) {
         self.fpu_ficom_m32(bus);
+        if self.fault_pending {
+            return;
+        }
         self.fpu_pop();
     }
 
     pub(super) fn fpu_ficomp_m16(&mut self, bus: &mut impl common::Bus) {
         self.fpu_ficom_m16(bus);
+        if self.fault_pending {
+            return;
+        }
         self.fpu_pop();
     }
 
@@ -1273,184 +1359,213 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let use_32bit = self.code_segment_32bit() ^ self.operand_size_override;
         let protected = self.is_protected_mode();
 
-        if use_32bit {
-            self.fpu_fnstenv_32bit(protected, bus);
+        let saved = if use_32bit {
+            self.fpu_fnstenv_32bit(protected, bus)
         } else {
-            self.fpu_fnstenv_16bit(protected, bus);
+            self.fpu_fnstenv_16bit(protected, bus)
+        };
+        if saved.is_none() {
+            return;
         }
 
-        // After FSTENV, mask all exceptions
+        // After FSTENV, mask all exceptions. Only runs on full success
+        // so a partial-fault FNSTENV leaves the control word untouched.
         self.state.fpu.control_word |= 0x3F;
         self.fpu_update_es();
         self.clk(Self::timing(103, 67));
     }
 
-    fn fpu_fnstenv_16bit(&mut self, protected: bool, bus: &mut impl common::Bus) {
+    fn fpu_fnstenv_16bit(&mut self, protected: bool, bus: &mut impl common::Bus) -> Option<()> {
         let base = self.ea;
-        bus.write_word(base, self.state.fpu.control_word);
-        bus.write_word(base.wrapping_add(2), self.state.fpu.status_word);
-        bus.write_word(base.wrapping_add(4), self.state.fpu.tag_word);
+        self.write_word_linear(bus, base, self.state.fpu.control_word)?;
+        self.write_word_linear(bus, base.wrapping_add(2), self.state.fpu.status_word)?;
+        self.write_word_linear(bus, base.wrapping_add(4), self.state.fpu.tag_word)?;
 
         if protected {
-            bus.write_word(base.wrapping_add(6), self.state.fpu.fip_offset as u16);
-            bus.write_word(base.wrapping_add(8), self.state.fpu.fip_selector);
-            bus.write_word(base.wrapping_add(10), self.state.fpu.fdp_offset as u16);
-            bus.write_word(base.wrapping_add(12), self.state.fpu.fdp_selector);
+            self.write_word_linear(bus, base.wrapping_add(6), self.state.fpu.fip_offset as u16)?;
+            self.write_word_linear(bus, base.wrapping_add(8), self.state.fpu.fip_selector)?;
+            self.write_word_linear(bus, base.wrapping_add(10), self.state.fpu.fdp_offset as u16)?;
+            self.write_word_linear(bus, base.wrapping_add(12), self.state.fpu.fdp_selector)?;
         } else {
-            bus.write_word(base.wrapping_add(6), self.state.fpu.fip_offset as u16);
+            self.write_word_linear(bus, base.wrapping_add(6), self.state.fpu.fip_offset as u16)?;
             let ip_hi_opcode = (self.state.fpu.fpu_opcode & 0x7FF)
                 | (((self.state.fpu.fip_offset >> 16) as u16 & 0xF) << 12);
-            bus.write_word(base.wrapping_add(8), ip_hi_opcode);
-            bus.write_word(base.wrapping_add(10), self.state.fpu.fdp_offset as u16);
-            bus.write_word(
+            self.write_word_linear(bus, base.wrapping_add(8), ip_hi_opcode)?;
+            self.write_word_linear(bus, base.wrapping_add(10), self.state.fpu.fdp_offset as u16)?;
+            self.write_word_linear(
+                bus,
                 base.wrapping_add(12),
                 ((self.state.fpu.fdp_offset >> 16) as u16 & 0xF) << 12,
-            );
+            )?;
         }
+        Some(())
     }
 
-    fn fpu_write_env_u32(bus: &mut impl common::Bus, addr: u32, val: u32) {
-        bus.write_word(addr, val as u16);
-        bus.write_word(addr.wrapping_add(2), (val >> 16) as u16);
+    fn fpu_write_env_u32(&mut self, bus: &mut impl common::Bus, addr: u32, val: u32) -> Option<()> {
+        self.write_word_linear(bus, addr, val as u16)?;
+        self.write_word_linear(bus, addr.wrapping_add(2), (val >> 16) as u16)
     }
 
-    fn fpu_read_env_u32(bus: &mut impl common::Bus, addr: u32) -> u32 {
-        let lo = bus.read_word(addr) as u32;
-        let hi = bus.read_word(addr.wrapping_add(2)) as u32;
-        lo | (hi << 16)
+    fn fpu_read_env_u32(&mut self, bus: &mut impl common::Bus, addr: u32) -> Option<u32> {
+        let lo = self.read_word_linear(bus, addr)? as u32;
+        let hi = self.read_word_linear(bus, addr.wrapping_add(2))? as u32;
+        Some(lo | (hi << 16))
     }
 
-    fn fpu_fnstenv_32bit(&mut self, protected: bool, bus: &mut impl common::Bus) {
+    fn fpu_fnstenv_32bit(&mut self, protected: bool, bus: &mut impl common::Bus) -> Option<()> {
         let base = self.ea;
-
-        Self::fpu_write_env_u32(bus, base, 0xFFFF_0000 | self.state.fpu.control_word as u32);
-        Self::fpu_write_env_u32(
+        self.fpu_write_env_u32(bus, base, 0xFFFF_0000 | self.state.fpu.control_word as u32)?;
+        self.fpu_write_env_u32(
             bus,
             base.wrapping_add(4),
             0xFFFF_0000 | self.state.fpu.status_word as u32,
-        );
-        Self::fpu_write_env_u32(
+        )?;
+        self.fpu_write_env_u32(
             bus,
             base.wrapping_add(8),
             0xFFFF_0000 | self.state.fpu.tag_word as u32,
-        );
+        )?;
 
         if protected {
-            Self::fpu_write_env_u32(bus, base.wrapping_add(12), self.state.fpu.fip_offset);
+            self.fpu_write_env_u32(bus, base.wrapping_add(12), self.state.fpu.fip_offset)?;
             let opcode_cs = (self.state.fpu.fpu_opcode as u32 & 0x7FF) << 16
                 | self.state.fpu.fip_selector as u32;
-            Self::fpu_write_env_u32(bus, base.wrapping_add(16), opcode_cs);
-            Self::fpu_write_env_u32(bus, base.wrapping_add(20), self.state.fpu.fdp_offset);
-            Self::fpu_write_env_u32(
+            self.fpu_write_env_u32(bus, base.wrapping_add(16), opcode_cs)?;
+            self.fpu_write_env_u32(bus, base.wrapping_add(20), self.state.fpu.fdp_offset)?;
+            self.fpu_write_env_u32(
                 bus,
                 base.wrapping_add(24),
                 0xFFFF_0000 | self.state.fpu.fdp_selector as u32,
-            );
+            )?;
         } else {
-            Self::fpu_write_env_u32(
+            self.fpu_write_env_u32(
                 bus,
                 base.wrapping_add(12),
                 0xFFFF_0000 | (self.state.fpu.fip_offset & 0xFFFF),
-            );
+            )?;
             let ip_hi_opcode = (self.state.fpu.fpu_opcode as u32 & 0x7FF)
                 | (((self.state.fpu.fip_offset >> 16) & 0xF) << 12);
-            Self::fpu_write_env_u32(bus, base.wrapping_add(16), ip_hi_opcode);
-            Self::fpu_write_env_u32(
+            self.fpu_write_env_u32(bus, base.wrapping_add(16), ip_hi_opcode)?;
+            self.fpu_write_env_u32(
                 bus,
                 base.wrapping_add(20),
                 0xFFFF_0000 | (self.state.fpu.fdp_offset & 0xFFFF),
-            );
+            )?;
             let dp_hi = ((self.state.fpu.fdp_offset >> 16) & 0xF) << 12;
-            Self::fpu_write_env_u32(bus, base.wrapping_add(24), dp_hi);
+            self.fpu_write_env_u32(bus, base.wrapping_add(24), dp_hi)?;
         }
+        Some(())
     }
 
     pub(super) fn fpu_fldenv(&mut self, bus: &mut impl common::Bus) {
         let use_32bit = self.code_segment_32bit() ^ self.operand_size_override;
         let protected = self.is_protected_mode();
 
-        if use_32bit {
-            self.fpu_fldenv_32bit(protected, bus);
+        let loaded = if use_32bit {
+            self.fpu_fldenv_32bit(protected, bus)
         } else {
-            self.fpu_fldenv_16bit(protected, bus);
+            self.fpu_fldenv_16bit(protected, bus)
+        };
+        if loaded.is_none() {
+            return;
         }
 
         self.fpu_update_es();
         self.clk(Self::timing(71, 44));
     }
 
-    fn fpu_fldenv_16bit(&mut self, protected: bool, bus: &mut impl common::Bus) {
+    fn fpu_fldenv_16bit(&mut self, protected: bool, bus: &mut impl common::Bus) -> Option<()> {
+        // Gather all words first so a faulting read leaves the FPU
+        // state untouched.
         let base = self.ea;
-        self.state.fpu.control_word = bus.read_word(base);
-        self.state.fpu.status_word = bus.read_word(base.wrapping_add(2));
-        self.state.fpu.tag_word = bus.read_word(base.wrapping_add(4));
+        let cw = self.read_word_linear(bus, base)?;
+        let sw = self.read_word_linear(bus, base.wrapping_add(2))?;
+        let tw = self.read_word_linear(bus, base.wrapping_add(4))?;
+        let w6 = self.read_word_linear(bus, base.wrapping_add(6))?;
+        let w8 = self.read_word_linear(bus, base.wrapping_add(8))?;
+        let w10 = self.read_word_linear(bus, base.wrapping_add(10))?;
+        let w12 = self.read_word_linear(bus, base.wrapping_add(12))?;
+
+        self.state.fpu.control_word = cw;
+        self.state.fpu.status_word = sw;
+        self.state.fpu.tag_word = tw;
 
         if protected {
-            self.state.fpu.fip_offset = bus.read_word(base.wrapping_add(6)) as u32;
-            self.state.fpu.fip_selector = bus.read_word(base.wrapping_add(8));
-            self.state.fpu.fdp_offset = bus.read_word(base.wrapping_add(10)) as u32;
-            self.state.fpu.fdp_selector = bus.read_word(base.wrapping_add(12));
+            self.state.fpu.fip_offset = w6 as u32;
+            self.state.fpu.fip_selector = w8;
+            self.state.fpu.fdp_offset = w10 as u32;
+            self.state.fpu.fdp_selector = w12;
         } else {
-            self.state.fpu.fip_offset = bus.read_word(base.wrapping_add(6)) as u32;
-            let w = bus.read_word(base.wrapping_add(8));
-            self.state.fpu.fpu_opcode = w & 0x7FF;
-            self.state.fpu.fip_offset |= ((w >> 12) as u32 & 0xF) << 16;
-            self.state.fpu.fdp_offset = bus.read_word(base.wrapping_add(10)) as u32;
-            let dp_hi = bus.read_word(base.wrapping_add(12));
-            self.state.fpu.fdp_offset |= ((dp_hi >> 12) as u32 & 0xF) << 16;
+            self.state.fpu.fip_offset = w6 as u32 | (((w8 >> 12) as u32 & 0xF) << 16);
+            self.state.fpu.fpu_opcode = w8 & 0x7FF;
+            self.state.fpu.fdp_offset = w10 as u32 | (((w12 >> 12) as u32 & 0xF) << 16);
         }
+        Some(())
     }
 
-    fn fpu_fldenv_32bit(&mut self, protected: bool, bus: &mut impl common::Bus) {
+    fn fpu_fldenv_32bit(&mut self, protected: bool, bus: &mut impl common::Bus) -> Option<()> {
         let base = self.ea;
+        let cw_dw = self.fpu_read_env_u32(bus, base)?;
+        let sw_dw = self.fpu_read_env_u32(bus, base.wrapping_add(4))?;
+        let tw_dw = self.fpu_read_env_u32(bus, base.wrapping_add(8))?;
+        let dw12 = self.fpu_read_env_u32(bus, base.wrapping_add(12))?;
+        let dw16 = self.fpu_read_env_u32(bus, base.wrapping_add(16))?;
+        let dw20 = self.fpu_read_env_u32(bus, base.wrapping_add(20))?;
+        let dw24 = self.fpu_read_env_u32(bus, base.wrapping_add(24))?;
 
-        self.state.fpu.control_word = Self::fpu_read_env_u32(bus, base) as u16;
-        self.state.fpu.status_word = Self::fpu_read_env_u32(bus, base.wrapping_add(4)) as u16;
-        self.state.fpu.tag_word = Self::fpu_read_env_u32(bus, base.wrapping_add(8)) as u16;
+        self.state.fpu.control_word = cw_dw as u16;
+        self.state.fpu.status_word = sw_dw as u16;
+        self.state.fpu.tag_word = tw_dw as u16;
 
         if protected {
-            self.state.fpu.fip_offset = Self::fpu_read_env_u32(bus, base.wrapping_add(12));
-            let opcode_cs = Self::fpu_read_env_u32(bus, base.wrapping_add(16));
-            self.state.fpu.fip_selector = opcode_cs as u16;
-            self.state.fpu.fpu_opcode = ((opcode_cs >> 16) & 0x7FF) as u16;
-            self.state.fpu.fdp_offset = Self::fpu_read_env_u32(bus, base.wrapping_add(20));
-            self.state.fpu.fdp_selector = Self::fpu_read_env_u32(bus, base.wrapping_add(24)) as u16;
+            self.state.fpu.fip_offset = dw12;
+            self.state.fpu.fip_selector = dw16 as u16;
+            self.state.fpu.fpu_opcode = ((dw16 >> 16) & 0x7FF) as u16;
+            self.state.fpu.fdp_offset = dw20;
+            self.state.fpu.fdp_selector = dw24 as u16;
         } else {
-            self.state.fpu.fip_offset = Self::fpu_read_env_u32(bus, base.wrapping_add(12)) & 0xFFFF;
-            let w = Self::fpu_read_env_u32(bus, base.wrapping_add(16));
-            self.state.fpu.fpu_opcode = (w & 0x7FF) as u16;
-            self.state.fpu.fip_offset |= ((w >> 12) & 0xF) << 16;
-            self.state.fpu.fdp_offset = Self::fpu_read_env_u32(bus, base.wrapping_add(20)) & 0xFFFF;
-            let dp_hi = Self::fpu_read_env_u32(bus, base.wrapping_add(24));
-            self.state.fpu.fdp_offset |= ((dp_hi >> 12) & 0xF) << 16;
+            self.state.fpu.fip_offset = (dw12 & 0xFFFF) | (((dw16 >> 12) & 0xF) << 16);
+            self.state.fpu.fpu_opcode = (dw16 & 0x7FF) as u16;
+            self.state.fpu.fdp_offset = (dw20 & 0xFFFF) | (((dw24 >> 12) & 0xF) << 16);
         }
+        Some(())
     }
 
     pub(super) fn fpu_fnsave(&mut self, bus: &mut impl common::Bus) {
         let use_32bit = self.code_segment_32bit() ^ self.operand_size_override;
         let protected = self.is_protected_mode();
 
-        // Save environment first
-        if use_32bit {
-            self.fpu_fnstenv_32bit(protected, bus);
+        let env_saved = if use_32bit {
+            self.fpu_fnstenv_32bit(protected, bus)
         } else {
-            self.fpu_fnstenv_16bit(protected, bus);
+            self.fpu_fnstenv_16bit(protected, bus)
+        };
+        if env_saved.is_none() {
+            return;
         }
 
         let env_size: u32 = if use_32bit { 28 } else { 14 };
         let reg_base = self.ea.wrapping_add(env_size);
 
-        // Save all 8 registers in physical order R0-R7
-        for i in 0..8u32 {
-            let val = self.state.fpu.registers[i as usize];
+        // Save all 8 registers in physical order R0-R7. Translate every
+        // byte first so a fault in the middle leaves the FPU stack
+        // unmodified (FNSAVE re-inits the FPU only on full success).
+        let mut phys = [0u32; 80];
+        for i in 0..80u32 {
+            let Some(p) = self.translate_linear(reg_base.wrapping_add(i), true, bus) else {
+                return;
+            };
+            phys[i as usize] = p;
+        }
+        for reg_idx in 0..8u32 {
+            let val = self.state.fpu.registers[reg_idx as usize];
             let bytes = val.to_le_bytes();
-            let offset = reg_base.wrapping_add(i * 10);
             for (j, &byte) in bytes.iter().enumerate() {
-                bus.write_byte(offset.wrapping_add(j as u32), byte);
+                bus.write_byte(phys[(reg_idx * 10 + j as u32) as usize], byte);
             }
         }
 
-        // FSAVE reinitializes the FPU
+        // FSAVE reinitializes the FPU - only on full success.
         self.fpu_init();
         self.clk(Self::timing(375, 154));
     }
@@ -1459,25 +1574,40 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let use_32bit = self.code_segment_32bit() ^ self.operand_size_override;
         let protected = self.is_protected_mode();
 
-        // Restore environment
-        if use_32bit {
-            self.fpu_fldenv_32bit(protected, bus);
-        } else {
-            self.fpu_fldenv_16bit(protected, bus);
-        }
-
+        // Gather all 80 register bytes via translate_linear before any
+        // commit, so a faulting load leaves both the env and register
+        // stack at their previous values.
         let env_size: u32 = if use_32bit { 28 } else { 14 };
         let reg_base = self.ea.wrapping_add(env_size);
-
-        // Restore all 8 registers in physical order R0-R7
-        for i in 0..8u32 {
-            let offset = reg_base.wrapping_add(i * 10);
+        let mut phys = [0u32; 80];
+        for i in 0..80u32 {
+            let Some(p) = self.translate_linear(reg_base.wrapping_add(i), false, bus) else {
+                return;
+            };
+            phys[i as usize] = p;
+        }
+        let mut new_regs = [Fp80::ZERO; 8];
+        for reg_idx in 0..8u32 {
             let mut bytes = [0u8; 10];
             for (j, byte) in bytes.iter_mut().enumerate() {
-                *byte = bus.read_byte(offset.wrapping_add(j as u32));
+                *byte = bus.read_byte(phys[(reg_idx * 10 + j as u32) as usize]);
             }
-            self.state.fpu.registers[i as usize] = Fp80::from_le_bytes(bytes);
+            new_regs[reg_idx as usize] = Fp80::from_le_bytes(bytes);
         }
+
+        // Now load the env. fpu_fldenv_* gather their reads internally
+        // before committing, so a fault here leaves FPU state untouched.
+        let env_loaded = if use_32bit {
+            self.fpu_fldenv_32bit(protected, bus)
+        } else {
+            self.fpu_fldenv_16bit(protected, bus)
+        };
+        if env_loaded.is_none() {
+            return;
+        }
+
+        // All gathers succeeded; commit the FPU register stack.
+        self.state.fpu.registers = new_regs;
 
         self.fpu_update_es();
         self.clk(Self::timing(308, 131));
