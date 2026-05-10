@@ -13,8 +13,8 @@
 //!   - 23.3.1: V86 -> V86 task switch keeps VM=1 and reloads segments as
 //!     8086 selectors.
 //!   - 23.3.2 / Figure 23-3: V86 interrupt to PL0 pushes the V86 EFLAGS
-//!     image with VM=1, and the processor clears DS/ES/FS/GS before the
-//!     handler runs.
+//!     image with VM=1, saves OLD ESP as a 32-bit image, and the processor
+//!     clears DS/ES/FS/GS before the handler runs.
 
 use common::Cpu as _;
 
@@ -363,6 +363,38 @@ fn v86_interrupt_entry_to_ring0_handler_pushes_vm_flag_in_eflags_image_on_stack(
         pushed_eflags & EFLAGS_VM_BIT,
         0,
         "interrupt frame from V86 must record VM=1 in EFLAGS image"
+    );
+}
+
+#[test]
+fn v86_interrupt_entry_to_ring0_handler_pushes_full_esp_image_on_stack() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let old_esp = 0x1234_FF00;
+    let mut state = setup_vm86_with_iopl(&mut bus, 3);
+    state.set_esp(old_esp);
+    cpu.load_state(&state);
+
+    place_at(&mut bus, 0x0001_0000, &[0xCD, 0x42]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+
+    // 80486 PRM 23.3.2 / Figure 23-3 documents OLD ESP in the PL0
+    // interrupt frame. The INT instruction reference pseudocode section
+    // INTERRUPT-FROM-V86-MODE saves TempESP from ESP before switching to
+    // TSS.ESP0, then pushes TempESP.
+    // Stack frame on PL0 stack for INT without an error code:
+    // EIP, CS, EFLAGS, ESP, SS, ES, DS, FS, GS.
+    let pl0_stack_linear =
+        cpu.state.seg_bases[cpu::SegReg32::SS as usize] + cpu.state.regs.dword(cpu::DwordReg::ESP);
+    let pushed_esp = read_dword_at(&bus, pl0_stack_linear + 12);
+    assert_eq!(
+        pushed_esp, old_esp,
+        "V86 interrupt entry through an i486 gate must save the full ESP image"
     );
 }
 
