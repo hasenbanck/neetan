@@ -158,6 +158,10 @@ pub struct Pcm86State {
     pub sample_remainder: FmSampleRemainder,
     /// Fractional sample remainder for `update_buffer_state` vir_buf tracking.
     pub vir_buf_remainder: FmSampleRemainder,
+    /// Cycle anchor for the port A466h L/R DAC clock bit.
+    pub dac_clock_cycle: u64,
+    /// Fractional sample phase for the port A466h L/R DAC clock bit.
+    pub dac_clock_remainder: FmSampleRemainder,
     /// WaveStar handshake sequence index (0..=5).
     pub wavestar_seq_index: u8,
     /// WaveStar port 0xA464 readback value.
@@ -188,6 +192,8 @@ impl Default for Pcm86State {
             audio_frame_start_cycle: 0,
             sample_remainder: FmSampleRemainder::default(),
             vir_buf_remainder: FmSampleRemainder::default(),
+            dac_clock_cycle: 0,
+            dac_clock_remainder: FmSampleRemainder::default(),
             wavestar_seq_index: 0,
             wavestar_value: 0xFF,
         }
@@ -377,12 +383,7 @@ impl Pcm86 {
                 } else if self.state.vir_buf <= self.state.step_mask as i32 {
                     ret |= 0x40;
                 }
-                // L/R clock: toggles at sampling rate, reflects position within sample period.
-                let rate = self.pcm_rate() as f64;
-                let elapsed = current_cycle.saturating_sub(self.state.audio_frame_start_cycle);
-                let fractional = elapsed as f64 * rate / f64::from(cpu_clock_hz);
-                let within_period = fractional - (fractional as u64 as f64);
-                if within_period >= 0.5 {
+                if self.dac_clock_high(current_cycle, cpu_clock_hz) {
                     ret |= 0x01;
                 }
                 ret
@@ -477,6 +478,8 @@ impl Pcm86 {
                     self.state.audio_frame_start_cycle = current_cycle;
                     self.state.sample_remainder = FmSampleRemainder::default();
                     self.state.vir_buf_remainder = FmSampleRemainder::default();
+                    self.state.dac_clock_cycle = current_cycle;
+                    self.state.dac_clock_remainder = FmSampleRemainder::default();
                     self.state.last_clock_for_wait = current_cycle;
                 }
                 // IRQ clear when bit 4 is written as 0.
@@ -499,6 +502,8 @@ impl Pcm86 {
                     self.state.audio_frame_start_cycle = current_cycle;
                     self.state.sample_remainder = FmSampleRemainder::default();
                     self.state.vir_buf_remainder = FmSampleRemainder::default();
+                    self.state.dac_clock_cycle = current_cycle;
+                    self.state.dac_clock_remainder = FmSampleRemainder::default();
                 }
                 // Update rescue and resampler if rate changed.
                 if (old_fifo ^ value) & 7 != 0 {
@@ -627,6 +632,20 @@ impl Pcm86 {
             self.state.vir_buf &= self.state.step_mask as i32;
         }
         self.state.audio_frame_start_cycle = current_cycle;
+    }
+
+    fn dac_clock_high(&mut self, current_cycle: u64, cpu_clock_hz: u32) -> bool {
+        let elapsed = current_cycle.saturating_sub(self.state.dac_clock_cycle);
+        if elapsed > 0 {
+            let exact_samples = elapsed as f64 * f64::from(self.pcm_rate())
+                / f64::from(cpu_clock_hz)
+                + self.state.dac_clock_remainder.0;
+            let samples_elapsed = exact_samples as u64;
+            self.state.dac_clock_remainder =
+                FmSampleRemainder(exact_samples - samples_elapsed as f64);
+            self.state.dac_clock_cycle = current_cycle;
+        }
+        self.state.dac_clock_remainder.0 >= 0.5
     }
 
     /// Reconcile vir_buf with real_buf after audio generation and accumulate
@@ -1779,6 +1798,23 @@ mod tests {
         pcm.state.vir_buf = 0;
         pcm.state.data_write_irq_wait = 0;
         assert!(!pcm.irq_condition_met(100, false));
+    }
+
+    #[test]
+    fn port_a466_dac_clock_toggles_during_tight_polling() {
+        let mut pcm = make_pcm86();
+        pcm.state.fifo = 0x80;
+
+        let mut saw_low = false;
+        let mut saw_high = false;
+        for index in 0..32 {
+            let value = pcm.read_port(0xA466, index * 20, 8_000_000, false);
+            saw_low |= value & 0x01 == 0;
+            saw_high |= value & 0x01 != 0;
+        }
+
+        assert!(saw_low, "L/R clock should have a low phase");
+        assert!(saw_high, "L/R clock should have a high phase");
     }
 
     #[test]
