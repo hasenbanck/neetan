@@ -1223,45 +1223,41 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
     pub(super) fn pop_seg(&mut self, seg: SegReg32, bus: &mut impl common::Bus) {
         let penalty = self.sp_penalty();
-        let val = if self.operand_size_override {
-            if self.use_esp() {
-                let esp = self.regs.dword(DwordReg::ESP);
-                let base = self.seg_base(SegReg32::SS);
-                let l0 = base.wrapping_add(esp);
-                let word_val = if l0 & 0xFFF <= 0xFFE {
-                    let a0 = self.translate_linear(l0, false, bus).unwrap_or(0);
-                    bus.read_word(a0)
-                } else {
-                    let a0 = self.translate_linear(l0, false, bus).unwrap_or(0);
-                    let a1 = self
-                        .translate_linear(l0.wrapping_add(1), false, bus)
-                        .unwrap_or(0);
-                    bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8)
-                };
-                self.regs.set_dword(DwordReg::ESP, esp.wrapping_add(4));
-                word_val
-            } else {
-                let sp = self.regs.word(WordReg::SP);
-                let base = self.seg_base(SegReg32::SS);
-                let l0 = base.wrapping_add(sp as u32);
-                let word_val = if l0 & 0xFFF <= 0xFFE {
-                    let a0 = self.translate_linear(l0, false, bus).unwrap_or(0);
-                    bus.read_word(a0)
-                } else {
-                    let a0 = self.translate_linear(l0, false, bus).unwrap_or(0);
-                    let a1 = self
-                        .translate_linear(l0.wrapping_add(1), false, bus)
-                        .unwrap_or(0);
-                    bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8)
-                };
-                self.regs.set_word(WordReg::SP, sp.wrapping_add(4));
-                word_val
-            }
+        let slot_size = if self.operand_size_override { 4 } else { 2 };
+        let was_use_esp = self.use_esp();
+        let sp = if was_use_esp {
+            self.regs.dword(DwordReg::ESP)
         } else {
-            self.pop(bus)
+            self.regs.word(WordReg::SP) as u32
+        };
+        if !self.check_segment_access(SegReg32::SS, sp, slot_size, false, bus) {
+            return;
+        }
+
+        let base = self.seg_base(SegReg32::SS);
+        let l0 = base.wrapping_add(sp);
+        let val = if l0 & 0xFFF <= 0xFFE {
+            let Some(a0) = self.translate_linear(l0, false, bus) else {
+                return;
+            };
+            bus.read_word(a0)
+        } else {
+            let Some(a0) = self.translate_linear(l0, false, bus) else {
+                return;
+            };
+            let Some(a1) = self.translate_linear(l0.wrapping_add(1), false, bus) else {
+                return;
+            };
+            bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8)
         };
         if !self.load_segment(seg, val, bus) {
             return;
+        }
+        let new_sp = sp.wrapping_add(slot_size);
+        if was_use_esp {
+            self.regs.set_dword(DwordReg::ESP, new_sp);
+        } else {
+            self.regs.set_word(WordReg::SP, new_sp as u16);
         }
         self.clk(Self::timing(7, 3) + penalty);
     }
@@ -2096,6 +2092,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 let new_ss =
                     self.read_dword_linear(bus, ss_base.wrapping_add(sp.wrapping_add(12))) as u16;
 
+                if let Some((vector, error_code)) =
+                    self.precheck_ss_for_inter_priv_iret(new_ss, new_rpl, bus)
+                {
+                    self.raise_fault_with_code(vector, error_code, bus);
+                    return;
+                }
+
                 let saved_cs = self.save_cs_state();
                 if !self.load_cs_for_return(new_cs, new_eip, bus) {
                     return;
@@ -2119,13 +2122,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.revalidate_data_segment(SegReg32::FS, new_cpl, bus);
                 self.revalidate_data_segment(SegReg32::GS, new_cpl, bus);
             } else {
+                if !self.load_cs_for_return(new_cs, new_eip, bus) {
+                    return;
+                }
                 if self.use_esp() {
                     self.regs.set_dword(DwordReg::ESP, sp.wrapping_add(8));
                 } else {
                     self.regs.set_word(WordReg::SP, sp.wrapping_add(8) as u16);
-                }
-                if !self.load_cs_for_return(new_cs, new_eip, bus) {
-                    return;
                 }
                 self.ip = new_eip as u16;
                 self.ip_upper = new_eip & 0xFFFF_0000;
@@ -2140,6 +2143,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             if new_rpl > old_cpl {
                 let new_sp = self.read_word_linear(bus, ss_base.wrapping_add(sp.wrapping_add(4)));
                 let new_ss = self.read_word_linear(bus, ss_base.wrapping_add(sp.wrapping_add(6)));
+
+                if let Some((vector, error_code)) =
+                    self.precheck_ss_for_inter_priv_iret(new_ss, new_rpl, bus)
+                {
+                    self.raise_fault_with_code(vector, error_code, bus);
+                    return;
+                }
 
                 let saved_cs = self.save_cs_state();
                 if !self.load_cs_for_return(new_cs, new_ip as u32, bus) {
@@ -2164,13 +2174,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.revalidate_data_segment(SegReg32::FS, new_cpl, bus);
                 self.revalidate_data_segment(SegReg32::GS, new_cpl, bus);
             } else {
+                if !self.load_cs_for_return(new_cs, new_ip as u32, bus) {
+                    return;
+                }
                 if self.use_esp() {
                     self.regs.set_dword(DwordReg::ESP, sp.wrapping_add(4));
                 } else {
                     self.regs.set_word(WordReg::SP, sp.wrapping_add(4) as u16);
-                }
-                if !self.load_cs_for_return(new_cs, new_ip as u32, bus) {
-                    return;
                 }
                 self.ip = new_ip;
                 self.ip_upper = 0;
@@ -2250,6 +2260,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     .read_dword_linear(bus, ss_base.wrapping_add(sp_ss_base.wrapping_add(4)))
                     as u16;
 
+                if let Some((vector, error_code)) =
+                    self.precheck_ss_for_inter_priv_iret(new_ss, new_rpl, bus)
+                {
+                    self.raise_fault_with_code(vector, error_code, bus);
+                    return;
+                }
+
                 let saved_cs = self.save_cs_state();
                 if !self.load_cs_for_return(new_cs, new_eip, bus) {
                     return;
@@ -2275,13 +2292,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.revalidate_data_segment(SegReg32::GS, new_cpl, bus);
             } else {
                 let new_sp_val = sp.wrapping_add(8).wrapping_add(imm32);
+                if !self.load_cs_for_return(new_cs, new_eip, bus) {
+                    return;
+                }
                 if self.use_esp() {
                     self.regs.set_dword(DwordReg::ESP, new_sp_val);
                 } else {
                     self.regs.set_word(WordReg::SP, new_sp_val as u16);
-                }
-                if !self.load_cs_for_return(new_cs, new_eip, bus) {
-                    return;
                 }
                 self.ip = new_eip as u16;
                 self.ip_upper = new_eip & 0xFFFF_0000;
@@ -2298,6 +2315,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 let new_sp = self.read_word_linear(bus, ss_base.wrapping_add(sp_ss_base));
                 let new_ss =
                     self.read_word_linear(bus, ss_base.wrapping_add(sp_ss_base.wrapping_add(2)));
+
+                if let Some((vector, error_code)) =
+                    self.precheck_ss_for_inter_priv_iret(new_ss, new_rpl, bus)
+                {
+                    self.raise_fault_with_code(vector, error_code, bus);
+                    return;
+                }
 
                 let saved_cs = self.save_cs_state();
                 if !self.load_cs_for_return(new_cs, new_ip as u32, bus) {
@@ -2324,13 +2348,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.revalidate_data_segment(SegReg32::GS, new_cpl, bus);
             } else {
                 let new_sp_val = sp.wrapping_add(4).wrapping_add(imm32);
+                if !self.load_cs_for_return(new_cs, new_ip as u32, bus) {
+                    return;
+                }
                 if self.use_esp() {
                     self.regs.set_dword(DwordReg::ESP, new_sp_val);
                 } else {
                     self.regs.set_word(WordReg::SP, new_sp_val as u16);
-                }
-                if !self.load_cs_for_return(new_cs, new_ip as u32, bus) {
-                    return;
                 }
                 self.ip = new_ip;
                 self.ip_upper = 0;

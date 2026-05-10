@@ -1789,6 +1789,83 @@ fn i386_ret_far_ip_exceeds_limit_faults() {
 }
 
 #[test]
+fn i386_ret_far_same_privilege_invalid_cs_preserves_source_frame() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode(&mut bus, 0xFFFF);
+    state.seg_granularity[cpu::SegReg32::CS as usize] = 0x40;
+    state.seg_limits[cpu::SegReg32::CS as usize] = 0xFFFF_FFFF;
+    state.seg_granularity[cpu::SegReg32::SS as usize] = 0x40;
+    state.seg_limits[cpu::SegReg32::SS as usize] = 0xFFFF_FFFF;
+    state.set_esp(0x0001_0000);
+    cpu.load_state(&state);
+
+    let original_esp = cpu.esp();
+    write_dword_at(&mut bus, PM_STACK_BASE + original_esp, 0x2000);
+    write_dword_at(&mut bus, PM_STACK_BASE + original_esp + 4, 0x0040);
+    place_at(&mut bus, PM_CODE_BASE, &[0xCB]);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.ip(), u32::from(PM_GP_HANDLER_IP));
+    assert_eq!(cpu.esp(), original_esp.wrapping_sub(16));
+    assert_eq!(
+        read_dword_at(&bus, PM_STACK_BASE + cpu.esp()),
+        0x0040,
+        "error code should contain the invalid return selector"
+    );
+    assert_eq!(
+        read_dword_at(&bus, PM_STACK_BASE + cpu.esp() + 4),
+        0x0000,
+        "fault frame should point back to the RETF instruction"
+    );
+    assert_eq!(
+        read_dword_at(&bus, PM_STACK_BASE + original_esp),
+        0x2000,
+        "the original RETF frame must remain in place"
+    );
+}
+
+#[test]
+fn i386_pop_segment_invalid_selector_preserves_source_frame() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode(&mut bus, 0xFFFF);
+    state.seg_granularity[cpu::SegReg32::CS as usize] = 0x40;
+    state.seg_limits[cpu::SegReg32::CS as usize] = 0xFFFF_FFFF;
+    state.seg_granularity[cpu::SegReg32::SS as usize] = 0x40;
+    state.seg_limits[cpu::SegReg32::SS as usize] = 0xFFFF_FFFF;
+    state.set_esp(0x0001_0000);
+    cpu.load_state(&state);
+
+    let original_esp = cpu.esp();
+    write_dword_at(&mut bus, PM_STACK_BASE + original_esp, 0x0040);
+    place_at(&mut bus, PM_CODE_BASE, &[0x07]);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.ip(), u32::from(PM_GP_HANDLER_IP));
+    assert_eq!(cpu.esp(), original_esp.wrapping_sub(16));
+    assert_eq!(
+        read_dword_at(&bus, PM_STACK_BASE + cpu.esp()),
+        0x0040,
+        "error code should contain the invalid popped selector"
+    );
+    assert_eq!(
+        read_dword_at(&bus, PM_STACK_BASE + cpu.esp() + 4),
+        0x0000,
+        "fault frame should point back to the POP ES instruction"
+    );
+    assert_eq!(
+        read_dword_at(&bus, PM_STACK_BASE + original_esp),
+        0x0040,
+        "the original POP source slot must remain in place"
+    );
+}
+
+#[test]
 fn i386_invalidate_nonconforming_code_in_ds_on_return() {
     let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
