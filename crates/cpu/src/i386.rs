@@ -578,8 +578,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.raise_fault_with_code(13, 0, bus);
             return false;
         }
-        let iopb = self.read_word_linear(bus, self.tr_base.wrapping_add(0x66)) as u32;
-        let byte_idx = iopb.wrapping_add(u32::from(port) / 8);
+        let Some(iopb) = self.read_word_linear(bus, self.tr_base.wrapping_add(0x66)) else {
+            return false;
+        };
+        let byte_idx = u32::from(iopb).wrapping_add(u32::from(port) / 8);
         // Read two consecutive bytes from the IOPB to handle accesses that span a
         // byte boundary (e.g. a dword access starting at port 7 touches bits in two
         // bytes). The +1 also satisfies the Intel spec requirement for a 0xFF sentinel
@@ -1028,14 +1030,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus: &mut impl common::Bus,
         delta: u32,
         for_update: bool,
-    ) -> u16 {
+    ) -> Option<u16> {
         let offset = if self.address_size_override {
             self.eo32.wrapping_add(delta)
         } else {
             (self.eo32 as u16).wrapping_add(delta as u16) as u32
         };
         if !self.check_segment_access(self.ea_seg, offset, 2, for_update, bus) {
-            return 0;
+            return None;
         }
         let l0 = self.seg_addr(delta);
         let same_page = if self.address_size_override {
@@ -1044,33 +1046,27 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             l0 & 0xFFF <= 0xFFE && (offset as u16) <= 0xFFFE
         };
         if same_page {
-            let Some(a0) = self.translate_linear(l0, for_update, bus) else {
-                return 0;
-            };
-            return bus.read_word(a0);
+            let a0 = self.translate_linear(l0, for_update, bus)?;
+            return Some(bus.read_word(a0));
         }
         let l1 = self.seg_addr(delta.wrapping_add(1));
-        let Some(a0) = self.translate_linear(l0, for_update, bus) else {
-            return 0;
-        };
-        let Some(a1) = self.translate_linear(l1, for_update, bus) else {
-            return 0;
-        };
-        bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8)
+        let a0 = self.translate_linear(l0, for_update, bus)?;
+        let a1 = self.translate_linear(l1, for_update, bus)?;
+        Some(bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8))
     }
 
     #[inline(always)]
-    fn seg_read_word_at(&mut self, bus: &mut impl common::Bus, delta: u32) -> u16 {
+    fn seg_read_word_at(&mut self, bus: &mut impl common::Bus, delta: u32) -> Option<u16> {
         self.seg_read_word_at_with(bus, delta, false)
     }
 
     #[inline(always)]
-    fn seg_read_word(&mut self, bus: &mut impl common::Bus) -> u16 {
+    fn seg_read_word(&mut self, bus: &mut impl common::Bus) -> Option<u16> {
         self.seg_read_word_at_with(bus, 0, false)
     }
 
     #[inline(always)]
-    pub(super) fn seg_read_word_for_update(&mut self, bus: &mut impl common::Bus) -> u16 {
+    pub(super) fn seg_read_word_for_update(&mut self, bus: &mut impl common::Bus) -> Option<u16> {
         self.seg_read_word_at_with(bus, 0, true)
     }
 
@@ -1080,14 +1076,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus: &mut impl common::Bus,
         delta: u32,
         for_update: bool,
-    ) -> u32 {
+    ) -> Option<u32> {
         let offset = if self.address_size_override {
             self.eo32.wrapping_add(delta)
         } else {
             (self.eo32 as u16).wrapping_add(delta as u16) as u32
         };
         if !self.check_segment_access(self.ea_seg, offset, 4, for_update, bus) {
-            return 0;
+            return None;
         }
         let l0 = self.seg_addr(delta);
         let same_page = if self.address_size_override {
@@ -1096,44 +1092,36 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             l0 & 0xFFF <= 0xFFC && (offset as u16) <= 0xFFFC
         };
         if same_page {
-            let Some(a0) = self.translate_linear(l0, for_update, bus) else {
-                return 0;
-            };
-            return bus.read_dword(a0);
+            let a0 = self.translate_linear(l0, for_update, bus)?;
+            return Some(bus.read_dword(a0));
         }
         let l1 = self.seg_addr(delta.wrapping_add(1));
         let l2 = self.seg_addr(delta.wrapping_add(2));
         let l3 = self.seg_addr(delta.wrapping_add(3));
-        let Some(a0) = self.translate_linear(l0, for_update, bus) else {
-            return 0;
-        };
-        let Some(a1) = self.translate_linear(l1, for_update, bus) else {
-            return 0;
-        };
-        let Some(a2) = self.translate_linear(l2, for_update, bus) else {
-            return 0;
-        };
-        let Some(a3) = self.translate_linear(l3, for_update, bus) else {
-            return 0;
-        };
-        bus.read_byte(a0) as u32
-            | ((bus.read_byte(a1) as u32) << 8)
-            | ((bus.read_byte(a2) as u32) << 16)
-            | ((bus.read_byte(a3) as u32) << 24)
+        let a0 = self.translate_linear(l0, for_update, bus)?;
+        let a1 = self.translate_linear(l1, for_update, bus)?;
+        let a2 = self.translate_linear(l2, for_update, bus)?;
+        let a3 = self.translate_linear(l3, for_update, bus)?;
+        Some(
+            bus.read_byte(a0) as u32
+                | ((bus.read_byte(a1) as u32) << 8)
+                | ((bus.read_byte(a2) as u32) << 16)
+                | ((bus.read_byte(a3) as u32) << 24),
+        )
     }
 
     #[inline(always)]
-    fn seg_read_dword_at(&mut self, bus: &mut impl common::Bus, delta: u32) -> u32 {
+    fn seg_read_dword_at(&mut self, bus: &mut impl common::Bus, delta: u32) -> Option<u32> {
         self.seg_read_dword_at_with(bus, delta, false)
     }
 
     #[inline(always)]
-    fn seg_read_dword(&mut self, bus: &mut impl common::Bus) -> u32 {
+    fn seg_read_dword(&mut self, bus: &mut impl common::Bus) -> Option<u32> {
         self.seg_read_dword_at_with(bus, 0, false)
     }
 
     #[inline(always)]
-    pub(super) fn seg_read_dword_for_update(&mut self, bus: &mut impl common::Bus) -> u32 {
+    pub(super) fn seg_read_dword_for_update(&mut self, bus: &mut impl common::Bus) -> Option<u32> {
         self.seg_read_dword_at_with(bus, 0, true)
     }
 
@@ -1206,15 +1194,18 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     #[inline(always)]
-    fn read_byte_seg(&mut self, bus: &mut impl common::Bus, seg: SegReg32, offset: u32) -> u8 {
+    fn read_byte_seg(
+        &mut self,
+        bus: &mut impl common::Bus,
+        seg: SegReg32,
+        offset: u32,
+    ) -> Option<u8> {
         if !self.check_segment_access(seg, offset, 1, false, bus) {
-            return 0;
+            return None;
         }
         let linear = self.seg_base(seg).wrapping_add(offset);
-        let Some(addr) = self.translate_linear(linear, false, bus) else {
-            return 0;
-        };
-        bus.read_byte(addr)
+        let addr = self.translate_linear(linear, false, bus)?;
+        Some(bus.read_byte(addr))
     }
 
     #[inline(always)]
@@ -1242,30 +1233,29 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         seg: SegReg32,
         offset: u32,
         for_update: bool,
-    ) -> u16 {
+    ) -> Option<u16> {
         if !self.check_segment_access(seg, offset, 2, for_update, bus) {
-            return 0;
+            return None;
         }
         let base = self.seg_base(seg);
         let l0 = base.wrapping_add(offset);
         if l0 & 0xFFF <= 0xFFE {
-            let Some(a0) = self.translate_linear(l0, for_update, bus) else {
-                return 0;
-            };
-            return bus.read_word(a0);
+            let a0 = self.translate_linear(l0, for_update, bus)?;
+            return Some(bus.read_word(a0));
         }
         let l1 = base.wrapping_add(offset.wrapping_add(1));
-        let Some(a0) = self.translate_linear(l0, for_update, bus) else {
-            return 0;
-        };
-        let Some(a1) = self.translate_linear(l1, for_update, bus) else {
-            return 0;
-        };
-        bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8)
+        let a0 = self.translate_linear(l0, for_update, bus)?;
+        let a1 = self.translate_linear(l1, for_update, bus)?;
+        Some(bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8))
     }
 
     #[inline(always)]
-    fn read_word_seg(&mut self, bus: &mut impl common::Bus, seg: SegReg32, offset: u32) -> u16 {
+    fn read_word_seg(
+        &mut self,
+        bus: &mut impl common::Bus,
+        seg: SegReg32,
+        offset: u32,
+    ) -> Option<u16> {
         self.read_word_seg_with(bus, seg, offset, false)
     }
 
@@ -1275,7 +1265,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus: &mut impl common::Bus,
         seg: SegReg32,
         offset: u32,
-    ) -> u16 {
+    ) -> Option<u16> {
         self.read_word_seg_with(bus, seg, offset, true)
     }
 
@@ -1286,41 +1276,38 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         seg: SegReg32,
         offset: u32,
         for_update: bool,
-    ) -> u32 {
+    ) -> Option<u32> {
         if !self.check_segment_access(seg, offset, 4, for_update, bus) {
-            return 0;
+            return None;
         }
         let base = self.seg_base(seg);
         let l0 = base.wrapping_add(offset);
         if l0 & 0xFFF <= 0xFFC {
-            let Some(a0) = self.translate_linear(l0, for_update, bus) else {
-                return 0;
-            };
-            return bus.read_dword(a0);
+            let a0 = self.translate_linear(l0, for_update, bus)?;
+            return Some(bus.read_dword(a0));
         }
         let l1 = base.wrapping_add(offset.wrapping_add(1));
         let l2 = base.wrapping_add(offset.wrapping_add(2));
         let l3 = base.wrapping_add(offset.wrapping_add(3));
-        let Some(a0) = self.translate_linear(l0, for_update, bus) else {
-            return 0;
-        };
-        let Some(a1) = self.translate_linear(l1, for_update, bus) else {
-            return 0;
-        };
-        let Some(a2) = self.translate_linear(l2, for_update, bus) else {
-            return 0;
-        };
-        let Some(a3) = self.translate_linear(l3, for_update, bus) else {
-            return 0;
-        };
-        bus.read_byte(a0) as u32
-            | ((bus.read_byte(a1) as u32) << 8)
-            | ((bus.read_byte(a2) as u32) << 16)
-            | ((bus.read_byte(a3) as u32) << 24)
+        let a0 = self.translate_linear(l0, for_update, bus)?;
+        let a1 = self.translate_linear(l1, for_update, bus)?;
+        let a2 = self.translate_linear(l2, for_update, bus)?;
+        let a3 = self.translate_linear(l3, for_update, bus)?;
+        Some(
+            bus.read_byte(a0) as u32
+                | ((bus.read_byte(a1) as u32) << 8)
+                | ((bus.read_byte(a2) as u32) << 16)
+                | ((bus.read_byte(a3) as u32) << 24),
+        )
     }
 
     #[inline(always)]
-    fn read_dword_seg(&mut self, bus: &mut impl common::Bus, seg: SegReg32, offset: u32) -> u32 {
+    fn read_dword_seg(
+        &mut self,
+        bus: &mut impl common::Bus,
+        seg: SegReg32,
+        offset: u32,
+    ) -> Option<u32> {
         self.read_dword_seg_with(bus, seg, offset, false)
     }
 
@@ -1330,7 +1317,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus: &mut impl common::Bus,
         seg: SegReg32,
         offset: u32,
-    ) -> u32 {
+    ) -> Option<u32> {
         self.read_dword_seg_with(bus, seg, offset, true)
     }
 
@@ -1653,36 +1640,28 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.set_loaded_segment_cache(seg, selector, descriptor);
     }
 
-    fn read_word_linear(&mut self, bus: &mut impl common::Bus, addr: u32) -> u16 {
+    fn read_word_linear(&mut self, bus: &mut impl common::Bus, addr: u32) -> Option<u16> {
         if addr & 0xFFF <= 0xFFE {
-            let Some(a0) = self.translate_linear(addr, false, bus) else {
-                return 0;
-            };
-            return bus.read_word(a0);
+            let a0 = self.translate_linear(addr, false, bus)?;
+            return Some(bus.read_word(a0));
         }
-        let a0 = self.translate_linear(addr, false, bus).unwrap_or(0);
-        let a1 = self
-            .translate_linear(addr.wrapping_add(1), false, bus)
-            .unwrap_or(0);
-        bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8)
+        let a0 = self.translate_linear(addr, false, bus)?;
+        let a1 = self.translate_linear(addr.wrapping_add(1), false, bus)?;
+        Some(bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8))
     }
 
     pub(super) fn read_word_linear_for_update(
         &mut self,
         bus: &mut impl common::Bus,
         addr: u32,
-    ) -> u16 {
+    ) -> Option<u16> {
         if addr & 0xFFF <= 0xFFE {
-            let Some(a0) = self.translate_linear(addr, true, bus) else {
-                return 0;
-            };
-            return bus.read_word(a0);
+            let a0 = self.translate_linear(addr, true, bus)?;
+            return Some(bus.read_word(a0));
         }
-        let a0 = self.translate_linear(addr, true, bus).unwrap_or(0);
-        let a1 = self
-            .translate_linear(addr.wrapping_add(1), true, bus)
-            .unwrap_or(0);
-        bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8)
+        let a0 = self.translate_linear(addr, true, bus)?;
+        let a1 = self.translate_linear(addr.wrapping_add(1), true, bus)?;
+        Some(bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8))
     }
 
     fn write_word_linear(&mut self, bus: &mut impl common::Bus, addr: u32, value: u16) {
@@ -1703,54 +1682,42 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus.write_byte(a1, (value >> 8) as u8);
     }
 
-    fn read_dword_linear(&mut self, bus: &mut impl common::Bus, addr: u32) -> u32 {
+    fn read_dword_linear(&mut self, bus: &mut impl common::Bus, addr: u32) -> Option<u32> {
         if addr & 0xFFF <= 0xFFC {
-            let Some(a0) = self.translate_linear(addr, false, bus) else {
-                return 0;
-            };
-            return bus.read_dword(a0);
+            let a0 = self.translate_linear(addr, false, bus)?;
+            return Some(bus.read_dword(a0));
         }
-        let a0 = self.translate_linear(addr, false, bus).unwrap_or(0);
-        let a1 = self
-            .translate_linear(addr.wrapping_add(1), false, bus)
-            .unwrap_or(0);
-        let a2 = self
-            .translate_linear(addr.wrapping_add(2), false, bus)
-            .unwrap_or(0);
-        let a3 = self
-            .translate_linear(addr.wrapping_add(3), false, bus)
-            .unwrap_or(0);
-        bus.read_byte(a0) as u32
-            | ((bus.read_byte(a1) as u32) << 8)
-            | ((bus.read_byte(a2) as u32) << 16)
-            | ((bus.read_byte(a3) as u32) << 24)
+        let a0 = self.translate_linear(addr, false, bus)?;
+        let a1 = self.translate_linear(addr.wrapping_add(1), false, bus)?;
+        let a2 = self.translate_linear(addr.wrapping_add(2), false, bus)?;
+        let a3 = self.translate_linear(addr.wrapping_add(3), false, bus)?;
+        Some(
+            bus.read_byte(a0) as u32
+                | ((bus.read_byte(a1) as u32) << 8)
+                | ((bus.read_byte(a2) as u32) << 16)
+                | ((bus.read_byte(a3) as u32) << 24),
+        )
     }
 
     pub(super) fn read_dword_linear_for_update(
         &mut self,
         bus: &mut impl common::Bus,
         addr: u32,
-    ) -> u32 {
+    ) -> Option<u32> {
         if addr & 0xFFF <= 0xFFC {
-            let Some(a0) = self.translate_linear(addr, true, bus) else {
-                return 0;
-            };
-            return bus.read_dword(a0);
+            let a0 = self.translate_linear(addr, true, bus)?;
+            return Some(bus.read_dword(a0));
         }
-        let a0 = self.translate_linear(addr, true, bus).unwrap_or(0);
-        let a1 = self
-            .translate_linear(addr.wrapping_add(1), true, bus)
-            .unwrap_or(0);
-        let a2 = self
-            .translate_linear(addr.wrapping_add(2), true, bus)
-            .unwrap_or(0);
-        let a3 = self
-            .translate_linear(addr.wrapping_add(3), true, bus)
-            .unwrap_or(0);
-        bus.read_byte(a0) as u32
-            | ((bus.read_byte(a1) as u32) << 8)
-            | ((bus.read_byte(a2) as u32) << 16)
-            | ((bus.read_byte(a3) as u32) << 24)
+        let a0 = self.translate_linear(addr, true, bus)?;
+        let a1 = self.translate_linear(addr.wrapping_add(1), true, bus)?;
+        let a2 = self.translate_linear(addr.wrapping_add(2), true, bus)?;
+        let a3 = self.translate_linear(addr.wrapping_add(3), true, bus)?;
+        Some(
+            bus.read_byte(a0) as u32
+                | ((bus.read_byte(a1) as u32) << 8)
+                | ((bus.read_byte(a2) as u32) << 16)
+                | ((bus.read_byte(a3) as u32) << 24),
+        )
     }
 
     fn write_dword_linear(&mut self, bus: &mut impl common::Bus, addr: u32, value: u32) {
@@ -1782,19 +1749,24 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     fn switch_task(&mut self, ntask: u16, task_type: TaskType, bus: &mut impl common::Bus) {
         let saved_supervisor_override = self.supervisor_override;
         self.supervisor_override = true;
-        self.switch_task_inner(ntask, task_type, bus);
+        let _ = self.switch_task_inner(ntask, task_type, bus);
         self.supervisor_override = saved_supervisor_override;
     }
 
-    fn switch_task_inner(&mut self, ntask: u16, task_type: TaskType, bus: &mut impl common::Bus) {
+    fn switch_task_inner(
+        &mut self,
+        ntask: u16,
+        task_type: TaskType,
+        bus: &mut impl common::Bus,
+    ) -> Option<()> {
         if ntask & 0x0004 != 0 {
             self.raise_fault_with_code(10, Self::segment_error_code(ntask), bus);
-            return;
+            return None;
         }
 
         let Some(naddr) = self.descriptor_addr_checked(ntask) else {
             self.raise_fault_with_code(10, Self::segment_error_code(ntask), bus);
-            return;
+            return None;
         };
 
         let ndesc = self.decode_descriptor_at(naddr, bus);
@@ -1806,28 +1778,28 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let tss_type = r & 0x0F;
         if Self::descriptor_is_segment(r) || !matches!(tss_type, 1 | 3 | 9 | 11) {
             self.raise_fault_with_code(13, Self::segment_error_code(ntask), bus);
-            return;
+            return None;
         }
         if task_type == TaskType::Iret {
             if r & 0x02 == 0 {
                 self.raise_fault_with_code(13, Self::segment_error_code(ntask), bus);
-                return;
+                return None;
             }
         } else if r & 0x02 != 0 {
             self.raise_fault_with_code(13, Self::segment_error_code(ntask), bus);
-            return;
+            return None;
         }
 
         if !Self::descriptor_present(r) {
             self.raise_fault_with_code(11, Self::segment_error_code(ntask), bus);
-            return;
+            return None;
         }
 
         let is_386_tss = matches!(tss_type, 9 | 11);
         let min_limit: u32 = if is_386_tss { 103 } else { 43 };
         if ndesc_limit < min_limit {
             self.raise_fault_with_code(10, Self::segment_error_code(ntask), bus);
-            return;
+            return None;
         }
 
         let mut flags = self.flags.compress();
@@ -1978,41 +1950,41 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         );
 
         if is_386_tss {
-            ntss_cr3 = self.read_dword_linear(bus, new_base.wrapping_add(28));
-            ntss_eip = self.read_dword_linear(bus, new_base.wrapping_add(32));
-            ntss_eflags = self.read_dword_linear(bus, new_base.wrapping_add(36));
-            ntss_eax = self.read_dword_linear(bus, new_base.wrapping_add(40));
-            ntss_ecx = self.read_dword_linear(bus, new_base.wrapping_add(44));
-            ntss_edx = self.read_dword_linear(bus, new_base.wrapping_add(48));
-            ntss_ebx = self.read_dword_linear(bus, new_base.wrapping_add(52));
-            ntss_esp = self.read_dword_linear(bus, new_base.wrapping_add(56));
-            ntss_ebp = self.read_dword_linear(bus, new_base.wrapping_add(60));
-            ntss_esi = self.read_dword_linear(bus, new_base.wrapping_add(64));
-            ntss_edi = self.read_dword_linear(bus, new_base.wrapping_add(68));
-            ntss_es = self.read_word_linear(bus, new_base.wrapping_add(72));
-            ntss_cs = self.read_word_linear(bus, new_base.wrapping_add(76));
-            ntss_ss = self.read_word_linear(bus, new_base.wrapping_add(80));
-            ntss_ds = self.read_word_linear(bus, new_base.wrapping_add(84));
-            ntss_fs = self.read_word_linear(bus, new_base.wrapping_add(88));
-            ntss_gs = self.read_word_linear(bus, new_base.wrapping_add(92));
-            ntss_ldt = self.read_word_linear(bus, new_base.wrapping_add(96));
+            ntss_cr3 = self.read_dword_linear(bus, new_base.wrapping_add(28))?;
+            ntss_eip = self.read_dword_linear(bus, new_base.wrapping_add(32))?;
+            ntss_eflags = self.read_dword_linear(bus, new_base.wrapping_add(36))?;
+            ntss_eax = self.read_dword_linear(bus, new_base.wrapping_add(40))?;
+            ntss_ecx = self.read_dword_linear(bus, new_base.wrapping_add(44))?;
+            ntss_edx = self.read_dword_linear(bus, new_base.wrapping_add(48))?;
+            ntss_ebx = self.read_dword_linear(bus, new_base.wrapping_add(52))?;
+            ntss_esp = self.read_dword_linear(bus, new_base.wrapping_add(56))?;
+            ntss_ebp = self.read_dword_linear(bus, new_base.wrapping_add(60))?;
+            ntss_esi = self.read_dword_linear(bus, new_base.wrapping_add(64))?;
+            ntss_edi = self.read_dword_linear(bus, new_base.wrapping_add(68))?;
+            ntss_es = self.read_word_linear(bus, new_base.wrapping_add(72))?;
+            ntss_cs = self.read_word_linear(bus, new_base.wrapping_add(76))?;
+            ntss_ss = self.read_word_linear(bus, new_base.wrapping_add(80))?;
+            ntss_ds = self.read_word_linear(bus, new_base.wrapping_add(84))?;
+            ntss_fs = self.read_word_linear(bus, new_base.wrapping_add(88))?;
+            ntss_gs = self.read_word_linear(bus, new_base.wrapping_add(92))?;
+            ntss_ldt = self.read_word_linear(bus, new_base.wrapping_add(96))?;
         } else {
             ntss_cr3 = 0;
-            ntss_eip = self.read_word_linear(bus, new_base.wrapping_add(14)) as u32;
-            ntss_eflags = self.read_word_linear(bus, new_base.wrapping_add(16)) as u32;
-            ntss_eax = self.read_word_linear(bus, new_base.wrapping_add(18)) as u32;
-            ntss_ecx = self.read_word_linear(bus, new_base.wrapping_add(20)) as u32;
-            ntss_edx = self.read_word_linear(bus, new_base.wrapping_add(22)) as u32;
-            ntss_ebx = self.read_word_linear(bus, new_base.wrapping_add(24)) as u32;
-            ntss_esp = self.read_word_linear(bus, new_base.wrapping_add(26)) as u32;
-            ntss_ebp = self.read_word_linear(bus, new_base.wrapping_add(28)) as u32;
-            ntss_esi = self.read_word_linear(bus, new_base.wrapping_add(30)) as u32;
-            ntss_edi = self.read_word_linear(bus, new_base.wrapping_add(32)) as u32;
-            ntss_es = self.read_word_linear(bus, new_base.wrapping_add(34));
-            ntss_cs = self.read_word_linear(bus, new_base.wrapping_add(36));
-            ntss_ss = self.read_word_linear(bus, new_base.wrapping_add(38));
-            ntss_ds = self.read_word_linear(bus, new_base.wrapping_add(40));
-            ntss_ldt = self.read_word_linear(bus, new_base.wrapping_add(42));
+            ntss_eip = self.read_word_linear(bus, new_base.wrapping_add(14))? as u32;
+            ntss_eflags = self.read_word_linear(bus, new_base.wrapping_add(16))? as u32;
+            ntss_eax = self.read_word_linear(bus, new_base.wrapping_add(18))? as u32;
+            ntss_ecx = self.read_word_linear(bus, new_base.wrapping_add(20))? as u32;
+            ntss_edx = self.read_word_linear(bus, new_base.wrapping_add(22))? as u32;
+            ntss_ebx = self.read_word_linear(bus, new_base.wrapping_add(24))? as u32;
+            ntss_esp = self.read_word_linear(bus, new_base.wrapping_add(26))? as u32;
+            ntss_ebp = self.read_word_linear(bus, new_base.wrapping_add(28))? as u32;
+            ntss_esi = self.read_word_linear(bus, new_base.wrapping_add(30))? as u32;
+            ntss_edi = self.read_word_linear(bus, new_base.wrapping_add(32))? as u32;
+            ntss_es = self.read_word_linear(bus, new_base.wrapping_add(34))?;
+            ntss_cs = self.read_word_linear(bus, new_base.wrapping_add(36))?;
+            ntss_ss = self.read_word_linear(bus, new_base.wrapping_add(38))?;
+            ntss_ds = self.read_word_linear(bus, new_base.wrapping_add(40))?;
+            ntss_ldt = self.read_word_linear(bus, new_base.wrapping_add(42))?;
             ntss_fs = 0;
             ntss_gs = 0;
         }
@@ -2068,22 +2040,22 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         // Load LDT from new TSS.
         if ntss_ldt & 0x0004 != 0 {
             self.raise_fault_with_code(10, Self::segment_error_code(ntss_ldt), bus);
-            return;
+            return None;
         }
         if ntss_ldt & 0xFFFC != 0 {
             let Some(ldtaddr) = self.descriptor_addr_checked(ntss_ldt) else {
                 self.raise_fault_with_code(10, Self::segment_error_code(ntss_ldt), bus);
-                return;
+                return None;
             };
             let ldt_desc = self.decode_descriptor_at(ldtaddr, bus);
             let lr = ldt_desc.rights;
             if Self::descriptor_is_segment(lr) || (lr & 0x0F) != 0x02 {
                 self.raise_fault_with_code(10, Self::segment_error_code(ntss_ldt), bus);
-                return;
+                return None;
             }
             if !Self::descriptor_present(lr) {
                 self.raise_fault_with_code(10, Self::segment_error_code(ntss_ldt), bus);
-                return;
+                return None;
             }
             let ldt_base = ldt_desc.base;
             let ldt_limit = ldt_desc.limit;
@@ -2105,7 +2077,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         // TSS T-bit (offset 100, bit 0): schedule a debug trap (#DB) after the
         // first instruction of the new task. Sets DR6.BT (bit 15).
         if is_386_tss {
-            let debug_trap_word = self.read_word_linear(bus, new_base.wrapping_add(100));
+            let debug_trap_word = self.read_word_linear(bus, new_base.wrapping_add(100))?;
             if debug_trap_word & 1 != 0 {
                 self.debug_trap_pending = true;
             }
@@ -2128,7 +2100,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.set_real_segment_cache(SegReg32::GS, ntss_gs);
             self.ip = ntss_eip as u16;
             self.ip_upper = 0;
-            return;
+            return None;
         }
 
         // Load segment registers from new TSS. SS first (uses new CS RPL as CPL).
@@ -2140,6 +2112,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.load_task_data_segment(SegReg32::DS, ntss_ds, cpl, bus);
         self.load_task_data_segment(SegReg32::FS, ntss_fs, cpl, bus);
         self.load_task_data_segment(SegReg32::GS, ntss_gs, cpl, bus);
+
+        Some(())
     }
 
     fn load_task_data_segment(
@@ -2305,16 +2279,27 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             4 | 12 => {
                 // Call gate (4=286, 12=386).
                 let is_386_gate = gate_type == 12;
-                let gate_selector = self.read_word_linear(bus, addr.wrapping_add(2));
+                let Some(gate_selector) = self.read_word_linear(bus, addr.wrapping_add(2)) else {
+                    return false;
+                };
                 let gc_linear = addr.wrapping_add(4);
-                let gc_phys = self.translate_linear(gc_linear, false, bus).unwrap_or(0);
+                let Some(gc_phys) = self.translate_linear(gc_linear, false, bus) else {
+                    return false;
+                };
                 let gate_count = bus.read_byte(gc_phys) & 0x1F;
                 let gate_offset = if is_386_gate {
-                    let lo = self.read_word_linear(bus, addr);
-                    let hi = self.read_word_linear(bus, addr.wrapping_add(6));
+                    let Some(lo) = self.read_word_linear(bus, addr) else {
+                        return false;
+                    };
+                    let Some(hi) = self.read_word_linear(bus, addr.wrapping_add(6)) else {
+                        return false;
+                    };
                     lo as u32 | ((hi as u32) << 16)
                 } else {
-                    self.read_word_linear(bus, addr) as u32
+                    let Some(lo) = self.read_word_linear(bus, addr) else {
+                        return false;
+                    };
+                    lo as u32
                 };
 
                 let Some(target_addr) = self.descriptor_addr_checked(gate_selector) else {
@@ -2360,12 +2345,25 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     };
                     let tss_ss_offset = tss_sp_offset + if is_386_tss { 4 } else { 2 };
                     let tss_esp = if is_386_tss {
-                        self.read_dword_linear(bus, self.tr_base.wrapping_add(tss_sp_offset))
+                        let Some(v) =
+                            self.read_dword_linear(bus, self.tr_base.wrapping_add(tss_sp_offset))
+                        else {
+                            return false;
+                        };
+                        v
                     } else {
-                        self.read_word_linear(bus, self.tr_base.wrapping_add(tss_sp_offset)) as u32
+                        let Some(v) =
+                            self.read_word_linear(bus, self.tr_base.wrapping_add(tss_sp_offset))
+                        else {
+                            return false;
+                        };
+                        v as u32
                     };
-                    let tss_ss =
-                        self.read_word_linear(bus, self.tr_base.wrapping_add(tss_ss_offset));
+                    let Some(tss_ss) =
+                        self.read_word_linear(bus, self.tr_base.wrapping_add(tss_ss_offset))
+                    else {
+                        return false;
+                    };
 
                     let saved_ss = self.sregs[SegReg32::SS as usize];
                     let saved_esp = if self.use_esp() {
@@ -2445,8 +2443,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                             } else {
                                 offset & 0xFFFF
                             };
-                            let param =
-                                self.read_dword_linear(bus, old_ss_base.wrapping_add(offset));
+                            let Some(param) =
+                                self.read_dword_linear(bus, old_ss_base.wrapping_add(offset))
+                            else {
+                                return false;
+                            };
                             self.push_dword(bus, param);
                         }
                     } else {
@@ -2459,8 +2460,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                             } else {
                                 offset & 0xFFFF
                             };
-                            let param =
-                                self.read_word_linear(bus, old_ss_base.wrapping_add(offset));
+                            let Some(param) =
+                                self.read_word_linear(bus, old_ss_base.wrapping_add(offset))
+                            else {
+                                return false;
+                            };
                             self.push(bus, param);
                         }
                     }
@@ -2491,7 +2495,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             }
             5 => {
                 // Task gate.
-                let task_selector = self.read_word_linear(bus, addr.wrapping_add(2));
+                let Some(task_selector) = self.read_word_linear(bus, addr.wrapping_add(2)) else {
+                    return false;
+                };
                 self.switch_task(task_selector, gate, bus);
                 let flags_val = self.flags.compress();
                 let cpl = self.cpl();

@@ -136,22 +136,18 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
 
         let gate_addr = self.idt_base.wrapping_add(gate_offset);
-        let w0 = self.read_word_linear(bus, gate_addr);
-        if self.fault_pending {
+        let Some(w0) = self.read_word_linear(bus, gate_addr) else {
             return;
-        }
-        let w1 = self.read_word_linear(bus, gate_addr.wrapping_add(2));
-        if self.fault_pending {
+        };
+        let Some(w1) = self.read_word_linear(bus, gate_addr.wrapping_add(2)) else {
             return;
-        }
-        let w2 = self.read_word_linear(bus, gate_addr.wrapping_add(4));
-        if self.fault_pending {
+        };
+        let Some(w2) = self.read_word_linear(bus, gate_addr.wrapping_add(4)) else {
             return;
-        }
-        let w3 = self.read_word_linear(bus, gate_addr.wrapping_add(6));
-        if self.fault_pending {
+        };
+        let Some(w3) = self.read_word_linear(bus, gate_addr.wrapping_add(6)) else {
             return;
-        }
+        };
 
         let gate_selector = w1;
         let rights_byte = (w2 >> 8) as u8;
@@ -275,14 +271,15 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     self.raise_fault_with_code(10, Self::segment_error_code(self.tr), bus);
                     return;
                 }
-                let esp = self.read_dword_linear(bus, self.tr_base.wrapping_add(tss_esp_offset));
-                if self.fault_pending {
+                let Some(esp) =
+                    self.read_dword_linear(bus, self.tr_base.wrapping_add(tss_esp_offset))
+                else {
                     return;
-                }
-                let ss = self.read_word_linear(bus, self.tr_base.wrapping_add(tss_ss_offset));
-                if self.fault_pending {
+                };
+                let Some(ss) = self.read_word_linear(bus, self.tr_base.wrapping_add(tss_ss_offset))
+                else {
                     return;
-                }
+                };
                 (esp, ss)
             } else {
                 let tss_sp_offset = 2 + new_dpl as u32 * 4;
@@ -291,14 +288,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     self.raise_fault_with_code(10, Self::segment_error_code(self.tr), bus);
                     return;
                 }
-                let sp = self.read_word_linear(bus, self.tr_base.wrapping_add(tss_sp_offset));
-                if self.fault_pending {
+                let Some(sp) = self.read_word_linear(bus, self.tr_base.wrapping_add(tss_sp_offset))
+                else {
                     return;
-                }
-                let ss = self.read_word_linear(bus, self.tr_base.wrapping_add(tss_ss_offset));
-                if self.fault_pending {
+                };
+                let Some(ss) = self.read_word_linear(bus, self.tr_base.wrapping_add(tss_ss_offset))
+                else {
                     return;
-                }
+                };
                 (sp as u32, ss)
             };
 
