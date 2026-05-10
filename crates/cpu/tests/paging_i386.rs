@@ -1239,6 +1239,54 @@ fn paging_movsb_between_remapped_pages() {
     assert_eq!(cpu.cx(), 0, "CX should be 0 after REP MOVSB");
 }
 
+#[test]
+fn paging_fault_on_cross_page_modrm_fetch_does_not_raise_secondary_fault() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_paged_protected_mode_32bit(&mut bus);
+    state.set_eip(0x0FFF);
+    state.set_eax(0x1F0000);
+    cpu.load_state(&state);
+
+    let original_esp = cpu.esp();
+    place_at(&mut bus, PG_CODE_BASE + 0x0FFF, &[0x8B]);
+
+    let next_code_page = (PG_CODE_BASE + 0x1000) >> 12;
+    write_dword_at(
+        &mut bus,
+        PG_PAGE_TABLE_0 + next_code_page * 4,
+        (PG_CODE_BASE + 0x1000) & 0xFFFF_F000,
+    );
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.cs(), PG_CS_SEL);
+    assert_eq!(cpu.eip(), PG_PF_HANDLER_IP as u32);
+    assert_eq!(
+        cpu.cr2,
+        PG_CODE_BASE + 0x1000,
+        "CR2 must hold the faulting linear address"
+    );
+
+    let handler_sp = cpu.esp();
+    assert_eq!(
+        handler_sp,
+        original_esp.wrapping_sub(16),
+        "exactly one #PF frame (error_code + EIP + CS + EFLAGS) must be on the stack"
+    );
+    assert_eq!(
+        read_dword_at(&bus, PG_STACK_BASE + handler_sp + 4),
+        0x0FFF,
+        "fault frame return EIP must point to the faulting instruction"
+    );
+    assert_eq!(
+        read_dword_at(&bus, PG_STACK_BASE + handler_sp + 8) as u16,
+        PG_CS32_SEL,
+        "fault frame return CS must be the original 32-bit code selector"
+    );
+}
+
 /// #PF on instruction fetch from a not-present code page.
 #[test]
 fn paging_fault_on_code_fetch() {
