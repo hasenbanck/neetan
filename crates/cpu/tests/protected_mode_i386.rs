@@ -8535,3 +8535,176 @@ fn i386_iret_inter_privilege_zeros_execute_only_code_in_data_register() {
         "Execute-only code in DS must be zeroed on privilege change"
     );
 }
+
+/// Validate-then-commit IRET path: an inter-privilege return whose new SS
+/// fails validation (DPL!=RPL) must raise #GP without touching any of CS,
+/// EIP, EFLAGS, ESP, DS or ES. The new pipeline validates SS first, so this
+/// fault must fire before any state mutation.
+#[test]
+fn i386_iret_inter_priv_invalid_ss_preserves_source_frame() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_ring3(&mut bus);
+    cpu.load_state(&state);
+
+    // Replace GDT entry 6 (RING3_SS) with a DPL=2 data descriptor. The RPL
+    // of the new SS selector (0x33 -> RPL 3) no longer matches its DPL,
+    // making the descriptor unacceptable.
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 6, PM_RING3_STACK_BASE, 0xFFFF, 0xD3);
+
+    place_at(&mut bus, PM_CODE_BASE, &[0xCF]);
+
+    let pre_cs = cpu.cs();
+    let pre_ss = cpu.ss();
+    let pre_ds = cpu.ds();
+    let pre_es = cpu.es();
+    let original_esp = cpu.esp();
+
+    let ring3_ip: u16 = 0x0100;
+    write_word_at(&mut bus, PM_STACK_BASE + original_esp, ring3_ip);
+    write_word_at(&mut bus, PM_STACK_BASE + original_esp + 2, PM_RING3_CS_SEL);
+    write_word_at(&mut bus, PM_STACK_BASE + original_esp + 4, 0x0202);
+    write_word_at(&mut bus, PM_STACK_BASE + original_esp + 6, 0xFF00);
+    write_word_at(&mut bus, PM_STACK_BASE + original_esp + 8, PM_RING3_SS_SEL);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(
+        cpu.ip(),
+        u32::from(PM_GP_HANDLER_IP),
+        "invalid new SS must raise #GP"
+    );
+    assert_eq!(cpu.cs(), pre_cs, "CS must not have been committed");
+    assert_eq!(cpu.ss(), pre_ss, "SS must not have been committed");
+    assert_eq!(cpu.ds(), pre_ds, "DS must not have been committed");
+    assert_eq!(cpu.es(), pre_es, "ES must not have been committed");
+
+    let handler_sp = cpu.esp();
+    assert_eq!(
+        handler_sp,
+        original_esp.wrapping_sub(16),
+        "fault frame must consume exactly 4 dwords on the source stack"
+    );
+    let error_code = read_dword_at(&bus, PM_STACK_BASE + handler_sp);
+    assert_eq!(
+        error_code as u16,
+        PM_RING3_SS_SEL & 0xFFFC,
+        "error code should encode the invalid SS selector"
+    );
+    assert_eq!(
+        read_dword_at(&bus, PM_STACK_BASE + handler_sp + 4),
+        0,
+        "fault frame EIP must point back at the IRET instruction"
+    );
+    assert_eq!(
+        read_word_at(&bus, PM_STACK_BASE + original_esp + 8),
+        PM_RING3_SS_SEL,
+        "original IRET frame must survive the failed inter-privilege return"
+    );
+}
+
+/// Validate-then-commit IRET path: an inter-privilege return where SS is
+/// acceptable but the new CS fails validation must raise #GP with no SS
+/// commit having occurred. This is the race the rewrite specifically closes:
+/// the old commit-as-you-go path loaded SS before validating CS, so an
+/// invalid CS would leave SS mutated.
+#[test]
+fn i386_iret_inter_priv_invalid_cs_no_partial_ss_commit() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_protected_mode_with_ring3(&mut bus);
+    cpu.load_state(&state);
+
+    // Replace GDT entry 4 (RING3_CS) with a data descriptor: still present,
+    // legal-looking, but no longer a code segment - rejected by
+    // validate_cs_for_return.
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 4, PM_RING3_CODE_BASE, 0xFFFF, 0xF3);
+
+    place_at(&mut bus, PM_CODE_BASE, &[0xCF]);
+
+    let pre_cs = cpu.cs();
+    let pre_ss = cpu.ss();
+    let pre_ds = cpu.ds();
+    let pre_es = cpu.es();
+    let original_esp = cpu.esp();
+
+    let ring3_ip: u16 = 0x0100;
+    write_word_at(&mut bus, PM_STACK_BASE + original_esp, ring3_ip);
+    write_word_at(&mut bus, PM_STACK_BASE + original_esp + 2, PM_RING3_CS_SEL);
+    write_word_at(&mut bus, PM_STACK_BASE + original_esp + 4, 0x0202);
+    write_word_at(&mut bus, PM_STACK_BASE + original_esp + 6, 0xFF00);
+    write_word_at(&mut bus, PM_STACK_BASE + original_esp + 8, PM_RING3_SS_SEL);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(
+        cpu.ip(),
+        u32::from(PM_GP_HANDLER_IP),
+        "non-code new CS must raise #GP"
+    );
+    assert_eq!(cpu.cs(), pre_cs, "CS must not have been committed");
+    assert_eq!(
+        cpu.ss(),
+        pre_ss,
+        "SS must not have been committed despite passing its own validation"
+    );
+    assert_eq!(cpu.ds(), pre_ds, "DS must not have been committed");
+    assert_eq!(cpu.es(), pre_es, "ES must not have been committed");
+
+    let handler_sp = cpu.esp();
+    let error_code = read_dword_at(&bus, PM_STACK_BASE + handler_sp);
+    assert_eq!(
+        error_code as u16,
+        PM_RING3_CS_SEL & 0xFFFC,
+        "error code should encode the invalid CS selector"
+    );
+    assert_eq!(
+        read_dword_at(&bus, PM_STACK_BASE + handler_sp + 4),
+        0,
+        "fault frame EIP must point back at the IRET instruction"
+    );
+}
+
+/// Validate-then-commit IRET path: when the inter-privilege return drops the
+/// CPL below the cached DS DPL, the new pipeline pre-decides "Null" and the
+/// commit block writes the null selector. Exercises check_data_segment_at_cpl
+/// + apply_data_segment_decision on a happy path with no descriptor fault.
+#[test]
+fn i386_iret_inter_priv_dpl2_data_segment_nulled_on_ring3_return() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let mut state = setup_protected_mode_with_ring3(&mut bus);
+
+    // Add a DPL=2 data descriptor at GDT index 8 (selector 0x40, RPL 2 -> 0x42).
+    const DPL2_DS_SEL: u16 = 0x0042;
+    write_gdt_entry16(&mut bus, PM_GDT_BASE, 8, PM_DATA_BASE, 0xFFFF, 0xD3);
+    state.gdt_limit = 9 * 8 - 1;
+
+    // Pre-load DS at CPL 0 with the DPL=2 selector. Legal at CPL 0 because
+    // DPL=2 >= max(CPL,RPL)=2.
+    state.set_ds(DPL2_DS_SEL);
+    state.seg_bases[cpu::SegReg32::DS as usize] = PM_DATA_BASE;
+    state.seg_rights[cpu::SegReg32::DS as usize] = 0xD3;
+    state.seg_limits[cpu::SegReg32::DS as usize] = 0xFFFF;
+
+    cpu.load_state(&state);
+
+    place_at(&mut bus, PM_CODE_BASE, &[0xCF]);
+
+    let ring3_ip: u16 = 0x0100;
+    let sp = cpu.esp();
+    write_word_at(&mut bus, PM_STACK_BASE + sp, ring3_ip);
+    write_word_at(&mut bus, PM_STACK_BASE + sp + 2, PM_RING3_CS_SEL);
+    write_word_at(&mut bus, PM_STACK_BASE + sp + 4, 0x0202);
+    write_word_at(&mut bus, PM_STACK_BASE + sp + 6, 0xFF00);
+    write_word_at(&mut bus, PM_STACK_BASE + sp + 8, PM_RING3_SS_SEL);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.cs() & 3, 3, "IRET should land at ring 3");
+    assert_eq!(
+        cpu.ds(),
+        0,
+        "DS with DPL=2 must be nulled when returning to CPL=3"
+    );
+}

@@ -2600,3 +2600,222 @@ fn paging_passes_high_physical_address_to_bus() {
         bus.write_address_log,
     );
 }
+
+/// Validate-then-commit IRET path: a #PF raised while reading the new SS/CS
+/// descriptor must deliver the fault with the source IRET frame intact - the
+/// pushed CS:EIP must still point at the IRET, EFLAGS/ESP must be unchanged,
+/// and the original IRET stack frame must remain on the source stack.
+///
+/// The PTE that backs the new SS GDT entry is cleared by relocating the GDT
+/// to straddle two pages: ring-0 entries (CS at index 1) stay on the mapped
+/// page so the #PF handler can dispatch, while the ring-3 SS/CS entries used
+/// by the IRET migration end up on the page we clear.
+#[test]
+fn paging_iret_inter_priv_pf_on_descriptor_read_preserves_source_frame() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_paged_protected_mode(&mut bus);
+
+    // Relocate the GDT so that entries 0..1 (null, ring-0 CS used by the #PF
+    // handler) live on page 0x80000 while entries 2..7 spill into page
+    // 0x81000. We can then clear the PTE backing 0x81000 to fault the new SS
+    // descriptor read while keeping the #PF dispatch path intact.
+    const SPLIT_GDT_BASE: u32 = 0x80FF0;
+    for entry_index in 0..8u32 {
+        let src = (PG_GDT_BASE + entry_index * 8) as usize;
+        let dst = (SPLIT_GDT_BASE + entry_index * 8) as usize;
+        for byte_offset in 0..8usize {
+            bus.ram[dst + byte_offset] = bus.ram[src + byte_offset];
+        }
+    }
+    state.gdt_base = SPLIT_GDT_BASE;
+    state.gdt_limit = 8 * 8 - 1;
+
+    cpu.load_state(&state);
+
+    place_at(&mut bus, PG_CODE_BASE, &[0xCF]);
+
+    let ring3_ip: u16 = 0x0100;
+    let ring3_esp_low: u16 = 0xFF00;
+    let original_esp = cpu.esp();
+
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp, ring3_ip);
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp + 2, PG_RING3_CS_SEL);
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp + 4, 0x0202);
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp + 6, ring3_esp_low);
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp + 8, PG_RING3_SS_SEL);
+
+    let pre_cs = cpu.cs();
+    let pre_ss = cpu.ss();
+    let pre_ds = cpu.ds();
+    let pre_es = cpu.es();
+
+    // Clear the PTE that covers the GDT entries used by the IRET migration.
+    // The page that backs entry 1 (#PF handler's CS) remains mapped.
+    const SPILL_PTE_INDEX: u32 = 0x81;
+    let saved_spill_pte = read_dword_at(&bus, PG_PAGE_TABLE_0 + SPILL_PTE_INDEX * 4);
+    write_dword_at(&mut bus, PG_PAGE_TABLE_0 + SPILL_PTE_INDEX * 4, 0);
+
+    cpu.step(&mut bus); // IRET -> #PF during the ring-3 SS descriptor read
+    cpu.step(&mut bus); // HLT in #PF handler
+
+    assert!(cpu.halted(), "CPU should halt inside the #PF handler");
+    assert_eq!(
+        cpu.ip(),
+        PG_PF_HANDLER_IP as u32 + 1,
+        "control must transfer to the #PF handler"
+    );
+
+    let handler_sp = cpu.esp();
+    assert_eq!(
+        handler_sp,
+        original_esp.wrapping_sub(16),
+        "fault frame must consume exactly 4 dwords on the source stack"
+    );
+
+    let pushed_eip = read_dword_at(&bus, PG_STACK_BASE + handler_sp + 4);
+    let pushed_cs = read_dword_at(&bus, PG_STACK_BASE + handler_sp + 8);
+    assert_eq!(
+        pushed_eip, 0,
+        "fault frame EIP must point back at the IRET instruction"
+    );
+    assert_eq!(
+        pushed_cs & 0xFFFF,
+        pre_cs as u32,
+        "fault frame CS must still be the source CS"
+    );
+
+    assert_eq!(cpu.cs(), pre_cs, "CS must not have been committed");
+    assert_eq!(cpu.ss(), pre_ss, "SS must not have been committed");
+    assert_eq!(cpu.ds(), pre_ds, "DS must not have been committed");
+    assert_eq!(cpu.es(), pre_es, "ES must not have been committed");
+
+    write_dword_at(
+        &mut bus,
+        PG_PAGE_TABLE_0 + SPILL_PTE_INDEX * 4,
+        saved_spill_pte,
+    );
+    assert_eq!(
+        read_word_at(&bus, PG_STACK_BASE + original_esp),
+        ring3_ip,
+        "original IRET frame EIP word must survive the failed IRET"
+    );
+    assert_eq!(
+        read_word_at(&bus, PG_STACK_BASE + original_esp + 2),
+        PG_RING3_CS_SEL,
+        "original IRET frame CS word must survive the failed IRET"
+    );
+    assert_eq!(
+        read_word_at(&bus, PG_STACK_BASE + original_esp + 8),
+        PG_RING3_SS_SEL,
+        "original IRET frame SS word must survive the failed IRET"
+    );
+}
+
+/// Discriminating test for the validate-then-commit IRET pipeline: place the
+/// fault during the data-segment revalidation phase, where the previous
+/// commit-as-you-go path would have already committed CS, EIP, EFLAGS, SS
+/// and ESP before discovering the descriptor was unreadable. The new pipeline
+/// must validate every operand first and deliver the #PF same-privilege from
+/// CPL 0 with no architectural state changed.
+///
+/// This test would fail against the old pipeline because the fault would be
+/// delivered inter-privilege (CPL 3 -> CPL 0) and the fault frame ESP would
+/// land on the TSS-supplied stack with 6 dwords pushed, not 4.
+#[test]
+fn paging_iret_inter_priv_pf_on_data_segment_decode_does_not_commit() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_paged_protected_mode(&mut bus);
+
+    // Build a CPL-0 data descriptor at GDT entry index 512 (offset 0x1000 in
+    // the GDT page). The descriptor sits in physical page 0x81000 so we can
+    // make its read fault while leaving the standard ring-0/ring-3 entries on
+    // the mapped page 0x80000.
+    const HIGH_DS_SEL: u16 = 0x1000;
+    write_gdt_entry16(&mut bus, PG_GDT_BASE, 512, PG_DATA_BASE, 0xFFFF, 0x93);
+    state.gdt_limit = 0x1007;
+
+    // Pre-load DS at CPL 0 with the high-index selector. Cached rights match
+    // the descriptor we placed; the cached fields are only consulted on
+    // segment access, not during the IRET pre-decision.
+    state.set_ds(HIGH_DS_SEL);
+    state.seg_bases[cpu::SegReg32::DS as usize] = PG_DATA_BASE;
+    state.seg_rights[cpu::SegReg32::DS as usize] = 0x93;
+    state.seg_limits[cpu::SegReg32::DS as usize] = 0xFFFF;
+
+    cpu.load_state(&state);
+
+    place_at(&mut bus, PG_CODE_BASE, &[0xCF]);
+
+    let ring3_ip: u16 = 0x0100;
+    let ring3_esp_low: u16 = 0xFF00;
+    let original_esp = cpu.esp();
+
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp, ring3_ip);
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp + 2, PG_RING3_CS_SEL);
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp + 4, 0x0202);
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp + 6, ring3_esp_low);
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp + 8, PG_RING3_SS_SEL);
+
+    let pre_cs = cpu.cs();
+    let pre_ss = cpu.ss();
+    let pre_ds = cpu.ds();
+    let pre_es = cpu.es();
+
+    // Unmap the page that backs the high-index GDT entry. SS/CS validation
+    // still reads from page 0x80000 (mapped); only the DS pre-decision read
+    // will fault.
+    const SPILL_PTE_INDEX: u32 = 0x81;
+    let saved_spill_pte = read_dword_at(&bus, PG_PAGE_TABLE_0 + SPILL_PTE_INDEX * 4);
+    write_dword_at(&mut bus, PG_PAGE_TABLE_0 + SPILL_PTE_INDEX * 4, 0);
+
+    cpu.step(&mut bus); // IRET -> #PF during DS check_data_segment_at_cpl
+    cpu.step(&mut bus); // HLT in #PF handler
+
+    assert!(cpu.halted(), "CPU should halt inside the #PF handler");
+    assert_eq!(
+        cpu.ip(),
+        PG_PF_HANDLER_IP as u32 + 1,
+        "control must transfer to the #PF handler"
+    );
+
+    // The fault must be delivered same-privilege from CPL 0. The old pipeline
+    // would have already loaded CS/SS to ring 3, making this an inter-priv
+    // fault with a 6-dword frame on a TSS-supplied stack.
+    let handler_sp = cpu.esp();
+    assert_eq!(
+        handler_sp,
+        original_esp.wrapping_sub(16),
+        "same-privilege #PF must consume 4 dwords on the unchanged source stack"
+    );
+
+    let pushed_eip = read_dword_at(&bus, PG_STACK_BASE + handler_sp + 4);
+    let pushed_cs = read_dword_at(&bus, PG_STACK_BASE + handler_sp + 8);
+    assert_eq!(
+        pushed_eip, 0,
+        "fault frame EIP must still point at the IRET instruction"
+    );
+    assert_eq!(
+        pushed_cs & 0xFFFF,
+        pre_cs as u32,
+        "fault frame CS must still be the source ring-0 CS"
+    );
+
+    assert_eq!(cpu.cs(), pre_cs, "CS must not have been committed");
+    assert_eq!(cpu.ss(), pre_ss, "SS must not have been committed");
+    assert_eq!(
+        cpu.ds(),
+        pre_ds,
+        "DS must not have been mutated by the IRET pre-decision"
+    );
+    assert_eq!(cpu.es(), pre_es, "ES must not have been committed");
+
+    write_dword_at(
+        &mut bus,
+        PG_PAGE_TABLE_0 + SPILL_PTE_INDEX * 4,
+        saved_spill_pte,
+    );
+}

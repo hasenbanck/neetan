@@ -3291,18 +3291,42 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 };
                 let new_ss = new_ss_dword as u16;
 
-                if let Some((vector, error_code)) =
-                    self.precheck_ss_for_inter_priv_iret(new_ss, new_rpl, bus)
-                {
-                    self.raise_fault_with_code(vector, error_code, bus);
-                    return;
-                }
+                let ss_validation = match self.validate_ss_for_iret_return(new_ss, new_rpl, bus) {
+                    None => return,
+                    Some(Err((vector, error_code))) => {
+                        self.raise_fault_with_code(vector, error_code, bus);
+                        return;
+                    }
+                    Some(Ok(validation)) => validation,
+                };
 
-                if !self.load_cs_for_return(new_cs, new_eip, bus) {
+                let cs_validation = match self.validate_cs_for_return(new_cs, new_eip, bus) {
+                    None => return,
+                    Some(Err((vector, error_code))) => {
+                        self.raise_fault_with_code(vector, error_code, bus);
+                        return;
+                    }
+                    Some(Ok(validation)) => validation,
+                };
+
+                let new_cpl = new_rpl;
+                let Some(ds_decision) = self.check_data_segment_at_cpl(SegReg32::DS, new_cpl, bus)
+                else {
                     return;
-                }
-                self.ip = new_eip as u16;
-                self.ip_upper = new_eip & 0xFFFF_0000;
+                };
+                let Some(es_decision) = self.check_data_segment_at_cpl(SegReg32::ES, new_cpl, bus)
+                else {
+                    return;
+                };
+                let Some(fs_decision) = self.check_data_segment_at_cpl(SegReg32::FS, new_cpl, bus)
+                else {
+                    return;
+                };
+                let Some(gs_decision) = self.check_data_segment_at_cpl(SegReg32::GS, new_cpl, bus)
+                else {
+                    return;
+                };
+
                 self.flags.load_flags(new_eflags as u16, old_cpl, true);
                 if old_cpl == 0 {
                     self.eflags_upper = new_eflags & 0x00FF_0000;
@@ -3310,24 +3334,43 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     self.eflags_upper = new_eflags & 0x00FD_0000;
                 }
 
-                if !self.load_segment(SegReg32::SS, new_ss, bus) {
-                    return;
-                }
+                self.set_loaded_segment_cache(
+                    SegReg32::CS,
+                    cs_validation.adjusted_selector,
+                    cs_validation.descriptor,
+                );
+                let _ = self.set_accessed_bit(cs_validation.adjusted_selector, bus);
+                self.ip = new_eip as u16;
+                self.ip_upper = new_eip & 0xFFFF_0000;
+
+                self.set_loaded_segment_cache(SegReg32::SS, new_ss, ss_validation.descriptor);
+                let _ = self.set_accessed_bit(new_ss, bus);
                 if self.use_esp() {
                     self.regs.set_dword(DwordReg::ESP, new_esp);
                 } else {
                     self.regs.set_word(WordReg::SP, new_esp as u16);
                 }
 
-                let new_cpl = self.cpl();
-                self.revalidate_data_segment(SegReg32::DS, new_cpl, bus);
-                self.revalidate_data_segment(SegReg32::ES, new_cpl, bus);
-                self.revalidate_data_segment(SegReg32::FS, new_cpl, bus);
-                self.revalidate_data_segment(SegReg32::GS, new_cpl, bus);
+                self.apply_data_segment_decision(SegReg32::DS, ds_decision);
+                self.apply_data_segment_decision(SegReg32::ES, es_decision);
+                self.apply_data_segment_decision(SegReg32::FS, fs_decision);
+                self.apply_data_segment_decision(SegReg32::GS, gs_decision);
             } else {
-                if !self.load_cs_for_return(new_cs, new_eip, bus) {
-                    return;
-                }
+                let cs_validation = match self.validate_cs_for_return(new_cs, new_eip, bus) {
+                    None => return,
+                    Some(Err((vector, error_code))) => {
+                        self.raise_fault_with_code(vector, error_code, bus);
+                        return;
+                    }
+                    Some(Ok(validation)) => validation,
+                };
+
+                self.set_loaded_segment_cache(
+                    SegReg32::CS,
+                    cs_validation.adjusted_selector,
+                    cs_validation.descriptor,
+                );
+                let _ = self.set_accessed_bit(cs_validation.adjusted_selector, bus);
                 if self.use_esp() {
                     self.regs.set_dword(DwordReg::ESP, sp.wrapping_add(12));
                 } else {
@@ -3370,38 +3413,81 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     return;
                 };
 
-                if let Some((vector, error_code)) =
-                    self.precheck_ss_for_inter_priv_iret(new_ss, new_rpl, bus)
-                {
-                    self.raise_fault_with_code(vector, error_code, bus);
-                    return;
-                }
+                let ss_validation = match self.validate_ss_for_iret_return(new_ss, new_rpl, bus) {
+                    None => return,
+                    Some(Err((vector, error_code))) => {
+                        self.raise_fault_with_code(vector, error_code, bus);
+                        return;
+                    }
+                    Some(Ok(validation)) => validation,
+                };
 
-                if !self.load_cs_for_return(new_cs, new_ip as u32, bus) {
+                let cs_validation = match self.validate_cs_for_return(new_cs, new_ip as u32, bus) {
+                    None => return,
+                    Some(Err((vector, error_code))) => {
+                        self.raise_fault_with_code(vector, error_code, bus);
+                        return;
+                    }
+                    Some(Ok(validation)) => validation,
+                };
+
+                let new_cpl = new_rpl;
+                let Some(ds_decision) = self.check_data_segment_at_cpl(SegReg32::DS, new_cpl, bus)
+                else {
                     return;
-                }
-                self.ip = new_ip;
-                self.ip_upper = 0;
+                };
+                let Some(es_decision) = self.check_data_segment_at_cpl(SegReg32::ES, new_cpl, bus)
+                else {
+                    return;
+                };
+                let Some(fs_decision) = self.check_data_segment_at_cpl(SegReg32::FS, new_cpl, bus)
+                else {
+                    return;
+                };
+                let Some(gs_decision) = self.check_data_segment_at_cpl(SegReg32::GS, new_cpl, bus)
+                else {
+                    return;
+                };
+
                 self.flags.load_flags(new_flags, old_cpl, true);
 
-                if !self.load_segment(SegReg32::SS, new_ss, bus) {
-                    return;
-                }
+                self.set_loaded_segment_cache(
+                    SegReg32::CS,
+                    cs_validation.adjusted_selector,
+                    cs_validation.descriptor,
+                );
+                let _ = self.set_accessed_bit(cs_validation.adjusted_selector, bus);
+                self.ip = new_ip;
+                self.ip_upper = 0;
+
+                self.set_loaded_segment_cache(SegReg32::SS, new_ss, ss_validation.descriptor);
+                let _ = self.set_accessed_bit(new_ss, bus);
                 if self.use_esp() {
                     self.regs.set_dword(DwordReg::ESP, new_sp as u32);
                 } else {
                     self.regs.set_word(WordReg::SP, new_sp);
                 }
 
-                let new_cpl = self.cpl();
-                self.revalidate_data_segment(SegReg32::DS, new_cpl, bus);
-                self.revalidate_data_segment(SegReg32::ES, new_cpl, bus);
-                self.revalidate_data_segment(SegReg32::FS, new_cpl, bus);
-                self.revalidate_data_segment(SegReg32::GS, new_cpl, bus);
+                self.apply_data_segment_decision(SegReg32::DS, ds_decision);
+                self.apply_data_segment_decision(SegReg32::ES, es_decision);
+                self.apply_data_segment_decision(SegReg32::FS, fs_decision);
+                self.apply_data_segment_decision(SegReg32::GS, gs_decision);
             } else {
-                if !self.load_cs_for_return(new_cs, new_ip as u32, bus) {
-                    return;
-                }
+                let cs_validation = match self.validate_cs_for_return(new_cs, new_ip as u32, bus) {
+                    None => return,
+                    Some(Err((vector, error_code))) => {
+                        self.raise_fault_with_code(vector, error_code, bus);
+                        return;
+                    }
+                    Some(Ok(validation)) => validation,
+                };
+
+                self.set_loaded_segment_cache(
+                    SegReg32::CS,
+                    cs_validation.adjusted_selector,
+                    cs_validation.descriptor,
+                );
+                let _ = self.set_accessed_bit(cs_validation.adjusted_selector, bus);
                 if self.use_esp() {
                     self.regs.set_dword(DwordReg::ESP, sp.wrapping_add(6));
                 } else {

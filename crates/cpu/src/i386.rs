@@ -54,6 +54,29 @@ enum TaskType {
     Call,
 }
 
+#[derive(Clone, Copy)]
+struct CsReturnValidation {
+    descriptor: SegmentDescriptor,
+    adjusted_selector: u16,
+}
+
+#[derive(Clone, Copy)]
+struct SsReturnValidation {
+    descriptor: SegmentDescriptor,
+}
+
+#[derive(Clone, Copy)]
+enum DataSegmentDecision {
+    NoChange,
+    Null {
+        selector: u16,
+    },
+    Keep {
+        selector: u16,
+        descriptor: SegmentDescriptor,
+    },
+}
+
 /// Intel 80386+ CPU emulator.
 ///
 /// The const generic `CPU_MODEL` selects the instruction timings and feature set.
@@ -958,6 +981,171 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let adjusted = (selector & !3) | rpl;
         self.set_loaded_segment_cache(SegReg32::CS, adjusted, descriptor);
         true
+    }
+
+    /// Validates a candidate CS for an inter- or same-privilege return
+    /// (IRET, RETF) without committing any state. Mirrors the checks in
+    /// `load_cs_for_return` but reports the outcome instead of raising the
+    /// fault or writing the segment cache, allowing the caller to defer all
+    /// observable mutations until every operand has been validated.
+    ///
+    /// Returns `None` if a #PF was raised while reading the descriptor (the
+    /// fault is already pending; the caller must abort without raising a
+    /// second one). `Some(Err((vector, error_code)))` indicates the selector
+    /// fails the protected-mode checks and the caller should raise that
+    /// fault before any commit. `Some(Ok(_))` means the selector is
+    /// acceptable and the caller may commit using the returned descriptor
+    /// and adjusted selector.
+    fn validate_cs_for_return(
+        &mut self,
+        selector: u16,
+        new_ip: u32,
+        bus: &mut impl common::Bus,
+    ) -> Option<Result<CsReturnValidation, (u8, u16)>> {
+        if selector & 0xFFFC == 0 {
+            return Some(Err((13, 0)));
+        }
+        let descriptor = match self.decode_descriptor(selector, bus) {
+            Some(d) => d,
+            None => {
+                if self.fault_pending {
+                    return None;
+                }
+                return Some(Err((13, Self::segment_error_code(selector))));
+            }
+        };
+        let rights = descriptor.rights;
+        let cpl = self.cpl();
+        let rpl = selector & 0x0003;
+        let dpl = Self::descriptor_dpl(rights);
+
+        if rpl < cpl {
+            return Some(Err((13, Self::segment_error_code(selector))));
+        }
+        if !Self::descriptor_is_segment(rights) || !Self::descriptor_is_code(rights) {
+            return Some(Err((13, Self::segment_error_code(selector))));
+        }
+        if Self::descriptor_is_conforming_code(rights) {
+            if dpl > rpl {
+                return Some(Err((13, Self::segment_error_code(selector))));
+            }
+        } else if dpl != rpl {
+            return Some(Err((13, Self::segment_error_code(selector))));
+        }
+        if !Self::descriptor_present(rights) {
+            return Some(Err((11, Self::segment_error_code(selector))));
+        }
+        if new_ip > descriptor.limit {
+            return Some(Err((13, 0)));
+        }
+        let adjusted_selector = (selector & !3) | rpl;
+        Some(Ok(CsReturnValidation {
+            descriptor,
+            adjusted_selector,
+        }))
+    }
+
+    /// Variant of `precheck_ss_for_inter_priv_iret` that also returns the
+    /// cached descriptor so the IRET commit block can reuse it without
+    /// re-decoding.
+    fn validate_ss_for_iret_return(
+        &mut self,
+        selector: u16,
+        target_cpl: u16,
+        bus: &mut impl common::Bus,
+    ) -> Option<Result<SsReturnValidation, (u8, u16)>> {
+        if selector & 0xFFFC == 0 {
+            return Some(Err((13, 0)));
+        }
+        let descriptor = match self.decode_descriptor(selector, bus) {
+            Some(d) => d,
+            None => {
+                if self.fault_pending {
+                    return None;
+                }
+                return Some(Err((13, Self::segment_error_code(selector))));
+            }
+        };
+        let rights = descriptor.rights;
+        let rpl = selector & 0x0003;
+        let dpl = Self::descriptor_dpl(rights);
+        if rpl != target_cpl {
+            return Some(Err((13, Self::segment_error_code(selector))));
+        }
+        if !Self::descriptor_is_segment(rights) || !Self::descriptor_is_writable(rights) {
+            return Some(Err((13, Self::segment_error_code(selector))));
+        }
+        if dpl != target_cpl {
+            return Some(Err((13, Self::segment_error_code(selector))));
+        }
+        if !Self::descriptor_present(rights) {
+            return Some(Err((12, Self::segment_error_code(selector))));
+        }
+        Some(Ok(SsReturnValidation { descriptor }))
+    }
+
+    /// Returns the post-IRET decision for a data segment without committing
+    /// it. Used during the IRET inter-privilege validate phase so that the
+    /// faulting descriptor read happens before any architectural state is
+    /// mutated. Returns `None` if a #PF was raised on the descriptor read;
+    /// the caller must abort without raising another fault.
+    fn check_data_segment_at_cpl(
+        &mut self,
+        seg: SegReg32,
+        new_cpl: u16,
+        bus: &mut impl common::Bus,
+    ) -> Option<DataSegmentDecision> {
+        if !self.seg_valid[seg as usize] {
+            return Some(DataSegmentDecision::NoChange);
+        }
+        let selector = self.sregs[seg as usize];
+        if selector & 0xFFFC == 0 {
+            return Some(DataSegmentDecision::Null { selector });
+        }
+        let saved_supervisor_override = self.supervisor_override;
+        self.supervisor_override = true;
+        let descriptor = self.decode_descriptor(selector, bus);
+        self.supervisor_override = saved_supervisor_override;
+        if self.fault_pending {
+            return None;
+        }
+        let Some(descriptor) = descriptor else {
+            return Some(DataSegmentDecision::Null { selector: 0 });
+        };
+        let rights = descriptor.rights;
+        if !Self::descriptor_is_segment(rights) {
+            return Some(DataSegmentDecision::Null { selector: 0 });
+        }
+        if Self::descriptor_is_code(rights) && !Self::descriptor_is_readable(rights) {
+            return Some(DataSegmentDecision::Null { selector: 0 });
+        }
+        if !Self::descriptor_present(rights) {
+            return Some(DataSegmentDecision::Null { selector: 0 });
+        }
+        if !Self::descriptor_is_conforming_code(rights) {
+            let dpl = Self::descriptor_dpl(rights);
+            let rpl = selector & 3;
+            if dpl < new_cpl || dpl < rpl {
+                return Some(DataSegmentDecision::Null { selector: 0 });
+            }
+        }
+        Some(DataSegmentDecision::Keep {
+            selector,
+            descriptor,
+        })
+    }
+
+    fn apply_data_segment_decision(&mut self, seg: SegReg32, decision: DataSegmentDecision) {
+        match decision {
+            DataSegmentDecision::NoChange => {}
+            DataSegmentDecision::Null { selector } => self.set_null_segment(seg, selector),
+            DataSegmentDecision::Keep {
+                selector,
+                descriptor,
+            } => {
+                self.set_loaded_segment_cache(seg, selector, descriptor);
+            }
+        }
     }
 
     fn check_segment_access(
