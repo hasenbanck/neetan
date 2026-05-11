@@ -1668,6 +1668,30 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         result
     }
 
+    /// Pre-translate (with write permission) every byte covered by the
+    /// linear range `[start, end_inclusive]`, walking page-by-page so any
+    /// #PF on the underlying PTE surfaces before commit.
+    fn pre_translate_range(
+        &mut self,
+        start: u32,
+        end_inclusive: u32,
+        write: bool,
+        bus: &mut impl common::Bus,
+    ) -> Step {
+        let start_page = start & !0xFFF;
+        let end_page = end_inclusive & !0xFFF;
+        let mut page = start_page;
+        loop {
+            let probe = if page == start_page { start } else { page };
+            self.translate_linear(probe, write, bus)?;
+            if page == end_page {
+                break;
+            }
+            page = page.wrapping_add(0x1000);
+        }
+        Ok(())
+    }
+
     fn switch_task_inner(
         &mut self,
         ntask: u16,
@@ -1710,16 +1734,77 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             return self.raise_fault_with_code(10, Self::segment_error_code(ntask), bus);
         }
 
+        let old_base = self.tr_base;
+        let old_is_386 = self.tr_rights & 0x0F >= 9;
+        let oaddr_opt = self.descriptor_addr_checked(self.tr);
+
+        // Pre-translate every page the dispatch will write to,
+        // before any commits. A #PF here aborts cleanly with the old TSS
+        // descriptor still marked busy and the old TSS body untouched.
+        let (save_start_off, save_end_off): (u32, u32) = if old_is_386 {
+            (32, 95) // EIP..GS, last dword occupies 92..95
+        } else {
+            (14, 41) // IP..DS, last word occupies 40..41
+        };
+        self.pre_translate_range(
+            old_base.wrapping_add(save_start_off),
+            old_base.wrapping_add(save_end_off),
+            true,
+            bus,
+        )?;
+        if task_type == TaskType::Call {
+            // Back-link write at new TSS base, 2 bytes.
+            self.pre_translate_range(ndesc_base, ndesc_base.wrapping_add(1), true, bus)?;
+        }
+        if task_type != TaskType::Call
+            && let Some(oaddr) = oaddr_opt
+        {
+            // Old TSS busy-bit byte (will be cleared).
+            self.translate_linear(oaddr.wrapping_add(5), true, bus)?;
+        }
+        if task_type != TaskType::Iret {
+            // New TSS busy-bit byte (will be set).
+            self.translate_linear(naddr.wrapping_add(5), true, bus)?;
+        }
+        if is_386_tss {
+            // T-bit byte (read at the end of the switch).
+            self.translate_linear(ndesc_base.wrapping_add(100), false, bus)?;
+        }
+
         let mut flags = self.flags.compress();
 
         if task_type == TaskType::Iret {
             flags &= !0x4000;
         }
 
-        // Save current state to old TSS.
-        let old_base = self.tr_base;
-        let old_is_386 = self.tr_rights & 0x0F >= 9;
+        // Commit. New TSS marked busy FIRST so a transient
+        // observer never sees both TSSes idle (matters when a host fault
+        // handler peeks at the GDT). The old-TSS busy-bit clear, old-TSS
+        // state save, back-link write, and TR / CR3 / regs updates follow.
 
+        // Mark new TSS busy (CALL/JMP) before any other commit.
+        let nlinear = naddr.wrapping_add(5);
+        let new_rights = if task_type != TaskType::Iret {
+            let nphys = self.translate_linear(nlinear, true, bus)?;
+            let r = bus.read_byte(nphys);
+            bus.write_byte(nphys, r | 0x02);
+            r | 0x02
+        } else {
+            let nphys = self.translate_linear(nlinear, false, bus)?;
+            bus.read_byte(nphys)
+        };
+
+        // Mark old TSS idle (JMP/IRET).
+        if task_type != TaskType::Call
+            && let Some(oaddr) = oaddr_opt
+        {
+            let olinear = oaddr.wrapping_add(5);
+            let ophys = self.translate_linear(olinear, true, bus)?;
+            let old_rights = bus.read_byte(ophys);
+            bus.write_byte(ophys, old_rights & !0x02);
+        }
+
+        // Save current state to old TSS.
         if old_is_386 {
             let eip = self.ip_upper | self.ip as u32;
             let eflags = self.eflags_upper | flags as u32;
@@ -1896,31 +1981,6 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             ntss_fs = 0;
             ntss_gs = 0;
         }
-
-        // Mark old TSS idle (JMP/IRET). Each translate may fault: abort
-        // cleanly so we don't write to physical 0.
-        if task_type != TaskType::Call
-            && let Some(oaddr) = self.descriptor_addr_checked(self.tr)
-        {
-            let olinear = oaddr.wrapping_add(5);
-            let ophys = self.translate_linear(olinear, true, bus)?;
-            let old_rights = bus.read_byte(ophys);
-            bus.write_byte(ophys, old_rights & !0x02);
-        }
-
-        // Mark new TSS busy (CALL/JMP).
-        let nlinear = naddr.wrapping_add(5);
-        let new_rights = if task_type != TaskType::Iret {
-            let nphys = self.translate_linear(nlinear, true, bus)?;
-            let r = bus.read_byte(nphys);
-            bus.write_byte(nphys, r | 0x02);
-            r | 0x02
-        } else {
-            // For IRET the busy bit is already set; just sample current
-            // rights so we can commit tr_rights without a second translate.
-            let nphys = self.translate_linear(nlinear, false, bus)?;
-            bus.read_byte(nphys)
-        };
 
         // Update TR.
         self.tr = ntask;
