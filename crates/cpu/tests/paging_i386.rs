@@ -319,6 +319,38 @@ fn make_ring3(state: &mut cpu::I386State) {
     state.seg_rights[cpu::SegReg32::ES as usize] = 0xF3;
 }
 
+/// Transforms a ring-0 protected-mode + paging state into V86 mode.
+/// CS / SS / DS / ES are reshaped to real-mode-style caches (base =
+/// selector << 4, limit 0xFFFF, data-style rights). The VM flag (EFLAGS
+/// bit 17) is set. The caller is responsible for placing the V86
+/// instruction at `(cs_selector << 4) + ip` linear, and ensuring those
+/// pages are present and identity-mapped.
+fn make_v86(state: &mut cpu::I386State, cs_selector: u16, ss_selector: u16) {
+    state.set_cs(cs_selector);
+    state.seg_bases[cpu::SegReg32::CS as usize] = (cs_selector as u32) << 4;
+    state.seg_limits[cpu::SegReg32::CS as usize] = 0xFFFF;
+    state.seg_rights[cpu::SegReg32::CS as usize] = 0xF3;
+
+    state.set_ss(ss_selector);
+    state.seg_bases[cpu::SegReg32::SS as usize] = (ss_selector as u32) << 4;
+    state.seg_limits[cpu::SegReg32::SS as usize] = 0xFFFF;
+    state.seg_rights[cpu::SegReg32::SS as usize] = 0xF3;
+    state.seg_granularity[cpu::SegReg32::SS as usize] = 0;
+
+    state.set_ds(0);
+    state.seg_bases[cpu::SegReg32::DS as usize] = 0;
+    state.seg_limits[cpu::SegReg32::DS as usize] = 0xFFFF;
+    state.seg_rights[cpu::SegReg32::DS as usize] = 0xF3;
+
+    state.set_es(0);
+    state.seg_bases[cpu::SegReg32::ES as usize] = 0;
+    state.seg_limits[cpu::SegReg32::ES as usize] = 0xFFFF;
+    state.seg_rights[cpu::SegReg32::ES as usize] = 0xF3;
+
+    state.eflags_upper |= 0x0002_0000; // VM=1
+    state.flags.iopl = 3;
+}
+
 /// Identity-mapped paging: MOV AL,[DS:offset] reads through page tables correctly.
 #[test]
 fn paging_identity_map_read_byte() {
@@ -3038,4 +3070,136 @@ fn paging_fault_fistp_m32_preserves_st0_on_fault() {
     assert_eq!(top, 0, "TOP must not advance on faulting FISTP m32");
     assert_eq!(cpu.state.fpu.tag_word & 0x3, 0b00);
     assert_eq!(cpu.state.fpu.registers[0], Fp80::ONE);
+}
+
+/// Layout for V86 RET FAR atomicity tests:
+/// - V86 CS = 0x0500 -> linear 0x5000 (page 0x5, present, contains RET FAR)
+/// - V86 SS = 0x0000 -> linear 0..0xFFFF
+/// - Page 0 (linear 0..0xFFF) is present; the V86 stack IP slot lives here.
+/// - Page 1 (linear 0x1000..0x1FFF) is marked NOT PRESENT; the V86 stack
+///   CS slot lives here. The second pop on RET FAR is what should #PF.
+/// - On the V86 -> ring 0 #PF transition, the CPU loads SS:ESP from TSS
+///   (ESP0=0xFFF0, SS0=PG_SS_SEL, base 0) and pushes a 10-dword frame
+///   (GS, FS, DS, ES, SS, ESP, EFLAGS, CS, EIP, errcode = 40 bytes).
+const V86_CS_SELECTOR: u16 = 0x0500;
+const V86_SS_SELECTOR: u16 = 0x0000;
+const V86_CS_BASE: u32 = (V86_CS_SELECTOR as u32) << 4; // 0x5000
+const V86_PF_FRAME_BYTES: u32 = 40;
+
+fn setup_v86_ret_far_fault(bus: &mut TestBus, sp: u16) -> cpu::I386State {
+    let mut state = setup_paged_protected_mode(bus);
+    make_v86(&mut state, V86_CS_SELECTOR, V86_SS_SELECTOR);
+    state.set_esp(sp as u32);
+    state.ip = 0;
+    state.ip_upper = 0;
+
+    // V86 runs at CPL=3, so PDE and the pages directly touched by V86
+    // need US=1. We mark the whole identity map US-accessible; the
+    // kernel-side IDT/GDT/TSS/handler pages are accessed in supervisor
+    // mode (CPL drops to 0 on #PF entry) and don't depend on US.
+    let pde = read_dword_at(bus, PG_PAGE_DIR);
+    write_dword_at(bus, PG_PAGE_DIR, pde | PTE_US);
+    for i in 0..512u32 {
+        let pte = read_dword_at(bus, PG_PAGE_TABLE_0 + i * 4);
+        if pte & PTE_P != 0 {
+            write_dword_at(bus, PG_PAGE_TABLE_0 + i * 4, pte | PTE_US);
+        }
+    }
+
+    // Mark linear page 0x1000 (PTE index 1) as not present.
+    write_dword_at(bus, PG_PAGE_TABLE_0 + 4, 0);
+    state
+}
+
+fn assert_v86_pf_frame_preserves_sp(
+    cpu: &I386,
+    bus: &TestBus,
+    expected_user_esp: u32,
+    expected_user_eip: u32,
+) {
+    assert!(cpu.halted(), "ring-0 #PF handler must HLT");
+    assert_eq!(cpu.ip(), PG_PF_HANDLER_IP as u32 + 1);
+    assert_eq!(cpu.cr2, 0x1000, "CR2 must point at the not-present CS slot");
+
+    // Ring-0 ESP after the 10-dword V86 fault frame push.
+    let handler_sp = cpu.esp();
+    assert_eq!(
+        handler_sp,
+        0xFFF0u32.wrapping_sub(V86_PF_FRAME_BYTES),
+        "V86 #PF must consume 40 bytes on the TSS-supplied stack"
+    );
+
+    // V86 frame layout (low to high): errcode, EIP, CS, EFLAGS, ESP, SS, ...
+    let saved_eip = read_dword_at(bus, PG_STACK_BASE + handler_sp + 4);
+    let saved_esp = read_dword_at(bus, PG_STACK_BASE + handler_sp + 16);
+
+    assert_eq!(
+        saved_eip, expected_user_eip,
+        "saved EIP must point at the faulting RET FAR for restart"
+    );
+    assert_eq!(
+        saved_esp, expected_user_esp,
+        "saved V86 ESP must be the pre-instruction SP, not the partially-popped SP"
+    );
+}
+
+/// RET FAR in V86 - second pop (CS slot) faults; SP must remain at its
+/// pre-instruction value. Buggy code commits SP += 2 from the first pop
+/// before the second pop runs, so the saved-ESP frame slot would read 0x1000.
+#[test]
+fn paging_fault_ret_far_v86_preserves_sp_on_cs_fault() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_v86_ret_far_fault(&mut bus, 0x0FFE);
+    cpu.load_state(&state);
+
+    // RET FAR at V86 CS:IP = 0x0500:0x0000 = linear 0x5000.
+    place_at(&mut bus, V86_CS_BASE, &[0xCB]);
+
+    cpu.step(&mut bus); // RET FAR -> #PF on the CS pop
+    cpu.step(&mut bus); // HLT in handler
+
+    assert_v86_pf_frame_preserves_sp(&cpu, &bus, 0x0FFE, 0);
+}
+
+/// RET FAR imm16 in V86 - same property; SP must not have absorbed the
+/// imm operand either.
+#[test]
+fn paging_fault_ret_far_imm_v86_preserves_sp_on_cs_fault() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_v86_ret_far_fault(&mut bus, 0x0FFE);
+    cpu.load_state(&state);
+
+    // RET FAR 0x0004 -- 0xCA imm16
+    place_at(&mut bus, V86_CS_BASE, &[0xCA, 0x04, 0x00]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert_v86_pf_frame_preserves_sp(&cpu, &bus, 0x0FFE, 0);
+}
+
+/// RET FAR with operand-size override 0x66 in V86 - 32-bit IP / CS pops.
+/// SP = 0x0FFC means the dword IP slot is at 0x0FFC..0x0FFF (page 0,
+/// present) and the dword CS slot is at 0x1000..0x1003 (page 1, not
+/// present). The first read succeeds; the second must fault without
+/// committing SP.
+#[test]
+fn paging_fault_ret_far_o32_v86_preserves_esp_on_cs_fault() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_v86_ret_far_fault(&mut bus, 0x0FFC);
+    cpu.load_state(&state);
+
+    // 0x66 0xCB -- operand-size override + RET FAR
+    place_at(&mut bus, V86_CS_BASE, &[0x66, 0xCB]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert_v86_pf_frame_preserves_sp(&cpu, &bus, 0x0FFC, 0);
 }

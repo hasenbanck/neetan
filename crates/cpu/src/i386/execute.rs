@@ -2050,18 +2050,34 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let penalty = self.sp_penalty();
 
         if !self.is_protected_mode() || self.is_virtual_mode() {
-            if self.operand_size_override {
-                let eip = self.pop_dword(bus)?;
-                let cs_dword = self.pop_dword(bus)?;
-                let cs = cs_dword as u16;
-                self.load_segment(SegReg32::CS, cs, bus)?;
-                self.ip = eip as u16;
-                self.ip_upper = eip & 0xFFFF_0000;
+            let use_esp = self.use_esp();
+            let sp = if use_esp {
+                self.regs.dword(DwordReg::ESP)
             } else {
-                let ip = self.pop(bus)?;
-                let cs = self.pop(bus)?;
-                self.load_segment(SegReg32::CS, cs, bus)?;
-                self.ip = ip;
+                self.regs.word(WordReg::SP) as u32
+            };
+            let stack_offset = |delta: u32| -> u32 {
+                if use_esp {
+                    sp.wrapping_add(delta)
+                } else {
+                    (sp as u16).wrapping_add(delta as u16) as u32
+                }
+            };
+            let ss_base = self.seg_base(SegReg32::SS);
+            if self.operand_size_override {
+                let new_eip = self.read_dword_linear(bus, ss_base.wrapping_add(stack_offset(0)))?;
+                let new_cs_dword =
+                    self.read_dword_linear(bus, ss_base.wrapping_add(stack_offset(4)))?;
+                self.load_segment(SegReg32::CS, new_cs_dword as u16, bus)?;
+                self.commit_sp(stack_offset(8));
+                self.ip = new_eip as u16;
+                self.ip_upper = new_eip & 0xFFFF_0000;
+            } else {
+                let new_ip = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(0)))?;
+                let new_cs = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(2)))?;
+                self.load_segment(SegReg32::CS, new_cs, bus)?;
+                self.commit_sp(stack_offset(4));
+                self.ip = new_ip;
                 self.ip_upper = 0;
             }
             match CPU_MODEL {
@@ -2216,22 +2232,36 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let imm = self.fetchword(bus);
 
         if !self.is_protected_mode() || self.is_virtual_mode() {
-            if self.operand_size_override {
-                let eip = self.pop_dword(bus)?;
-                let cs_dword = self.pop_dword(bus)?;
-                let cs = cs_dword as u16;
-                self.load_segment(SegReg32::CS, cs, bus)?;
-                self.ip = eip as u16;
-                self.ip_upper = eip & 0xFFFF_0000;
+            let use_esp = self.use_esp();
+            let sp = if use_esp {
+                self.regs.dword(DwordReg::ESP)
             } else {
-                let ip = self.pop(bus)?;
-                let cs = self.pop(bus)?;
-                self.load_segment(SegReg32::CS, cs, bus)?;
-                self.ip = ip;
+                self.regs.word(WordReg::SP) as u32
+            };
+            let stack_offset = |delta: u32| -> u32 {
+                if use_esp {
+                    sp.wrapping_add(delta)
+                } else {
+                    (sp as u16).wrapping_add(delta as u16) as u32
+                }
+            };
+            let ss_base = self.seg_base(SegReg32::SS);
+            if self.operand_size_override {
+                let new_eip = self.read_dword_linear(bus, ss_base.wrapping_add(stack_offset(0)))?;
+                let new_cs_dword =
+                    self.read_dword_linear(bus, ss_base.wrapping_add(stack_offset(4)))?;
+                self.load_segment(SegReg32::CS, new_cs_dword as u16, bus)?;
+                self.commit_sp(stack_offset(8u32.wrapping_add(imm as u32)));
+                self.ip = new_eip as u16;
+                self.ip_upper = new_eip & 0xFFFF_0000;
+            } else {
+                let new_ip = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(0)))?;
+                let new_cs = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(2)))?;
+                self.load_segment(SegReg32::CS, new_cs, bus)?;
+                self.commit_sp(stack_offset(4u32.wrapping_add(imm as u32)));
+                self.ip = new_ip;
                 self.ip_upper = 0;
             }
-            let sp = self.regs.word(WordReg::SP).wrapping_add(imm);
-            self.regs.set_word(WordReg::SP, sp);
             match CPU_MODEL {
                 CPU_MODEL_386 => {
                     let m = self.next_instruction_length_approx(bus);
