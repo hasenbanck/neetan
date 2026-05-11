@@ -2856,9 +2856,6 @@ fn paging_iret_inter_priv_pf_on_data_segment_decode_does_not_commit() {
 /// RET FAR inter-priv must validate every operand (CS, SS, DS/ES/FS/GS) before
 /// committing any state. A #PF raised during the DS revalidation phase has to
 /// be delivered same-privilege from CPL 0 with CS, SS, EIP and ESP unchanged.
-/// The pre-fix code commits CS, IP, SS, ESP first and then enters
-/// `revalidate_data_segment(DS)`, so the fault is delivered inter-privilege
-/// with a 6-dword frame on the TSS-supplied stack.
 #[test]
 fn paging_retf_inter_priv_pf_on_data_segment_decode_does_not_commit() {
     let mut cpu: I386 = I386::new();
@@ -3021,6 +3018,140 @@ fn paging_retf_imm_inter_priv_pf_on_data_segment_decode_does_not_commit() {
         PG_PAGE_TABLE_0 + SPILL_PTE_INDEX * 4,
         saved_spill_pte,
     );
+}
+
+/// 386 call gate descriptor: target offset + selector + param count + rights.
+/// Rights byte: P=1, DPL, S=0, type (4=286 call gate, 12=386 call gate).
+#[allow(clippy::too_many_arguments)]
+fn write_gdt_call_gate(
+    bus: &mut TestBus,
+    gdt_base: u32,
+    entry_index: u32,
+    offset: u32,
+    selector: u16,
+    param_count: u8,
+    gate_type: u8,
+    dpl: u8,
+) {
+    let addr = (gdt_base + entry_index * 8) as usize;
+    bus.ram[addr] = offset as u8;
+    bus.ram[addr + 1] = (offset >> 8) as u8;
+    bus.ram[addr + 2] = selector as u8;
+    bus.ram[addr + 3] = (selector >> 8) as u8;
+    bus.ram[addr + 4] = param_count & 0x1F;
+    bus.ram[addr + 5] = 0x80 | (dpl << 5) | gate_type;
+    bus.ram[addr + 6] = (offset >> 16) as u8;
+    bus.ram[addr + 7] = (offset >> 24) as u8;
+}
+
+/// Inter-priv CALL FAR through a 386 call gate must validate every page
+/// touched by the parameter copy and the new-stack pushes before committing
+/// SS:ESP to the target stack. If a parameter read from the OLD (ring-3) stack
+/// triggers a #PF, the fault must be reported with SS:ESP still pointing at
+/// the caller's stack so the #PF is delivered inter-privilege from CPL 3.
+#[test]
+fn paging_call_gate_pf_on_param_copy_does_not_commit_ss_esp() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_paged_protected_mode(&mut bus);
+
+    // 386 call gate at GDT entry 8 -> selector 0x43 (entry 8 << 3 | RPL=3).
+    // Gate target = PG_CS_SEL (DPL=0), gate_count = 2 dwords, target offset =
+    // PG_GP_HANDLER_IP (HLT). Gate DPL = 3 so ring-3 CALL FAR can reach it.
+    const CALL_GATE_INDEX: u32 = 8;
+    write_gdt_call_gate(
+        &mut bus,
+        PG_GDT_BASE,
+        CALL_GATE_INDEX,
+        PG_GP_HANDLER_IP as u32,
+        PG_CS_SEL,
+        2,
+        12,
+        3,
+    );
+    state.gdt_limit = 9 * 8 - 1;
+
+    // PTE_US on every page touched by the CPL=3 caller and by the still-CPL=3
+    // code in code_descriptor (which reads gate fields and TSS fields without
+    // the supervisor-override path used for descriptor decode). The kernel
+    // stack page also needs PTE_US so the post-SS-commit (still CPL=3) pushes
+    // in the pre-fix code path can succeed - otherwise the buggy path faults
+    // on the saved_ss push instead of on the parameter copy and the test
+    // doesn't exercise the bug we care about.
+    let pde = read_dword_at(&bus, PG_PAGE_DIR);
+    write_dword_at(&mut bus, PG_PAGE_DIR, pde | PTE_US);
+    for page in [
+        PG_RING3_CODE_BASE,
+        PG_RING3_STACK_BASE,
+        PG_GDT_BASE,
+        PG_TSS_BASE,
+        PG_STACK_BASE,
+    ] {
+        write_dword_at(
+            &mut bus,
+            PG_PAGE_TABLE_0 + (page >> 12) * 4,
+            page | PTE_P | PTE_RW | PTE_US,
+        );
+    }
+
+    make_ring3(&mut state);
+    state.set_esp(0x0FF0);
+    cpu.load_state(&state);
+
+    let r3_sp = cpu.esp();
+    // Parameter placeholders at SS:r3_sp + 0 and SS:r3_sp + 4 on the ring-3
+    // stack page. After the unmap below they will be unreachable.
+    write_dword_at(&mut bus, PG_RING3_STACK_BASE + r3_sp, 0xAAAA_AAAA);
+    write_dword_at(&mut bus, PG_RING3_STACK_BASE + r3_sp + 4, 0xBBBB_BBBB);
+
+    // CALL FAR 0x0043:0x0000 (the offset bytes are ignored; gate provides
+    // the actual target offset).
+    let gate_selector: u16 = ((CALL_GATE_INDEX as u16) << 3) | 3;
+    place_at(
+        &mut bus,
+        PG_RING3_CODE_BASE,
+        &[
+            0x9A,
+            0x00,
+            0x00,
+            gate_selector as u8,
+            (gate_selector >> 8) as u8,
+        ],
+    );
+
+    // Unmap the ring-3 stack page so the parameter copy faults.
+    let stack_pte_index: u32 = PG_RING3_STACK_BASE >> 12;
+    let saved_pte = read_dword_at(&bus, PG_PAGE_TABLE_0 + stack_pte_index * 4);
+    write_dword_at(&mut bus, PG_PAGE_TABLE_0 + stack_pte_index * 4, 0);
+
+    cpu.step(&mut bus); // CALL FAR -> #PF during param copy
+    cpu.step(&mut bus); // HLT in #PF handler
+
+    assert!(cpu.halted(), "CPU should halt inside the #PF handler");
+    assert_eq!(
+        cpu.ip(),
+        PG_PF_HANDLER_IP as u32 + 1,
+        "control must transfer to the #PF handler"
+    );
+
+    // The #PF must be delivered inter-privilege (CPL 3 -> CPL 0) using
+    // TSS.SS0:ESP0 = PG_SS_SEL:0xFFF0. The dispatch frame pushes 6 dwords:
+    // saved_ss, saved_esp, EFLAGS, CS, EIP, error code (top to bottom).
+    let pushed_ss = read_dword_at(&bus, PG_STACK_BASE + 0xFFEC);
+    let pushed_sp = read_dword_at(&bus, PG_STACK_BASE + 0xFFE8);
+
+    assert_eq!(
+        pushed_ss & 0xFFFF,
+        PG_RING3_SS_SEL as u32,
+        "dispatch frame SS must be the caller's ring-3 SS"
+    );
+    assert_eq!(
+        pushed_sp, r3_sp,
+        "dispatch frame ESP must be the caller's ring-3 ESP"
+    );
+
+    write_dword_at(&mut bus, PG_PAGE_TABLE_0 + stack_pte_index * 4, saved_pte);
 }
 
 /// LEAVE atomicity: a #PF on the BP pop must leave ESP/EBP at their

@@ -1374,6 +1374,15 @@ fn i386_ring3_call_gate_reads_supervisor_descriptor_table_pages() {
     set_identity_page_flags(&mut bus, PM_DATA_BASE, TEST_PAGE_PRESENT_WRITABLE_USER);
     set_identity_page_flags(&mut bus, PM_GDT_BASE, TEST_PAGE_PRESENT_WRITABLE_USER);
     set_identity_page_flags(&mut bus, PM_GDT_BASE + 0x1000, TEST_PAGE_PRESENT_WRITABLE);
+    // The default ring-3 ESP is 0xFFF0; with SS base 0x20000 the CALL's
+    // return-frame push lands on the segment's last page (0x2F000). The
+    // gate's atomicity pre-checks resolve that page before any commit, so
+    // it must be mapped user-accessible.
+    set_identity_page_flags(
+        &mut bus,
+        PM_RING3_STACK_BASE + 0xF000,
+        TEST_PAGE_PRESENT_WRITABLE_USER,
+    );
 
     cpu.load_state(&state);
     place_at(
