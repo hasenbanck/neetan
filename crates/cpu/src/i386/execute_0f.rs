@@ -265,75 +265,83 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         if self.operand_size_override {
             let bit_offset = self.regs.dword(self.reg_dword(modrm));
             if modrm >= 0xC0 {
-                let mut value = self.regs.dword(self.rm_dword(modrm));
+                let value_before = self.regs.dword(self.rm_dword(modrm));
                 let bit = 1u32 << (bit_offset & 31);
-                self.flags.carry_val = u32::from(value & bit != 0);
+                let mut new_value = value_before;
                 if clear {
-                    value &= !bit;
+                    new_value &= !bit;
                 }
                 if set {
-                    value |= bit;
+                    new_value |= bit;
                 }
                 if toggle {
-                    value ^= bit;
+                    new_value ^= bit;
                 }
-                self.flags.overflow_val = if self.flags.carry_val != 0 { 0x0800 } else { 0 };
                 let reg = self.rm_dword(modrm);
-                self.regs.set_dword(reg, value);
+                self.regs.set_dword(reg, new_value);
+                let cf = u32::from(value_before & bit != 0);
+                self.flags.carry_val = cf;
+                self.flags.overflow_val = if cf != 0 { 0x0800 } else { 0 };
             } else {
                 self.calc_ea(modrm, bus);
                 let (offset, bit_index) = self.bit_mem_effective_offset(bit_offset as i32, 32);
-                let mut value = self.read_dword_seg_for_update(bus, self.ea_seg, offset)?;
+                let value_before = self.read_dword_seg_for_update(bus, self.ea_seg, offset)?;
                 let bit = 1u32 << bit_index;
-                self.flags.carry_val = u32::from(value & bit != 0);
+                let mut new_value = value_before;
                 if clear {
-                    value &= !bit;
+                    new_value &= !bit;
                 }
                 if set {
-                    value |= bit;
+                    new_value |= bit;
                 }
                 if toggle {
-                    value ^= bit;
+                    new_value ^= bit;
                 }
-                self.flags.overflow_val = if self.flags.carry_val != 0 { 0x0800 } else { 0 };
-                self.write_dword_seg(bus, self.ea_seg, offset, value)?;
+                self.write_dword_seg(bus, self.ea_seg, offset, new_value)?;
+                let cf = u32::from(value_before & bit != 0);
+                self.flags.carry_val = cf;
+                self.flags.overflow_val = if cf != 0 { 0x0800 } else { 0 };
             }
         } else {
             let bit_offset = self.regs.word(self.reg_word(modrm));
             if modrm >= 0xC0 {
-                let mut value = self.regs.word(self.rm_word(modrm));
+                let value_before = self.regs.word(self.rm_word(modrm));
                 let bit = 1u16 << (bit_offset as u32 & 15);
-                self.flags.carry_val = u32::from(value & bit != 0);
+                let mut new_value = value_before;
                 if clear {
-                    value &= !bit;
+                    new_value &= !bit;
                 }
                 if set {
-                    value |= bit;
+                    new_value |= bit;
                 }
                 if toggle {
-                    value ^= bit;
+                    new_value ^= bit;
                 }
-                self.flags.overflow_val = if self.flags.carry_val != 0 { 0x0800 } else { 0 };
                 let reg = self.rm_word(modrm);
-                self.regs.set_word(reg, value);
+                self.regs.set_word(reg, new_value);
+                let cf = u32::from(value_before & bit != 0);
+                self.flags.carry_val = cf;
+                self.flags.overflow_val = if cf != 0 { 0x0800 } else { 0 };
             } else {
                 self.calc_ea(modrm, bus);
                 let signed_offset = bit_offset as i16 as i32;
                 let (offset, bit_index) = self.bit_mem_effective_offset(signed_offset, 16);
-                let mut value = self.read_word_seg_for_update(bus, self.ea_seg, offset)?;
+                let value_before = self.read_word_seg_for_update(bus, self.ea_seg, offset)?;
                 let bit = 1u16 << bit_index;
-                self.flags.carry_val = u32::from(value & bit != 0);
+                let mut new_value = value_before;
                 if clear {
-                    value &= !bit;
+                    new_value &= !bit;
                 }
                 if set {
-                    value |= bit;
+                    new_value |= bit;
                 }
                 if toggle {
-                    value ^= bit;
+                    new_value ^= bit;
                 }
-                self.flags.overflow_val = if self.flags.carry_val != 0 { 0x0800 } else { 0 };
-                self.write_word_seg(bus, self.ea_seg, offset, value)?;
+                self.write_word_seg(bus, self.ea_seg, offset, new_value)?;
+                let cf = u32::from(value_before & bit != 0);
+                self.flags.carry_val = cf;
+                self.flags.overflow_val = if cf != 0 { 0x0800 } else { 0 };
             }
         }
         self.clk_modrm_word(modrm, register_cycles, memory_cycles, 2);
@@ -355,23 +363,25 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         if self.operand_size_override {
             if modrm >= 0xC0 {
                 let imm = self.fetch(bus) as u32;
-                let mut value = self.regs.dword(self.rm_dword(modrm));
+                let value_before = self.regs.dword(self.rm_dword(modrm));
                 let bit = 1u32 << (imm & 31);
-                self.flags.carry_val = u32::from(value & bit != 0);
+                let mut new_value = value_before;
                 if clear {
-                    value &= !bit;
+                    new_value &= !bit;
                 }
                 if set {
-                    value |= bit;
+                    new_value |= bit;
                 }
                 if toggle {
-                    value ^= bit;
+                    new_value ^= bit;
                 }
-                self.flags.overflow_val = if self.flags.carry_val != 0 { 0x0800 } else { 0 };
                 if write_back {
                     let reg = self.rm_dword(modrm);
-                    self.regs.set_dword(reg, value);
+                    self.regs.set_dword(reg, new_value);
                 }
+                let cf = u32::from(value_before & bit != 0);
+                self.flags.carry_val = cf;
+                self.flags.overflow_val = if cf != 0 { 0x0800 } else { 0 };
             } else {
                 self.calc_ea(modrm, bus);
                 let imm = self.fetch(bus) as u32;
@@ -383,65 +393,71 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     } else {
                         self.read_dword_linear(bus, address)
                     };
-                    let mut value = read_result?;
+                    let value_before = read_result?;
                     let bit = 1u32 << bit_index;
-                    self.flags.carry_val = u32::from(value & bit != 0);
+                    let mut new_value = value_before;
                     if clear {
-                        value &= !bit;
+                        new_value &= !bit;
                     }
                     if set {
-                        value |= bit;
+                        new_value |= bit;
                     }
                     if toggle {
-                        value ^= bit;
+                        new_value ^= bit;
                     }
-                    self.flags.overflow_val = if self.flags.carry_val != 0 { 0x0800 } else { 0 };
                     if write_back {
-                        self.write_dword_linear(bus, address, value)?;
+                        self.write_dword_linear(bus, address, new_value)?;
                     }
+                    let cf = u32::from(value_before & bit != 0);
+                    self.flags.carry_val = cf;
+                    self.flags.overflow_val = if cf != 0 { 0x0800 } else { 0 };
                 } else {
                     let read_result = if write_back {
                         self.seg_read_dword_for_update(bus)
                     } else {
                         self.seg_read_dword(bus)
                     };
-                    let mut value = read_result?;
+                    let value_before = read_result?;
                     let bit = 1u32 << bit_index;
-                    self.flags.carry_val = u32::from(value & bit != 0);
+                    let mut new_value = value_before;
                     if clear {
-                        value &= !bit;
+                        new_value &= !bit;
                     }
                     if set {
-                        value |= bit;
+                        new_value |= bit;
                     }
                     if toggle {
-                        value ^= bit;
+                        new_value ^= bit;
                     }
-                    self.flags.overflow_val = if self.flags.carry_val != 0 { 0x0800 } else { 0 };
                     if write_back {
-                        self.seg_write_dword(bus, value)?;
+                        self.seg_write_dword(bus, new_value)?;
                     }
+                    let cf = u32::from(value_before & bit != 0);
+                    self.flags.carry_val = cf;
+                    self.flags.overflow_val = if cf != 0 { 0x0800 } else { 0 };
                 }
             }
         } else if modrm >= 0xC0 {
             let imm = self.fetch(bus) as u32;
-            let mut value = self.regs.word(self.rm_word(modrm));
+            let value_before = self.regs.word(self.rm_word(modrm));
             let bit = 1u16 << (imm & 15);
-            self.flags.carry_val = u32::from(value & bit != 0);
+            let mut new_value = value_before;
             if clear {
-                value &= !bit;
+                new_value &= !bit;
             }
             if set {
-                value |= bit;
+                new_value |= bit;
             }
             if toggle {
-                value ^= bit;
+                new_value ^= bit;
             }
-            self.flags.overflow_val = if self.flags.carry_val != 0 { 0x0800 } else { 0 };
             if write_back {
                 let reg = self.rm_word(modrm);
-                self.regs.set_word(reg, value);
+                self.regs.set_word(reg, new_value);
             }
+            let cf = u32::from(value_before & bit != 0);
+            self.flags.carry_val = cf;
+            self.flags.overflow_val = if cf != 0 { 0x0800 } else { 0 };
         } else {
             self.calc_ea(modrm, bus);
             let imm = self.fetch(bus) as u32;
@@ -453,44 +469,48 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 } else {
                     self.read_word_linear(bus, address)
                 };
-                let mut value = read_result?;
+                let value_before = read_result?;
                 let bit = 1u16 << bit_index;
-                self.flags.carry_val = u32::from(value & bit != 0);
+                let mut new_value = value_before;
                 if clear {
-                    value &= !bit;
+                    new_value &= !bit;
                 }
                 if set {
-                    value |= bit;
+                    new_value |= bit;
                 }
                 if toggle {
-                    value ^= bit;
+                    new_value ^= bit;
                 }
-                self.flags.overflow_val = if self.flags.carry_val != 0 { 0x0800 } else { 0 };
                 if write_back {
-                    self.write_word_linear(bus, address, value)?;
+                    self.write_word_linear(bus, address, new_value)?;
                 }
+                let cf = u32::from(value_before & bit != 0);
+                self.flags.carry_val = cf;
+                self.flags.overflow_val = if cf != 0 { 0x0800 } else { 0 };
             } else {
                 let read_result = if write_back {
                     self.seg_read_word_for_update(bus)
                 } else {
                     self.seg_read_word(bus)
                 };
-                let mut value = read_result?;
+                let value_before = read_result?;
                 let bit = 1u16 << bit_index;
-                self.flags.carry_val = u32::from(value & bit != 0);
+                let mut new_value = value_before;
                 if clear {
-                    value &= !bit;
+                    new_value &= !bit;
                 }
                 if set {
-                    value |= bit;
+                    new_value |= bit;
                 }
                 if toggle {
-                    value ^= bit;
+                    new_value ^= bit;
                 }
-                self.flags.overflow_val = if self.flags.carry_val != 0 { 0x0800 } else { 0 };
                 if write_back {
-                    self.seg_write_word(bus, value)?;
+                    self.seg_write_word(bus, new_value)?;
                 }
+                let cf = u32::from(value_before & bit != 0);
+                self.flags.carry_val = cf;
+                self.flags.overflow_val = if cf != 0 { 0x0800 } else { 0 };
             }
         }
 
@@ -1583,14 +1603,18 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     fn xadd_byte(&mut self, bus: &mut impl common::Bus) -> Step {
-        // XADD r/m8,r8 - exchange and add.
         let modrm = self.fetch(bus);
         let src_reg = self.reg_byte(modrm);
         let src = self.regs.byte(src_reg);
         let dst = self.get_rm_byte_for_update(modrm, bus)?;
         let result = self.alu_add_byte(dst, src);
-        self.regs.set_byte(src_reg, dst);
-        self.putback_rm_byte(modrm, result, bus)?;
+        if modrm >= 0xC0 {
+            self.regs.set_byte(src_reg, dst);
+            self.putback_rm_byte(modrm, result, bus)?;
+        } else {
+            self.putback_rm_byte(modrm, result, bus)?;
+            self.regs.set_byte(src_reg, dst);
+        }
         self.clk_modrm(modrm, 3, 4);
         Ok(())
     }
@@ -1603,15 +1627,25 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             let src = self.regs.dword(src_reg);
             let dst = self.get_rm_dword_for_update(modrm, bus)?;
             let result = self.alu_add_dword(dst, src);
-            self.regs.set_dword(src_reg, dst);
-            self.putback_rm_dword(modrm, result, bus)?;
+            if modrm >= 0xC0 {
+                self.regs.set_dword(src_reg, dst);
+                self.putback_rm_dword(modrm, result, bus)?;
+            } else {
+                self.putback_rm_dword(modrm, result, bus)?;
+                self.regs.set_dword(src_reg, dst);
+            }
         } else {
             let src_reg = self.reg_word(modrm);
             let src = self.regs.word(src_reg);
             let dst = self.get_rm_word_for_update(modrm, bus)?;
             let result = self.alu_add_word(dst, src);
-            self.regs.set_word(src_reg, dst);
-            self.putback_rm_word(modrm, result, bus)?;
+            if modrm >= 0xC0 {
+                self.regs.set_word(src_reg, dst);
+                self.putback_rm_word(modrm, result, bus)?;
+            } else {
+                self.putback_rm_word(modrm, result, bus)?;
+                self.regs.set_word(src_reg, dst);
+            }
         }
         self.clk_modrm(modrm, 3, 4);
         Ok(())

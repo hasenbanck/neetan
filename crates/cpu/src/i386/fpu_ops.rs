@@ -119,48 +119,44 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.clk(Self::timing(14, 4));
     }
 
-    pub(super) fn fpu_fst_m32(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn fpu_fst_m32(&mut self, bus: &mut impl common::Bus) -> Step {
         if self.fpu_check_underflow(0) {
             let masked = self.state.fpu.control_word & 1 != 0;
             if masked {
                 let bits = Fp80::INDEFINITE
                     .to_f32(self.fpu_rounding_mode(), &mut ExceptionFlags::default());
-                if self.fpu_write_u32(bus, bits.to_bits()).is_err() {
-                    return;
-                }
+                self.fpu_write_u32(bus, bits.to_bits())?;
             }
             self.clk(Self::timing(44, 7));
+            return Ok(());
         }
         let val = self.fpu_st(0);
         let mut ef = ExceptionFlags::default();
         let f = val.to_f32(self.fpu_rounding_mode(), &mut ef);
         self.fpu_check_result(&ef);
-        if self.fpu_write_u32(bus, f.to_bits()).is_err() {
-            return;
-        }
+        self.fpu_write_u32(bus, f.to_bits())?;
         self.clk(Self::timing(44, 7));
+        Ok(())
     }
 
-    pub(super) fn fpu_fst_m64(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn fpu_fst_m64(&mut self, bus: &mut impl common::Bus) -> Step {
         if self.fpu_check_underflow(0) {
             let masked = self.state.fpu.control_word & 1 != 0;
             if masked {
                 let bits = Fp80::INDEFINITE
                     .to_f64(self.fpu_rounding_mode(), &mut ExceptionFlags::default());
-                if self.fpu_write_u64(bus, bits.to_bits()).is_err() {
-                    return;
-                }
+                self.fpu_write_u64(bus, bits.to_bits())?;
             }
             self.clk(Self::timing(45, 8));
+            return Ok(());
         }
         let val = self.fpu_st(0);
         let mut ef = ExceptionFlags::default();
         let f = val.to_f64(self.fpu_rounding_mode(), &mut ef);
         self.fpu_check_result(&ef);
-        if self.fpu_write_u64(bus, f.to_bits()).is_err() {
-            return;
-        }
+        self.fpu_write_u64(bus, f.to_bits())?;
         self.clk(Self::timing(45, 8));
+        Ok(())
     }
 
     pub(super) fn fpu_fst_sti(&mut self, i: u8) {
@@ -177,14 +173,16 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.clk(Self::timing(11, 3));
     }
 
-    pub(super) fn fpu_fstp_m32(&mut self, bus: &mut impl common::Bus) {
-        self.fpu_fst_m32(bus);
+    pub(super) fn fpu_fstp_m32(&mut self, bus: &mut impl common::Bus) -> Step {
+        self.fpu_fst_m32(bus)?;
         self.fpu_pop();
+        Ok(())
     }
 
-    pub(super) fn fpu_fstp_m64(&mut self, bus: &mut impl common::Bus) {
-        self.fpu_fst_m64(bus);
+    pub(super) fn fpu_fstp_m64(&mut self, bus: &mut impl common::Bus) -> Step {
+        self.fpu_fst_m64(bus)?;
         self.fpu_pop();
+        Ok(())
     }
 
     pub(super) fn fpu_fstp_m80(&mut self, bus: &mut impl common::Bus) {
@@ -238,51 +236,52 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         Ok(())
     }
 
-    pub(super) fn fpu_fist_m16(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn fpu_fist_m16(&mut self, bus: &mut impl common::Bus) -> Step {
         if self.fpu_check_underflow(0) {
             let masked = self.state.fpu.control_word & 1 != 0;
-            if masked && self.fpu_write_u16(bus, 0x8000u16).is_err() {
-                return;
+            if masked {
+                self.fpu_write_u16(bus, 0x8000u16)?;
             }
             self.clk(Self::timing(82, 29));
+            return Ok(());
         }
         let val = self.fpu_st(0);
         let mut ef = ExceptionFlags::default();
         let i = val.to_i16(self.fpu_rounding_mode(), &mut ef);
         self.fpu_check_result(&ef);
-        if self.fpu_write_u16(bus, i as u16).is_err() {
-            return;
-        }
+        self.fpu_write_u16(bus, i as u16)?;
         self.clk(Self::timing(82, 29));
+        Ok(())
     }
 
-    pub(super) fn fpu_fist_m32(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn fpu_fist_m32(&mut self, bus: &mut impl common::Bus) -> Step {
         if self.fpu_check_underflow(0) {
             let masked = self.state.fpu.control_word & 1 != 0;
-            if masked && self.fpu_write_u32(bus, 0x8000_0000u32).is_err() {
-                return;
+            if masked {
+                self.fpu_write_u32(bus, 0x8000_0000u32)?;
             }
             self.clk(Self::timing(79, 28));
-            return;
+            return Ok(());
         }
         let val = self.fpu_st(0);
         let mut ef = ExceptionFlags::default();
         let i = val.to_i32(self.fpu_rounding_mode(), &mut ef);
         self.fpu_check_result(&ef);
-        if self.fpu_write_u32(bus, i as u32).is_err() {
-            return;
-        }
+        self.fpu_write_u32(bus, i as u32)?;
         self.clk(Self::timing(79, 28));
+        Ok(())
     }
 
-    pub(super) fn fpu_fistp_m16(&mut self, bus: &mut impl common::Bus) {
-        self.fpu_fist_m16(bus);
+    pub(super) fn fpu_fistp_m16(&mut self, bus: &mut impl common::Bus) -> Step {
+        self.fpu_fist_m16(bus)?;
         self.fpu_pop();
+        Ok(())
     }
 
-    pub(super) fn fpu_fistp_m32(&mut self, bus: &mut impl common::Bus) {
-        self.fpu_fist_m32(bus);
+    pub(super) fn fpu_fistp_m32(&mut self, bus: &mut impl common::Bus) -> Step {
+        self.fpu_fist_m32(bus)?;
         self.fpu_pop();
+        Ok(())
     }
 
     pub(super) fn fpu_fistp_m64(&mut self, bus: &mut impl common::Bus) {

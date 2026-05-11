@@ -2797,19 +2797,19 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     fn leave(&mut self, bus: &mut impl common::Bus) -> Step {
-        if self.use_esp() {
-            let ebp = self.regs.dword(DwordReg::EBP);
-            self.regs.set_dword(DwordReg::ESP, ebp);
+        let bp_offset = if self.use_esp() {
+            self.regs.dword(DwordReg::EBP)
         } else {
-            let bp = self.regs.word(WordReg::BP);
-            self.regs.set_word(WordReg::SP, bp);
-        }
+            self.regs.word(WordReg::BP) as u32
+        };
         let penalty = self.sp_penalty();
         if self.operand_size_override {
-            let val = self.pop_dword(bus)?;
+            let val = self.read_dword_seg(bus, SegReg32::SS, bp_offset)?;
+            self.commit_sp(bp_offset.wrapping_add(4));
             self.regs.set_dword(DwordReg::EBP, val);
         } else {
-            let val = self.pop(bus)?;
+            let val = self.read_word_seg(bus, SegReg32::SS, bp_offset)?;
+            self.commit_sp(bp_offset.wrapping_add(2));
             self.regs.set_word(WordReg::BP, val);
         }
         self.clk(Self::timing(4, 5) + penalty);
