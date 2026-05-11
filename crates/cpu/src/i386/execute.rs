@@ -1791,12 +1791,53 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     fn pop_rm(&mut self, bus: &mut impl common::Bus) -> Step {
         let modrm = self.fetch(bus);
         let sp_pen = self.sp_penalty();
-        if self.operand_size_override {
-            let val = self.pop_dword(bus)?;
-            self.put_rm_dword(modrm, val, bus)?;
+
+        if modrm >= 0xC0 {
+            if self.operand_size_override {
+                let val = self.pop_dword(bus)?;
+                self.put_rm_dword(modrm, val, bus)?;
+            } else {
+                let val = self.pop(bus)?;
+                self.put_rm_word(modrm, val, bus)?;
+            }
         } else {
-            let val = self.pop(bus)?;
-            self.put_rm_word(modrm, val, bus)?;
+            let use_esp = self.use_esp();
+            let old_sp = if use_esp {
+                self.regs.dword(DwordReg::ESP)
+            } else {
+                self.regs.word(WordReg::SP) as u32
+            };
+            let pop_bytes: u32 = if self.operand_size_override { 4 } else { 2 };
+            let new_sp = if use_esp {
+                old_sp.wrapping_add(pop_bytes)
+            } else {
+                (old_sp as u16).wrapping_add(pop_bytes as u16) as u32
+            };
+            let val = if self.operand_size_override {
+                self.read_dword_seg(bus, SegReg32::SS, old_sp)?
+            } else {
+                self.read_word_seg(bus, SegReg32::SS, old_sp)? as u32
+            };
+
+            self.commit_sp(new_sp);
+            self.calc_ea(modrm, bus);
+            let ea_seg = self.ea_seg;
+            let eo32 = self.eo32;
+            self.commit_sp(old_sp);
+
+            self.check_segment_access(ea_seg, eo32, pop_bytes, true, bus)?;
+            let base = self.seg_base(ea_seg);
+            let l0 = base.wrapping_add(eo32);
+            for b in 0..pop_bytes {
+                self.translate_linear(l0.wrapping_add(b), true, bus)?;
+            }
+
+            self.commit_sp(new_sp);
+            if self.operand_size_override {
+                self.write_dword_seg(bus, ea_seg, eo32, val)?;
+            } else {
+                self.write_word_seg(bus, ea_seg, eo32, val as u16)?;
+            }
         }
         if modrm >= 0xC0 {
             self.clk(Self::timing(4, 4) + sp_pen);
@@ -1851,8 +1892,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             if self.is_protected_mode() && !self.is_virtual_mode() {
                 self.code_descriptor(segment, offset, super::TaskType::Call, cs, eip, bus)?;
             } else {
-                self.push_dword(bus, cs as u32)?;
-                self.push_dword(bus, eip)?;
+                self.far_push_real_v86_dword(bus, cs as u32, eip)?;
                 self.load_segment(SegReg32::CS, segment, bus)?;
                 self.ip = offset as u16;
                 self.ip_upper = offset & 0xFFFF_0000;
@@ -1883,8 +1923,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     bus,
                 )?;
             } else {
-                self.push(bus, cs)?;
-                self.push(bus, ip)?;
+                self.far_push_real_v86_word(bus, cs, ip)?;
                 self.load_segment(SegReg32::CS, segment, bus)?;
                 self.ip = offset;
                 self.ip_upper = 0;
@@ -1900,6 +1939,76 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Probe-then-commit real/V86 far push pair (CS first, then IP).
+    pub(super) fn far_push_real_v86_word(
+        &mut self,
+        bus: &mut impl common::Bus,
+        cs: u16,
+        ip: u16,
+    ) -> Step {
+        let use_esp = self.use_esp();
+        let sp_orig = if use_esp {
+            self.regs.dword(DwordReg::ESP)
+        } else {
+            self.regs.word(WordReg::SP) as u32
+        };
+        let stack_offset = |delta: u32| -> u32 {
+            if use_esp {
+                sp_orig.wrapping_sub(delta)
+            } else {
+                (sp_orig as u16).wrapping_sub(delta as u16) as u32
+            }
+        };
+        let ss_base = self.seg_base(SegReg32::SS);
+        for i in 1..=2u32 {
+            let off = stack_offset(2 * i);
+            self.check_segment_access(SegReg32::SS, off, 2, true, bus)?;
+            let l0 = ss_base.wrapping_add(off);
+            self.translate_linear(l0, true, bus)?;
+            self.translate_linear(l0.wrapping_add(1), true, bus)?;
+        }
+        self.commit_sp(stack_offset(4));
+        self.write_word_seg(bus, SegReg32::SS, stack_offset(2), cs)?;
+        self.write_word_seg(bus, SegReg32::SS, stack_offset(4), ip)?;
+        Ok(())
+    }
+
+    /// 32-bit variant of `far_push_real_v86_word`: pushes CS (zero-extended)
+    /// and EIP as dwords.
+    pub(super) fn far_push_real_v86_dword(
+        &mut self,
+        bus: &mut impl common::Bus,
+        cs: u32,
+        eip: u32,
+    ) -> Step {
+        let use_esp = self.use_esp();
+        let sp_orig = if use_esp {
+            self.regs.dword(DwordReg::ESP)
+        } else {
+            self.regs.word(WordReg::SP) as u32
+        };
+        let stack_offset = |delta: u32| -> u32 {
+            if use_esp {
+                sp_orig.wrapping_sub(delta)
+            } else {
+                (sp_orig as u16).wrapping_sub(delta as u16) as u32
+            }
+        };
+        let ss_base = self.seg_base(SegReg32::SS);
+        for i in 1..=2u32 {
+            let off = stack_offset(4 * i);
+            self.check_segment_access(SegReg32::SS, off, 4, true, bus)?;
+            let l0 = ss_base.wrapping_add(off);
+            for b in 0..4u32 {
+                self.translate_linear(l0.wrapping_add(b), true, bus)?;
+            }
+        }
+        self.commit_sp(stack_offset(8));
+        self.write_dword_seg(bus, SegReg32::SS, stack_offset(4), cs)?;
+        self.write_dword_seg(bus, SegReg32::SS, stack_offset(8), eip)?;
         Ok(())
     }
 
@@ -2787,87 +2896,121 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     fn enter(&mut self, bus: &mut impl common::Bus) -> Step {
         let alloc = self.fetchword(bus);
         let level = self.fetch(bus) & 0x1F;
+        let sp_pen = self.sp_penalty();
         let operand_size: u32 = if self.operand_size_override { 4 } else { 2 };
         let push_count: u32 = if level == 0 { 1 } else { level as u32 + 1 };
-        let total_bytes = push_count * operand_size + alloc as u32;
-        let final_sp = if self.use_esp() {
-            self.regs.dword(DwordReg::ESP).wrapping_sub(total_bytes)
+        let use_esp = self.use_esp();
+        let esp_full = self.regs.dword(DwordReg::ESP);
+        let sp_in = if use_esp {
+            esp_full
         } else {
-            self.regs.word(WordReg::SP).wrapping_sub(total_bytes as u16) as u32
+            esp_full as u16 as u32
         };
-        self.check_segment_access(SegReg32::SS, final_sp, operand_size, true, bus)?;
-        let probe_linear = self.seg_base(SegReg32::SS).wrapping_add(final_sp);
-        if self.translate_linear(probe_linear, true, bus).is_err() {
-            return Ok(());
-        }
-        if self.operand_size_override {
-            let sp_pen = self.sp_penalty();
-            let ebp_val = self.regs.dword(DwordReg::EBP);
-            self.push_dword(bus, ebp_val)?;
-            let frame_ptr = self.regs.dword(DwordReg::ESP);
-            if self.use_esp() {
-                if level > 0 {
-                    // Walk the previous frame chain into a local without
-                    // mutating EBP, so a faulting read leaves EBP at its
-                    // entry value rather than partially walked.
-                    let mut walk = ebp_val;
-                    for _ in 1..level {
-                        walk = walk.wrapping_sub(4);
-                        let val = self.read_dword_seg(bus, SegReg32::SS, walk)?;
-                        self.push_dword(bus, val)?;
-                    }
-                    self.push_dword(bus, frame_ptr)?;
-                }
-                self.regs.set_dword(DwordReg::EBP, frame_ptr);
-                let esp = self.regs.dword(DwordReg::ESP).wrapping_sub(alloc as u32);
-                self.regs.set_dword(DwordReg::ESP, esp);
-            } else {
-                if level > 0 {
-                    let mut walk = ebp_val as u16;
-                    for _ in 1..level {
-                        walk = walk.wrapping_sub(4);
-                        let val = self.read_dword_seg(bus, SegReg32::SS, walk as u32)?;
-                        self.push_dword(bus, val)?;
-                    }
-                    self.push_dword(bus, frame_ptr)?;
-                }
-                self.regs.set_dword(DwordReg::EBP, frame_ptr);
-                let sp = self.regs.word(WordReg::SP).wrapping_sub(alloc);
-                self.regs.set_word(WordReg::SP, sp);
-            }
-            if level == 0 {
-                self.clk(Self::timing(10, 14) + sp_pen);
-            } else if level == 1 {
-                self.clk(Self::timing(12, 17) + sp_pen);
-            } else {
-                let l = level as i32;
-                self.clk(Self::timing(15 + 4 * (l - 1), 17 + 3 * l) + sp_pen);
-            }
+        let bp_in: u32 = if self.operand_size_override {
+            self.regs.dword(DwordReg::EBP)
         } else {
-            let sp_pen = self.sp_penalty();
-            let bp = self.regs.word(WordReg::BP);
-            self.push(bus, bp)?;
-            let frame_ptr = self.regs.word(WordReg::SP);
-            if level > 0 {
-                let mut walk = bp;
-                for _ in 1..level {
-                    walk = walk.wrapping_sub(2);
-                    let val = self.read_word_seg(bus, SegReg32::SS, walk as u32)?;
-                    self.push(bus, val)?;
-                }
-                self.push(bus, frame_ptr)?;
-            }
-            self.regs.set_word(WordReg::BP, frame_ptr);
-            let sp = self.regs.word(WordReg::SP).wrapping_sub(alloc);
-            self.regs.set_word(WordReg::SP, sp);
-            if level == 0 {
-                self.clk(Self::timing(10, 14) + sp_pen);
-            } else if level == 1 {
-                self.clk(Self::timing(12, 17) + sp_pen);
+            self.regs.word(WordReg::BP) as u32
+        };
+        let stack_offset = |delta: u32| -> u32 {
+            if use_esp {
+                sp_in.wrapping_sub(delta)
             } else {
-                let l = level as i32;
-                self.clk(Self::timing(15 + 4 * (l - 1), 17 + 3 * l) + sp_pen);
+                (sp_in as u16).wrapping_sub(delta as u16) as u32
             }
+        };
+
+        // FrameTemp follows the SP-commit wrap rules but also preserves
+        // ESP's upper 16 bits when the stack is 16-bit (B=0).
+        let frame_ptr_value = if use_esp {
+            sp_in.wrapping_sub(operand_size)
+        } else {
+            (esp_full & 0xFFFF_0000) | ((sp_in as u16).wrapping_sub(operand_size as u16) as u32)
+        };
+
+        // Pre-compute every offset the instruction will touch. `level` is
+        // masked to [0, 31] so the buffers are bounded.
+        let mut walk_offsets: [u32; 31] = [0; 31];
+        let chain_count: u32 = if level >= 2 { level as u32 - 1 } else { 0 };
+        if chain_count > 0 {
+            let wrap_walk_16 = !self.operand_size_override || !use_esp;
+            let mut walk = bp_in;
+            for entry in walk_offsets.iter_mut().take(chain_count as usize) {
+                walk = walk.wrapping_sub(operand_size);
+                *entry = if wrap_walk_16 {
+                    walk as u16 as u32
+                } else {
+                    walk
+                };
+            }
+        }
+        let mut push_offsets: [u32; 32] = [0; 32];
+        for k in 0..push_count {
+            push_offsets[k as usize] = stack_offset(operand_size * (k + 1));
+        }
+        let final_sp = stack_offset(operand_size * push_count + alloc as u32);
+
+        // Probe phase. Chain reads (read access); push writes (write); and
+        // the final-SP byte (write, for the alloc-area #PF pre-check).
+        let ss_base = self.seg_base(SegReg32::SS);
+        for k in 0..chain_count {
+            let off = walk_offsets[k as usize];
+            self.check_segment_access(SegReg32::SS, off, operand_size, false, bus)?;
+            let l0 = ss_base.wrapping_add(off);
+            for b in 0..operand_size {
+                self.translate_linear(l0.wrapping_add(b), false, bus)?;
+            }
+        }
+        for k in 0..push_count {
+            let off = push_offsets[k as usize];
+            self.check_segment_access(SegReg32::SS, off, operand_size, true, bus)?;
+            let l0 = ss_base.wrapping_add(off);
+            for b in 0..operand_size {
+                self.translate_linear(l0.wrapping_add(b), true, bus)?;
+            }
+        }
+        self.check_segment_access(SegReg32::SS, final_sp, operand_size, true, bus)?;
+        self.translate_linear(ss_base.wrapping_add(final_sp), true, bus)?;
+
+        // Sequential operation against memory (TLB-hot, cannot fault).
+        if self.operand_size_override {
+            self.write_dword_seg(bus, SegReg32::SS, push_offsets[0], bp_in)?;
+        } else {
+            self.write_word_seg(bus, SegReg32::SS, push_offsets[0], bp_in as u16)?;
+        }
+        for k in 0..chain_count {
+            let read_off = walk_offsets[k as usize];
+            let push_off = push_offsets[(k + 1) as usize];
+            if self.operand_size_override {
+                let val = self.read_dword_seg(bus, SegReg32::SS, read_off)?;
+                self.write_dword_seg(bus, SegReg32::SS, push_off, val)?;
+            } else {
+                let val = self.read_word_seg(bus, SegReg32::SS, read_off)?;
+                self.write_word_seg(bus, SegReg32::SS, push_off, val)?;
+            }
+        }
+        if level > 0 {
+            let frame_off = push_offsets[(push_count - 1) as usize];
+            if self.operand_size_override {
+                self.write_dword_seg(bus, SegReg32::SS, frame_off, frame_ptr_value)?;
+            } else {
+                self.write_word_seg(bus, SegReg32::SS, frame_off, frame_ptr_value as u16)?;
+            }
+        }
+
+        self.commit_sp(final_sp);
+        if self.operand_size_override {
+            self.regs.set_dword(DwordReg::EBP, frame_ptr_value);
+        } else {
+            self.regs.set_word(WordReg::BP, frame_ptr_value as u16);
+        }
+
+        if level == 0 {
+            self.clk(Self::timing(10, 14) + sp_pen);
+        } else if level == 1 {
+            self.clk(Self::timing(12, 17) + sp_pen);
+        } else {
+            let l = level as i32;
+            self.clk(Self::timing(15 + 4 * (l - 1), 17 + 3 * l) + sp_pen);
         }
         Ok(())
     }

@@ -3441,3 +3441,160 @@ fn paging_fault_v86_int_dispatch_preserves_state_on_kernel_stack_fault() {
         "saved SS must be V86 SS, not the kernel SS"
     );
 }
+
+/// CALL FAR ptr16:16 in V86 - sequential push(CS); push(IP). SP=0x2002:
+/// push CS at 0x2000 (page 2, OK), push IP at 0x1FFE (page 1, FAULT).
+/// Buggy code commits SP after the first push, so the saved-ESP frame
+/// slot would read 0x2000 instead of 0x2002.
+#[test]
+fn paging_fault_call_far_v86_preserves_sp_on_ip_fault() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_v86_descending_push_fault(&mut bus, 0x2002);
+    cpu.load_state(&state);
+
+    // CALL FAR 0x1234:0x5678 - 0x9A imm16 imm16
+    place_at(&mut bus, V86_CS_BASE, &[0x9A, 0x78, 0x56, 0x34, 0x12]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert_v86_pf_frame_preserves_sp_with_cr2(&cpu, &bus, 0x2002, 0, 0x1FFE);
+}
+
+/// CALL FAR ptr16:32 in V86 (0x66 prefix) - dword pushes. SP=0x2004:
+/// push CS dword at 0x2000-0x2003 (page 2, OK), push EIP dword at
+/// 0x1FFC-0x1FFF (page 1, FAULT).
+#[test]
+fn paging_fault_call_far_o32_v86_preserves_esp_on_eip_fault() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_v86_descending_push_fault(&mut bus, 0x2004);
+    cpu.load_state(&state);
+
+    // 0x66 0x9A imm32 imm16 - CALL FAR ptr16:32
+    place_at(
+        &mut bus,
+        V86_CS_BASE,
+        &[0x66, 0x9A, 0x78, 0x56, 0x34, 0x12, 0x00, 0x10],
+    );
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert_v86_pf_frame_preserves_sp_with_cr2(&cpu, &bus, 0x2004, 0, 0x1FFC);
+}
+
+/// CALL m16:16 far indirect (group FF /3) in V86 - sequential push(CS);
+/// push(IP). Same fault property as CALL FAR ptr16:16. The far pointer
+/// itself is placed in a mapped data page.
+#[test]
+fn paging_fault_call_m_far_v86_preserves_sp_on_ip_fault() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_v86_descending_push_fault(&mut bus, 0x2002);
+    cpu.load_state(&state);
+
+    // Place a m16:16 far pointer at DS:[0x6000] (page 6, mapped).
+    // Layout: IP word at +0, CS word at +2.
+    write_word_at(&mut bus, 0x6000, 0x5678);
+    write_word_at(&mut bus, 0x6002, 0x1234);
+
+    // CALL FAR WORD PTR [0x6000] - 0xFF /3 with modrm 0x1E disp16.
+    place_at(&mut bus, V86_CS_BASE, &[0xFF, 0x1E, 0x00, 0x60]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert_v86_pf_frame_preserves_sp_with_cr2(&cpu, &bus, 0x2002, 0, 0x1FFE);
+}
+
+/// ENTER 0, 2 in V86 with the source frame pointer landing in an absent
+/// page. The instruction pushes BP, then walks SS:[BP-2] for the chain.
+/// Buggy code commits the first push (SP -= 2, write BP at SP-2) before
+/// the chain read fires. Atomic code reads the chain into a buffer
+/// before any commit, so a #PF leaves SP and the stack word at the BP
+/// slot untouched. SP=0x4002 (page 4, mapped), BP=0x1004 (page 1, absent).
+/// Chain read at SS:[0x1002] faults; we observe CR2=0x1002, saved-ESP=
+/// 0x4002, the BP push slot at linear 0x4000 still zeroed, and the V86
+/// BP register unchanged.
+#[test]
+fn paging_fault_enter_level_2_chain_read_preserves_state() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_v86_descending_push_fault(&mut bus, 0x4002);
+    state.set_ebp(0x1004);
+    cpu.load_state(&state);
+
+    // ENTER 0x0000, 0x02 - 0xC8 imm16 imm8.
+    place_at(&mut bus, V86_CS_BASE, &[0xC8, 0x00, 0x00, 0x02]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert_v86_pf_frame_preserves_sp_with_cr2(&cpu, &bus, 0x4002, 0, 0x1002);
+
+    // Push slot for BP at SS:[0x4000] must remain at its initial zero
+    // value - the chain read fault must abort before the BP push commits.
+    let bp_slot = read_word_at(&bus, 0x4000);
+    assert_eq!(
+        bp_slot, 0,
+        "BP push slot must not be written when ENTER faults on chain read"
+    );
+    assert_eq!(
+        cpu.ebp(),
+        0x1004,
+        "EBP must remain at its V86 value when ENTER faults"
+    );
+}
+
+/// POP word ptr [absent_page] in V86 - pop reads from stack (mapped),
+/// then put writes to memory (absent). Buggy code commits SP from the
+/// pop before attempting the write, so the saved-ESP frame slot would
+/// read 0x2002. Atomic code rolls SP back when the put faults.
+#[test]
+fn paging_fault_pop_rm_mem_v86_preserves_sp() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_v86_descending_push_fault(&mut bus, 0x2000);
+    cpu.load_state(&state);
+
+    // Seed the top-of-stack with a known word so pop reads valid data.
+    write_word_at(&mut bus, 0x2000, 0xBEEF);
+
+    // POP WORD PTR [0x1000] - 0x8F /0 with modrm 0x06 disp16. Memory
+    // target lands in absent page 1.
+    place_at(&mut bus, V86_CS_BASE, &[0x8F, 0x06, 0x00, 0x10]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert_v86_pf_frame_preserves_sp_with_cr2(&cpu, &bus, 0x2000, 0, 0x1000);
+}
+
+/// POP DWORD PTR [absent_page] in V86 (0x66 prefix) - same property
+/// with dword pop. SP=0x2000 so the stack read fits in page 2 and the
+/// memory write hits page 1.
+#[test]
+fn paging_fault_pop_rm_o32_mem_v86_preserves_esp() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_v86_descending_push_fault(&mut bus, 0x2000);
+    cpu.load_state(&state);
+
+    write_dword_at(&mut bus, 0x2000, 0xDEAD_BEEF);
+
+    // 0x66 0x8F 0x06 disp16 - POP DWORD PTR [disp16] (16-bit address mode).
+    place_at(&mut bus, V86_CS_BASE, &[0x66, 0x8F, 0x06, 0x00, 0x10]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert_v86_pf_frame_preserves_sp_with_cr2(&cpu, &bus, 0x2000, 0, 0x1000);
+}
