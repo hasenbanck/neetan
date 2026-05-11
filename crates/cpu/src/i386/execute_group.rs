@@ -1,4 +1,4 @@
-use super::{CPU_MODEL_386, CPU_MODEL_486, I386};
+use super::{CPU_MODEL_386, CPU_MODEL_486, I386, Step};
 use crate::{ByteReg, DwordReg, SegReg32, WordReg};
 
 impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
@@ -29,24 +29,19 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     /// Group 0x80: ALU r/m8, imm8
-    pub(super) fn group_80(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn group_80(&mut self, bus: &mut impl common::Bus) -> Step {
         let modrm = self.fetch(bus);
         let extension = (modrm >> 3) & 7;
         if self.lock_prefix && extension == 7 {
-            self.raise_fault(6, bus);
-            return;
+            self.raise_fault(6, bus)?;
+            return Ok(());
         }
-        let Some(dst) = (if extension == 7 {
+        let dst = (if extension == 7 {
             self.get_rm_byte(modrm, bus)
         } else {
             self.get_rm_byte_for_update(modrm, bus)
-        }) else {
-            return;
-        };
+        })?;
         let src = self.fetch(bus);
-        if self.fault_pending {
-            return;
-        }
         let result = match extension {
             0 => self.alu_add_byte(dst, src),
             1 => self.alu_or_byte(dst, src),
@@ -64,39 +59,32 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             7 => {
                 self.alu_sub_byte(dst, src);
                 self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(5, 2));
-                return;
+                return Ok(());
             }
             _ => unreachable!(),
         };
         if extension != 7 {
-            self.putback_rm_byte(modrm, result, bus);
-            if self.fault_pending {
-                return;
-            }
+            self.putback_rm_byte(modrm, result, bus)?;
         }
         self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(7, 3));
+        Ok(())
     }
 
     /// Group 0x81: ALU r/m16, imm16
-    pub(super) fn group_81(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn group_81(&mut self, bus: &mut impl common::Bus) -> Step {
         let modrm = self.fetch(bus);
         let extension = (modrm >> 3) & 7;
         if self.lock_prefix && extension == 7 {
-            self.raise_fault(6, bus);
-            return;
+            self.raise_fault(6, bus)?;
+            return Ok(());
         }
         if self.operand_size_override {
-            let Some(dst) = (if extension == 7 {
+            let dst = (if extension == 7 {
                 self.get_rm_dword(modrm, bus)
             } else {
                 self.get_rm_dword_for_update(modrm, bus)
-            }) else {
-                return;
-            };
+            })?;
             let src = self.fetchdword(bus);
-            if self.fault_pending {
-                return;
-            }
             let result = match extension {
                 0 => self.alu_add_dword(dst, src),
                 1 => self.alu_or_dword(dst, src),
@@ -114,29 +102,21 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 7 => {
                     self.alu_sub_dword(dst, src);
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(5, 2), 2);
-                    return;
+                    return Ok(());
                 }
                 _ => unreachable!(),
             };
             if extension != 7 {
-                self.putback_rm_dword(modrm, result, bus);
-                if self.fault_pending {
-                    return;
-                }
+                self.putback_rm_dword(modrm, result, bus)?;
             }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
-            let Some(dst) = (if extension == 7 {
+            let dst = (if extension == 7 {
                 self.get_rm_word(modrm, bus)
             } else {
                 self.get_rm_word_for_update(modrm, bus)
-            }) else {
-                return;
-            };
+            })?;
             let src = self.fetchword(bus);
-            if self.fault_pending {
-                return;
-            }
             let result = match extension {
                 0 => self.alu_add_word(dst, src),
                 1 => self.alu_or_word(dst, src),
@@ -154,45 +134,39 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 7 => {
                     self.alu_sub_word(dst, src);
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(5, 2), 1);
-                    return;
+                    return Ok(());
                 }
                 _ => unreachable!(),
             };
             if extension != 7 {
-                self.putback_rm_word(modrm, result, bus);
-                if self.fault_pending {
-                    return;
-                }
+                self.putback_rm_word(modrm, result, bus)?;
             }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 2);
         }
+        Ok(())
     }
 
     /// Group 0x82: ALU r/m8, imm8 (same as 0x80)
-    pub(super) fn group_82(&mut self, bus: &mut impl common::Bus) {
-        self.group_80(bus);
+    pub(super) fn group_82(&mut self, bus: &mut impl common::Bus) -> Step {
+        self.group_80(bus)?;
+        Ok(())
     }
 
     /// Group 0x83: ALU r/m16, sign-extended imm8
-    pub(super) fn group_83(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn group_83(&mut self, bus: &mut impl common::Bus) -> Step {
         let modrm = self.fetch(bus);
         let extension = (modrm >> 3) & 7;
         if self.lock_prefix && extension == 7 {
-            self.raise_fault(6, bus);
-            return;
+            self.raise_fault(6, bus)?;
+            return Ok(());
         }
         if self.operand_size_override {
-            let Some(dst) = (if extension == 7 {
+            let dst = (if extension == 7 {
                 self.get_rm_dword(modrm, bus)
             } else {
                 self.get_rm_dword_for_update(modrm, bus)
-            }) else {
-                return;
-            };
+            })?;
             let src = self.fetch(bus) as i8 as i32 as u32;
-            if self.fault_pending {
-                return;
-            }
             let result = match extension {
                 0 => self.alu_add_dword(dst, src),
                 1 => self.alu_or_dword(dst, src),
@@ -210,29 +184,21 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 7 => {
                     self.alu_sub_dword(dst, src);
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(5, 2), 2);
-                    return;
+                    return Ok(());
                 }
                 _ => unreachable!(),
             };
             if extension != 7 {
-                self.putback_rm_dword(modrm, result, bus);
-                if self.fault_pending {
-                    return;
-                }
+                self.putback_rm_dword(modrm, result, bus)?;
             }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
-            let Some(dst) = (if extension == 7 {
+            let dst = (if extension == 7 {
                 self.get_rm_word(modrm, bus)
             } else {
                 self.get_rm_word_for_update(modrm, bus)
-            }) else {
-                return;
-            };
+            })?;
             let src = self.fetch(bus) as i8 as u16;
-            if self.fault_pending {
-                return;
-            }
             let result = match extension {
                 0 => self.alu_add_word(dst, src),
                 1 => self.alu_or_word(dst, src),
@@ -250,26 +216,22 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 7 => {
                     self.alu_sub_word(dst, src);
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(5, 2), 1);
-                    return;
+                    return Ok(());
                 }
                 _ => unreachable!(),
             };
             if extension != 7 {
-                self.putback_rm_word(modrm, result, bus);
-                if self.fault_pending {
-                    return;
-                }
+                self.putback_rm_word(modrm, result, bus)?;
             }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 2);
         }
+        Ok(())
     }
 
     /// Group 0xC0: shift/rotate r/m8, imm8
-    pub(super) fn group_c0(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn group_c0(&mut self, bus: &mut impl common::Bus) -> Step {
         let modrm = self.fetch(bus);
-        let Some(dst) = self.get_rm_byte(modrm, bus) else {
-            return;
-        };
+        let dst = self.get_rm_byte(modrm, bus)?;
         let count = self.fetch(bus);
         let extension = (modrm >> 3) & 7;
         let result = match extension {
@@ -283,20 +245,19 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             7 => self.alu_sar_byte(dst, count),
             _ => unreachable!(),
         };
-        self.putback_rm_byte(modrm, result, bus);
+        self.putback_rm_byte(modrm, result, bus)?;
         let (register_cycles, memory_cycles) = Self::shift_group_timing(extension, 0);
         self.clk_modrm(modrm, register_cycles, memory_cycles);
+        Ok(())
     }
 
     /// Group 0xC1: shift/rotate r/m16, imm8
-    pub(super) fn group_c1(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn group_c1(&mut self, bus: &mut impl common::Bus) -> Step {
         let modrm = self.fetch(bus);
         let extension = (modrm >> 3) & 7;
         let (register_cycles, memory_cycles) = Self::shift_group_timing(extension, 0);
         if self.operand_size_override {
-            let Some(dst) = self.get_rm_dword(modrm, bus) else {
-                return;
-            };
+            let dst = self.get_rm_dword(modrm, bus)?;
             let count = self.fetch(bus);
             let result = match extension {
                 0 => self.alu_rol_dword(dst, count),
@@ -309,12 +270,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 7 => self.alu_sar_dword(dst, count),
                 _ => unreachable!(),
             };
-            self.putback_rm_dword(modrm, result, bus);
+            self.putback_rm_dword(modrm, result, bus)?;
             self.clk_modrm_word(modrm, register_cycles, memory_cycles, 4);
         } else {
-            let Some(dst) = self.get_rm_word(modrm, bus) else {
-                return;
-            };
+            let dst = self.get_rm_word(modrm, bus)?;
             let count = self.fetch(bus);
             let result = match extension {
                 0 => self.alu_rol_word(dst, count),
@@ -327,17 +286,16 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 7 => self.alu_sar_word(dst, count),
                 _ => unreachable!(),
             };
-            self.putback_rm_word(modrm, result, bus);
+            self.putback_rm_word(modrm, result, bus)?;
             self.clk_modrm_word(modrm, register_cycles, memory_cycles, 2);
         }
+        Ok(())
     }
 
     /// Group 0xD0: shift/rotate r/m8, 1
-    pub(super) fn group_d0(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn group_d0(&mut self, bus: &mut impl common::Bus) -> Step {
         let modrm = self.fetch(bus);
-        let Some(dst) = self.get_rm_byte(modrm, bus) else {
-            return;
-        };
+        let dst = self.get_rm_byte(modrm, bus)?;
         let extension = (modrm >> 3) & 7;
         let result = match extension {
             0 => self.alu_rol_byte(dst, 1),
@@ -350,20 +308,19 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             7 => self.alu_sar_byte(dst, 1),
             _ => unreachable!(),
         };
-        self.putback_rm_byte(modrm, result, bus);
+        self.putback_rm_byte(modrm, result, bus)?;
         let (register_cycles, memory_cycles) = Self::shift_group_timing(extension, 1);
         self.clk_modrm(modrm, register_cycles, memory_cycles);
+        Ok(())
     }
 
     /// Group 0xD1: shift/rotate r/m16, 1
-    pub(super) fn group_d1(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn group_d1(&mut self, bus: &mut impl common::Bus) -> Step {
         let modrm = self.fetch(bus);
         let extension = (modrm >> 3) & 7;
         let (register_cycles, memory_cycles) = Self::shift_group_timing(extension, 1);
         if self.operand_size_override {
-            let Some(dst) = self.get_rm_dword(modrm, bus) else {
-                return;
-            };
+            let dst = self.get_rm_dword(modrm, bus)?;
             let result = match extension {
                 0 => self.alu_rol_dword(dst, 1),
                 1 => self.alu_ror_dword(dst, 1),
@@ -375,12 +332,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 7 => self.alu_sar_dword(dst, 1),
                 _ => unreachable!(),
             };
-            self.putback_rm_dword(modrm, result, bus);
+            self.putback_rm_dword(modrm, result, bus)?;
             self.clk_modrm_word(modrm, register_cycles, memory_cycles, 4);
         } else {
-            let Some(dst) = self.get_rm_word(modrm, bus) else {
-                return;
-            };
+            let dst = self.get_rm_word(modrm, bus)?;
             let result = match extension {
                 0 => self.alu_rol_word(dst, 1),
                 1 => self.alu_ror_word(dst, 1),
@@ -392,17 +347,16 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 7 => self.alu_sar_word(dst, 1),
                 _ => unreachable!(),
             };
-            self.putback_rm_word(modrm, result, bus);
+            self.putback_rm_word(modrm, result, bus)?;
             self.clk_modrm_word(modrm, register_cycles, memory_cycles, 2);
         }
+        Ok(())
     }
 
     /// Group 0xD2: shift/rotate r/m8, CL
-    pub(super) fn group_d2(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn group_d2(&mut self, bus: &mut impl common::Bus) -> Step {
         let modrm = self.fetch(bus);
-        let Some(dst) = self.get_rm_byte(modrm, bus) else {
-            return;
-        };
+        let dst = self.get_rm_byte(modrm, bus)?;
         let count = self.regs.byte(ByteReg::CL);
         let extension = (modrm >> 3) & 7;
         let result = match extension {
@@ -416,21 +370,20 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             7 => self.alu_sar_byte(dst, count),
             _ => unreachable!(),
         };
-        self.putback_rm_byte(modrm, result, bus);
+        self.putback_rm_byte(modrm, result, bus)?;
         let (register_cycles, memory_cycles) = Self::shift_group_timing(extension, 2);
         self.clk_modrm(modrm, register_cycles, memory_cycles);
+        Ok(())
     }
 
     /// Group 0xD3: shift/rotate r/m16, CL
-    pub(super) fn group_d3(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn group_d3(&mut self, bus: &mut impl common::Bus) -> Step {
         let modrm = self.fetch(bus);
         let count = self.regs.byte(ByteReg::CL);
         let extension = (modrm >> 3) & 7;
         let (register_cycles, memory_cycles) = Self::shift_group_timing(extension, 2);
         if self.operand_size_override {
-            let Some(dst) = self.get_rm_dword(modrm, bus) else {
-                return;
-            };
+            let dst = self.get_rm_dword(modrm, bus)?;
             let result = match extension {
                 0 => self.alu_rol_dword(dst, count),
                 1 => self.alu_ror_dword(dst, count),
@@ -442,12 +395,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 7 => self.alu_sar_dword(dst, count),
                 _ => unreachable!(),
             };
-            self.putback_rm_dword(modrm, result, bus);
+            self.putback_rm_dword(modrm, result, bus)?;
             self.clk_modrm_word(modrm, register_cycles, memory_cycles, 4);
         } else {
-            let Some(dst) = self.get_rm_word(modrm, bus) else {
-                return;
-            };
+            let dst = self.get_rm_word(modrm, bus)?;
             let result = match extension {
                 0 => self.alu_rol_word(dst, count),
                 1 => self.alu_ror_word(dst, count),
@@ -459,51 +410,44 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 7 => self.alu_sar_word(dst, count),
                 _ => unreachable!(),
             };
-            self.putback_rm_word(modrm, result, bus);
+            self.putback_rm_word(modrm, result, bus)?;
             self.clk_modrm_word(modrm, register_cycles, memory_cycles, 2);
         }
+        Ok(())
     }
 
     /// Group 0xF6: various byte operations
-    pub(super) fn group_f6(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn group_f6(&mut self, bus: &mut impl common::Bus) -> Step {
         let modrm = self.fetch(bus);
         let op = (modrm >> 3) & 7;
         if self.lock_prefix && !matches!(op, 2 | 3) {
-            self.raise_fault(6, bus);
-            return;
+            self.raise_fault(6, bus)?;
+            return Ok(());
         }
         match op {
             0 | 1 => {
                 // TEST r/m8, imm8
-                let Some(dst) = self.get_rm_byte(modrm, bus) else {
-                    return;
-                };
+                let dst = self.get_rm_byte(modrm, bus)?;
                 let src = self.fetch(bus);
                 self.alu_and_byte(dst, src);
                 self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(5, 2));
             }
             2 => {
                 // NOT r/m8
-                let Some(dst) = self.get_rm_byte(modrm, bus) else {
-                    return;
-                };
-                self.putback_rm_byte(modrm, !dst, bus);
+                let dst = self.get_rm_byte(modrm, bus)?;
+                self.putback_rm_byte(modrm, !dst, bus)?;
                 self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(6, 3));
             }
             3 => {
                 // NEG r/m8
-                let Some(dst) = self.get_rm_byte(modrm, bus) else {
-                    return;
-                };
+                let dst = self.get_rm_byte(modrm, bus)?;
                 let result = self.alu_neg_byte(dst);
-                self.putback_rm_byte(modrm, result, bus);
+                self.putback_rm_byte(modrm, result, bus)?;
                 self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(6, 3));
             }
             4 => {
                 // MUL r/m8 (unsigned)
-                let Some(src) = self.get_rm_byte(modrm, bus) else {
-                    return;
-                };
+                let src = self.get_rm_byte(modrm, bus)?;
                 let al = self.regs.byte(ByteReg::AL);
                 let result = al as u16 * src as u16;
                 self.regs.set_word(WordReg::AX, result);
@@ -513,9 +457,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             }
             5 => {
                 // IMUL r/m8 (signed)
-                let Some(src) = self.get_rm_byte(modrm, bus) else {
-                    return;
-                };
+                let src = self.get_rm_byte(modrm, bus)?;
                 let src = src as i8 as i16;
                 let al = self.regs.byte(ByteReg::AL) as i8 as i16;
                 let result = al * src;
@@ -528,19 +470,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             }
             6 => {
                 // DIV r/m8 (unsigned)
-                let Some(src) = self.get_rm_byte(modrm, bus) else {
-                    return;
-                };
+                let src = self.get_rm_byte(modrm, bus)?;
                 let src = src as u16;
                 if src == 0 {
-                    self.raise_fault(0, bus);
-                    return;
+                    self.raise_fault(0, bus)?;
+                    return Ok(());
                 }
                 let aw = self.regs.word(WordReg::AX);
                 let quotient = aw / src;
                 if quotient > 0xFF {
-                    self.raise_fault(0, bus);
-                    return;
+                    self.raise_fault(0, bus)?;
+                    return Ok(());
                 }
                 let remainder = aw % src;
                 self.regs.set_byte(ByteReg::AL, quotient as u8);
@@ -553,22 +493,20 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             }
             7 => {
                 // IDIV r/m8 (signed)
-                let Some(src) = self.get_rm_byte(modrm, bus) else {
-                    return;
-                };
+                let src = self.get_rm_byte(modrm, bus)?;
                 let src = src as i8 as i16;
                 if src == 0 {
-                    self.raise_fault(0, bus);
-                    return;
+                    self.raise_fault(0, bus)?;
+                    return Ok(());
                 }
                 let aw = self.regs.word(WordReg::AX) as i16;
                 let Some(quotient) = aw.checked_div(src) else {
-                    self.raise_fault(0, bus);
-                    return;
+                    self.raise_fault(0, bus)?;
+                    return Ok(());
                 };
                 if !(-128..=127).contains(&quotient) {
-                    self.raise_fault(0, bus);
-                    return;
+                    self.raise_fault(0, bus)?;
+                    return Ok(());
                 }
                 let remainder = aw.checked_rem(src).unwrap_or(0);
                 self.regs.set_byte(ByteReg::AL, quotient as u8);
@@ -581,49 +519,42 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             }
             _ => unreachable!(),
         }
+        Ok(())
     }
 
     /// Group 0xF7: various word operations
-    pub(super) fn group_f7(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn group_f7(&mut self, bus: &mut impl common::Bus) -> Step {
         let modrm = self.fetch(bus);
         let op = (modrm >> 3) & 7;
         if self.lock_prefix && !matches!(op, 2 | 3) {
-            self.raise_fault(6, bus);
-            return;
+            self.raise_fault(6, bus)?;
+            return Ok(());
         }
         if self.operand_size_override {
             match op {
                 0 | 1 => {
                     // TEST r/m32, imm32
-                    let Some(dst) = self.get_rm_dword(modrm, bus) else {
-                        return;
-                    };
+                    let dst = self.get_rm_dword(modrm, bus)?;
                     let src = self.fetchdword(bus);
                     self.alu_and_dword(dst, src);
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(5, 2), 2);
                 }
                 2 => {
                     // NOT r/m32
-                    let Some(dst) = self.get_rm_dword(modrm, bus) else {
-                        return;
-                    };
-                    self.putback_rm_dword(modrm, !dst, bus);
+                    let dst = self.get_rm_dword(modrm, bus)?;
+                    self.putback_rm_dword(modrm, !dst, bus)?;
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 3), 4);
                 }
                 3 => {
                     // NEG r/m32
-                    let Some(dst) = self.get_rm_dword(modrm, bus) else {
-                        return;
-                    };
+                    let dst = self.get_rm_dword(modrm, bus)?;
                     let result = self.alu_neg_dword(dst);
-                    self.putback_rm_dword(modrm, result, bus);
+                    self.putback_rm_dword(modrm, result, bus)?;
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 3), 4);
                 }
                 4 => {
                     // MUL r/m32 (unsigned)
-                    let Some(src) = self.get_rm_dword(modrm, bus) else {
-                        return;
-                    };
+                    let src = self.get_rm_dword(modrm, bus)?;
                     let eax = self.regs.dword(DwordReg::EAX);
                     let result = eax as u64 * src as u64;
                     self.regs.set_dword(DwordReg::EAX, result as u32);
@@ -634,9 +565,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
                 5 => {
                     // IMUL r/m32 (signed)
-                    let Some(src) = self.get_rm_dword(modrm, bus) else {
-                        return;
-                    };
+                    let src = self.get_rm_dword(modrm, bus)?;
                     let src = src as i32 as i64;
                     let eax = self.regs.dword(DwordReg::EAX) as i32 as i64;
                     let result = eax * src;
@@ -649,21 +578,19 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
                 6 => {
                     // DIV r/m32 (unsigned)
-                    let Some(src) = self.get_rm_dword(modrm, bus) else {
-                        return;
-                    };
+                    let src = self.get_rm_dword(modrm, bus)?;
                     let src = src as u64;
                     if src == 0 {
-                        self.raise_fault(0, bus);
-                        return;
+                        self.raise_fault(0, bus)?;
+                        return Ok(());
                     }
                     let edx = self.regs.dword(DwordReg::EDX) as u64;
                     let eax = self.regs.dword(DwordReg::EAX) as u64;
                     let dividend = (edx << 32) | eax;
                     let quotient = dividend / src;
                     if quotient > u32::MAX as u64 {
-                        self.raise_fault(0, bus);
-                        return;
+                        self.raise_fault(0, bus)?;
+                        return Ok(());
                     }
                     let remainder = dividend % src;
                     self.regs.set_dword(DwordReg::EAX, quotient as u32);
@@ -676,24 +603,22 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
                 7 => {
                     // IDIV r/m32 (signed)
-                    let Some(src) = self.get_rm_dword(modrm, bus) else {
-                        return;
-                    };
+                    let src = self.get_rm_dword(modrm, bus)?;
                     let src = src as i32 as i64;
                     if src == 0 {
-                        self.raise_fault(0, bus);
-                        return;
+                        self.raise_fault(0, bus)?;
+                        return Ok(());
                     }
                     let edx = self.regs.dword(DwordReg::EDX) as u64;
                     let eax = self.regs.dword(DwordReg::EAX) as u64;
                     let dividend = ((edx << 32) | eax) as i64;
                     let Some(quotient) = dividend.checked_div(src) else {
-                        self.raise_fault(0, bus);
-                        return;
+                        self.raise_fault(0, bus)?;
+                        return Ok(());
                     };
                     if !((i32::MIN as i64)..=(i32::MAX as i64)).contains(&quotient) {
-                        self.raise_fault(0, bus);
-                        return;
+                        self.raise_fault(0, bus)?;
+                        return Ok(());
                     }
                     let remainder = dividend.checked_rem(src).unwrap_or(0);
                     self.regs.set_dword(DwordReg::EAX, quotient as u32);
@@ -710,35 +635,27 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             match op {
                 0 | 1 => {
                     // TEST r/m16, imm16
-                    let Some(dst) = self.get_rm_word(modrm, bus) else {
-                        return;
-                    };
+                    let dst = self.get_rm_word(modrm, bus)?;
                     let src = self.fetchword(bus);
                     self.alu_and_word(dst, src);
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(5, 2), 1);
                 }
                 2 => {
                     // NOT r/m16
-                    let Some(dst) = self.get_rm_word(modrm, bus) else {
-                        return;
-                    };
-                    self.putback_rm_word(modrm, !dst, bus);
+                    let dst = self.get_rm_word(modrm, bus)?;
+                    self.putback_rm_word(modrm, !dst, bus)?;
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 3), 2);
                 }
                 3 => {
                     // NEG r/m16
-                    let Some(dst) = self.get_rm_word(modrm, bus) else {
-                        return;
-                    };
+                    let dst = self.get_rm_word(modrm, bus)?;
                     let result = self.alu_neg_word(dst);
-                    self.putback_rm_word(modrm, result, bus);
+                    self.putback_rm_word(modrm, result, bus)?;
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 3), 2);
                 }
                 4 => {
                     // MUL r/m16 (unsigned)
-                    let Some(src) = self.get_rm_word(modrm, bus) else {
-                        return;
-                    };
+                    let src = self.get_rm_word(modrm, bus)?;
                     let aw = self.regs.word(WordReg::AX);
                     let result = aw as u32 * src as u32;
                     self.regs.set_word(WordReg::AX, result as u16);
@@ -749,9 +666,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
                 5 => {
                     // IMUL r/m16 (signed)
-                    let Some(src) = self.get_rm_word(modrm, bus) else {
-                        return;
-                    };
+                    let src = self.get_rm_word(modrm, bus)?;
                     let src = src as i16 as i32;
                     let aw = self.regs.word(WordReg::AX) as i16 as i32;
                     let result = aw * src;
@@ -765,21 +680,19 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
                 6 => {
                     // DIV r/m16 (unsigned)
-                    let Some(src) = self.get_rm_word(modrm, bus) else {
-                        return;
-                    };
+                    let src = self.get_rm_word(modrm, bus)?;
                     let src = src as u32;
                     if src == 0 {
-                        self.raise_fault(0, bus);
-                        return;
+                        self.raise_fault(0, bus)?;
+                        return Ok(());
                     }
                     let dw = self.regs.word(WordReg::DX) as u32;
                     let aw = self.regs.word(WordReg::AX) as u32;
                     let dividend = (dw << 16) | aw;
                     let quotient = dividend / src;
                     if quotient > 0xFFFF {
-                        self.raise_fault(0, bus);
-                        return;
+                        self.raise_fault(0, bus)?;
+                        return Ok(());
                     }
                     let remainder = dividend % src;
                     self.regs.set_word(WordReg::AX, quotient as u16);
@@ -792,24 +705,22 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
                 7 => {
                     // IDIV r/m16 (signed)
-                    let Some(src) = self.get_rm_word(modrm, bus) else {
-                        return;
-                    };
+                    let src = self.get_rm_word(modrm, bus)?;
                     let src = src as i16 as i32;
                     if src == 0 {
-                        self.raise_fault(0, bus);
-                        return;
+                        self.raise_fault(0, bus)?;
+                        return Ok(());
                     }
                     let dw = self.regs.word(WordReg::DX) as u32;
                     let aw = self.regs.word(WordReg::AX) as u32;
                     let dividend = ((dw << 16) | aw) as i32;
                     let Some(quotient) = dividend.checked_div(src) else {
-                        self.raise_fault(0, bus);
-                        return;
+                        self.raise_fault(0, bus)?;
+                        return Ok(());
                     };
                     if !(-32768..=32767).contains(&quotient) {
-                        self.raise_fault(0, bus);
-                        return;
+                        self.raise_fault(0, bus)?;
+                        return Ok(());
                     }
                     let remainder = dividend.checked_rem(src).unwrap_or(0);
                     self.regs.set_word(WordReg::AX, quotient as u16);
@@ -823,101 +734,73 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 _ => unreachable!(),
             }
         }
+        Ok(())
     }
 
     /// Group 0xFE: INC/DEC r/m8
-    pub(super) fn group_fe(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn group_fe(&mut self, bus: &mut impl common::Bus) -> Step {
         let modrm = self.fetch(bus);
         if self.lock_prefix && (modrm >> 3) & 7 >= 2 {
-            self.raise_fault(6, bus);
-            return;
+            self.raise_fault(6, bus)?;
+            return Ok(());
         }
         match (modrm >> 3) & 7 {
             0 => {
                 // INC r/m8
-                let Some(dst) = self.get_rm_byte_for_update(modrm, bus) else {
-                    return;
-                };
+                let dst = self.get_rm_byte_for_update(modrm, bus)?;
                 let result = self.alu_inc_byte(dst);
-                self.putback_rm_byte(modrm, result, bus);
-                if self.fault_pending {
-                    return;
-                }
+                self.putback_rm_byte(modrm, result, bus)?;
                 self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(6, 3));
             }
             1 => {
                 // DEC r/m8
-                let Some(dst) = self.get_rm_byte_for_update(modrm, bus) else {
-                    return;
-                };
+                let dst = self.get_rm_byte_for_update(modrm, bus)?;
                 let result = self.alu_dec_byte(dst);
-                self.putback_rm_byte(modrm, result, bus);
-                if self.fault_pending {
-                    return;
-                }
+                self.putback_rm_byte(modrm, result, bus)?;
                 self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(6, 3));
             }
             _ => {
                 self.clk(Self::timing(2, 1));
             }
         }
+        Ok(())
     }
 
     /// Group 0xFF: various word operations
-    pub(super) fn group_ff(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn group_ff(&mut self, bus: &mut impl common::Bus) -> Step {
         let modrm = self.fetch(bus);
         if self.lock_prefix && (modrm >> 3) & 7 >= 2 {
-            self.raise_fault(6, bus);
-            return;
+            self.raise_fault(6, bus)?;
+            return Ok(());
         }
         match (modrm >> 3) & 7 {
             0 => {
                 if self.operand_size_override {
                     // INC r/m32
-                    let Some(dst) = self.get_rm_dword_for_update(modrm, bus) else {
-                        return;
-                    };
+                    let dst = self.get_rm_dword_for_update(modrm, bus)?;
                     let result = self.alu_inc_dword(dst);
-                    self.putback_rm_dword(modrm, result, bus);
-                    if self.fault_pending {
-                        return;
-                    }
+                    self.putback_rm_dword(modrm, result, bus)?;
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 3), 4);
                 } else {
                     // INC r/m16
-                    let Some(dst) = self.get_rm_word_for_update(modrm, bus) else {
-                        return;
-                    };
+                    let dst = self.get_rm_word_for_update(modrm, bus)?;
                     let result = self.alu_inc_word(dst);
-                    self.putback_rm_word(modrm, result, bus);
-                    if self.fault_pending {
-                        return;
-                    }
+                    self.putback_rm_word(modrm, result, bus)?;
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 3), 2);
                 }
             }
             1 => {
                 if self.operand_size_override {
                     // DEC r/m32
-                    let Some(dst) = self.get_rm_dword_for_update(modrm, bus) else {
-                        return;
-                    };
+                    let dst = self.get_rm_dword_for_update(modrm, bus)?;
                     let result = self.alu_dec_dword(dst);
-                    self.putback_rm_dword(modrm, result, bus);
-                    if self.fault_pending {
-                        return;
-                    }
+                    self.putback_rm_dword(modrm, result, bus)?;
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 3), 4);
                 } else {
                     // DEC r/m16
-                    let Some(dst) = self.get_rm_word_for_update(modrm, bus) else {
-                        return;
-                    };
+                    let dst = self.get_rm_word_for_update(modrm, bus)?;
                     let result = self.alu_dec_word(dst);
-                    self.putback_rm_word(modrm, result, bus);
-                    if self.fault_pending {
-                        return;
-                    }
+                    self.putback_rm_word(modrm, result, bus)?;
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(6, 3), 2);
                 }
             }
@@ -925,11 +808,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 if self.operand_size_override {
                     // CALL r/m32 (near indirect)
                     let sp_pen = self.sp_penalty();
-                    let Some(dst) = self.get_rm_dword(modrm, bus) else {
-                        return;
-                    };
+                    let dst = self.get_rm_dword(modrm, bus)?;
                     let return_eip = self.ip_upper | self.ip as u32;
-                    self.push_dword(bus, return_eip);
+                    self.push_dword(bus, return_eip)?;
                     self.ip = dst as u16;
                     self.ip_upper = dst & 0xFFFF_0000;
                     match CPU_MODEL {
@@ -950,10 +831,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 } else {
                     // CALL r/m16 (near indirect)
                     let sp_pen = self.sp_penalty();
-                    let Some(dst) = self.get_rm_word(modrm, bus) else {
-                        return;
-                    };
-                    self.push(bus, self.ip);
+                    let dst = self.get_rm_word(modrm, bus)?;
+                    self.push(bus, self.ip)?;
                     self.ip = dst;
                     self.ip_upper = 0;
                     match CPU_MODEL {
@@ -975,26 +854,20 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             }
             3 => {
                 if modrm >= 0xC0 {
-                    return;
+                    return Ok(());
                 }
                 if self.operand_size_override {
                     // CALL m16:32 (far indirect)
                     let sp_pen = self.sp_penalty();
                     self.calc_ea(modrm, bus);
-                    let Some(offset) = self.seg_read_dword(bus) else {
-                        return;
-                    };
-                    let Some(segment) = self.seg_read_word_at(bus, 4) else {
-                        return;
-                    };
+                    let offset = self.seg_read_dword(bus)?;
+                    let segment = self.seg_read_word_at(bus, 4)?;
                     let cs = self.sregs[SegReg32::CS as usize];
                     let old_eip = self.ip_upper | self.ip as u32;
                     if !self.is_protected_mode() || self.is_virtual_mode() {
-                        self.push_dword(bus, cs as u32);
-                        self.push_dword(bus, old_eip);
-                        if !self.load_segment(SegReg32::CS, segment, bus) {
-                            return;
-                        }
+                        self.push_dword(bus, cs as u32)?;
+                        self.push_dword(bus, old_eip)?;
+                        self.load_segment(SegReg32::CS, segment, bus)?;
                         self.ip = offset as u16;
                         self.ip_upper = offset & 0xFFFF_0000;
                     } else {
@@ -1005,7 +878,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                             cs,
                             old_eip,
                             bus,
-                        );
+                        )?;
                     }
                     match CPU_MODEL {
                         CPU_MODEL_386 => {
@@ -1022,20 +895,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     // CALL m16:16 (far indirect)
                     let sp_pen = self.sp_penalty();
                     self.calc_ea(modrm, bus);
-                    let Some(offset) = self.seg_read_word(bus) else {
-                        return;
-                    };
-                    let Some(segment) = self.seg_read_word_at(bus, 2) else {
-                        return;
-                    };
+                    let offset = self.seg_read_word(bus)?;
+                    let segment = self.seg_read_word_at(bus, 2)?;
                     let cs = self.sregs[SegReg32::CS as usize];
                     let old_eip = self.ip_upper | self.ip as u32;
                     if !self.is_protected_mode() || self.is_virtual_mode() {
-                        self.push(bus, cs);
-                        self.push(bus, old_eip as u16);
-                        if !self.load_segment(SegReg32::CS, segment, bus) {
-                            return;
-                        }
+                        self.push(bus, cs)?;
+                        self.push(bus, old_eip as u16)?;
+                        self.load_segment(SegReg32::CS, segment, bus)?;
                         self.ip = offset;
                         self.ip_upper = 0;
                     } else {
@@ -1046,7 +913,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                             cs,
                             old_eip,
                             bus,
-                        );
+                        )?;
                     }
                     match CPU_MODEL {
                         CPU_MODEL_386 => {
@@ -1064,9 +931,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             4 => {
                 if self.operand_size_override {
                     // JMP r/m32 (near indirect)
-                    let Some(dst) = self.get_rm_dword(modrm, bus) else {
-                        return;
-                    };
+                    let dst = self.get_rm_dword(modrm, bus)?;
                     self.ip = dst as u16;
                     self.ip_upper = dst & 0xFFFF_0000;
                     match CPU_MODEL {
@@ -1086,9 +951,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     }
                 } else {
                     // JMP r/m16 (near indirect)
-                    let Some(dst) = self.get_rm_word(modrm, bus) else {
-                        return;
-                    };
+                    let dst = self.get_rm_word(modrm, bus)?;
                     self.ip = dst;
                     self.ip_upper = 0;
                     match CPU_MODEL {
@@ -1110,25 +973,19 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             }
             5 => {
                 if modrm >= 0xC0 {
-                    return;
+                    return Ok(());
                 }
                 if self.operand_size_override {
                     // JMP m16:32 (far indirect)
                     self.calc_ea(modrm, bus);
-                    let Some(offset) = self.seg_read_dword(bus) else {
-                        return;
-                    };
-                    let Some(segment) = self.seg_read_word_at(bus, 4) else {
-                        return;
-                    };
+                    let offset = self.seg_read_dword(bus)?;
+                    let segment = self.seg_read_word_at(bus, 4)?;
                     if !self.is_protected_mode() || self.is_virtual_mode() {
-                        if !self.load_segment(SegReg32::CS, segment, bus) {
-                            return;
-                        }
+                        self.load_segment(SegReg32::CS, segment, bus)?;
                         self.ip = offset as u16;
                         self.ip_upper = offset & 0xFFFF_0000;
                     } else {
-                        self.code_descriptor(segment, offset, super::TaskType::Jmp, 0, 0, bus);
+                        self.code_descriptor(segment, offset, super::TaskType::Jmp, 0, 0, bus)?;
                     }
                     match CPU_MODEL {
                         CPU_MODEL_386 => {
@@ -1144,16 +1001,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 } else {
                     // JMP m16:16 (far indirect)
                     self.calc_ea(modrm, bus);
-                    let Some(offset) = self.seg_read_word(bus) else {
-                        return;
-                    };
-                    let Some(segment) = self.seg_read_word_at(bus, 2) else {
-                        return;
-                    };
+                    let offset = self.seg_read_word(bus)?;
+                    let segment = self.seg_read_word_at(bus, 2)?;
                     if !self.is_protected_mode() || self.is_virtual_mode() {
-                        if !self.load_segment(SegReg32::CS, segment, bus) {
-                            return;
-                        }
+                        self.load_segment(SegReg32::CS, segment, bus)?;
                         self.ip = offset;
                         self.ip_upper = 0;
                     } else {
@@ -1164,7 +1015,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                             0,
                             0,
                             bus,
-                        );
+                        )?;
                     }
                     match CPU_MODEL {
                         CPU_MODEL_386 => {
@@ -1183,10 +1034,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 if self.operand_size_override {
                     // PUSH r/m32 (7 is undocumented alias)
                     let sp_pen = self.sp_penalty();
-                    let Some(val) = self.get_rm_dword(modrm, bus) else {
-                        return;
-                    };
-                    self.push_dword(bus, val);
+                    let val = self.get_rm_dword(modrm, bus)?;
+                    self.push_dword(bus, val)?;
                     if modrm >= 0xC0 {
                         self.clk(Self::timing(5, 1) + sp_pen);
                     } else {
@@ -1200,10 +1049,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 } else {
                     // PUSH r/m16 (7 is undocumented alias)
                     let sp_pen = self.sp_penalty();
-                    let Some(val) = self.get_rm_word(modrm, bus) else {
-                        return;
-                    };
-                    self.push(bus, val);
+                    let val = self.get_rm_word(modrm, bus)?;
+                    self.push(bus, val)?;
                     if modrm >= 0xC0 {
                         self.clk(Self::timing(5, 1) + sp_pen);
                     } else {
@@ -1220,5 +1067,6 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.clk(Self::timing(2, 1));
             }
         }
+        Ok(())
     }
 }

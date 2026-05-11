@@ -1,17 +1,15 @@
-use super::I386;
+use super::{I386, Step};
 
 impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
-    pub(super) fn fpu_escape(&mut self, opcode: u8, bus: &mut impl common::Bus) {
+    pub(super) fn fpu_escape(&mut self, opcode: u8, bus: &mut impl common::Bus) -> Step {
         // CR0.EM=1 -> #NM
         if self.cr0 & 0x04 != 0 {
-            self.raise_fault(7, bus);
-            return;
+            return self.raise_fault(7, bus);
         }
 
         // CR0.TS=1 -> #NM
         if self.cr0 & 0x08 != 0 {
-            self.raise_fault(7, bus);
-            return;
+            return self.raise_fault(7, bus);
         }
 
         let modrm = self.fetch(bus);
@@ -19,8 +17,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
         // ES=1 -> deliver pending exception before executing
         if self.fpu_es_pending() {
-            self.fpu_raise_exception(bus);
-            return;
+            return self.fpu_raise_exception(bus);
         }
 
         if has_memory {
@@ -29,49 +26,49 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
         let esc_bits = opcode & 7;
         match esc_bits {
-            0 => self.fpu_esc_d8(modrm, has_memory, bus),
-            1 => self.fpu_esc_d9(modrm, has_memory, bus),
-            2 => self.fpu_esc_da(modrm, has_memory, bus),
-            3 => self.fpu_esc_db(modrm, has_memory, bus),
-            4 => self.fpu_esc_dc(modrm, has_memory, bus),
-            5 => self.fpu_esc_dd(modrm, has_memory, bus),
-            6 => self.fpu_esc_de(modrm, has_memory, bus),
-            7 => self.fpu_esc_df(modrm, has_memory, bus),
+            0 => self.fpu_esc_d8(modrm, has_memory, bus)?,
+            1 => self.fpu_esc_d9(modrm, has_memory, bus)?,
+            2 => self.fpu_esc_da(modrm, has_memory, bus)?,
+            3 => self.fpu_esc_db(modrm, has_memory, bus)?,
+            4 => self.fpu_esc_dc(modrm, has_memory, bus)?,
+            5 => self.fpu_esc_dd(modrm, has_memory, bus)?,
+            6 => self.fpu_esc_de(modrm, has_memory, bus)?,
+            7 => self.fpu_esc_df(modrm, has_memory, bus)?,
             _ => unreachable!(),
         }
+        Ok(())
     }
 
-    pub(super) fn fpu_wait(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn fpu_wait(&mut self, bus: &mut impl common::Bus) -> Step {
         // CR0.MP=1 AND CR0.TS=1 -> #NM
         if self.cr0 & 0x02 != 0 && self.cr0 & 0x08 != 0 {
-            self.raise_fault(7, bus);
-            return;
+            return self.raise_fault(7, bus);
         }
 
         // ES=1 -> deliver pending exception
         if self.fpu_es_pending() {
-            self.fpu_raise_exception(bus);
-            return;
+            return self.fpu_raise_exception(bus);
         }
 
         self.clk(Self::timing(6, 1));
+        Ok(())
     }
 
     // D8: Single-precision arithmetic
-    fn fpu_esc_d8(&mut self, modrm: u8, has_memory: bool, bus: &mut impl common::Bus) {
+    fn fpu_esc_d8(&mut self, modrm: u8, has_memory: bool, bus: &mut impl common::Bus) -> Step {
         let reg = (modrm >> 3) & 7;
         self.fpu_update_pointers(0, modrm, has_memory);
 
         if has_memory {
             match reg {
-                0 => self.fpu_fadd_m32(bus),
-                1 => self.fpu_fmul_m32(bus),
-                2 => self.fpu_fcom_m32(bus),
-                3 => self.fpu_fcomp_m32(bus),
-                4 => self.fpu_fsub_m32(bus),
-                5 => self.fpu_fsubr_m32(bus),
-                6 => self.fpu_fdiv_m32(bus),
-                7 => self.fpu_fdivr_m32(bus),
+                0 => self.fpu_fadd_m32(bus)?,
+                1 => self.fpu_fmul_m32(bus)?,
+                2 => self.fpu_fcom_m32(bus)?,
+                3 => self.fpu_fcomp_m32(bus)?,
+                4 => self.fpu_fsub_m32(bus)?,
+                5 => self.fpu_fsubr_m32(bus)?,
+                6 => self.fpu_fdiv_m32(bus)?,
+                7 => self.fpu_fdivr_m32(bus)?,
                 _ => unreachable!(),
             }
         } else {
@@ -88,10 +85,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 _ => unreachable!(),
             }
         }
+        Ok(())
     }
 
     // D9: Load/Store, Transcendentals, Control
-    fn fpu_esc_d9(&mut self, modrm: u8, has_memory: bool, bus: &mut impl common::Bus) {
+    fn fpu_esc_d9(&mut self, modrm: u8, has_memory: bool, bus: &mut impl common::Bus) -> Step {
         if has_memory {
             let reg = (modrm >> 3) & 7;
             // Control instructions don't update FIP/FDP: FLDENV(4), FLDCW(5), FSTENV(6), FSTCW(7)
@@ -99,12 +97,12 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.fpu_update_pointers(1, modrm, true);
             }
             match reg {
-                0 => self.fpu_fld_m32(bus),
+                0 => self.fpu_fld_m32(bus)?,
                 1 => self.clk(Self::timing(2, 2)), // reserved
                 2 => self.fpu_fst_m32(bus),
                 3 => self.fpu_fstp_m32(bus),
                 4 => self.fpu_fldenv(bus),
-                5 => self.fpu_fldcw(bus),
+                5 => self.fpu_fldcw(bus)?,
                 6 => self.fpu_fnstenv(bus),
                 7 => self.fpu_fnstcw(bus),
                 _ => unreachable!(),
@@ -241,23 +239,24 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 }
             }
         }
+        Ok(())
     }
 
     // DA: 32-bit integer arithmetic
-    fn fpu_esc_da(&mut self, modrm: u8, has_memory: bool, bus: &mut impl common::Bus) {
+    fn fpu_esc_da(&mut self, modrm: u8, has_memory: bool, bus: &mut impl common::Bus) -> Step {
         let reg = (modrm >> 3) & 7;
         self.fpu_update_pointers(2, modrm, has_memory);
 
         if has_memory {
             match reg {
-                0 => self.fpu_fiadd_m32(bus),
-                1 => self.fpu_fimul_m32(bus),
-                2 => self.fpu_ficom_m32(bus),
-                3 => self.fpu_ficomp_m32(bus),
-                4 => self.fpu_fisub_m32(bus),
-                5 => self.fpu_fisubr_m32(bus),
-                6 => self.fpu_fidiv_m32(bus),
-                7 => self.fpu_fidivr_m32(bus),
+                0 => self.fpu_fiadd_m32(bus)?,
+                1 => self.fpu_fimul_m32(bus)?,
+                2 => self.fpu_ficom_m32(bus)?,
+                3 => self.fpu_ficomp_m32(bus)?,
+                4 => self.fpu_fisub_m32(bus)?,
+                5 => self.fpu_fisubr_m32(bus)?,
+                6 => self.fpu_fidiv_m32(bus)?,
+                7 => self.fpu_fidivr_m32(bus)?,
                 _ => unreachable!(),
             }
         } else {
@@ -266,20 +265,21 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 _ => self.clk(Self::timing(2, 2)), // reserved
             }
         }
+        Ok(())
     }
 
     // DB: 32-bit integer load/store, extended load/store
-    fn fpu_esc_db(&mut self, modrm: u8, has_memory: bool, bus: &mut impl common::Bus) {
+    fn fpu_esc_db(&mut self, modrm: u8, has_memory: bool, bus: &mut impl common::Bus) -> Step {
         if has_memory {
             let reg = (modrm >> 3) & 7;
             self.fpu_update_pointers(3, modrm, true);
             match reg {
-                0 => self.fpu_fild_m32(bus),
+                0 => self.fpu_fild_m32(bus)?,
                 1 => self.clk(Self::timing(2, 2)), // reserved
                 2 => self.fpu_fist_m32(bus),
                 3 => self.fpu_fistp_m32(bus),
                 4 => self.clk(Self::timing(2, 2)), // reserved
-                5 => self.fpu_fld_m80(bus),
+                5 => self.fpu_fld_m80(bus)?,
                 6 => self.clk(Self::timing(2, 2)), // reserved
                 7 => self.fpu_fstp_m80(bus),
                 _ => unreachable!(),
@@ -295,23 +295,24 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 _ => self.clk(Self::timing(2, 2)), // reserved
             }
         }
+        Ok(())
     }
 
     // DC: Double-precision arithmetic
-    fn fpu_esc_dc(&mut self, modrm: u8, has_memory: bool, bus: &mut impl common::Bus) {
+    fn fpu_esc_dc(&mut self, modrm: u8, has_memory: bool, bus: &mut impl common::Bus) -> Step {
         let reg = (modrm >> 3) & 7;
         self.fpu_update_pointers(4, modrm, has_memory);
 
         if has_memory {
             match reg {
-                0 => self.fpu_fadd_m64(bus),
-                1 => self.fpu_fmul_m64(bus),
-                2 => self.fpu_fcom_m64(bus),
-                3 => self.fpu_fcomp_m64(bus),
-                4 => self.fpu_fsub_m64(bus),
-                5 => self.fpu_fsubr_m64(bus),
-                6 => self.fpu_fdiv_m64(bus),
-                7 => self.fpu_fdivr_m64(bus),
+                0 => self.fpu_fadd_m64(bus)?,
+                1 => self.fpu_fmul_m64(bus)?,
+                2 => self.fpu_fcom_m64(bus)?,
+                3 => self.fpu_fcomp_m64(bus)?,
+                4 => self.fpu_fsub_m64(bus)?,
+                5 => self.fpu_fsubr_m64(bus)?,
+                6 => self.fpu_fdiv_m64(bus)?,
+                7 => self.fpu_fdivr_m64(bus)?,
                 _ => unreachable!(),
             }
         } else {
@@ -327,10 +328,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 _ => self.clk(Self::timing(2, 2)), // reserved (2,3 in register form)
             }
         }
+        Ok(())
     }
 
     // DD: Double-precision memory, stack management
-    fn fpu_esc_dd(&mut self, modrm: u8, has_memory: bool, bus: &mut impl common::Bus) {
+    fn fpu_esc_dd(&mut self, modrm: u8, has_memory: bool, bus: &mut impl common::Bus) -> Step {
         if has_memory {
             let reg = (modrm >> 3) & 7;
             // FRSTOR(4), FSAVE(6), FSTSW(7) are control-ish, but FRSTOR/FSAVE do update
@@ -339,13 +341,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.fpu_update_pointers(5, modrm, true);
             }
             match reg {
-                0 => self.fpu_fld_m64(bus),
+                0 => self.fpu_fld_m64(bus)?,
                 1 => self.clk(Self::timing(2, 2)), // reserved
                 2 => self.fpu_fst_m64(bus),
                 3 => self.fpu_fstp_m64(bus),
-                4 => self.fpu_frstor(bus),
+                4 => self.fpu_frstor(bus)?,
                 5 => self.clk(Self::timing(2, 2)), // reserved
-                6 => self.fpu_fnsave(bus),
+                6 => self.fpu_fnsave(bus)?,
                 7 => self.fpu_fnstsw_m16(bus),
                 _ => unreachable!(),
             }
@@ -379,23 +381,24 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 _ => self.clk(Self::timing(2, 2)), // reserved
             }
         }
+        Ok(())
     }
 
     // DE: 16-bit integer arithmetic, pop variants
-    fn fpu_esc_de(&mut self, modrm: u8, has_memory: bool, bus: &mut impl common::Bus) {
+    fn fpu_esc_de(&mut self, modrm: u8, has_memory: bool, bus: &mut impl common::Bus) -> Step {
         let reg = (modrm >> 3) & 7;
         self.fpu_update_pointers(6, modrm, has_memory);
 
         if has_memory {
             match reg {
-                0 => self.fpu_fiadd_m16(bus),
-                1 => self.fpu_fimul_m16(bus),
-                2 => self.fpu_ficom_m16(bus),
-                3 => self.fpu_ficomp_m16(bus),
-                4 => self.fpu_fisub_m16(bus),
-                5 => self.fpu_fisubr_m16(bus),
-                6 => self.fpu_fidiv_m16(bus),
-                7 => self.fpu_fidivr_m16(bus),
+                0 => self.fpu_fiadd_m16(bus)?,
+                1 => self.fpu_fimul_m16(bus)?,
+                2 => self.fpu_ficom_m16(bus)?,
+                3 => self.fpu_ficomp_m16(bus)?,
+                4 => self.fpu_fisub_m16(bus)?,
+                5 => self.fpu_fisubr_m16(bus)?,
+                6 => self.fpu_fidiv_m16(bus)?,
+                7 => self.fpu_fidivr_m16(bus)?,
                 _ => unreachable!(),
             }
         } else {
@@ -418,20 +421,21 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 _ => self.clk(Self::timing(2, 2)), // reserved
             }
         }
+        Ok(())
     }
 
     // DF: 16/64-bit integer, BCD, status word
-    fn fpu_esc_df(&mut self, modrm: u8, has_memory: bool, bus: &mut impl common::Bus) {
+    fn fpu_esc_df(&mut self, modrm: u8, has_memory: bool, bus: &mut impl common::Bus) -> Step {
         if has_memory {
             let reg = (modrm >> 3) & 7;
             self.fpu_update_pointers(7, modrm, true);
             match reg {
-                0 => self.fpu_fild_m16(bus),
+                0 => self.fpu_fild_m16(bus)?,
                 1 => self.clk(Self::timing(2, 2)), // reserved
                 2 => self.fpu_fist_m16(bus),
                 3 => self.fpu_fistp_m16(bus),
-                4 => self.fpu_fbld(bus),
-                5 => self.fpu_fild_m64(bus),
+                4 => self.fpu_fbld(bus)?,
+                5 => self.fpu_fild_m64(bus)?,
                 6 => self.fpu_fbstp(bus),
                 7 => self.fpu_fistp_m64(bus),
                 _ => unreachable!(),
@@ -443,5 +447,6 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 _ => self.clk(Self::timing(2, 2)), // reserved
             }
         }
+        Ok(())
     }
 }
