@@ -3225,17 +3225,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     self.eflags_upper = new_eflags & 0x00FD_0000;
                 }
 
+                self.set_accessed_bit(cs_validation.adjusted_selector, bus)?;
                 self.set_loaded_segment_cache(
                     SegReg32::CS,
                     cs_validation.adjusted_selector,
                     cs_validation.descriptor,
                 );
-                self.set_accessed_bit(cs_validation.adjusted_selector, bus)?;
                 self.ip = new_eip as u16;
                 self.ip_upper = new_eip & 0xFFFF_0000;
 
-                self.set_loaded_segment_cache(SegReg32::SS, new_ss, ss_validation.descriptor);
                 self.set_accessed_bit(new_ss, bus)?;
+                self.set_loaded_segment_cache(SegReg32::SS, new_ss, ss_validation.descriptor);
                 if self.use_esp() {
                     self.regs.set_dword(DwordReg::ESP, new_esp);
                 } else {
@@ -3254,12 +3254,12 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     Ok(validation) => validation,
                 };
 
+                self.set_accessed_bit(cs_validation.adjusted_selector, bus)?;
                 self.set_loaded_segment_cache(
                     SegReg32::CS,
                     cs_validation.adjusted_selector,
                     cs_validation.descriptor,
                 );
-                self.set_accessed_bit(cs_validation.adjusted_selector, bus)?;
                 if self.use_esp() {
                     self.regs.set_dword(DwordReg::ESP, sp.wrapping_add(12));
                 } else {
@@ -3309,17 +3309,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
                 self.flags.load_flags(new_flags, old_cpl, true);
 
+                self.set_accessed_bit(cs_validation.adjusted_selector, bus)?;
                 self.set_loaded_segment_cache(
                     SegReg32::CS,
                     cs_validation.adjusted_selector,
                     cs_validation.descriptor,
                 );
-                self.set_accessed_bit(cs_validation.adjusted_selector, bus)?;
                 self.ip = new_ip;
                 self.ip_upper = 0;
 
-                self.set_loaded_segment_cache(SegReg32::SS, new_ss, ss_validation.descriptor);
                 self.set_accessed_bit(new_ss, bus)?;
+                self.set_loaded_segment_cache(SegReg32::SS, new_ss, ss_validation.descriptor);
                 if self.use_esp() {
                     self.regs.set_dword(DwordReg::ESP, new_sp as u32);
                 } else {
@@ -3338,12 +3338,12 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     Ok(validation) => validation,
                 };
 
+                self.set_accessed_bit(cs_validation.adjusted_selector, bus)?;
                 self.set_loaded_segment_cache(
                     SegReg32::CS,
                     cs_validation.adjusted_selector,
                     cs_validation.descriptor,
                 );
-                self.set_accessed_bit(cs_validation.adjusted_selector, bus)?;
                 if self.use_esp() {
                     self.regs.set_dword(DwordReg::ESP, sp.wrapping_add(6));
                 } else {
