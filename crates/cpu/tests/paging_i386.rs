@@ -3074,11 +3074,7 @@ fn paging_call_gate_pf_on_param_copy_does_not_commit_ss_esp() {
 
     // PTE_US on every page touched by the CPL=3 caller and by the still-CPL=3
     // code in code_descriptor (which reads gate fields and TSS fields without
-    // the supervisor-override path used for descriptor decode). The kernel
-    // stack page also needs PTE_US so the post-SS-commit (still CPL=3) pushes
-    // in the pre-fix code path can succeed - otherwise the buggy path faults
-    // on the saved_ss push instead of on the parameter copy and the test
-    // doesn't exercise the bug we care about.
+    // the supervisor-override path used for descriptor decode).
     let pde = read_dword_at(&bus, PG_PAGE_DIR);
     write_dword_at(&mut bus, PG_PAGE_DIR, pde | PTE_US);
     for page in [
@@ -3152,6 +3148,95 @@ fn paging_call_gate_pf_on_param_copy_does_not_commit_ss_esp() {
     );
 
     write_dword_at(&mut bus, PG_PAGE_TABLE_0 + stack_pte_index * 4, saved_pte);
+}
+
+/// Task switch must mark the new TSS busy and save the old task's CPU
+/// state atomically: a #PF on the new TSS busy-bit write must leave the
+/// caller's TSS unmodified (still marked busy in the GDT) and the old
+/// task's state save un-applied.
+///
+/// 486 with CR0.WP=1 lets a supervisor write to a read-only page fault, so
+/// we can place the new TSS descriptor on a read-only GDT page while the
+/// surrounding state save / decode reads still succeed.
+#[test]
+fn paging_task_switch_pf_on_new_tss_busy_bit_leaves_old_tss_busy() {
+    let mut cpu: I386<{ CPU_MODEL_486 }> = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_paged_protected_mode(&mut bus);
+    state.cr0 |= 0x0001_0000; // CR0.WP = 1.
+
+    // Mark the current TSS (entry 7 = PG_TSS_SEL) busy in the GDT to match
+    // the cached tr_rights = 0x8B from `setup_paged_protected_mode`.
+    bus.ram[(PG_GDT_BASE + 7 * 8 + 5) as usize] = 0x8B;
+
+    // Lay down a second TSS descriptor at GDT entry 512: the descriptor
+    // straddles into page 0x81 so we can make that page read-only without
+    // affecting the rest of the GDT. Available 386 TSS, base = TSS1_BASE,
+    // limit = 103.
+    const TSS1_BASE: u32 = 0x71000;
+    const TSS1_GDT_ENTRY: u32 = 512;
+    let tss1_sel: u16 = (TSS1_GDT_ENTRY as u16) << 3;
+    write_gdt_entry16(
+        &mut bus,
+        PG_GDT_BASE,
+        TSS1_GDT_ENTRY as u16,
+        TSS1_BASE,
+        103,
+        0x89,
+    );
+    state.gdt_limit = (TSS1_GDT_ENTRY * 8 + 7) as u16;
+
+    // Pre-populate TSS1 body with a plausible state so a successful switch
+    // would resume cleanly. Both buggy and fixed paths fault before TSS1
+    // takes effect, but we want any post-fault descriptor walks to see a
+    // legal target.
+    write_dword_at(&mut bus, TSS1_BASE + 32, 0x0000); // EIP
+    write_dword_at(&mut bus, TSS1_BASE + 36, 0x0002); // EFLAGS
+    write_word_at(&mut bus, TSS1_BASE + 76, PG_CS_SEL); // CS
+    write_word_at(&mut bus, TSS1_BASE + 80, PG_SS_SEL); // SS
+    write_word_at(&mut bus, TSS1_BASE + 84, PG_DS_SEL); // DS
+
+    cpu.load_state(&state);
+
+    // Sentinel in EAX so a successful state save into the old TSS body is
+    // detectable afterwards.
+    cpu.state.set_eax(0xCAFE_BABE);
+
+    // JMP FAR 0x1000:0 - 0xEA imm16:imm16 (TSS selector dispatch).
+    place_at(
+        &mut bus,
+        PG_CODE_BASE,
+        &[0xEA, 0x00, 0x00, tss1_sel as u8, (tss1_sel >> 8) as u8],
+    );
+
+    // Make page 0x81 (which holds the TSS1 descriptor) read-only: present
+    // but no PTE_RW. With CR0.WP=1 the busy-bit write at GDT[512]+5 = 0x81005
+    // faults; reads of the descriptor itself still succeed.
+    write_dword_at(&mut bus, PG_PAGE_TABLE_0 + 0x81 * 4, 0x81000 | PTE_P);
+
+    cpu.step(&mut bus); // JMP FAR (task switch) -> #PF on new TSS busy bit
+    cpu.step(&mut bus); // HLT in #PF handler
+
+    assert!(cpu.halted(), "CPU should halt inside the #PF handler");
+    assert_eq!(
+        cpu.ip(),
+        PG_PF_HANDLER_IP as u32 + 1,
+        "control must transfer to the #PF handler"
+    );
+
+    let tss0_rights = bus.ram[(PG_GDT_BASE + 7 * 8 + 5) as usize];
+    assert_eq!(
+        tss0_rights, 0x8B,
+        "old TSS descriptor must still be marked busy after the failed switch"
+    );
+
+    let saved_eax = read_dword_at(&bus, PG_TSS_BASE + 40);
+    assert_eq!(
+        saved_eax, 0,
+        "old TSS body must not have been written (the state save must be \
+         pre-translated and aborted before any commit)"
+    );
 }
 
 /// LEAVE atomicity: a #PF on the BP pop must leave ESP/EBP at their
