@@ -3318,3 +3318,126 @@ fn paging_fault_pushad_v86_preserves_sp_on_fault() {
 
     assert_v86_pf_frame_preserves_sp_with_cr2(&cpu, &bus, 0x2004, 0, 0x1FFC);
 }
+
+/// V86 -> ring0 INT dispatch must be restartable: if a push onto the
+/// TSS-supplied kernel stack faults, the #PF handler must observe the
+/// original V86 state (VM=1, V86 SS:ESP, V86 segment registers, EIP
+/// pointing at the INT instruction) so that IRET back re-executes the
+/// INT cleanly. Layout:
+/// - TSS ESP0 = 0x4020 (kernel stack just inside page 4, present).
+/// - Page 3 (linear 0x3000..0x3FFF) NOT PRESENT.
+/// - V86 INT pushes 9 dwords descending from 0x401C to 0x3FFC. The 9th
+///   push at 0x3FFC is in page 3 (FAULT).
+/// - The subsequent #PF dispatch is itself inter-priv (CPL was still 3
+///   since the original INT had not yet committed CS). #PF pushes 10
+///   dwords (from_vm86=true if VM was preserved) totaling 40 bytes,
+///   descending from 0x401C to 0x3FF8 - all in page 4.
+#[test]
+fn paging_fault_v86_int_dispatch_preserves_state_on_kernel_stack_fault() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_paged_protected_mode(&mut bus);
+    write_dword_at(&mut bus, PG_TSS_BASE + 4, 0x4020);
+
+    make_v86(&mut state, V86_CS_SELECTOR, V86_SS_SELECTOR);
+    let v86_esp_orig: u32 = 0x0F00;
+    state.set_esp(v86_esp_orig);
+    state.ip = 0;
+    state.ip_upper = 0;
+
+    let pde = read_dword_at(&bus, PG_PAGE_DIR);
+    write_dword_at(&mut bus, PG_PAGE_DIR, pde | PTE_US);
+    for i in 0..512u32 {
+        let pte = read_dword_at(&bus, PG_PAGE_TABLE_0 + i * 4);
+        if pte & PTE_P != 0 {
+            write_dword_at(&mut bus, PG_PAGE_TABLE_0 + i * 4, pte | PTE_US);
+        }
+    }
+    write_dword_at(&mut bus, PG_PAGE_TABLE_0 + 3 * 4, 0);
+
+    // INT 0x80 -> 386 gate so the V86 dispatch pushes 9 dwords (36 bytes,
+    // crossing into page 3 and faulting).
+    write_idt_gate(
+        &mut bus,
+        PG_IDT_BASE,
+        0x80,
+        PG_PF_HANDLER_IP as u32,
+        PG_CS_SEL,
+        14,
+        3,
+    );
+    // #PF gate -> 286 gate so its V86 dispatch pushes 10 words (20 bytes),
+    // which fits entirely in page 4. This lets the #PF actually deliver
+    // rather than triple-faulting on the same absent page, so the test
+    // can observe the preserved V86 state in the saved frame.
+    write_idt_gate(
+        &mut bus,
+        PG_IDT_BASE,
+        14,
+        PG_PF_HANDLER_IP as u32,
+        PG_CS_SEL,
+        6,
+        0,
+    );
+
+    cpu.load_state(&state);
+    place_at(&mut bus, V86_CS_BASE, &[0xCD, 0x80]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted(), "#PF handler must HLT");
+    assert_eq!(
+        cpu.cr2, 0x3FFC,
+        "CR2 must point at the faulting kernel stack push"
+    );
+
+    // #PF gate is a 286 gate -> V86 inter-priv pushes 10 words (20 bytes).
+    let handler_sp = cpu.esp();
+    assert_eq!(
+        handler_sp,
+        0x4020u32.wrapping_sub(20),
+        "V86 #PF (286 gate) must consume 20 bytes on the TSS stack"
+    );
+
+    // 286-gate V86 inter-priv frame (low to high): errcode, IP, CS,
+    // FLAGS, SP, SS, ES, DS, FS, GS -- each 2 bytes.
+    let frame_base = PG_STACK_BASE + handler_sp;
+    let saved_ip = read_word_at(&bus, frame_base + 2);
+    let saved_cs = read_word_at(&bus, frame_base + 4);
+    let saved_flags = read_word_at(&bus, frame_base + 6);
+    let saved_sp = read_word_at(&bus, frame_base + 8);
+    let saved_ss = read_word_at(&bus, frame_base + 10);
+
+    assert_eq!(saved_ip, 0, "saved IP must point at INT 0x80 for restart");
+    assert_eq!(
+        saved_cs, V86_CS_SELECTOR,
+        "saved CS must be V86 CS, not kernel CS"
+    );
+    // VM is necessarily 0 inside the ring-0 handler; instead, verify
+    // that the saved frame structure proves VM was 1 at fault time -
+    // a from_vm86 inter-priv push from the secondary #PF dispatch
+    // includes the V86 segment registers (GS, FS, DS, ES). If the
+    // primary INT dispatch had pre-cleared VM, the #PF dispatch would
+    // have taken the non-vm86 path with a shorter frame, and we'd have
+    // failed the handler_sp = ESP0 - 20 assertion above.
+    let _ = saved_flags;
+    let saved_es = read_word_at(&bus, frame_base + 12);
+    let saved_ds = read_word_at(&bus, frame_base + 14);
+    let saved_fs = read_word_at(&bus, frame_base + 16);
+    let saved_gs = read_word_at(&bus, frame_base + 18);
+    // V86 ES/DS/FS/GS were left at 0 by make_v86, so all four should be 0.
+    assert_eq!(saved_es, 0, "saved V86 ES must be preserved");
+    assert_eq!(saved_ds, 0, "saved V86 DS must be preserved");
+    assert_eq!(saved_fs, 0, "saved V86 FS must be preserved");
+    assert_eq!(saved_gs, 0, "saved V86 GS must be preserved");
+    assert_eq!(
+        saved_sp as u32, v86_esp_orig,
+        "saved SP must be the V86 SP, not the kernel TSS ESP"
+    );
+    assert_eq!(
+        saved_ss, V86_SS_SELECTOR,
+        "saved SS must be V86 SS, not the kernel SS"
+    );
+}

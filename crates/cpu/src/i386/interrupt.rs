@@ -328,6 +328,40 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             if !Self::descriptor_present(ss_rights) {
                 return self.raise_fault_with_code(12, ss_error_code, bus);
             }
+
+            // Probe-then-commit: translate every byte the dispatch will
+            // push onto the new kernel stack BEFORE committing SS/ESP/VM.
+            let new_ss_base = ss_descriptor.base;
+            let new_b_bit = (ss_descriptor.granularity & 0x40) != 0;
+            let push_size: u32 = if is_386_gate { 4 } else { 2 };
+            let push_count: u32 =
+                if from_vm86 { 4 } else { 0 } + 5 + if error_code.is_some() { 1 } else { 0 };
+
+            // Probe each push slot at its starting linear address (and at
+            // its last byte, for the rare cross-page case).
+            for i in 1..=push_count {
+                let raw_off = new_esp.wrapping_sub(i * push_size);
+                let off_lo = if new_b_bit {
+                    raw_off
+                } else {
+                    raw_off as u16 as u32
+                };
+                let linear_lo = new_ss_base.wrapping_add(off_lo);
+                self.translate_linear(linear_lo, true, bus)?;
+                if push_size > 1 {
+                    let raw_hi = raw_off.wrapping_add(push_size - 1);
+                    let off_hi = if new_b_bit {
+                        raw_hi
+                    } else {
+                        raw_hi as u16 as u32
+                    };
+                    let linear_hi = new_ss_base.wrapping_add(off_hi);
+                    if (linear_hi & !0xFFF) != (linear_lo & !0xFFF) {
+                        self.translate_linear(linear_hi, true, bus)?;
+                    }
+                }
+            }
+
             self.set_accessed_bit(new_ss, bus)?;
             self.set_loaded_segment_cache(SegReg32::SS, new_ss, ss_descriptor);
             self.eflags_upper &= !0x0003_0000; // Clear RF and VM before setting ESP.
