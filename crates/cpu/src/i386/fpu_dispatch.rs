@@ -99,8 +99,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             match reg {
                 0 => self.fpu_fld_m32(bus)?,
                 1 => self.clk(Self::timing(2, 2)), // reserved
-                2 => self.fpu_fst_m32(bus),
-                3 => self.fpu_fstp_m32(bus),
+                2 => self.fpu_fst_m32(bus)?,
+                3 => self.fpu_fstp_m32(bus)?,
                 4 => self.fpu_fldenv(bus),
                 5 => self.fpu_fldcw(bus)?,
                 6 => self.fpu_fnstenv(bus),
@@ -276,8 +276,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             match reg {
                 0 => self.fpu_fild_m32(bus)?,
                 1 => self.clk(Self::timing(2, 2)), // reserved
-                2 => self.fpu_fist_m32(bus),
-                3 => self.fpu_fistp_m32(bus),
+                2 => self.fpu_fist_m32(bus)?,
+                3 => self.fpu_fistp_m32(bus)?,
                 4 => self.clk(Self::timing(2, 2)), // reserved
                 5 => self.fpu_fld_m80(bus)?,
                 6 => self.clk(Self::timing(2, 2)), // reserved
@@ -343,8 +343,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             match reg {
                 0 => self.fpu_fld_m64(bus)?,
                 1 => self.clk(Self::timing(2, 2)), // reserved
-                2 => self.fpu_fst_m64(bus),
-                3 => self.fpu_fstp_m64(bus),
+                2 => self.fpu_fst_m64(bus)?,
+                3 => self.fpu_fstp_m64(bus)?,
                 4 => self.fpu_frstor(bus)?,
                 5 => self.clk(Self::timing(2, 2)), // reserved
                 6 => self.fpu_fnsave(bus)?,
@@ -432,8 +432,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             match reg {
                 0 => self.fpu_fild_m16(bus)?,
                 1 => self.clk(Self::timing(2, 2)), // reserved
-                2 => self.fpu_fist_m16(bus),
-                3 => self.fpu_fistp_m16(bus),
+                2 => self.fpu_fist_m16(bus)?,
+                3 => self.fpu_fistp_m16(bus)?,
                 4 => self.fpu_fbld(bus)?,
                 5 => self.fpu_fild_m64(bus)?,
                 6 => self.fpu_fbstp(bus),

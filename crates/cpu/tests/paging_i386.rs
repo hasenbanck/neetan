@@ -1,5 +1,6 @@
 use common::Cpu as _;
 use cpu::{CPU_MODEL_486, I386};
+use softfloat::Fp80;
 
 const RAM_SIZE: usize = 2 * 1024 * 1024;
 const ADDRESS_MASK: u32 = 0x001F_FFFF;
@@ -2818,4 +2819,223 @@ fn paging_iret_inter_priv_pf_on_data_segment_decode_does_not_commit() {
         PG_PAGE_TABLE_0 + SPILL_PTE_INDEX * 4,
         saved_spill_pte,
     );
+}
+
+/// LEAVE atomicity: a #PF on the BP pop must leave ESP/EBP at their
+/// pre-instruction values. The 386 LEAVE conceptually does
+/// `SP := BP; pop BP`. A non-atomic implementation commits the SP update
+/// before the pop and leaves SP at BP after the fault, breaking restart.
+#[test]
+fn paging_fault_leave_16bit_preserves_sp_bp_on_fault() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state_template = setup_paged_protected_mode(&mut bus);
+    let mut state = state_template;
+    state.set_esp(0x0FF0);
+    state.set_ebp(0x4000);
+    cpu.load_state(&state);
+
+    // Mark page 4 (linear 0x4000..0x4FFF) as not present. SS:BP points there.
+    let bp_pte_index: u32 = 0x4;
+    write_dword_at(&mut bus, PG_PAGE_TABLE_0 + bp_pte_index * 4, 0);
+
+    // LEAVE (0xC9)
+    place_at(&mut bus, PG_CODE_BASE, &[0xC9]);
+
+    cpu.step(&mut bus); // LEAVE -> #PF
+    cpu.step(&mut bus); // HLT in handler
+
+    assert!(cpu.halted(), "handler must HLT");
+    assert_eq!(cpu.ip(), PG_PF_HANDLER_IP as u32 + 1);
+    assert_eq!(
+        cpu.cr2, 0x4000,
+        "CR2 must point at the linear address of the faulting BP pop"
+    );
+
+    // Same-privilege #PF pushes 4 dwords on the source stack: err, EIP, CS, EFLAGS.
+    // So handler_sp == ESP_at_fault - 16. If LEAVE is atomic, ESP_at_fault is
+    // the original ESP (0x0FF0). If LEAVE prematurely committed SP := BP,
+    // ESP_at_fault would be BP (0x4000).
+    let handler_sp = cpu.esp();
+    assert_eq!(
+        handler_sp,
+        0x0FF0_u32.wrapping_sub(16),
+        "ESP at fault must be the pre-instruction ESP, not BP"
+    );
+
+    assert_eq!(
+        cpu.ebp(),
+        0x4000,
+        "EBP must not have been popped on faulting LEAVE"
+    );
+}
+
+/// LEAVE r/m32 (with operand-size override 0x66) - same atomicity property
+/// as the 16-bit form, but pops a dword instead of a word.
+#[test]
+fn paging_fault_leave_32bit_preserves_sp_bp_on_fault() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state_template = setup_paged_protected_mode(&mut bus);
+    let mut state = state_template;
+    state.set_esp(0x0FF0);
+    state.set_ebp(0x4000);
+    cpu.load_state(&state);
+
+    let bp_pte_index: u32 = 0x4;
+    write_dword_at(&mut bus, PG_PAGE_TABLE_0 + bp_pte_index * 4, 0);
+
+    // 0x66 0xC9 - LEAVE with operand-size override (pops 4 bytes into EBP)
+    place_at(&mut bus, PG_CODE_BASE, &[0x66, 0xC9]);
+
+    cpu.step(&mut bus); // LEAVE -> #PF
+    cpu.step(&mut bus); // HLT in handler
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PG_PF_HANDLER_IP as u32 + 1);
+    assert_eq!(cpu.cr2, 0x4000);
+
+    let handler_sp = cpu.esp();
+    assert_eq!(
+        handler_sp,
+        0x0FF0_u32.wrapping_sub(16),
+        "ESP at fault must be the pre-instruction ESP, not BP"
+    );
+
+    assert_eq!(cpu.ebp(), 0x4000, "EBP must not have been popped");
+}
+
+/// Sets up a paged ring-0 state with TOP=0 and ST(0)=Fp80::ONE (a value that
+/// converts losslessly to f32/f64, so fpu_check_result leaves the precision
+/// flag clear). Marks PTE for linear page 0x14 as not present and sets BX
+/// to 0x4000, so DS:[BX] = 0x14000 will #PF on any memory FPU access. The
+/// FPU memory stores below all target this address.
+fn setup_fpu_fault_state(bus: &mut TestBus) -> cpu::I386State {
+    let mut state = setup_paged_protected_mode(bus);
+    state.set_ebx(0x4000);
+    state.fpu.registers[0] = Fp80::ONE;
+    state.fpu.status_word = 0; // TOP=0, no exception bits
+    state.fpu.tag_word = 0xFFFC; // reg 0 valid (00), regs 1..7 empty (11)
+    state.fpu.control_word = 0x037F; // default; precision = extended
+    state
+}
+
+/// FSTP DWORD PTR [BX] atomicity: a #PF on the memory write must leave
+/// the FPU stack untouched. The buggy implementation calls fpu_pop()
+/// unconditionally after fpu_fst_m32 (whose internal write returns Step
+/// but whose void signature swallows the failure), so on fault TOP would
+/// advance and ST(0)'s tag would flip to empty.
+#[test]
+fn paging_fault_fstp_m32_preserves_st0_on_fault() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_fpu_fault_state(&mut bus);
+    cpu.load_state(&state);
+
+    // PTE 0x14 = not present. DS:BX = 0x10000 + 0x4000 = 0x14000.
+    write_dword_at(&mut bus, PG_PAGE_TABLE_0 + 0x14 * 4, 0);
+
+    // FSTP DWORD PTR [BX] - 0xD9 /3 mod=00 rm=111 -> 0xD9 0x1F
+    place_at(&mut bus, PG_CODE_BASE, &[0xD9, 0x1F]);
+
+    cpu.step(&mut bus); // FSTP -> #PF
+    cpu.step(&mut bus); // HLT in handler
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PG_PF_HANDLER_IP as u32 + 1);
+    assert_eq!(cpu.cr2, 0x14000);
+
+    let top = (cpu.state.fpu.status_word >> 11) & 7;
+    assert_eq!(top, 0, "TOP must not have advanced on faulting FSTP");
+
+    let tag_st0 = cpu.state.fpu.tag_word & 0x3;
+    assert_eq!(
+        tag_st0, 0b00,
+        "ST(0) tag must remain valid on faulting FSTP"
+    );
+
+    assert_eq!(
+        cpu.state.fpu.registers[0],
+        Fp80::ONE,
+        "ST(0) register slot must be unchanged on faulting FSTP"
+    );
+}
+
+/// FSTP QWORD PTR [BX] - same property for the 64-bit form (DD /3).
+#[test]
+fn paging_fault_fstp_m64_preserves_st0_on_fault() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_fpu_fault_state(&mut bus);
+    cpu.load_state(&state);
+
+    write_dword_at(&mut bus, PG_PAGE_TABLE_0 + 0x14 * 4, 0);
+
+    // FSTP QWORD PTR [BX] - 0xDD /3 mod=00 rm=111 -> 0xDD 0x1F
+    place_at(&mut bus, PG_CODE_BASE, &[0xDD, 0x1F]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.cr2, 0x14000);
+
+    let top = (cpu.state.fpu.status_word >> 11) & 7;
+    assert_eq!(top, 0, "TOP must not advance on faulting FSTP m64");
+    assert_eq!(cpu.state.fpu.tag_word & 0x3, 0b00);
+    assert_eq!(cpu.state.fpu.registers[0], Fp80::ONE);
+}
+
+/// FISTP WORD PTR [BX] - DF /3 mod=00 rm=111 -> 0xDF 0x1F.
+#[test]
+fn paging_fault_fistp_m16_preserves_st0_on_fault() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_fpu_fault_state(&mut bus);
+    cpu.load_state(&state);
+
+    write_dword_at(&mut bus, PG_PAGE_TABLE_0 + 0x14 * 4, 0);
+
+    place_at(&mut bus, PG_CODE_BASE, &[0xDF, 0x1F]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.cr2, 0x14000);
+
+    let top = (cpu.state.fpu.status_word >> 11) & 7;
+    assert_eq!(top, 0, "TOP must not advance on faulting FISTP m16");
+    assert_eq!(cpu.state.fpu.tag_word & 0x3, 0b00);
+    assert_eq!(cpu.state.fpu.registers[0], Fp80::ONE);
+}
+
+/// FISTP DWORD PTR [BX] - DB /3 mod=00 rm=111 -> 0xDB 0x1F.
+#[test]
+fn paging_fault_fistp_m32_preserves_st0_on_fault() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_fpu_fault_state(&mut bus);
+    cpu.load_state(&state);
+
+    write_dword_at(&mut bus, PG_PAGE_TABLE_0 + 0x14 * 4, 0);
+
+    place_at(&mut bus, PG_CODE_BASE, &[0xDB, 0x1F]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.cr2, 0x14000);
+
+    let top = (cpu.state.fpu.status_word >> 11) & 7;
+    assert_eq!(top, 0, "TOP must not advance on faulting FISTP m32");
+    assert_eq!(cpu.state.fpu.tag_word & 0x3, 0b00);
+    assert_eq!(cpu.state.fpu.registers[0], Fp80::ONE);
 }
