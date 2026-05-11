@@ -2231,151 +2231,29 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                             bus,
                         );
                     }
-
-                    let is_386_tss = self.tr_rights & 0x0F >= 9;
-                    let tss_sp_offset = if is_386_tss {
-                        4 + target_dpl as u32 * 8
-                    } else {
-                        2 + target_dpl as u32 * 4
-                    };
-                    let tss_ss_offset = tss_sp_offset + if is_386_tss { 4 } else { 2 };
-                    let tss_esp = if is_386_tss {
-                        self.read_dword_linear(bus, self.tr_base.wrapping_add(tss_sp_offset))?
-                    } else {
-                        self.read_word_linear(bus, self.tr_base.wrapping_add(tss_sp_offset))? as u32
-                    };
-                    let tss_ss =
-                        self.read_word_linear(bus, self.tr_base.wrapping_add(tss_ss_offset))?;
-
-                    let saved_ss = self.sregs[SegReg32::SS as usize];
-                    let saved_esp = if self.use_esp() {
-                        self.regs.dword(crate::DwordReg::ESP)
-                    } else {
-                        self.regs.word(WordReg::SP) as u32
-                    };
-                    let old_ss_base = self.seg_base(SegReg32::SS);
-                    let old_ss_is_32bit = self.seg_granularity[SegReg32::SS as usize] & 0x40 != 0;
-
-                    // Validate the new SS descriptor without committing it yet.
-                    if tss_ss & 0xFFFC == 0 {
-                        return self.raise_fault_with_code(10, 0, bus);
-                    }
-                    let Some(new_ss_desc) = self.decode_descriptor(tss_ss, bus)? else {
-                        return self.raise_fault_with_code(
-                            10,
-                            Self::segment_error_code(tss_ss),
-                            bus,
-                        );
-                    };
-                    let new_ss_rights = new_ss_desc.rights;
-                    if !Self::descriptor_is_segment(new_ss_rights)
-                        || !Self::descriptor_is_writable(new_ss_rights)
-                    {
-                        return self.raise_fault_with_code(
-                            10,
-                            Self::segment_error_code(tss_ss),
-                            bus,
-                        );
-                    }
-                    let new_ss_dpl = Self::descriptor_dpl(new_ss_rights);
-                    let new_ss_rpl = tss_ss & 3;
-                    if new_ss_dpl != target_dpl || new_ss_rpl != target_dpl {
-                        return self.raise_fault_with_code(
-                            10,
-                            Self::segment_error_code(tss_ss),
-                            bus,
-                        );
-                    }
-                    if !Self::descriptor_present(new_ss_rights) {
-                        return self.raise_fault_with_code(
-                            10,
-                            Self::segment_error_code(tss_ss),
-                            bus,
-                        );
-                    }
-
-                    // Stack-space pre-check: verify the new stack has room for
-                    // the parameters plus the return frame (SS, ESP, CS, EIP)
-                    // before any state is mutated. Per 486 PRM CALL gate
-                    // pseudocode, raise #SS(0) when the stack is too small.
-                    let bytes_per_push: u32 = if is_386_gate { 4 } else { 2 };
-                    let total_push_bytes = bytes_per_push * (4 + gate_count as u32);
-                    let new_ss_d_bit = new_ss_desc.granularity & 0x40 != 0;
-                    let stack_top = if new_ss_d_bit {
-                        tss_esp
-                    } else {
-                        tss_esp & 0xFFFF
-                    };
-                    let stack_space_ok = if Self::descriptor_is_expand_down(new_ss_rights) {
-                        stack_top
-                            .checked_sub(total_push_bytes)
-                            .is_some_and(|new_esp| new_esp > new_ss_desc.limit)
-                    } else {
-                        stack_top >= total_push_bytes
-                    };
-                    if !stack_space_ok {
-                        return self.raise_fault_with_code(12, 0, bus);
-                    }
-
-                    self.set_accessed_bit(tss_ss, bus)?;
-                    self.set_loaded_segment_cache(SegReg32::SS, tss_ss, new_ss_desc);
-                    if self.use_esp() {
-                        self.regs.set_dword(crate::DwordReg::ESP, tss_esp);
-                    } else {
-                        self.regs.set_word(WordReg::SP, tss_esp as u16);
-                    }
-
-                    if is_386_gate {
-                        self.push_dword(bus, saved_ss as u32)?;
-                        self.push_dword(bus, saved_esp)?;
-                        for i in (0..gate_count as u32).rev() {
-                            let offset = saved_esp.wrapping_add(i * 4);
-                            let offset = if old_ss_is_32bit {
-                                offset
-                            } else {
-                                offset & 0xFFFF
-                            };
-                            let param =
-                                self.read_dword_linear(bus, old_ss_base.wrapping_add(offset))?;
-                            self.push_dword(bus, param)?;
-                        }
-                    } else {
-                        self.push(bus, saved_ss)?;
-                        self.push(bus, saved_esp as u16)?;
-                        for i in (0..gate_count as u16).rev() {
-                            let offset = saved_esp.wrapping_add(i as u32 * 2);
-                            let offset = if old_ss_is_32bit {
-                                offset
-                            } else {
-                                offset & 0xFFFF
-                            };
-                            let param =
-                                self.read_word_linear(bus, old_ss_base.wrapping_add(offset))?;
-                            self.push(bus, param)?;
-                        }
-                    }
-                }
-
-                self.set_accessed_bit(gate_selector, bus)?;
-                // Conforming targets preserve the calling CPL; non-conforming
-                // targets adopt the target's DPL as the new CPL.
-                let new_cpl = if Self::descriptor_is_conforming_code(tr) {
-                    cpl
+                    self.commit_call_gate_inter_priv(
+                        target_desc,
+                        target_dpl,
+                        gate_selector,
+                        gate_offset,
+                        is_386_gate,
+                        gate_count,
+                        old_cs,
+                        old_eip,
+                        bus,
+                    )?;
                 } else {
-                    target_dpl
-                };
-                let adjusted = (gate_selector & !3) | new_cpl;
-                self.set_loaded_segment_cache(SegReg32::CS, adjusted, target_desc);
-                self.ip = gate_offset as u16;
-                self.ip_upper = gate_offset & 0xFFFF_0000;
-                if gate == TaskType::Call {
-                    if is_386_gate {
-                        self.push_dword(bus, old_cs as u32)?;
-                        self.push_dword(bus, old_eip)?;
-                    } else {
-                        self.push(bus, old_cs)?;
-                        self.push(bus, old_eip as u16)?;
-                    }
+                    self.commit_call_gate_intra_priv(
+                        target_desc,
+                        gate,
+                        gate_selector,
+                        gate_offset,
+                        is_386_gate,
+                        cpl,
+                        old_cs,
+                        old_eip,
+                        bus,
+                    )?;
                 }
                 Ok(())
             }
@@ -2402,6 +2280,252 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             }
             _ => self.raise_fault_with_code(13, Self::segment_error_code(selector), bus),
         }
+    }
+
+    /// Inter-privilege CALL through a call gate. Validates every operand and
+    /// pre-translates every page the dispatch will touch before committing
+    /// any architectural state. A #PF on a parameter read, a return-frame
+    /// push slot, or one of the descriptor accessed-bit writes aborts with
+    /// SS:ESP and CS:EIP still pointing at the caller's frame, so the fault
+    /// is reported inter-privilege from the calling CPL.
+    #[allow(clippy::too_many_arguments)]
+    fn commit_call_gate_inter_priv(
+        &mut self,
+        target_desc: SegmentDescriptor,
+        target_dpl: u16,
+        gate_selector: u16,
+        gate_offset: u32,
+        is_386_gate: bool,
+        gate_count: u8,
+        old_cs: u16,
+        old_eip: u32,
+        bus: &mut impl common::Bus,
+    ) -> Step {
+        let is_386_tss = self.tr_rights & 0x0F >= 9;
+        let tss_sp_offset = if is_386_tss {
+            4 + target_dpl as u32 * 8
+        } else {
+            2 + target_dpl as u32 * 4
+        };
+        let tss_ss_offset = tss_sp_offset + if is_386_tss { 4 } else { 2 };
+        let tss_esp = if is_386_tss {
+            self.read_dword_linear(bus, self.tr_base.wrapping_add(tss_sp_offset))?
+        } else {
+            self.read_word_linear(bus, self.tr_base.wrapping_add(tss_sp_offset))? as u32
+        };
+        let tss_ss = self.read_word_linear(bus, self.tr_base.wrapping_add(tss_ss_offset))?;
+
+        let saved_ss = self.sregs[SegReg32::SS as usize];
+        let saved_esp = if self.use_esp() {
+            self.regs.dword(crate::DwordReg::ESP)
+        } else {
+            self.regs.word(WordReg::SP) as u32
+        };
+        let old_ss_base = self.seg_base(SegReg32::SS);
+        let old_ss_is_32bit = self.seg_granularity[SegReg32::SS as usize] & 0x40 != 0;
+
+        if tss_ss & 0xFFFC == 0 {
+            return self.raise_fault_with_code(10, 0, bus);
+        }
+        let Some(new_ss_desc) = self.decode_descriptor(tss_ss, bus)? else {
+            return self.raise_fault_with_code(10, Self::segment_error_code(tss_ss), bus);
+        };
+        let new_ss_rights = new_ss_desc.rights;
+        if !Self::descriptor_is_segment(new_ss_rights)
+            || !Self::descriptor_is_writable(new_ss_rights)
+        {
+            return self.raise_fault_with_code(10, Self::segment_error_code(tss_ss), bus);
+        }
+        let new_ss_dpl = Self::descriptor_dpl(new_ss_rights);
+        let new_ss_rpl = tss_ss & 3;
+        if new_ss_dpl != target_dpl || new_ss_rpl != target_dpl {
+            return self.raise_fault_with_code(10, Self::segment_error_code(tss_ss), bus);
+        }
+        if !Self::descriptor_present(new_ss_rights) {
+            return self.raise_fault_with_code(10, Self::segment_error_code(tss_ss), bus);
+        }
+
+        // Stack-space pre-check: verify the new stack has room for the
+        // parameters plus the return frame (SS, ESP, CS, EIP) before any
+        // state is mutated.
+        let bytes_per_push: u32 = if is_386_gate { 4 } else { 2 };
+        let total_push_bytes = bytes_per_push * (4 + gate_count as u32);
+        let new_ss_d_bit = new_ss_desc.granularity & 0x40 != 0;
+        let stack_top = if new_ss_d_bit {
+            tss_esp
+        } else {
+            tss_esp & 0xFFFF
+        };
+        let stack_space_ok = if Self::descriptor_is_expand_down(new_ss_rights) {
+            stack_top
+                .checked_sub(total_push_bytes)
+                .is_some_and(|new_esp| new_esp > new_ss_desc.limit)
+        } else {
+            stack_top >= total_push_bytes
+        };
+        if !stack_space_ok {
+            return self.raise_fault_with_code(12, 0, bus);
+        }
+
+        // Pre-translate every new-stack push slot (saved_ss, saved_esp,
+        // gate_count parameters, and the outer CS:EIP push) before any
+        // commits.
+        let new_ss_base = new_ss_desc.base;
+        let total_pushes: u32 = 4 + gate_count as u32;
+        for i in 1..=total_pushes {
+            let raw_off = tss_esp.wrapping_sub(i * bytes_per_push);
+            let off_lo = if new_ss_d_bit {
+                raw_off
+            } else {
+                raw_off as u16 as u32
+            };
+            let linear_lo = new_ss_base.wrapping_add(off_lo);
+            self.translate_linear(linear_lo, true, bus)?;
+            if bytes_per_push > 1 {
+                let raw_hi = raw_off.wrapping_add(bytes_per_push - 1);
+                let off_hi = if new_ss_d_bit {
+                    raw_hi
+                } else {
+                    raw_hi as u16 as u32
+                };
+                let linear_hi = new_ss_base.wrapping_add(off_hi);
+                if (linear_hi & !0xFFF) != (linear_lo & !0xFFF) {
+                    self.translate_linear(linear_hi, true, bus)?;
+                }
+            }
+        }
+
+        // Read all parameters from the caller's stack now, before any
+        // commit. Buffer them so the subsequent push phase has no faulting
+        // operations.
+        let mut params: [u32; 31] = [0; 31];
+        for i in 0..gate_count as u32 {
+            let offset_raw = saved_esp.wrapping_add(i * bytes_per_push);
+            let offset = if old_ss_is_32bit {
+                offset_raw
+            } else {
+                offset_raw & 0xFFFF
+            };
+            let linear = old_ss_base.wrapping_add(offset);
+            params[i as usize] = if is_386_gate {
+                self.read_dword_linear(bus, linear)?
+            } else {
+                self.read_word_linear(bus, linear)? as u32
+            };
+        }
+
+        // Set descriptor accessed bits before any commit. On 486 + CR0.WP=1
+        // these writes can #PF on a read-only descriptor-table page, so they
+        // must occur before SS/CS caches are updated.
+        self.set_accessed_bit(tss_ss, bus)?;
+        self.set_accessed_bit(gate_selector, bus)?;
+
+        // Commit: SS cache + ESP, push the inter-priv prologue, CS cache +
+        // EIP, push the return frame. Every push from here on hits a
+        // pre-translated page so cannot #PF.
+        self.set_loaded_segment_cache(SegReg32::SS, tss_ss, new_ss_desc);
+        if self.use_esp() {
+            self.regs.set_dword(crate::DwordReg::ESP, tss_esp);
+        } else {
+            self.regs.set_word(WordReg::SP, tss_esp as u16);
+        }
+
+        if is_386_gate {
+            self.push_dword(bus, saved_ss as u32)?;
+            self.push_dword(bus, saved_esp)?;
+            for i in (0..gate_count as u32).rev() {
+                self.push_dword(bus, params[i as usize])?;
+            }
+        } else {
+            self.push(bus, saved_ss)?;
+            self.push(bus, saved_esp as u16)?;
+            for i in (0..gate_count as u32).rev() {
+                self.push(bus, params[i as usize] as u16)?;
+            }
+        }
+
+        let adjusted = (gate_selector & !3) | target_dpl;
+        self.set_loaded_segment_cache(SegReg32::CS, adjusted, target_desc);
+        self.ip = gate_offset as u16;
+        self.ip_upper = gate_offset & 0xFFFF_0000;
+
+        if is_386_gate {
+            self.push_dword(bus, old_cs as u32)?;
+            self.push_dword(bus, old_eip)?;
+        } else {
+            self.push(bus, old_cs)?;
+            self.push(bus, old_eip as u16)?;
+        }
+        Ok(())
+    }
+
+    /// Intra-privilege CALL or JMP through a call gate. Pre-translates the
+    /// outer CS:EIP push slots (CALL only) before A-bit and CS cache commit
+    /// so a fault on the push can abort with CS:EIP unchanged.
+    #[allow(clippy::too_many_arguments)]
+    fn commit_call_gate_intra_priv(
+        &mut self,
+        target_desc: SegmentDescriptor,
+        gate: TaskType,
+        gate_selector: u16,
+        gate_offset: u32,
+        is_386_gate: bool,
+        cpl: u16,
+        old_cs: u16,
+        old_eip: u32,
+        bus: &mut impl common::Bus,
+    ) -> Step {
+        // Pre-translate the outer push slots on the current stack so the
+        // CALL's return frame push cannot fault after the CS cache has
+        // already been committed.
+        if gate == TaskType::Call {
+            let bytes_per_push: u32 = if is_386_gate { 4 } else { 2 };
+            let ss_base = self.seg_base(SegReg32::SS);
+            let ss_b_bit = self.seg_granularity[SegReg32::SS as usize] & 0x40 != 0;
+            let current_esp = if self.use_esp() {
+                self.regs.dword(crate::DwordReg::ESP)
+            } else {
+                self.regs.word(WordReg::SP) as u32
+            };
+            for i in 1..=2u32 {
+                let raw_off = current_esp.wrapping_sub(i * bytes_per_push);
+                let off_lo = if ss_b_bit {
+                    raw_off
+                } else {
+                    raw_off as u16 as u32
+                };
+                let linear_lo = ss_base.wrapping_add(off_lo);
+                self.translate_linear(linear_lo, true, bus)?;
+                if bytes_per_push > 1 {
+                    let raw_hi = raw_off.wrapping_add(bytes_per_push - 1);
+                    let off_hi = if ss_b_bit {
+                        raw_hi
+                    } else {
+                        raw_hi as u16 as u32
+                    };
+                    let linear_hi = ss_base.wrapping_add(off_hi);
+                    if (linear_hi & !0xFFF) != (linear_lo & !0xFFF) {
+                        self.translate_linear(linear_hi, true, bus)?;
+                    }
+                }
+            }
+        }
+
+        self.set_accessed_bit(gate_selector, bus)?;
+        let adjusted = (gate_selector & !3) | cpl;
+        self.set_loaded_segment_cache(SegReg32::CS, adjusted, target_desc);
+        self.ip = gate_offset as u16;
+        self.ip_upper = gate_offset & 0xFFFF_0000;
+        if gate == TaskType::Call {
+            if is_386_gate {
+                self.push_dword(bus, old_cs as u32)?;
+                self.push_dword(bus, old_eip)?;
+            } else {
+                self.push(bus, old_cs)?;
+                self.push(bus, old_eip as u16)?;
+            }
+        }
+        Ok(())
     }
 
     /// Reads the 8-byte descriptor at `addr` (a linear address).
