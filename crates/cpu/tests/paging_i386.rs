@@ -2853,6 +2853,176 @@ fn paging_iret_inter_priv_pf_on_data_segment_decode_does_not_commit() {
     );
 }
 
+/// RET FAR inter-priv must validate every operand (CS, SS, DS/ES/FS/GS) before
+/// committing any state. A #PF raised during the DS revalidation phase has to
+/// be delivered same-privilege from CPL 0 with CS, SS, EIP and ESP unchanged.
+/// The pre-fix code commits CS, IP, SS, ESP first and then enters
+/// `revalidate_data_segment(DS)`, so the fault is delivered inter-privilege
+/// with a 6-dword frame on the TSS-supplied stack.
+#[test]
+fn paging_retf_inter_priv_pf_on_data_segment_decode_does_not_commit() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_paged_protected_mode(&mut bus);
+
+    const HIGH_DS_SEL: u16 = 0x1000;
+    write_gdt_entry16(&mut bus, PG_GDT_BASE, 512, PG_DATA_BASE, 0xFFFF, 0x93);
+    state.gdt_limit = 0x1007;
+
+    state.set_ds(HIGH_DS_SEL);
+    state.seg_bases[cpu::SegReg32::DS as usize] = PG_DATA_BASE;
+    state.seg_rights[cpu::SegReg32::DS as usize] = 0x93;
+    state.seg_limits[cpu::SegReg32::DS as usize] = 0xFFFF;
+
+    cpu.load_state(&state);
+
+    // 0xCB - RET FAR (16-bit operand size).
+    place_at(&mut bus, PG_CODE_BASE, &[0xCB]);
+
+    let ring3_ip: u16 = 0x0100;
+    let ring3_sp_low: u16 = 0xFF00;
+    let original_esp = cpu.esp();
+
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp, ring3_ip);
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp + 2, PG_RING3_CS_SEL);
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp + 4, ring3_sp_low);
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp + 6, PG_RING3_SS_SEL);
+
+    let pre_cs = cpu.cs();
+    let pre_ss = cpu.ss();
+    let pre_ds = cpu.ds();
+    let pre_es = cpu.es();
+
+    const SPILL_PTE_INDEX: u32 = 0x81;
+    let saved_spill_pte = read_dword_at(&bus, PG_PAGE_TABLE_0 + SPILL_PTE_INDEX * 4);
+    write_dword_at(&mut bus, PG_PAGE_TABLE_0 + SPILL_PTE_INDEX * 4, 0);
+
+    cpu.step(&mut bus); // RET FAR -> #PF during DS check_data_segment_at_cpl
+    cpu.step(&mut bus); // HLT in #PF handler
+
+    assert!(cpu.halted(), "CPU should halt inside the #PF handler");
+    assert_eq!(
+        cpu.ip(),
+        PG_PF_HANDLER_IP as u32 + 1,
+        "control must transfer to the #PF handler"
+    );
+
+    let handler_sp = cpu.esp();
+    assert_eq!(
+        handler_sp,
+        original_esp.wrapping_sub(16),
+        "same-privilege #PF must consume 4 dwords on the unchanged source stack"
+    );
+
+    let pushed_eip = read_dword_at(&bus, PG_STACK_BASE + handler_sp + 4);
+    let pushed_cs = read_dword_at(&bus, PG_STACK_BASE + handler_sp + 8);
+    assert_eq!(
+        pushed_eip, 0,
+        "fault frame EIP must still point at the RET FAR instruction"
+    );
+    assert_eq!(
+        pushed_cs & 0xFFFF,
+        pre_cs as u32,
+        "fault frame CS must still be the source ring-0 CS"
+    );
+
+    assert_eq!(cpu.cs(), pre_cs, "CS must not have been committed");
+    assert_eq!(cpu.ss(), pre_ss, "SS must not have been committed");
+    assert_eq!(
+        cpu.ds(),
+        pre_ds,
+        "DS must not have been mutated by the RET FAR pre-decision"
+    );
+    assert_eq!(cpu.es(), pre_es, "ES must not have been committed");
+
+    write_dword_at(
+        &mut bus,
+        PG_PAGE_TABLE_0 + SPILL_PTE_INDEX * 4,
+        saved_spill_pte,
+    );
+}
+
+/// RET FAR imm16 inter-priv: same atomicity contract as the bare RET FAR. The
+/// immediate stack-cleanup operand must not change the validate-then-commit
+/// shape; a #PF during DS revalidation has to land same-privilege with all
+/// segment caches untouched.
+#[test]
+fn paging_retf_imm_inter_priv_pf_on_data_segment_decode_does_not_commit() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_paged_protected_mode(&mut bus);
+
+    const HIGH_DS_SEL: u16 = 0x1000;
+    write_gdt_entry16(&mut bus, PG_GDT_BASE, 512, PG_DATA_BASE, 0xFFFF, 0x93);
+    state.gdt_limit = 0x1007;
+
+    state.set_ds(HIGH_DS_SEL);
+    state.seg_bases[cpu::SegReg32::DS as usize] = PG_DATA_BASE;
+    state.seg_rights[cpu::SegReg32::DS as usize] = 0x93;
+    state.seg_limits[cpu::SegReg32::DS as usize] = 0xFFFF;
+
+    cpu.load_state(&state);
+
+    // 0xCA imm16 - RET FAR imm16, immediate = 8. The inter-priv path reads
+    // new_sp / new_ss from `sp + 4 + imm`, so the SS/SP slots sit 8 bytes
+    // higher than for the bare RET FAR variant.
+    place_at(&mut bus, PG_CODE_BASE, &[0xCA, 0x08, 0x00]);
+
+    let ring3_ip: u16 = 0x0100;
+    let ring3_sp_low: u16 = 0xFF00;
+    let original_esp = cpu.esp();
+
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp, ring3_ip);
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp + 2, PG_RING3_CS_SEL);
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp + 12, ring3_sp_low);
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp + 14, PG_RING3_SS_SEL);
+
+    let pre_cs = cpu.cs();
+    let pre_ss = cpu.ss();
+    let pre_ds = cpu.ds();
+    let pre_es = cpu.es();
+
+    const SPILL_PTE_INDEX: u32 = 0x81;
+    let saved_spill_pte = read_dword_at(&bus, PG_PAGE_TABLE_0 + SPILL_PTE_INDEX * 4);
+    write_dword_at(&mut bus, PG_PAGE_TABLE_0 + SPILL_PTE_INDEX * 4, 0);
+
+    cpu.step(&mut bus); // RET FAR imm16 -> #PF during DS check
+    cpu.step(&mut bus); // HLT in #PF handler
+
+    assert!(cpu.halted(), "CPU should halt inside the #PF handler");
+    let handler_sp = cpu.esp();
+    assert_eq!(
+        handler_sp,
+        original_esp.wrapping_sub(16),
+        "same-privilege #PF must consume 4 dwords on the unchanged source stack"
+    );
+
+    let pushed_eip = read_dword_at(&bus, PG_STACK_BASE + handler_sp + 4);
+    let pushed_cs = read_dword_at(&bus, PG_STACK_BASE + handler_sp + 8);
+    assert_eq!(
+        pushed_eip, 0,
+        "fault frame EIP must still point at the RET FAR imm16 instruction"
+    );
+    assert_eq!(
+        pushed_cs & 0xFFFF,
+        pre_cs as u32,
+        "fault frame CS must still be the source ring-0 CS"
+    );
+
+    assert_eq!(cpu.cs(), pre_cs, "CS must not have been committed");
+    assert_eq!(cpu.ss(), pre_ss, "SS must not have been committed");
+    assert_eq!(cpu.ds(), pre_ds, "DS must not have been mutated");
+    assert_eq!(cpu.es(), pre_es, "ES must not have been committed");
+
+    write_dword_at(
+        &mut bus,
+        PG_PAGE_TABLE_0 + SPILL_PTE_INDEX * 4,
+        saved_spill_pte,
+    );
+}
+
 /// LEAVE atomicity: a #PF on the BP pop must leave ESP/EBP at their
 /// pre-instruction values. The 386 LEAVE conceptually does
 /// `SP := BP; pop BP`. A non-atomic implementation commits the SP update

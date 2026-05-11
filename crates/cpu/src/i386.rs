@@ -312,28 +312,6 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             && (self.seg_granularity[SegReg32::CS as usize] & 0x40) != 0
     }
 
-    fn save_cs_state(&self) -> (u16, u32, u32, u8, u8, u16, u32) {
-        (
-            self.sregs[SegReg32::CS as usize],
-            self.seg_bases[SegReg32::CS as usize],
-            self.seg_limits[SegReg32::CS as usize],
-            self.seg_rights[SegReg32::CS as usize],
-            self.seg_granularity[SegReg32::CS as usize],
-            self.ip,
-            self.ip_upper,
-        )
-    }
-
-    fn restore_cs_state(&mut self, saved: &(u16, u32, u32, u8, u8, u16, u32)) {
-        self.sregs[SegReg32::CS as usize] = saved.0;
-        self.seg_bases[SegReg32::CS as usize] = saved.1;
-        self.seg_limits[SegReg32::CS as usize] = saved.2;
-        self.seg_rights[SegReg32::CS as usize] = saved.3;
-        self.seg_granularity[SegReg32::CS as usize] = saved.4;
-        self.ip = saved.5;
-        self.ip_upper = saved.6;
-    }
-
     #[inline(always)]
     fn effective_eip(&self) -> u32 {
         self.ip_upper | self.ip as u32
@@ -866,86 +844,6 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
         self.set_accessed_bit(selector, bus)?;
         self.set_loaded_segment_cache(seg, selector, descriptor);
-        Ok(())
-    }
-
-    /// Validates a candidate SS for an inter-privilege IRET return without
-    /// committing any state. Returns the fault `(vector, error_code)` if the
-    /// selector would not be acceptable; returns `None` if the load would
-    /// succeed. Mirrors the SS-branch checks in [`load_protected_segment`].
-    ///
-    /// 80486 PRM IRET pseudocode validates SS before any CS or EIP commit, so
-    /// callers must run this *before* `load_cs_for_return` to keep faults
-    /// reportable with the original CS:EIP intact.
-    fn precheck_ss_for_inter_priv_iret(
-        &mut self,
-        selector: u16,
-        target_cpl: u16,
-        bus: &mut impl common::Bus,
-    ) -> Step<Option<(u8, u16)>> {
-        if selector & 0xFFFC == 0 {
-            return Ok(Some((13, 0)));
-        }
-        let Some(descriptor) = self.decode_descriptor(selector, bus)? else {
-            return Ok(Some((13, Self::segment_error_code(selector))));
-        };
-        let rights = descriptor.rights;
-        let rpl = selector & 0x0003;
-        let dpl = Self::descriptor_dpl(rights);
-        if rpl != target_cpl {
-            return Ok(Some((13, Self::segment_error_code(selector))));
-        }
-        if !Self::descriptor_is_segment(rights) || !Self::descriptor_is_writable(rights) {
-            return Ok(Some((13, Self::segment_error_code(selector))));
-        }
-        if dpl != target_cpl {
-            return Ok(Some((13, Self::segment_error_code(selector))));
-        }
-        if !Self::descriptor_present(rights) {
-            return Ok(Some((12, Self::segment_error_code(selector))));
-        }
-        Ok(None)
-    }
-
-    fn load_cs_for_return(
-        &mut self,
-        selector: u16,
-        new_ip: u32,
-        bus: &mut impl common::Bus,
-    ) -> Step {
-        if selector & 0xFFFC == 0 {
-            return self.raise_fault_with_code(13, 0, bus);
-        }
-        let Some(descriptor) = self.decode_descriptor(selector, bus)? else {
-            return self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
-        };
-        let rights = descriptor.rights;
-        let cpl = self.cpl();
-        let rpl = selector & 0x0003;
-        let dpl = Self::descriptor_dpl(rights);
-
-        if rpl < cpl {
-            return self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
-        }
-        if !Self::descriptor_is_segment(rights) || !Self::descriptor_is_code(rights) {
-            return self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
-        }
-        if Self::descriptor_is_conforming_code(rights) {
-            if dpl > rpl {
-                return self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
-            }
-        } else if dpl != rpl {
-            return self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
-        }
-        if !Self::descriptor_present(rights) {
-            return self.raise_fault_with_code(11, Self::segment_error_code(selector), bus);
-        }
-        if new_ip > descriptor.limit {
-            return self.raise_fault_with_code(13, 0, bus);
-        }
-        self.set_accessed_bit(selector, bus)?;
-        let adjusted = (selector & !3) | rpl;
-        self.set_loaded_segment_cache(SegReg32::CS, adjusted, descriptor);
         Ok(())
     }
 
@@ -1666,54 +1564,6 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         if rights & 0x01 == 0 {
             bus.write_byte(phys, rights | 0x01);
         }
-        Ok(())
-    }
-
-    fn revalidate_data_segment(
-        &mut self,
-        seg: SegReg32,
-        new_cpl: u16,
-        bus: &mut impl common::Bus,
-    ) -> Step {
-        if !self.seg_valid[seg as usize] {
-            return Ok(());
-        }
-        let selector = self.sregs[seg as usize];
-        if selector & 0xFFFC == 0 {
-            self.set_null_segment(seg, selector);
-            return Ok(());
-        }
-        let saved_supervisor_override = self.supervisor_override;
-        self.supervisor_override = true;
-        let descriptor = self.decode_descriptor(selector, bus);
-        self.supervisor_override = saved_supervisor_override;
-        let descriptor = descriptor?;
-        let Some(descriptor) = descriptor else {
-            self.set_null_segment(seg, 0);
-            return Ok(());
-        };
-        let rights = descriptor.rights;
-        if !Self::descriptor_is_segment(rights) {
-            self.set_null_segment(seg, 0);
-            return Ok(());
-        }
-        if Self::descriptor_is_code(rights) && !Self::descriptor_is_readable(rights) {
-            self.set_null_segment(seg, 0);
-            return Ok(());
-        }
-        if !Self::descriptor_present(rights) {
-            self.set_null_segment(seg, 0);
-            return Ok(());
-        }
-        if !Self::descriptor_is_conforming_code(rights) {
-            let dpl = Self::descriptor_dpl(rights);
-            let rpl = selector & 3;
-            if dpl < new_cpl || dpl < rpl {
-                self.set_null_segment(seg, 0);
-                return Ok(());
-            }
-        }
-        self.set_loaded_segment_cache(seg, selector, descriptor);
         Ok(())
     }
 
