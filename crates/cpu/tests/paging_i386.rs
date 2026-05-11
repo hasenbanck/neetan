@@ -3239,6 +3239,94 @@ fn paging_task_switch_pf_on_new_tss_busy_bit_leaves_old_tss_busy() {
     );
 }
 
+/// Pseudo-precise faulting on the segment-descriptor accessed-bit toggle.
+/// IRET inter-privilege must not commit CS to its new selector before the
+/// A-bit write on that descriptor has completed; otherwise a #PF on the
+/// A-bit write (here forced via 486 + CR0.WP=1 + a read-only descriptor
+/// table page) is observed inter-privilege from CPL 3 even though the
+/// IRET should have aborted with CPL still 0.
+///
+/// The GDT is relocated so the ring-0 entries (used by the #PF handler
+/// dispatch) stay on a writable page while the ring-3 entries (the IRET
+/// migration target) land on a read-only page.
+#[test]
+fn paging_iret_inter_priv_pf_on_cs_a_bit_does_not_commit_cs() {
+    let mut cpu: I386<{ CPU_MODEL_486 }> = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_paged_protected_mode(&mut bus);
+    state.cr0 |= 0x0001_0000; // CR0.WP = 1.
+
+    // Relocate GDT so entries 0-3 (null + ring-0 CS/DS/SS) stay on page
+    // 0x80 and entries 4-7 (ring-3 CS/DS/SS + TSS) spill onto page 0x81.
+    const SPLIT_GDT_BASE: u32 = 0x80FE0;
+    for entry_index in 0..8u32 {
+        let src = (PG_GDT_BASE + entry_index * 8) as usize;
+        let dst = (SPLIT_GDT_BASE + entry_index * 8) as usize;
+        for byte_offset in 0..8usize {
+            bus.ram[dst + byte_offset] = bus.ram[src + byte_offset];
+        }
+    }
+    state.gdt_base = SPLIT_GDT_BASE;
+    state.gdt_limit = 8 * 8 - 1;
+
+    // Clear the A-bit on the new (ring-3) CS so the IRET path will attempt
+    // the descriptor write that we want to fault.
+    let ring3_cs_rights_addr = (SPLIT_GDT_BASE + 4 * 8 + 5) as usize;
+    bus.ram[ring3_cs_rights_addr] = 0xFB & !0x01;
+
+    cpu.load_state(&state);
+
+    // 16-bit IRET (0xCF). The 5-word frame returns to ring 3.
+    place_at(&mut bus, PG_CODE_BASE, &[0xCF]);
+
+    let ring3_ip: u16 = 0x0100;
+    let ring3_sp_low: u16 = 0xFF00;
+    let original_esp = cpu.esp();
+
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp, ring3_ip);
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp + 2, PG_RING3_CS_SEL);
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp + 4, 0x0202);
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp + 6, ring3_sp_low);
+    write_word_at(&mut bus, PG_STACK_BASE + original_esp + 8, PG_RING3_SS_SEL);
+
+    let pre_cs = cpu.cs();
+
+    // Mark page 0x81 (which now holds the ring-3 descriptors) read-only.
+    // With CR0.WP=1, the supervisor A-bit write on the ring-3 CS descriptor
+    // at 0x81005 faults; reads of the descriptor itself still succeed.
+    let saved_pte = read_dword_at(&bus, PG_PAGE_TABLE_0 + 0x81 * 4);
+    write_dword_at(&mut bus, PG_PAGE_TABLE_0 + 0x81 * 4, 0x81000 | PTE_P);
+
+    cpu.step(&mut bus); // IRET -> #PF on the new CS A-bit write
+    cpu.step(&mut bus); // HLT in the #PF handler
+
+    assert!(cpu.halted(), "CPU should halt inside the #PF handler");
+    assert_eq!(
+        cpu.ip(),
+        PG_PF_HANDLER_IP as u32 + 1,
+        "control must transfer to the #PF handler"
+    );
+
+    // The A-bit write runs first and the fault is delivered same-privilege
+    // from CPL 0 on the unchanged source stack with a 4-dword frame.
+    let handler_sp = cpu.esp();
+    assert_eq!(
+        handler_sp,
+        original_esp.wrapping_sub(16),
+        "same-privilege #PF must consume 4 dwords"
+    );
+
+    let pushed_cs = read_dword_at(&bus, PG_STACK_BASE + handler_sp + 8);
+    assert_eq!(
+        pushed_cs & 0xFFFF,
+        pre_cs as u32,
+        "fault frame CS must still be the source ring-0 CS"
+    );
+
+    write_dword_at(&mut bus, PG_PAGE_TABLE_0 + 0x81 * 4, saved_pte);
+}
+
 /// LEAVE atomicity: a #PF on the BP pop must leave ESP/EBP at their
 /// pre-instruction values. The 386 LEAVE conceptually does
 /// `SP := BP; pop BP`. A non-atomic implementation commits the SP update
