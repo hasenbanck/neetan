@@ -39,6 +39,16 @@ pub const CPU_MODEL_486: u8 = 1;
 
 const EFLAGS_RESUME_FLAG: u32 = 0x0001_0000;
 
+/// Marker returned from any 386 primitive that may have raised a CPU exception.
+///
+/// The exception itself is already delivered into CPU state by `raise_fault*`;
+/// `Fault` is pure call-stack signalling so callers can propagate the abort
+/// via the `?` operator instead of inspecting `fault_pending` after every call.
+pub(super) struct Fault;
+
+/// Result alias for any 386 operation that may abort due to a raised fault.
+pub(super) type Step<T = ()> = Result<T, Fault>;
+
 #[derive(Clone, Copy)]
 struct SegmentDescriptor {
     base: u32,
@@ -436,12 +446,12 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         // there. fault_pending is asserted here so the prefix-decode loop
         // terminates instead of dispatching a stray 0 opcode at the handler.
         if unlikely(eip > self.seg_limits[SegReg32::CS as usize]) {
-            self.raise_fault_with_code(13, 0, bus);
+            let _: Step<()> = self.raise_fault_with_code(13, 0, bus);
             self.fault_pending = true;
             return 0;
         }
         let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
-        let Some(addr) = self.fetch_physical_address(linear, bus) else {
+        let Ok(addr) = self.fetch_physical_address(linear, bus) else {
             self.prefetch_valid = false;
             return 0;
         };
@@ -467,14 +477,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     #[inline(always)]
-    fn fetch_physical_address(&mut self, linear: u32, bus: &mut impl common::Bus) -> Option<u32> {
+    fn fetch_physical_address(&mut self, linear: u32, bus: &mut impl common::Bus) -> Step<u32> {
         let page = linear >> 12;
         if likely(
             self.fetch_page_valid
                 && self.fetch_page_tag == page
                 && (!self.is_user_page_access() || self.fetch_page_user),
         ) {
-            return Some(self.fetch_page_phys | (linear & 0xFFF));
+            return Ok(self.fetch_page_phys | (linear & 0xFFF));
         }
 
         let addr = self.translate_linear(linear, false, bus)?;
@@ -487,7 +497,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         } else {
             true
         };
-        Some(addr)
+        Ok(addr)
     }
 
     #[inline(always)]
@@ -496,7 +506,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             let eip = self.effective_eip();
             let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
             if likely((linear & 0xFFF) <= 0xFFE) {
-                let Some(addr) = self.fetch_physical_address(linear, bus) else {
+                let Ok(addr) = self.fetch_physical_address(linear, bus) else {
                     return 0;
                 };
                 let value = bus.read_word(addr);
@@ -515,7 +525,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             let eip = self.effective_eip();
             let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
             if likely((linear & 0xFFF) <= 0xFFC) {
-                let Some(addr) = self.fetch_physical_address(linear, bus) else {
+                let Ok(addr) = self.fetch_physical_address(linear, bus) else {
                     return 0;
                 };
                 let value = bus.read_dword(addr);
@@ -582,47 +592,41 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.is_protected_mode() && (self.eflags_upper & 0x0002_0000) != 0
     }
 
-    /// Returns `true` if the current privilege level and IOPL allow I/O access to `port`.
-    /// When access is denied and the IOPB does not grant it, raises #GP(0) and returns `false`.
-    /// CLI/STI/HLT use separate IOPL/CPL checks - this function is only for I/O port instructions.
-    fn check_io_privilege(&mut self, port: u16, size: u8, bus: &mut impl common::Bus) -> bool {
+    /// Returns `Ok(())` if the current privilege level and IOPL allow I/O access
+    /// to `port`. When access is denied and the IOPB does not grant it, raises
+    /// `#GP(0)` and returns `Err(Fault)`. CLI/STI/HLT use separate IOPL/CPL
+    /// checks - this function is only for I/O port instructions.
+    fn check_io_privilege(&mut self, port: u16, size: u8, bus: &mut impl common::Bus) -> Step {
         if !self.is_protected_mode() {
-            return true;
+            return Ok(());
         }
         if !self.is_virtual_mode() && self.cpl() <= u16::from(self.flags.iopl) {
-            return true;
+            return Ok(());
         }
         if bus.is_io_port_unrestricted(port) {
-            return true;
+            return Ok(());
         }
         // CPL > IOPL (or VM86 with IOPL < 3): consult I/O Permission Bitmap in TSS.
         // TSS must be a 386 TSS (type field >= 9) and large enough to hold the IOPB pointer.
         if self.tr_limit < 0x67 || (self.tr_rights & 0x0F) < 9 {
-            self.raise_fault_with_code(13, 0, bus);
-            return false;
+            return self.raise_fault_with_code(13, 0, bus);
         }
-        let Some(iopb) = self.read_word_linear(bus, self.tr_base.wrapping_add(0x66)) else {
-            return false;
-        };
+        let iopb = self.read_word_linear(bus, self.tr_base.wrapping_add(0x66))?;
         let byte_idx = u32::from(iopb).wrapping_add(u32::from(port) / 8);
         // Read two consecutive bytes from the IOPB to handle accesses that span a
         // byte boundary (e.g. a dword access starting at port 7 touches bits in two
         // bytes). The +1 also satisfies the Intel spec requirement for a 0xFF sentinel
         // byte immediately after the IOPB inside the TSS.
         if byte_idx + 1 > self.tr_limit {
-            self.raise_fault_with_code(13, 0, bus);
-            return false;
+            return self.raise_fault_with_code(13, 0, bus);
         }
         let linear = self.tr_base.wrapping_add(byte_idx);
-        let Some(map) = self.read_word_linear(bus, linear) else {
-            return false;
-        };
+        let map = self.read_word_linear(bus, linear)?;
         let mask = (1u16 << size) - 1;
         if (map >> (port & 7)) & mask != 0 {
-            self.raise_fault_with_code(13, 0, bus);
-            return false;
+            return self.raise_fault_with_code(13, 0, bus);
         }
-        true
+        Ok(())
     }
 
     /// Reads the next instruction byte from CS:IP without advancing IP.
@@ -630,7 +634,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     fn peek_byte(&mut self, bus: &mut impl common::Bus) -> u8 {
         let eip = self.effective_eip();
         let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
-        let Some(addr) = self.fetch_physical_address(linear, bus) else {
+        let Ok(addr) = self.fetch_physical_address(linear, bus) else {
             return 0;
         };
         if self.prefetch_valid && self.prefetch_addr == addr {
@@ -722,9 +726,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         &mut self,
         selector: u16,
         bus: &mut impl common::Bus,
-    ) -> Option<SegmentDescriptor> {
-        let addr = self.descriptor_addr_checked(selector)?;
-        self.decode_descriptor_at(addr, bus)
+    ) -> Step<Option<SegmentDescriptor>> {
+        let Some(addr) = self.descriptor_addr_checked(selector) else {
+            return Ok(None);
+        };
+        Ok(Some(self.decode_descriptor_at(addr, bus)?))
     }
 
     fn descriptor_dpl(rights: u8) -> u16 {
@@ -759,24 +765,24 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         rights & 0x80 != 0
     }
 
-    fn raise_segment_not_present(
+    fn raise_segment_not_present<T>(
         &mut self,
         seg: SegReg32,
         selector: u16,
         bus: &mut impl common::Bus,
-    ) {
+    ) -> Step<T> {
         let vector = if seg == SegReg32::SS { 12 } else { 11 };
-        self.raise_fault_with_code(vector, Self::segment_error_code(selector), bus);
+        self.raise_fault_with_code(vector, Self::segment_error_code(selector), bus)
     }
 
-    fn raise_segment_protection(
+    fn raise_segment_protection<T>(
         &mut self,
         seg: SegReg32,
         selector: u16,
         bus: &mut impl common::Bus,
-    ) {
+    ) -> Step<T> {
         let vector = if seg == SegReg32::SS { 12 } else { 13 };
-        self.raise_fault_with_code(vector, Self::segment_error_code(selector), bus);
+        self.raise_fault_with_code(vector, Self::segment_error_code(selector), bus)
     }
 
     fn load_protected_segment(
@@ -784,26 +790,22 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         seg: SegReg32,
         selector: u16,
         bus: &mut impl common::Bus,
-    ) -> bool {
+    ) -> Step {
         if matches!(
             seg,
             SegReg32::DS | SegReg32::ES | SegReg32::FS | SegReg32::GS
         ) && selector & 0xFFFC == 0
         {
             self.set_null_segment(seg, selector);
-            return true;
+            return Ok(());
         }
         if selector & 0xFFFC == 0 {
             // Null selector for CS or SS: always #GP(0) per 386 manual.
-            self.raise_fault_with_code(13, 0, bus);
-            return false;
+            return self.raise_fault_with_code(13, 0, bus);
         }
 
-        let Some(descriptor) = self.decode_descriptor(selector, bus) else {
-            if !self.fault_pending {
-                self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
-            }
-            return false;
+        let Some(descriptor) = self.decode_descriptor(selector, bus)? else {
+            return self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
         };
         let rights = descriptor.rights;
         let cpl = self.cpl();
@@ -813,25 +815,19 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         match seg {
             SegReg32::CS => {
                 if !Self::descriptor_is_segment(rights) || !Self::descriptor_is_code(rights) {
-                    self.raise_segment_protection(seg, selector, bus);
-                    return false;
+                    return self.raise_segment_protection(seg, selector, bus);
                 }
                 if Self::descriptor_is_conforming_code(rights) {
                     if dpl > cpl {
-                        self.raise_segment_protection(seg, selector, bus);
-                        return false;
+                        return self.raise_segment_protection(seg, selector, bus);
                     }
                 } else if dpl != cpl || rpl > cpl {
-                    self.raise_segment_protection(seg, selector, bus);
-                    return false;
+                    return self.raise_segment_protection(seg, selector, bus);
                 }
                 if !Self::descriptor_present(rights) {
-                    self.raise_segment_not_present(seg, selector, bus);
-                    return false;
+                    return self.raise_segment_not_present(seg, selector, bus);
                 }
-                if self.set_accessed_bit(selector, bus).is_none() {
-                    return false;
-                }
+                self.set_accessed_bit(selector, bus)?;
                 if Self::descriptor_is_conforming_code(rights) {
                     let adjusted = (selector & !3) | cpl;
                     self.set_loaded_segment_cache(seg, adjusted, descriptor);
@@ -839,47 +835,38 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     let adjusted = (selector & !3) | dpl;
                     self.set_loaded_segment_cache(seg, adjusted, descriptor);
                 }
-                return true;
+                return Ok(());
             }
             SegReg32::SS => {
                 if !Self::descriptor_is_segment(rights) || !Self::descriptor_is_writable(rights) {
-                    self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
-                    return false;
+                    return self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
                 }
                 if dpl != cpl || rpl != cpl {
-                    self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
-                    return false;
+                    return self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
                 }
                 if !Self::descriptor_present(rights) {
-                    self.raise_fault_with_code(12, Self::segment_error_code(selector), bus);
-                    return false;
+                    return self.raise_fault_with_code(12, Self::segment_error_code(selector), bus);
                 }
             }
             SegReg32::DS | SegReg32::ES | SegReg32::FS | SegReg32::GS => {
                 if !Self::descriptor_is_segment(rights) {
-                    self.raise_segment_protection(seg, selector, bus);
-                    return false;
+                    return self.raise_segment_protection(seg, selector, bus);
                 }
                 if !Self::descriptor_is_readable(rights) {
-                    self.raise_segment_protection(seg, selector, bus);
-                    return false;
+                    return self.raise_segment_protection(seg, selector, bus);
                 }
                 if !Self::descriptor_is_conforming_code(rights) && dpl < cpl.max(rpl) {
-                    self.raise_segment_protection(seg, selector, bus);
-                    return false;
+                    return self.raise_segment_protection(seg, selector, bus);
                 }
                 if !Self::descriptor_present(rights) {
-                    self.raise_segment_not_present(seg, selector, bus);
-                    return false;
+                    return self.raise_segment_not_present(seg, selector, bus);
                 }
             }
         }
 
-        if self.set_accessed_bit(selector, bus).is_none() {
-            return false;
-        }
+        self.set_accessed_bit(selector, bus)?;
         self.set_loaded_segment_cache(seg, selector, descriptor);
-        true
+        Ok(())
     }
 
     /// Validates a candidate SS for an inter-privilege IRET return without
@@ -895,38 +882,29 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         selector: u16,
         target_cpl: u16,
         bus: &mut impl common::Bus,
-    ) -> Option<(u8, u16)> {
+    ) -> Step<Option<(u8, u16)>> {
         if selector & 0xFFFC == 0 {
-            return Some((13, 0));
+            return Ok(Some((13, 0)));
         }
-        let descriptor = match self.decode_descriptor(selector, bus) {
-            Some(d) => d,
-            None => {
-                if self.fault_pending {
-                    // A #PF was raised during the descriptor read; the
-                    // caller will see fault_pending and abort without
-                    // overwriting it with a synthesized #GP.
-                    return None;
-                }
-                return Some((13, Self::segment_error_code(selector)));
-            }
+        let Some(descriptor) = self.decode_descriptor(selector, bus)? else {
+            return Ok(Some((13, Self::segment_error_code(selector))));
         };
         let rights = descriptor.rights;
         let rpl = selector & 0x0003;
         let dpl = Self::descriptor_dpl(rights);
         if rpl != target_cpl {
-            return Some((13, Self::segment_error_code(selector)));
+            return Ok(Some((13, Self::segment_error_code(selector))));
         }
         if !Self::descriptor_is_segment(rights) || !Self::descriptor_is_writable(rights) {
-            return Some((13, Self::segment_error_code(selector)));
+            return Ok(Some((13, Self::segment_error_code(selector))));
         }
         if dpl != target_cpl {
-            return Some((13, Self::segment_error_code(selector)));
+            return Ok(Some((13, Self::segment_error_code(selector))));
         }
         if !Self::descriptor_present(rights) {
-            return Some((12, Self::segment_error_code(selector)));
+            return Ok(Some((12, Self::segment_error_code(selector))));
         }
-        None
+        Ok(None)
     }
 
     fn load_cs_for_return(
@@ -934,16 +912,12 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         selector: u16,
         new_ip: u32,
         bus: &mut impl common::Bus,
-    ) -> bool {
+    ) -> Step {
         if selector & 0xFFFC == 0 {
-            self.raise_fault_with_code(13, 0, bus);
-            return false;
+            return self.raise_fault_with_code(13, 0, bus);
         }
-        let Some(descriptor) = self.decode_descriptor(selector, bus) else {
-            if !self.fault_pending {
-                self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
-            }
-            return false;
+        let Some(descriptor) = self.decode_descriptor(selector, bus)? else {
+            return self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
         };
         let rights = descriptor.rights;
         let cpl = self.cpl();
@@ -951,36 +925,28 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let dpl = Self::descriptor_dpl(rights);
 
         if rpl < cpl {
-            self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
-            return false;
+            return self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
         }
         if !Self::descriptor_is_segment(rights) || !Self::descriptor_is_code(rights) {
-            self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
-            return false;
+            return self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
         }
         if Self::descriptor_is_conforming_code(rights) {
             if dpl > rpl {
-                self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
-                return false;
+                return self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
             }
         } else if dpl != rpl {
-            self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
-            return false;
+            return self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
         }
         if !Self::descriptor_present(rights) {
-            self.raise_fault_with_code(11, Self::segment_error_code(selector), bus);
-            return false;
+            return self.raise_fault_with_code(11, Self::segment_error_code(selector), bus);
         }
         if new_ip > descriptor.limit {
-            self.raise_fault_with_code(13, 0, bus);
-            return false;
+            return self.raise_fault_with_code(13, 0, bus);
         }
-        if self.set_accessed_bit(selector, bus).is_none() {
-            return false;
-        }
+        self.set_accessed_bit(selector, bus)?;
         let adjusted = (selector & !3) | rpl;
         self.set_loaded_segment_cache(SegReg32::CS, adjusted, descriptor);
-        true
+        Ok(())
     }
 
     /// Validates a candidate CS for an inter- or same-privilege return
@@ -1001,18 +967,12 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         selector: u16,
         new_ip: u32,
         bus: &mut impl common::Bus,
-    ) -> Option<Result<CsReturnValidation, (u8, u16)>> {
+    ) -> Step<Result<CsReturnValidation, (u8, u16)>> {
         if selector & 0xFFFC == 0 {
-            return Some(Err((13, 0)));
+            return Ok(Err((13, 0)));
         }
-        let descriptor = match self.decode_descriptor(selector, bus) {
-            Some(d) => d,
-            None => {
-                if self.fault_pending {
-                    return None;
-                }
-                return Some(Err((13, Self::segment_error_code(selector))));
-            }
+        let Some(descriptor) = self.decode_descriptor(selector, bus)? else {
+            return Ok(Err((13, Self::segment_error_code(selector))));
         };
         let rights = descriptor.rights;
         let cpl = self.cpl();
@@ -1020,26 +980,26 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let dpl = Self::descriptor_dpl(rights);
 
         if rpl < cpl {
-            return Some(Err((13, Self::segment_error_code(selector))));
+            return Ok(Err((13, Self::segment_error_code(selector))));
         }
         if !Self::descriptor_is_segment(rights) || !Self::descriptor_is_code(rights) {
-            return Some(Err((13, Self::segment_error_code(selector))));
+            return Ok(Err((13, Self::segment_error_code(selector))));
         }
         if Self::descriptor_is_conforming_code(rights) {
             if dpl > rpl {
-                return Some(Err((13, Self::segment_error_code(selector))));
+                return Ok(Err((13, Self::segment_error_code(selector))));
             }
         } else if dpl != rpl {
-            return Some(Err((13, Self::segment_error_code(selector))));
+            return Ok(Err((13, Self::segment_error_code(selector))));
         }
         if !Self::descriptor_present(rights) {
-            return Some(Err((11, Self::segment_error_code(selector))));
+            return Ok(Err((11, Self::segment_error_code(selector))));
         }
         if new_ip > descriptor.limit {
-            return Some(Err((13, 0)));
+            return Ok(Err((13, 0)));
         }
         let adjusted_selector = (selector & !3) | rpl;
-        Some(Ok(CsReturnValidation {
+        Ok(Ok(CsReturnValidation {
             descriptor,
             adjusted_selector,
         }))
@@ -1053,35 +1013,29 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         selector: u16,
         target_cpl: u16,
         bus: &mut impl common::Bus,
-    ) -> Option<Result<SsReturnValidation, (u8, u16)>> {
+    ) -> Step<Result<SsReturnValidation, (u8, u16)>> {
         if selector & 0xFFFC == 0 {
-            return Some(Err((13, 0)));
+            return Ok(Err((13, 0)));
         }
-        let descriptor = match self.decode_descriptor(selector, bus) {
-            Some(d) => d,
-            None => {
-                if self.fault_pending {
-                    return None;
-                }
-                return Some(Err((13, Self::segment_error_code(selector))));
-            }
+        let Some(descriptor) = self.decode_descriptor(selector, bus)? else {
+            return Ok(Err((13, Self::segment_error_code(selector))));
         };
         let rights = descriptor.rights;
         let rpl = selector & 0x0003;
         let dpl = Self::descriptor_dpl(rights);
         if rpl != target_cpl {
-            return Some(Err((13, Self::segment_error_code(selector))));
+            return Ok(Err((13, Self::segment_error_code(selector))));
         }
         if !Self::descriptor_is_segment(rights) || !Self::descriptor_is_writable(rights) {
-            return Some(Err((13, Self::segment_error_code(selector))));
+            return Ok(Err((13, Self::segment_error_code(selector))));
         }
         if dpl != target_cpl {
-            return Some(Err((13, Self::segment_error_code(selector))));
+            return Ok(Err((13, Self::segment_error_code(selector))));
         }
         if !Self::descriptor_present(rights) {
-            return Some(Err((12, Self::segment_error_code(selector))));
+            return Ok(Err((12, Self::segment_error_code(selector))));
         }
-        Some(Ok(SsReturnValidation { descriptor }))
+        Ok(Ok(SsReturnValidation { descriptor }))
     }
 
     /// Returns the post-IRET decision for a data segment without committing
@@ -1094,42 +1048,40 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         seg: SegReg32,
         new_cpl: u16,
         bus: &mut impl common::Bus,
-    ) -> Option<DataSegmentDecision> {
+    ) -> Step<DataSegmentDecision> {
         if !self.seg_valid[seg as usize] {
-            return Some(DataSegmentDecision::NoChange);
+            return Ok(DataSegmentDecision::NoChange);
         }
         let selector = self.sregs[seg as usize];
         if selector & 0xFFFC == 0 {
-            return Some(DataSegmentDecision::Null { selector });
+            return Ok(DataSegmentDecision::Null { selector });
         }
         let saved_supervisor_override = self.supervisor_override;
         self.supervisor_override = true;
         let descriptor = self.decode_descriptor(selector, bus);
         self.supervisor_override = saved_supervisor_override;
-        if self.fault_pending {
-            return None;
-        }
+        let descriptor = descriptor?;
         let Some(descriptor) = descriptor else {
-            return Some(DataSegmentDecision::Null { selector: 0 });
+            return Ok(DataSegmentDecision::Null { selector: 0 });
         };
         let rights = descriptor.rights;
         if !Self::descriptor_is_segment(rights) {
-            return Some(DataSegmentDecision::Null { selector: 0 });
+            return Ok(DataSegmentDecision::Null { selector: 0 });
         }
         if Self::descriptor_is_code(rights) && !Self::descriptor_is_readable(rights) {
-            return Some(DataSegmentDecision::Null { selector: 0 });
+            return Ok(DataSegmentDecision::Null { selector: 0 });
         }
         if !Self::descriptor_present(rights) {
-            return Some(DataSegmentDecision::Null { selector: 0 });
+            return Ok(DataSegmentDecision::Null { selector: 0 });
         }
         if !Self::descriptor_is_conforming_code(rights) {
             let dpl = Self::descriptor_dpl(rights);
             let rpl = selector & 3;
             if dpl < new_cpl || dpl < rpl {
-                return Some(DataSegmentDecision::Null { selector: 0 });
+                return Ok(DataSegmentDecision::Null { selector: 0 });
             }
         }
-        Some(DataSegmentDecision::Keep {
+        Ok(DataSegmentDecision::Keep {
             selector,
             descriptor,
         })
@@ -1155,19 +1107,18 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         size: u32,
         write: bool,
         bus: &mut impl common::Bus,
-    ) -> bool {
+    ) -> Step {
         if self.fault_pending {
-            return false;
+            return Err(Fault);
         }
         if !self.is_protected_mode() {
-            return true;
+            return Ok(());
         }
 
         if !self.is_virtual_mode() {
             if !self.seg_valid[seg as usize] {
                 let vector = if seg == SegReg32::SS { 12 } else { 13 };
-                self.raise_fault_with_code(vector, 0, bus);
-                return false;
+                return self.raise_fault_with_code(vector, 0, bus);
             }
 
             let rights = self.seg_rights[seg as usize];
@@ -1181,24 +1132,28 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     0xFFFF
                 };
                 if offset <= limit || end > upper || wrapped {
-                    self.raise_fault_with_code(if seg == SegReg32::SS { 12 } else { 13 }, 0, bus);
-                    return false;
+                    return self.raise_fault_with_code(
+                        if seg == SegReg32::SS { 12 } else { 13 },
+                        0,
+                        bus,
+                    );
                 }
             } else if end > limit || wrapped {
-                self.raise_fault_with_code(if seg == SegReg32::SS { 12 } else { 13 }, 0, bus);
-                return false;
+                return self.raise_fault_with_code(
+                    if seg == SegReg32::SS { 12 } else { 13 },
+                    0,
+                    bus,
+                );
             }
 
             if write {
                 if !Self::descriptor_is_writable(rights) {
                     let vector = if seg == SegReg32::SS { 12 } else { 13 };
-                    self.raise_fault_with_code(vector, 0, bus);
-                    return false;
+                    return self.raise_fault_with_code(vector, 0, bus);
                 }
             } else if !Self::descriptor_is_readable(rights) {
                 let vector = if seg == SegReg32::SS { 12 } else { 13 };
-                self.raise_fault_with_code(vector, 0, bus);
-                return false;
+                return self.raise_fault_with_code(vector, 0, bus);
             }
         }
 
@@ -1220,13 +1175,12 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             if alignment_mask != 0 {
                 let linear = self.seg_base(seg).wrapping_add(offset);
                 if linear & alignment_mask != 0 {
-                    self.raise_fault_with_code(17, 0, bus);
-                    return false;
+                    return self.raise_fault_with_code(17, 0, bus);
                 }
             }
         }
 
-        true
+        Ok(())
     }
 
     #[inline(always)]
@@ -1235,15 +1189,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus: &mut impl common::Bus,
         delta: u32,
         for_update: bool,
-    ) -> Option<u16> {
+    ) -> Step<u16> {
         let offset = if self.address_size_override {
             self.eo32.wrapping_add(delta)
         } else {
             (self.eo32 as u16).wrapping_add(delta as u16) as u32
         };
-        if !self.check_segment_access(self.ea_seg, offset, 2, for_update, bus) {
-            return None;
-        }
+        self.check_segment_access(self.ea_seg, offset, 2, for_update, bus)?;
         let l0 = self.seg_addr(delta);
         let same_page = if self.address_size_override {
             l0 & 0xFFF <= 0xFFE
@@ -1252,26 +1204,26 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         };
         if same_page {
             let a0 = self.translate_linear(l0, for_update, bus)?;
-            return Some(bus.read_word(a0));
+            return Ok(bus.read_word(a0));
         }
         let l1 = self.seg_addr(delta.wrapping_add(1));
         let a0 = self.translate_linear(l0, for_update, bus)?;
         let a1 = self.translate_linear(l1, for_update, bus)?;
-        Some(bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8))
+        Ok(bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8))
     }
 
     #[inline(always)]
-    fn seg_read_word_at(&mut self, bus: &mut impl common::Bus, delta: u32) -> Option<u16> {
+    fn seg_read_word_at(&mut self, bus: &mut impl common::Bus, delta: u32) -> Step<u16> {
         self.seg_read_word_at_with(bus, delta, false)
     }
 
     #[inline(always)]
-    fn seg_read_word(&mut self, bus: &mut impl common::Bus) -> Option<u16> {
+    fn seg_read_word(&mut self, bus: &mut impl common::Bus) -> Step<u16> {
         self.seg_read_word_at_with(bus, 0, false)
     }
 
     #[inline(always)]
-    pub(super) fn seg_read_word_for_update(&mut self, bus: &mut impl common::Bus) -> Option<u16> {
+    pub(super) fn seg_read_word_for_update(&mut self, bus: &mut impl common::Bus) -> Step<u16> {
         self.seg_read_word_at_with(bus, 0, true)
     }
 
@@ -1281,15 +1233,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus: &mut impl common::Bus,
         delta: u32,
         for_update: bool,
-    ) -> Option<u32> {
+    ) -> Step<u32> {
         let offset = if self.address_size_override {
             self.eo32.wrapping_add(delta)
         } else {
             (self.eo32 as u16).wrapping_add(delta as u16) as u32
         };
-        if !self.check_segment_access(self.ea_seg, offset, 4, for_update, bus) {
-            return None;
-        }
+        self.check_segment_access(self.ea_seg, offset, 4, for_update, bus)?;
         let l0 = self.seg_addr(delta);
         let same_page = if self.address_size_override {
             l0 & 0xFFF <= 0xFFC
@@ -1298,7 +1248,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         };
         if same_page {
             let a0 = self.translate_linear(l0, for_update, bus)?;
-            return Some(bus.read_dword(a0));
+            return Ok(bus.read_dword(a0));
         }
         let l1 = self.seg_addr(delta.wrapping_add(1));
         let l2 = self.seg_addr(delta.wrapping_add(2));
@@ -1307,34 +1257,30 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let a1 = self.translate_linear(l1, for_update, bus)?;
         let a2 = self.translate_linear(l2, for_update, bus)?;
         let a3 = self.translate_linear(l3, for_update, bus)?;
-        Some(
-            bus.read_byte(a0) as u32
-                | ((bus.read_byte(a1) as u32) << 8)
-                | ((bus.read_byte(a2) as u32) << 16)
-                | ((bus.read_byte(a3) as u32) << 24),
-        )
+        Ok(bus.read_byte(a0) as u32
+            | ((bus.read_byte(a1) as u32) << 8)
+            | ((bus.read_byte(a2) as u32) << 16)
+            | ((bus.read_byte(a3) as u32) << 24))
     }
 
     #[inline(always)]
-    fn seg_read_dword_at(&mut self, bus: &mut impl common::Bus, delta: u32) -> Option<u32> {
+    fn seg_read_dword_at(&mut self, bus: &mut impl common::Bus, delta: u32) -> Step<u32> {
         self.seg_read_dword_at_with(bus, delta, false)
     }
 
     #[inline(always)]
-    fn seg_read_dword(&mut self, bus: &mut impl common::Bus) -> Option<u32> {
+    fn seg_read_dword(&mut self, bus: &mut impl common::Bus) -> Step<u32> {
         self.seg_read_dword_at_with(bus, 0, false)
     }
 
     #[inline(always)]
-    pub(super) fn seg_read_dword_for_update(&mut self, bus: &mut impl common::Bus) -> Option<u32> {
+    pub(super) fn seg_read_dword_for_update(&mut self, bus: &mut impl common::Bus) -> Step<u32> {
         self.seg_read_dword_at_with(bus, 0, true)
     }
 
     #[inline(always)]
-    fn seg_write_word(&mut self, bus: &mut impl common::Bus, value: u16) {
-        if !self.check_segment_access(self.ea_seg, self.eo32, 2, true, bus) {
-            return;
-        }
+    fn seg_write_word(&mut self, bus: &mut impl common::Bus, value: u16) -> Step {
+        self.check_segment_access(self.ea_seg, self.eo32, 2, true, bus)?;
         let l0 = self.seg_addr(0);
         let same_page = if self.address_size_override {
             l0 & 0xFFF <= 0xFFE
@@ -1342,28 +1288,21 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             l0 & 0xFFF <= 0xFFE && (self.eo32 as u16) <= 0xFFFE
         };
         if same_page {
-            let Some(a0) = self.translate_linear(l0, true, bus) else {
-                return;
-            };
+            let a0 = self.translate_linear(l0, true, bus)?;
             bus.write_word(a0, value);
-            return;
+            return Ok(());
         }
         let l1 = self.seg_addr(1);
-        let Some(a0) = self.translate_linear(l0, true, bus) else {
-            return;
-        };
-        let Some(a1) = self.translate_linear(l1, true, bus) else {
-            return;
-        };
+        let a0 = self.translate_linear(l0, true, bus)?;
+        let a1 = self.translate_linear(l1, true, bus)?;
         bus.write_byte(a0, value as u8);
         bus.write_byte(a1, (value >> 8) as u8);
+        Ok(())
     }
 
     #[inline(always)]
-    fn seg_write_dword(&mut self, bus: &mut impl common::Bus, value: u32) {
-        if !self.check_segment_access(self.ea_seg, self.eo32, 4, true, bus) {
-            return;
-        }
+    fn seg_write_dword(&mut self, bus: &mut impl common::Bus, value: u32) -> Step {
+        self.check_segment_access(self.ea_seg, self.eo32, 4, true, bus)?;
         let l0 = self.seg_addr(0);
         let same_page = if self.address_size_override {
             l0 & 0xFFF <= 0xFFC
@@ -1371,31 +1310,22 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             l0 & 0xFFF <= 0xFFC && (self.eo32 as u16) <= 0xFFFC
         };
         if same_page {
-            let Some(a0) = self.translate_linear(l0, true, bus) else {
-                return;
-            };
+            let a0 = self.translate_linear(l0, true, bus)?;
             bus.write_dword(a0, value);
-            return;
+            return Ok(());
         }
         let l1 = self.seg_addr(1);
         let l2 = self.seg_addr(2);
         let l3 = self.seg_addr(3);
-        let Some(a0) = self.translate_linear(l0, true, bus) else {
-            return;
-        };
-        let Some(a1) = self.translate_linear(l1, true, bus) else {
-            return;
-        };
-        let Some(a2) = self.translate_linear(l2, true, bus) else {
-            return;
-        };
-        let Some(a3) = self.translate_linear(l3, true, bus) else {
-            return;
-        };
+        let a0 = self.translate_linear(l0, true, bus)?;
+        let a1 = self.translate_linear(l1, true, bus)?;
+        let a2 = self.translate_linear(l2, true, bus)?;
+        let a3 = self.translate_linear(l3, true, bus)?;
         bus.write_byte(a0, value as u8);
         bus.write_byte(a1, (value >> 8) as u8);
         bus.write_byte(a2, (value >> 16) as u8);
         bus.write_byte(a3, (value >> 24) as u8);
+        Ok(())
     }
 
     #[inline(always)]
@@ -1404,13 +1334,11 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus: &mut impl common::Bus,
         seg: SegReg32,
         offset: u32,
-    ) -> Option<u8> {
-        if !self.check_segment_access(seg, offset, 1, false, bus) {
-            return None;
-        }
+    ) -> Step<u8> {
+        self.check_segment_access(seg, offset, 1, false, bus)?;
         let linear = self.seg_base(seg).wrapping_add(offset);
         let addr = self.translate_linear(linear, false, bus)?;
-        Some(bus.read_byte(addr))
+        Ok(bus.read_byte(addr))
     }
 
     #[inline(always)]
@@ -1420,15 +1348,12 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         seg: SegReg32,
         offset: u32,
         value: u8,
-    ) {
-        if !self.check_segment_access(seg, offset, 1, true, bus) {
-            return;
-        }
+    ) -> Step {
+        self.check_segment_access(seg, offset, 1, true, bus)?;
         let linear = self.seg_base(seg).wrapping_add(offset);
-        let Some(addr) = self.translate_linear(linear, true, bus) else {
-            return;
-        };
+        let addr = self.translate_linear(linear, true, bus)?;
         bus.write_byte(addr, value);
+        Ok(())
     }
 
     #[inline(always)]
@@ -1438,20 +1363,18 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         seg: SegReg32,
         offset: u32,
         for_update: bool,
-    ) -> Option<u16> {
-        if !self.check_segment_access(seg, offset, 2, for_update, bus) {
-            return None;
-        }
+    ) -> Step<u16> {
+        self.check_segment_access(seg, offset, 2, for_update, bus)?;
         let base = self.seg_base(seg);
         let l0 = base.wrapping_add(offset);
         if l0 & 0xFFF <= 0xFFE {
             let a0 = self.translate_linear(l0, for_update, bus)?;
-            return Some(bus.read_word(a0));
+            return Ok(bus.read_word(a0));
         }
         let l1 = base.wrapping_add(offset.wrapping_add(1));
         let a0 = self.translate_linear(l0, for_update, bus)?;
         let a1 = self.translate_linear(l1, for_update, bus)?;
-        Some(bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8))
+        Ok(bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8))
     }
 
     #[inline(always)]
@@ -1460,7 +1383,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus: &mut impl common::Bus,
         seg: SegReg32,
         offset: u32,
-    ) -> Option<u16> {
+    ) -> Step<u16> {
         self.read_word_seg_with(bus, seg, offset, false)
     }
 
@@ -1470,7 +1393,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus: &mut impl common::Bus,
         seg: SegReg32,
         offset: u32,
-    ) -> Option<u16> {
+    ) -> Step<u16> {
         self.read_word_seg_with(bus, seg, offset, true)
     }
 
@@ -1481,15 +1404,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         seg: SegReg32,
         offset: u32,
         for_update: bool,
-    ) -> Option<u32> {
-        if !self.check_segment_access(seg, offset, 4, for_update, bus) {
-            return None;
-        }
+    ) -> Step<u32> {
+        self.check_segment_access(seg, offset, 4, for_update, bus)?;
         let base = self.seg_base(seg);
         let l0 = base.wrapping_add(offset);
         if l0 & 0xFFF <= 0xFFC {
             let a0 = self.translate_linear(l0, for_update, bus)?;
-            return Some(bus.read_dword(a0));
+            return Ok(bus.read_dword(a0));
         }
         let l1 = base.wrapping_add(offset.wrapping_add(1));
         let l2 = base.wrapping_add(offset.wrapping_add(2));
@@ -1498,12 +1419,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let a1 = self.translate_linear(l1, for_update, bus)?;
         let a2 = self.translate_linear(l2, for_update, bus)?;
         let a3 = self.translate_linear(l3, for_update, bus)?;
-        Some(
-            bus.read_byte(a0) as u32
-                | ((bus.read_byte(a1) as u32) << 8)
-                | ((bus.read_byte(a2) as u32) << 16)
-                | ((bus.read_byte(a3) as u32) << 24),
-        )
+        Ok(bus.read_byte(a0) as u32
+            | ((bus.read_byte(a1) as u32) << 8)
+            | ((bus.read_byte(a2) as u32) << 16)
+            | ((bus.read_byte(a3) as u32) << 24))
     }
 
     #[inline(always)]
@@ -1512,7 +1431,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus: &mut impl common::Bus,
         seg: SegReg32,
         offset: u32,
-    ) -> Option<u32> {
+    ) -> Step<u32> {
         self.read_dword_seg_with(bus, seg, offset, false)
     }
 
@@ -1522,7 +1441,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus: &mut impl common::Bus,
         seg: SegReg32,
         offset: u32,
-    ) -> Option<u32> {
+    ) -> Step<u32> {
         self.read_dword_seg_with(bus, seg, offset, true)
     }
 
@@ -1533,28 +1452,21 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         seg: SegReg32,
         offset: u32,
         value: u16,
-    ) {
-        if !self.check_segment_access(seg, offset, 2, true, bus) {
-            return;
-        }
+    ) -> Step {
+        self.check_segment_access(seg, offset, 2, true, bus)?;
         let base = self.seg_base(seg);
         let l0 = base.wrapping_add(offset);
         if l0 & 0xFFF <= 0xFFE {
-            let Some(a0) = self.translate_linear(l0, true, bus) else {
-                return;
-            };
+            let a0 = self.translate_linear(l0, true, bus)?;
             bus.write_word(a0, value);
-            return;
+            return Ok(());
         }
         let l1 = base.wrapping_add(offset.wrapping_add(1));
-        let Some(a0) = self.translate_linear(l0, true, bus) else {
-            return;
-        };
-        let Some(a1) = self.translate_linear(l1, true, bus) else {
-            return;
-        };
+        let a0 = self.translate_linear(l0, true, bus)?;
+        let a1 = self.translate_linear(l1, true, bus)?;
         bus.write_byte(a0, value as u8);
         bus.write_byte(a1, (value >> 8) as u8);
+        Ok(())
     }
 
     #[inline(always)]
@@ -1564,38 +1476,27 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         seg: SegReg32,
         offset: u32,
         value: u32,
-    ) {
-        if !self.check_segment_access(seg, offset, 4, true, bus) {
-            return;
-        }
+    ) -> Step {
+        self.check_segment_access(seg, offset, 4, true, bus)?;
         let base = self.seg_base(seg);
         let l0 = base.wrapping_add(offset);
         if l0 & 0xFFF <= 0xFFC {
-            let Some(a0) = self.translate_linear(l0, true, bus) else {
-                return;
-            };
+            let a0 = self.translate_linear(l0, true, bus)?;
             bus.write_dword(a0, value);
-            return;
+            return Ok(());
         }
         let l1 = base.wrapping_add(offset.wrapping_add(1));
         let l2 = base.wrapping_add(offset.wrapping_add(2));
         let l3 = base.wrapping_add(offset.wrapping_add(3));
-        let Some(a0) = self.translate_linear(l0, true, bus) else {
-            return;
-        };
-        let Some(a1) = self.translate_linear(l1, true, bus) else {
-            return;
-        };
-        let Some(a2) = self.translate_linear(l2, true, bus) else {
-            return;
-        };
-        let Some(a3) = self.translate_linear(l3, true, bus) else {
-            return;
-        };
+        let a0 = self.translate_linear(l0, true, bus)?;
+        let a1 = self.translate_linear(l1, true, bus)?;
+        let a2 = self.translate_linear(l2, true, bus)?;
+        let a3 = self.translate_linear(l3, true, bus)?;
         bus.write_byte(a0, value as u8);
         bus.write_byte(a1, (value >> 8) as u8);
         bus.write_byte(a2, (value >> 16) as u8);
         bus.write_byte(a3, (value >> 24) as u8);
+        Ok(())
     }
 
     #[inline(always)]
@@ -1606,46 +1507,37 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.seg_granularity[SegReg32::SS as usize] & 0x40 != 0
     }
 
-    fn push(&mut self, bus: &mut impl common::Bus, value: u16) {
+    fn push(&mut self, bus: &mut impl common::Bus, value: u16) -> Step {
         let sp = if self.use_esp() {
             self.regs.dword(crate::DwordReg::ESP).wrapping_sub(2)
         } else {
             self.regs.word(WordReg::SP).wrapping_sub(2) as u32
         };
-        if !self.check_segment_access(SegReg32::SS, sp, 2, true, bus) {
-            return;
-        }
+        self.check_segment_access(SegReg32::SS, sp, 2, true, bus)?;
         let base = self.seg_base(SegReg32::SS);
         let l0 = base.wrapping_add(sp);
         if l0 & 0xFFF <= 0xFFE {
-            let Some(a0) = self.translate_linear(l0, true, bus) else {
-                return;
-            };
+            let a0 = self.translate_linear(l0, true, bus)?;
             self.commit_sp(sp);
             bus.write_word(a0, value);
-            return;
+            return Ok(());
         }
         let l1 = base.wrapping_add(sp.wrapping_add(1));
-        let Some(a0) = self.translate_linear(l0, true, bus) else {
-            return;
-        };
-        let Some(a1) = self.translate_linear(l1, true, bus) else {
-            return;
-        };
+        let a0 = self.translate_linear(l0, true, bus)?;
+        let a1 = self.translate_linear(l1, true, bus)?;
         self.commit_sp(sp);
         bus.write_byte(a0, value as u8);
         bus.write_byte(a1, (value >> 8) as u8);
+        Ok(())
     }
 
-    fn pop(&mut self, bus: &mut impl common::Bus) -> Option<u16> {
+    fn pop(&mut self, bus: &mut impl common::Bus) -> Step<u16> {
         let sp = if self.use_esp() {
             self.regs.dword(crate::DwordReg::ESP)
         } else {
             self.regs.word(WordReg::SP) as u32
         };
-        if !self.check_segment_access(SegReg32::SS, sp, 2, false, bus) {
-            return None;
-        }
+        self.check_segment_access(SegReg32::SS, sp, 2, false, bus)?;
         let base = self.seg_base(SegReg32::SS);
         let l0 = base.wrapping_add(sp);
         let value = if l0 & 0xFFF <= 0xFFE {
@@ -1658,48 +1550,37 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8)
         };
         self.commit_sp(sp.wrapping_add(2));
-        Some(value)
+        Ok(value)
     }
 
-    fn push_dword(&mut self, bus: &mut impl common::Bus, value: u32) {
+    fn push_dword(&mut self, bus: &mut impl common::Bus, value: u32) -> Step {
         let sp = if self.use_esp() {
             self.regs.dword(crate::DwordReg::ESP).wrapping_sub(4)
         } else {
             self.regs.word(WordReg::SP).wrapping_sub(4) as u32
         };
-        if !self.check_segment_access(SegReg32::SS, sp, 4, true, bus) {
-            return;
-        }
+        self.check_segment_access(SegReg32::SS, sp, 4, true, bus)?;
         let base = self.seg_base(SegReg32::SS);
         let l0 = base.wrapping_add(sp);
         if l0 & 0xFFF <= 0xFFC {
-            let Some(a0) = self.translate_linear(l0, true, bus) else {
-                return;
-            };
+            let a0 = self.translate_linear(l0, true, bus)?;
             self.commit_sp(sp);
             bus.write_dword(a0, value);
-            return;
+            return Ok(());
         }
         let l1 = base.wrapping_add(sp.wrapping_add(1));
         let l2 = base.wrapping_add(sp.wrapping_add(2));
         let l3 = base.wrapping_add(sp.wrapping_add(3));
-        let Some(a0) = self.translate_linear(l0, true, bus) else {
-            return;
-        };
-        let Some(a1) = self.translate_linear(l1, true, bus) else {
-            return;
-        };
-        let Some(a2) = self.translate_linear(l2, true, bus) else {
-            return;
-        };
-        let Some(a3) = self.translate_linear(l3, true, bus) else {
-            return;
-        };
+        let a0 = self.translate_linear(l0, true, bus)?;
+        let a1 = self.translate_linear(l1, true, bus)?;
+        let a2 = self.translate_linear(l2, true, bus)?;
+        let a3 = self.translate_linear(l3, true, bus)?;
         self.commit_sp(sp);
         bus.write_byte(a0, value as u8);
         bus.write_byte(a1, (value >> 8) as u8);
         bus.write_byte(a2, (value >> 16) as u8);
         bus.write_byte(a3, (value >> 24) as u8);
+        Ok(())
     }
 
     #[inline(always)]
@@ -1711,15 +1592,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
     }
 
-    fn pop_dword(&mut self, bus: &mut impl common::Bus) -> Option<u32> {
+    fn pop_dword(&mut self, bus: &mut impl common::Bus) -> Step<u32> {
         let sp = if self.use_esp() {
             self.regs.dword(crate::DwordReg::ESP)
         } else {
             self.regs.word(WordReg::SP) as u32
         };
-        if !self.check_segment_access(SegReg32::SS, sp, 4, false, bus) {
-            return None;
-        }
+        self.check_segment_access(SegReg32::SS, sp, 4, false, bus)?;
         let base = self.seg_base(SegReg32::SS);
         let l0 = base.wrapping_add(sp);
         let value = if l0 & 0xFFF <= 0xFFC {
@@ -1739,14 +1618,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 | ((bus.read_byte(a3) as u32) << 24)
         };
         self.commit_sp(sp.wrapping_add(4));
-        Some(value)
+        Ok(value)
     }
 
-    fn load_segment(&mut self, seg: SegReg32, selector: u16, bus: &mut impl common::Bus) -> bool {
+    fn load_segment(&mut self, seg: SegReg32, selector: u16, bus: &mut impl common::Bus) -> Step {
         if !self.is_protected_mode() || self.is_virtual_mode() {
             self.sregs[seg as usize] = selector;
             self.set_real_segment_cache(seg, selector);
-            return true;
+            return Ok(());
         }
         self.load_protected_segment(seg, selector, bus)
     }
@@ -1768,14 +1647,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     /// Sets the accessed bit on the descriptor for `selector`. Returns
-    /// `None` if the descriptor byte's translation faulted (the page
-    /// fault is already pending); callers must abort the segment commit
-    /// in that case so the load is restartable. Null/out-of-table
-    /// selectors return `Some(())` without touching memory - those
+    /// `Err(Fault)` if the descriptor byte's translation faulted (the
+    /// page fault is already pending); callers must abort the segment
+    /// commit in that case so the load is restartable. Null/out-of-table
+    /// selectors return `Ok(())` without touching memory - those
     /// cases are unreachable from a successful `decode_descriptor`.
-    fn set_accessed_bit(&mut self, selector: u16, bus: &mut impl common::Bus) -> Option<()> {
+    fn set_accessed_bit(&mut self, selector: u16, bus: &mut impl common::Bus) -> Step {
         let Some(addr) = self.descriptor_addr_checked(selector) else {
-            return Some(());
+            return Ok(());
         };
         let saved_supervisor_override = self.supervisor_override;
         self.supervisor_override = true;
@@ -1787,79 +1666,79 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         if rights & 0x01 == 0 {
             bus.write_byte(phys, rights | 0x01);
         }
-        Some(())
+        Ok(())
     }
 
-    fn revalidate_data_segment(&mut self, seg: SegReg32, new_cpl: u16, bus: &mut impl common::Bus) {
+    fn revalidate_data_segment(
+        &mut self,
+        seg: SegReg32,
+        new_cpl: u16,
+        bus: &mut impl common::Bus,
+    ) -> Step {
         if !self.seg_valid[seg as usize] {
-            return;
+            return Ok(());
         }
         let selector = self.sregs[seg as usize];
         if selector & 0xFFFC == 0 {
             self.set_null_segment(seg, selector);
-            return;
+            return Ok(());
         }
         let saved_supervisor_override = self.supervisor_override;
         self.supervisor_override = true;
         let descriptor = self.decode_descriptor(selector, bus);
         self.supervisor_override = saved_supervisor_override;
-        if self.fault_pending {
-            return;
-        }
+        let descriptor = descriptor?;
         let Some(descriptor) = descriptor else {
             self.set_null_segment(seg, 0);
-            return;
+            return Ok(());
         };
         let rights = descriptor.rights;
         if !Self::descriptor_is_segment(rights) {
             self.set_null_segment(seg, 0);
-            return;
+            return Ok(());
         }
         if Self::descriptor_is_code(rights) && !Self::descriptor_is_readable(rights) {
             self.set_null_segment(seg, 0);
-            return;
+            return Ok(());
         }
         if !Self::descriptor_present(rights) {
             self.set_null_segment(seg, 0);
-            return;
+            return Ok(());
         }
         if !Self::descriptor_is_conforming_code(rights) {
             let dpl = Self::descriptor_dpl(rights);
             let rpl = selector & 3;
             if dpl < new_cpl || dpl < rpl {
                 self.set_null_segment(seg, 0);
-                return;
+                return Ok(());
             }
         }
         self.set_loaded_segment_cache(seg, selector, descriptor);
+        Ok(())
     }
 
-    pub(super) fn read_word_linear(
-        &mut self,
-        bus: &mut impl common::Bus,
-        addr: u32,
-    ) -> Option<u16> {
+    pub(super) fn read_word_linear(&mut self, bus: &mut impl common::Bus, addr: u32) -> Step<u16> {
         if addr & 0xFFF <= 0xFFE {
             let a0 = self.translate_linear(addr, false, bus)?;
-            return Some(bus.read_word(a0));
+            return Ok(bus.read_word(a0));
         }
         let a0 = self.translate_linear(addr, false, bus)?;
         let a1 = self.translate_linear(addr.wrapping_add(1), false, bus)?;
-        Some(bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8))
+        Ok(bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8))
     }
 
     pub(super) fn read_word_linear_for_update(
         &mut self,
         bus: &mut impl common::Bus,
         addr: u32,
-    ) -> Option<u16> {
+    ) -> Step<u16> {
         if addr & 0xFFF <= 0xFFE {
             let a0 = self.translate_linear(addr, true, bus)?;
-            return Some(bus.read_word(a0));
+            return Ok(bus.read_word(a0));
         }
         let a0 = self.translate_linear(addr, true, bus)?;
         let a1 = self.translate_linear(addr.wrapping_add(1), true, bus)?;
-        Some(bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8))
+        Ok(bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8))
     }
 
     pub(super) fn write_word_linear(
@@ -1867,88 +1746,76 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         bus: &mut impl common::Bus,
         addr: u32,
         value: u16,
-    ) -> Option<()> {
+    ) -> Step {
         if addr & 0xFFF <= 0xFFE {
             let a0 = self.translate_linear(addr, true, bus)?;
             bus.write_word(a0, value);
-            return Some(());
+            return Ok(());
         }
         let a0 = self.translate_linear(addr, true, bus)?;
         let a1 = self.translate_linear(addr.wrapping_add(1), true, bus)?;
         bus.write_byte(a0, value as u8);
         bus.write_byte(a1, (value >> 8) as u8);
-        Some(())
+        Ok(())
     }
 
-    fn read_dword_linear(&mut self, bus: &mut impl common::Bus, addr: u32) -> Option<u32> {
+    fn read_dword_linear(&mut self, bus: &mut impl common::Bus, addr: u32) -> Step<u32> {
         if addr & 0xFFF <= 0xFFC {
             let a0 = self.translate_linear(addr, false, bus)?;
-            return Some(bus.read_dword(a0));
+            return Ok(bus.read_dword(a0));
         }
         let a0 = self.translate_linear(addr, false, bus)?;
         let a1 = self.translate_linear(addr.wrapping_add(1), false, bus)?;
         let a2 = self.translate_linear(addr.wrapping_add(2), false, bus)?;
         let a3 = self.translate_linear(addr.wrapping_add(3), false, bus)?;
-        Some(
-            bus.read_byte(a0) as u32
-                | ((bus.read_byte(a1) as u32) << 8)
-                | ((bus.read_byte(a2) as u32) << 16)
-                | ((bus.read_byte(a3) as u32) << 24),
-        )
+        Ok(bus.read_byte(a0) as u32
+            | ((bus.read_byte(a1) as u32) << 8)
+            | ((bus.read_byte(a2) as u32) << 16)
+            | ((bus.read_byte(a3) as u32) << 24))
     }
 
     pub(super) fn read_dword_linear_for_update(
         &mut self,
         bus: &mut impl common::Bus,
         addr: u32,
-    ) -> Option<u32> {
+    ) -> Step<u32> {
         if addr & 0xFFF <= 0xFFC {
             let a0 = self.translate_linear(addr, true, bus)?;
-            return Some(bus.read_dword(a0));
+            return Ok(bus.read_dword(a0));
         }
         let a0 = self.translate_linear(addr, true, bus)?;
         let a1 = self.translate_linear(addr.wrapping_add(1), true, bus)?;
         let a2 = self.translate_linear(addr.wrapping_add(2), true, bus)?;
         let a3 = self.translate_linear(addr.wrapping_add(3), true, bus)?;
-        Some(
-            bus.read_byte(a0) as u32
-                | ((bus.read_byte(a1) as u32) << 8)
-                | ((bus.read_byte(a2) as u32) << 16)
-                | ((bus.read_byte(a3) as u32) << 24),
-        )
+        Ok(bus.read_byte(a0) as u32
+            | ((bus.read_byte(a1) as u32) << 8)
+            | ((bus.read_byte(a2) as u32) << 16)
+            | ((bus.read_byte(a3) as u32) << 24))
     }
 
-    fn write_dword_linear(&mut self, bus: &mut impl common::Bus, addr: u32, value: u32) {
+    fn write_dword_linear(&mut self, bus: &mut impl common::Bus, addr: u32, value: u32) -> Step {
         if addr & 0xFFF <= 0xFFC {
-            let Some(a0) = self.translate_linear(addr, true, bus) else {
-                return;
-            };
+            let a0 = self.translate_linear(addr, true, bus)?;
             bus.write_dword(a0, value);
-            return;
+            return Ok(());
         }
-        let Some(a0) = self.translate_linear(addr, true, bus) else {
-            return;
-        };
-        let Some(a1) = self.translate_linear(addr.wrapping_add(1), true, bus) else {
-            return;
-        };
-        let Some(a2) = self.translate_linear(addr.wrapping_add(2), true, bus) else {
-            return;
-        };
-        let Some(a3) = self.translate_linear(addr.wrapping_add(3), true, bus) else {
-            return;
-        };
+        let a0 = self.translate_linear(addr, true, bus)?;
+        let a1 = self.translate_linear(addr.wrapping_add(1), true, bus)?;
+        let a2 = self.translate_linear(addr.wrapping_add(2), true, bus)?;
+        let a3 = self.translate_linear(addr.wrapping_add(3), true, bus)?;
         bus.write_byte(a0, value as u8);
         bus.write_byte(a1, (value >> 8) as u8);
         bus.write_byte(a2, (value >> 16) as u8);
         bus.write_byte(a3, (value >> 24) as u8);
+        Ok(())
     }
 
-    fn switch_task(&mut self, ntask: u16, task_type: TaskType, bus: &mut impl common::Bus) {
+    fn switch_task(&mut self, ntask: u16, task_type: TaskType, bus: &mut impl common::Bus) -> Step {
         let saved_supervisor_override = self.supervisor_override;
         self.supervisor_override = true;
-        let _ = self.switch_task_inner(ntask, task_type, bus);
+        let result = self.switch_task_inner(ntask, task_type, bus);
         self.supervisor_override = saved_supervisor_override;
+        result
     }
 
     fn switch_task_inner(
@@ -1956,15 +1823,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         ntask: u16,
         task_type: TaskType,
         bus: &mut impl common::Bus,
-    ) -> Option<()> {
+    ) -> Step {
         if ntask & 0x0004 != 0 {
-            self.raise_fault_with_code(10, Self::segment_error_code(ntask), bus);
-            return None;
+            return self.raise_fault_with_code(10, Self::segment_error_code(ntask), bus);
         }
 
         let Some(naddr) = self.descriptor_addr_checked(ntask) else {
-            self.raise_fault_with_code(10, Self::segment_error_code(ntask), bus);
-            return None;
+            return self.raise_fault_with_code(10, Self::segment_error_code(ntask), bus);
         };
 
         let ndesc = self.decode_descriptor_at(naddr, bus)?;
@@ -1975,29 +1840,24 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let r = ndesc_rights;
         let tss_type = r & 0x0F;
         if Self::descriptor_is_segment(r) || !matches!(tss_type, 1 | 3 | 9 | 11) {
-            self.raise_fault_with_code(13, Self::segment_error_code(ntask), bus);
-            return None;
+            return self.raise_fault_with_code(13, Self::segment_error_code(ntask), bus);
         }
         if task_type == TaskType::Iret {
             if r & 0x02 == 0 {
-                self.raise_fault_with_code(13, Self::segment_error_code(ntask), bus);
-                return None;
+                return self.raise_fault_with_code(13, Self::segment_error_code(ntask), bus);
             }
         } else if r & 0x02 != 0 {
-            self.raise_fault_with_code(13, Self::segment_error_code(ntask), bus);
-            return None;
+            return self.raise_fault_with_code(13, Self::segment_error_code(ntask), bus);
         }
 
         if !Self::descriptor_present(r) {
-            self.raise_fault_with_code(11, Self::segment_error_code(ntask), bus);
-            return None;
+            return self.raise_fault_with_code(11, Self::segment_error_code(ntask), bus);
         }
 
         let is_386_tss = matches!(tss_type, 9 | 11);
         let min_limit: u32 = if is_386_tss { 103 } else { 43 };
         if ndesc_limit < min_limit {
-            self.raise_fault_with_code(10, Self::segment_error_code(ntask), bus);
-            return None;
+            return self.raise_fault_with_code(10, Self::segment_error_code(ntask), bus);
         }
 
         let mut flags = self.flags.compress();
@@ -2013,114 +1873,114 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         if old_is_386 {
             let eip = self.ip_upper | self.ip as u32;
             let eflags = self.eflags_upper | flags as u32;
-            self.write_dword_linear(bus, old_base.wrapping_add(32), eip);
-            self.write_dword_linear(bus, old_base.wrapping_add(36), eflags);
+            self.write_dword_linear(bus, old_base.wrapping_add(32), eip)?;
+            self.write_dword_linear(bus, old_base.wrapping_add(36), eflags)?;
             self.write_dword_linear(
                 bus,
                 old_base.wrapping_add(40),
                 self.regs.dword(crate::DwordReg::EAX),
-            );
+            )?;
             self.write_dword_linear(
                 bus,
                 old_base.wrapping_add(44),
                 self.regs.dword(crate::DwordReg::ECX),
-            );
+            )?;
             self.write_dword_linear(
                 bus,
                 old_base.wrapping_add(48),
                 self.regs.dword(crate::DwordReg::EDX),
-            );
+            )?;
             self.write_dword_linear(
                 bus,
                 old_base.wrapping_add(52),
                 self.regs.dword(crate::DwordReg::EBX),
-            );
+            )?;
             self.write_dword_linear(
                 bus,
                 old_base.wrapping_add(56),
                 self.regs.dword(crate::DwordReg::ESP),
-            );
+            )?;
             self.write_dword_linear(
                 bus,
                 old_base.wrapping_add(60),
                 self.regs.dword(crate::DwordReg::EBP),
-            );
+            )?;
             self.write_dword_linear(
                 bus,
                 old_base.wrapping_add(64),
                 self.regs.dword(crate::DwordReg::ESI),
-            );
+            )?;
             self.write_dword_linear(
                 bus,
                 old_base.wrapping_add(68),
                 self.regs.dword(crate::DwordReg::EDI),
-            );
+            )?;
             self.write_dword_linear(
                 bus,
                 old_base.wrapping_add(72),
                 self.sregs[SegReg32::ES as usize] as u32,
-            );
+            )?;
             self.write_dword_linear(
                 bus,
                 old_base.wrapping_add(76),
                 self.sregs[SegReg32::CS as usize] as u32,
-            );
+            )?;
             self.write_dword_linear(
                 bus,
                 old_base.wrapping_add(80),
                 self.sregs[SegReg32::SS as usize] as u32,
-            );
+            )?;
             self.write_dword_linear(
                 bus,
                 old_base.wrapping_add(84),
                 self.sregs[SegReg32::DS as usize] as u32,
-            );
+            )?;
             self.write_dword_linear(
                 bus,
                 old_base.wrapping_add(88),
                 self.sregs[SegReg32::FS as usize] as u32,
-            );
+            )?;
             self.write_dword_linear(
                 bus,
                 old_base.wrapping_add(92),
                 self.sregs[SegReg32::GS as usize] as u32,
-            );
+            )?;
         } else {
-            self.write_word_linear(bus, old_base.wrapping_add(14), self.ip);
-            self.write_word_linear(bus, old_base.wrapping_add(16), flags);
-            self.write_word_linear(bus, old_base.wrapping_add(18), self.regs.word(WordReg::AX));
-            self.write_word_linear(bus, old_base.wrapping_add(20), self.regs.word(WordReg::CX));
-            self.write_word_linear(bus, old_base.wrapping_add(22), self.regs.word(WordReg::DX));
-            self.write_word_linear(bus, old_base.wrapping_add(24), self.regs.word(WordReg::BX));
-            self.write_word_linear(bus, old_base.wrapping_add(26), self.regs.word(WordReg::SP));
-            self.write_word_linear(bus, old_base.wrapping_add(28), self.regs.word(WordReg::BP));
-            self.write_word_linear(bus, old_base.wrapping_add(30), self.regs.word(WordReg::SI));
-            self.write_word_linear(bus, old_base.wrapping_add(32), self.regs.word(WordReg::DI));
+            self.write_word_linear(bus, old_base.wrapping_add(14), self.ip)?;
+            self.write_word_linear(bus, old_base.wrapping_add(16), flags)?;
+            self.write_word_linear(bus, old_base.wrapping_add(18), self.regs.word(WordReg::AX))?;
+            self.write_word_linear(bus, old_base.wrapping_add(20), self.regs.word(WordReg::CX))?;
+            self.write_word_linear(bus, old_base.wrapping_add(22), self.regs.word(WordReg::DX))?;
+            self.write_word_linear(bus, old_base.wrapping_add(24), self.regs.word(WordReg::BX))?;
+            self.write_word_linear(bus, old_base.wrapping_add(26), self.regs.word(WordReg::SP))?;
+            self.write_word_linear(bus, old_base.wrapping_add(28), self.regs.word(WordReg::BP))?;
+            self.write_word_linear(bus, old_base.wrapping_add(30), self.regs.word(WordReg::SI))?;
+            self.write_word_linear(bus, old_base.wrapping_add(32), self.regs.word(WordReg::DI))?;
             self.write_word_linear(
                 bus,
                 old_base.wrapping_add(34),
                 self.sregs[SegReg32::ES as usize],
-            );
+            )?;
             self.write_word_linear(
                 bus,
                 old_base.wrapping_add(36),
                 self.sregs[SegReg32::CS as usize],
-            );
+            )?;
             self.write_word_linear(
                 bus,
                 old_base.wrapping_add(38),
                 self.sregs[SegReg32::SS as usize],
-            );
+            )?;
             self.write_word_linear(
                 bus,
                 old_base.wrapping_add(40),
                 self.sregs[SegReg32::DS as usize],
-            );
+            )?;
         }
 
         // Write back-link to new TSS after old state is saved.
         if task_type == TaskType::Call {
-            self.write_word_linear(bus, ndesc_base, self.tr);
+            self.write_word_linear(bus, ndesc_base, self.tr)?;
         }
 
         // Read all fields from new TSS.
@@ -2242,23 +2102,19 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
         // Load LDT from new TSS.
         if ntss_ldt & 0x0004 != 0 {
-            self.raise_fault_with_code(10, Self::segment_error_code(ntss_ldt), bus);
-            return None;
+            return self.raise_fault_with_code(10, Self::segment_error_code(ntss_ldt), bus);
         }
         if ntss_ldt & 0xFFFC != 0 {
             let Some(ldtaddr) = self.descriptor_addr_checked(ntss_ldt) else {
-                self.raise_fault_with_code(10, Self::segment_error_code(ntss_ldt), bus);
-                return None;
+                return self.raise_fault_with_code(10, Self::segment_error_code(ntss_ldt), bus);
             };
             let ldt_desc = self.decode_descriptor_at(ldtaddr, bus)?;
             let lr = ldt_desc.rights;
             if Self::descriptor_is_segment(lr) || (lr & 0x0F) != 0x02 {
-                self.raise_fault_with_code(10, Self::segment_error_code(ntss_ldt), bus);
-                return None;
+                return self.raise_fault_with_code(10, Self::segment_error_code(ntss_ldt), bus);
             }
             if !Self::descriptor_present(lr) {
-                self.raise_fault_with_code(10, Self::segment_error_code(ntss_ldt), bus);
-                return None;
+                return self.raise_fault_with_code(10, Self::segment_error_code(ntss_ldt), bus);
             }
             let ldt_base = ldt_desc.base;
             let ldt_limit = ldt_desc.limit;
@@ -2303,20 +2159,20 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             self.set_real_segment_cache(SegReg32::GS, ntss_gs);
             self.ip = ntss_eip as u16;
             self.ip_upper = 0;
-            return None;
+            return Ok(());
         }
 
         // Load segment registers from new TSS. SS first (uses new CS RPL as CPL).
         let new_cpl = ntss_cs & 3;
-        self.load_task_data_segment(SegReg32::SS, ntss_ss, new_cpl, bus);
-        self.load_task_code_segment(ntss_cs, ntss_eip, bus);
+        self.load_task_data_segment(SegReg32::SS, ntss_ss, new_cpl, bus)?;
+        self.load_task_code_segment(ntss_cs, ntss_eip, bus)?;
         let cpl = self.cpl();
-        self.load_task_data_segment(SegReg32::ES, ntss_es, cpl, bus);
-        self.load_task_data_segment(SegReg32::DS, ntss_ds, cpl, bus);
-        self.load_task_data_segment(SegReg32::FS, ntss_fs, cpl, bus);
-        self.load_task_data_segment(SegReg32::GS, ntss_gs, cpl, bus);
+        self.load_task_data_segment(SegReg32::ES, ntss_es, cpl, bus)?;
+        self.load_task_data_segment(SegReg32::DS, ntss_ds, cpl, bus)?;
+        self.load_task_data_segment(SegReg32::FS, ntss_fs, cpl, bus)?;
+        self.load_task_data_segment(SegReg32::GS, ntss_gs, cpl, bus)?;
 
-        Some(())
+        Ok(())
     }
 
     fn load_task_data_segment(
@@ -2325,93 +2181,81 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         selector: u16,
         required_cpl: u16,
         bus: &mut impl common::Bus,
-    ) {
+    ) -> Step {
         if selector & 0xFFFC == 0 {
             self.set_null_segment(seg, selector);
-            return;
+            return Ok(());
         }
-        let Some(descriptor) = self.decode_descriptor(selector, bus) else {
-            if !self.fault_pending {
-                self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
-            }
-            return;
+        let Some(descriptor) = self.decode_descriptor(selector, bus)? else {
+            return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
         };
         let rights = descriptor.rights;
         if seg == SegReg32::SS {
             if !Self::descriptor_is_segment(rights) || !Self::descriptor_is_writable(rights) {
-                self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
-                return;
+                return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
             }
             let dpl = Self::descriptor_dpl(rights);
             let rpl = selector & 3;
             if dpl != required_cpl || rpl != required_cpl {
-                self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
-                return;
+                return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
             }
         } else {
             if !Self::descriptor_is_segment(rights) || !Self::descriptor_is_readable(rights) {
-                self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
-                return;
+                return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
             }
             if !Self::descriptor_is_conforming_code(rights) {
                 let dpl = Self::descriptor_dpl(rights);
                 let rpl = selector & 3;
                 if dpl < required_cpl.max(rpl) {
-                    self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
-                    return;
+                    return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
                 }
             }
         }
         if !Self::descriptor_present(rights) {
-            self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
-            return;
+            return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
         }
-        self.set_accessed_bit(selector, bus);
+        self.set_accessed_bit(selector, bus)?;
         self.set_loaded_segment_cache(seg, selector, descriptor);
+        Ok(())
     }
 
-    fn load_task_code_segment(&mut self, selector: u16, offset: u32, bus: &mut impl common::Bus) {
+    fn load_task_code_segment(
+        &mut self,
+        selector: u16,
+        offset: u32,
+        bus: &mut impl common::Bus,
+    ) -> Step {
         if selector & 0xFFFC == 0 {
-            self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
-            return;
+            return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
         }
-        let Some(descriptor) = self.decode_descriptor(selector, bus) else {
-            if !self.fault_pending {
-                self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
-            }
-            return;
+        let Some(descriptor) = self.decode_descriptor(selector, bus)? else {
+            return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
         };
         let rights = descriptor.rights;
         if !Self::descriptor_is_segment(rights) || !Self::descriptor_is_code(rights) {
-            self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
-            return;
+            return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
         }
         let dpl = Self::descriptor_dpl(rights);
         let rpl = selector & 3;
         if Self::descriptor_is_conforming_code(rights) {
             if dpl > rpl {
-                self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
-                return;
+                return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
             }
         } else if dpl != rpl {
-            self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
-            return;
+            return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
         }
         if !Self::descriptor_present(rights) {
-            self.raise_fault_with_code(11, Self::segment_error_code(selector), bus);
-            return;
+            return self.raise_fault_with_code(11, Self::segment_error_code(selector), bus);
         }
         if offset > descriptor.limit {
-            self.raise_fault_with_code(10, 0, bus);
-            return;
+            return self.raise_fault_with_code(10, 0, bus);
         }
-        if self.set_accessed_bit(selector, bus).is_none() {
-            return;
-        }
+        self.set_accessed_bit(selector, bus)?;
         let adjusted = (selector & !3) | rpl;
         self.set_loaded_segment_cache(SegReg32::CS, adjusted, descriptor);
         self.ip = offset as u16;
         self.ip_upper = offset & 0xFFFF_0000;
+        Ok(())
     }
 
     fn code_descriptor(
@@ -2422,70 +2266,57 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         old_cs: u16,
         old_eip: u32,
         bus: &mut impl common::Bus,
-    ) -> bool {
+    ) -> Step {
         let Some(addr) = self.descriptor_addr_checked(selector) else {
-            self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
-            return false;
+            return self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
         };
 
-        let Some(desc) = self.decode_descriptor_at(addr, bus) else {
-            // Fault was raised during descriptor read; propagate abort.
-            return false;
-        };
+        let desc = self.decode_descriptor_at(addr, bus)?;
         let r = desc.rights;
         let cpl = self.cpl();
         let rpl = selector & 3;
 
         if Self::descriptor_is_segment(r) {
             if !Self::descriptor_is_code(r) {
-                self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
-                return false;
+                return self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
             }
             if Self::descriptor_is_conforming_code(r) {
                 if Self::descriptor_dpl(r) > cpl {
-                    self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
-                    return false;
+                    return self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
                 }
             } else if rpl > cpl || Self::descriptor_dpl(r) != cpl {
-                self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
-                return false;
+                return self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
             }
             if !Self::descriptor_present(r) {
-                self.raise_fault_with_code(11, Self::segment_error_code(selector), bus);
-                return false;
+                return self.raise_fault_with_code(11, Self::segment_error_code(selector), bus);
             }
             if offset > desc.limit {
-                self.raise_fault_with_code(13, 0, bus);
-                return false;
+                return self.raise_fault_with_code(13, 0, bus);
             }
-            if self.set_accessed_bit(selector, bus).is_none() {
-                return false;
-            }
+            self.set_accessed_bit(selector, bus)?;
             let adjusted = (selector & !3) | cpl;
             self.set_loaded_segment_cache(SegReg32::CS, adjusted, desc);
             self.ip = offset as u16;
             self.ip_upper = offset & 0xFFFF_0000;
             if gate == TaskType::Call {
                 if self.operand_size_override {
-                    self.push_dword(bus, old_cs as u32);
-                    self.push_dword(bus, old_eip);
+                    self.push_dword(bus, old_cs as u32)?;
+                    self.push_dword(bus, old_eip)?;
                 } else {
-                    self.push(bus, old_cs);
-                    self.push(bus, old_eip as u16);
+                    self.push(bus, old_cs)?;
+                    self.push(bus, old_eip as u16)?;
                 }
             }
-            return true;
+            return Ok(());
         }
 
         // System descriptor.
         let dpl = Self::descriptor_dpl(r);
         if dpl < cpl.max(rpl) {
-            self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
-            return false;
+            return self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
         }
         if !Self::descriptor_present(r) {
-            self.raise_fault_with_code(11, Self::segment_error_code(selector), bus);
-            return false;
+            return self.raise_fault_with_code(11, Self::segment_error_code(selector), bus);
         }
 
         let gate_type = r & 0x0F;
@@ -2493,64 +2324,62 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             4 | 12 => {
                 // Call gate (4=286, 12=386).
                 let is_386_gate = gate_type == 12;
-                let Some(gate_selector) = self.read_word_linear(bus, addr.wrapping_add(2)) else {
-                    return false;
-                };
+                let gate_selector = self.read_word_linear(bus, addr.wrapping_add(2))?;
                 let gc_linear = addr.wrapping_add(4);
-                let Some(gc_phys) = self.translate_linear(gc_linear, false, bus) else {
-                    return false;
-                };
+                let gc_phys = self.translate_linear(gc_linear, false, bus)?;
                 let gate_count = bus.read_byte(gc_phys) & 0x1F;
                 let gate_offset = if is_386_gate {
-                    let Some(lo) = self.read_word_linear(bus, addr) else {
-                        return false;
-                    };
-                    let Some(hi) = self.read_word_linear(bus, addr.wrapping_add(6)) else {
-                        return false;
-                    };
+                    let lo = self.read_word_linear(bus, addr)?;
+                    let hi = self.read_word_linear(bus, addr.wrapping_add(6))?;
                     lo as u32 | ((hi as u32) << 16)
                 } else {
-                    let Some(lo) = self.read_word_linear(bus, addr) else {
-                        return false;
-                    };
+                    let lo = self.read_word_linear(bus, addr)?;
                     lo as u32
                 };
 
                 let Some(target_addr) = self.descriptor_addr_checked(gate_selector) else {
-                    self.raise_fault_with_code(13, Self::segment_error_code(gate_selector), bus);
-                    return false;
+                    return self.raise_fault_with_code(
+                        13,
+                        Self::segment_error_code(gate_selector),
+                        bus,
+                    );
                 };
-                let Some(target_desc) = self.decode_descriptor_at(target_addr, bus) else {
-                    return false;
-                };
+                let target_desc = self.decode_descriptor_at(target_addr, bus)?;
                 let tr = target_desc.rights;
                 if !Self::descriptor_is_code(tr) || !Self::descriptor_is_segment(tr) {
-                    self.raise_fault_with_code(13, Self::segment_error_code(gate_selector), bus);
-                    return false;
+                    return self.raise_fault_with_code(
+                        13,
+                        Self::segment_error_code(gate_selector),
+                        bus,
+                    );
                 }
                 let target_dpl = Self::descriptor_dpl(tr);
                 if target_dpl > cpl {
-                    self.raise_fault_with_code(13, Self::segment_error_code(gate_selector), bus);
-                    return false;
+                    return self.raise_fault_with_code(
+                        13,
+                        Self::segment_error_code(gate_selector),
+                        bus,
+                    );
                 }
                 if !Self::descriptor_present(tr) {
-                    self.raise_fault_with_code(11, Self::segment_error_code(gate_selector), bus);
-                    return false;
+                    return self.raise_fault_with_code(
+                        11,
+                        Self::segment_error_code(gate_selector),
+                        bus,
+                    );
                 }
                 if gate_offset > target_desc.limit {
-                    self.raise_fault_with_code(13, 0, bus);
-                    return false;
+                    return self.raise_fault_with_code(13, 0, bus);
                 }
 
                 if !Self::descriptor_is_conforming_code(tr) && target_dpl < cpl {
                     // Inter-privilege call via call gate.
                     if gate == TaskType::Jmp {
-                        self.raise_fault_with_code(
+                        return self.raise_fault_with_code(
                             13,
                             Self::segment_error_code(gate_selector),
                             bus,
                         );
-                        return false;
                     }
 
                     let is_386_tss = self.tr_rights & 0x0F >= 9;
@@ -2561,25 +2390,12 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     };
                     let tss_ss_offset = tss_sp_offset + if is_386_tss { 4 } else { 2 };
                     let tss_esp = if is_386_tss {
-                        let Some(v) =
-                            self.read_dword_linear(bus, self.tr_base.wrapping_add(tss_sp_offset))
-                        else {
-                            return false;
-                        };
-                        v
+                        self.read_dword_linear(bus, self.tr_base.wrapping_add(tss_sp_offset))?
                     } else {
-                        let Some(v) =
-                            self.read_word_linear(bus, self.tr_base.wrapping_add(tss_sp_offset))
-                        else {
-                            return false;
-                        };
-                        v as u32
+                        self.read_word_linear(bus, self.tr_base.wrapping_add(tss_sp_offset))? as u32
                     };
-                    let Some(tss_ss) =
-                        self.read_word_linear(bus, self.tr_base.wrapping_add(tss_ss_offset))
-                    else {
-                        return false;
-                    };
+                    let tss_ss =
+                        self.read_word_linear(bus, self.tr_base.wrapping_add(tss_ss_offset))?;
 
                     let saved_ss = self.sregs[SegReg32::SS as usize];
                     let saved_esp = if self.use_esp() {
@@ -2592,31 +2408,40 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
 
                     // Validate the new SS descriptor without committing it yet.
                     if tss_ss & 0xFFFC == 0 {
-                        self.raise_fault_with_code(10, 0, bus);
-                        return false;
+                        return self.raise_fault_with_code(10, 0, bus);
                     }
-                    let Some(new_ss_desc) = self.decode_descriptor(tss_ss, bus) else {
-                        if !self.fault_pending {
-                            self.raise_fault_with_code(10, Self::segment_error_code(tss_ss), bus);
-                        }
-                        return false;
+                    let Some(new_ss_desc) = self.decode_descriptor(tss_ss, bus)? else {
+                        return self.raise_fault_with_code(
+                            10,
+                            Self::segment_error_code(tss_ss),
+                            bus,
+                        );
                     };
                     let new_ss_rights = new_ss_desc.rights;
                     if !Self::descriptor_is_segment(new_ss_rights)
                         || !Self::descriptor_is_writable(new_ss_rights)
                     {
-                        self.raise_fault_with_code(10, Self::segment_error_code(tss_ss), bus);
-                        return false;
+                        return self.raise_fault_with_code(
+                            10,
+                            Self::segment_error_code(tss_ss),
+                            bus,
+                        );
                     }
                     let new_ss_dpl = Self::descriptor_dpl(new_ss_rights);
                     let new_ss_rpl = tss_ss & 3;
                     if new_ss_dpl != target_dpl || new_ss_rpl != target_dpl {
-                        self.raise_fault_with_code(10, Self::segment_error_code(tss_ss), bus);
-                        return false;
+                        return self.raise_fault_with_code(
+                            10,
+                            Self::segment_error_code(tss_ss),
+                            bus,
+                        );
                     }
                     if !Self::descriptor_present(new_ss_rights) {
-                        self.raise_fault_with_code(10, Self::segment_error_code(tss_ss), bus);
-                        return false;
+                        return self.raise_fault_with_code(
+                            10,
+                            Self::segment_error_code(tss_ss),
+                            bus,
+                        );
                     }
 
                     // Stack-space pre-check: verify the new stack has room for
@@ -2639,13 +2464,10 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                         stack_top >= total_push_bytes
                     };
                     if !stack_space_ok {
-                        self.raise_fault_with_code(12, 0, bus);
-                        return false;
+                        return self.raise_fault_with_code(12, 0, bus);
                     }
 
-                    if self.set_accessed_bit(tss_ss, bus).is_none() {
-                        return false;
-                    }
+                    self.set_accessed_bit(tss_ss, bus)?;
                     self.set_loaded_segment_cache(SegReg32::SS, tss_ss, new_ss_desc);
                     if self.use_esp() {
                         self.regs.set_dword(crate::DwordReg::ESP, tss_esp);
@@ -2654,8 +2476,8 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     }
 
                     if is_386_gate {
-                        self.push_dword(bus, saved_ss as u32);
-                        self.push_dword(bus, saved_esp);
+                        self.push_dword(bus, saved_ss as u32)?;
+                        self.push_dword(bus, saved_esp)?;
                         for i in (0..gate_count as u32).rev() {
                             let offset = saved_esp.wrapping_add(i * 4);
                             let offset = if old_ss_is_32bit {
@@ -2663,16 +2485,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                             } else {
                                 offset & 0xFFFF
                             };
-                            let Some(param) =
-                                self.read_dword_linear(bus, old_ss_base.wrapping_add(offset))
-                            else {
-                                return false;
-                            };
-                            self.push_dword(bus, param);
+                            let param =
+                                self.read_dword_linear(bus, old_ss_base.wrapping_add(offset))?;
+                            self.push_dword(bus, param)?;
                         }
                     } else {
-                        self.push(bus, saved_ss);
-                        self.push(bus, saved_esp as u16);
+                        self.push(bus, saved_ss)?;
+                        self.push(bus, saved_esp as u16)?;
                         for i in (0..gate_count as u16).rev() {
                             let offset = saved_esp.wrapping_add(i as u32 * 2);
                             let offset = if old_ss_is_32bit {
@@ -2680,19 +2499,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                             } else {
                                 offset & 0xFFFF
                             };
-                            let Some(param) =
-                                self.read_word_linear(bus, old_ss_base.wrapping_add(offset))
-                            else {
-                                return false;
-                            };
-                            self.push(bus, param);
+                            let param =
+                                self.read_word_linear(bus, old_ss_base.wrapping_add(offset))?;
+                            self.push(bus, param)?;
                         }
                     }
                 }
 
-                if self.set_accessed_bit(gate_selector, bus).is_none() {
-                    return false;
-                }
+                self.set_accessed_bit(gate_selector, bus)?;
                 // Conforming targets preserve the calling CPL; non-conforming
                 // targets adopt the target's DPL as the new CPL.
                 let new_cpl = if Self::descriptor_is_conforming_code(tr) {
@@ -2706,66 +2520,64 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.ip_upper = gate_offset & 0xFFFF_0000;
                 if gate == TaskType::Call {
                     if is_386_gate {
-                        self.push_dword(bus, old_cs as u32);
-                        self.push_dword(bus, old_eip);
+                        self.push_dword(bus, old_cs as u32)?;
+                        self.push_dword(bus, old_eip)?;
                     } else {
-                        self.push(bus, old_cs);
-                        self.push(bus, old_eip as u16);
+                        self.push(bus, old_cs)?;
+                        self.push(bus, old_eip as u16)?;
                     }
                 }
-                true
+                Ok(())
             }
             5 => {
                 // Task gate.
-                let Some(task_selector) = self.read_word_linear(bus, addr.wrapping_add(2)) else {
-                    return false;
-                };
-                self.switch_task(task_selector, gate, bus);
+                let task_selector = self.read_word_linear(bus, addr.wrapping_add(2))?;
+                self.switch_task(task_selector, gate, bus)?;
                 let flags_val = self.flags.compress();
                 let cpl = self.cpl();
                 self.flags.load_flags(flags_val, cpl, true);
-                true
+                Ok(())
             }
             1 | 9 => {
                 // Available TSS descriptor.
-                self.switch_task(selector, gate, bus);
+                self.switch_task(selector, gate, bus)?;
                 let flags_val = self.flags.compress();
                 let cpl = self.cpl();
                 self.flags.load_flags(flags_val, cpl, true);
-                true
+                Ok(())
             }
             3 | 11 => {
                 // Busy TSS.
-                self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
-                false
+                self.raise_fault_with_code(13, Self::segment_error_code(selector), bus)
             }
-            _ => {
-                self.raise_fault_with_code(13, Self::segment_error_code(selector), bus);
-                false
-            }
+            _ => self.raise_fault_with_code(13, Self::segment_error_code(selector), bus),
         }
     }
 
     /// Reads the 8-byte descriptor at `addr` (a linear address).
-    /// Returns `None` if any byte's translation faulted (the page
-    /// fault is already pending). Callers must propagate `None` as an
-    /// abort; never fall back to a sentinel descriptor.
+    /// Returns `Err(Fault)` if any byte's translation faulted (the page
+    /// fault is already pending). Callers must propagate as an abort;
+    /// never fall back to a sentinel descriptor.
     #[inline]
-    fn read_descriptor_byte(&mut self, linear: u32, bus: &mut impl common::Bus) -> Option<u8> {
+    fn read_descriptor_byte(&mut self, linear: u32, bus: &mut impl common::Bus) -> Step<u8> {
         let phys = self.translate_linear(linear, false, bus)?;
-        Some(bus.read_byte(phys))
+        Ok(bus.read_byte(phys))
     }
 
     fn decode_descriptor_at(
         &mut self,
         addr: u32,
         bus: &mut impl common::Bus,
-    ) -> Option<SegmentDescriptor> {
+    ) -> Step<SegmentDescriptor> {
         let saved_supervisor_override = self.supervisor_override;
         self.supervisor_override = true;
         // translate_linear short-circuits once fault_pending is set, so the
         // later reads after a fault on byte N are cheap no-ops returning
-        // None. Collect first, restore the override, then propagate.
+        // Err. Collect first, restore the override, then propagate.
+        // Read all bytes first so that a fault on byte N still restores the
+        // supervisor_override before we propagate. translate_linear short-
+        // circuits once fault_pending is set, so reads after the first fault
+        // are cheap no-ops that propagate Err.
         let b0 = self.read_descriptor_byte(addr, bus);
         let b1 = self.read_descriptor_byte(addr.wrapping_add(1), bus);
         let b2 = self.read_descriptor_byte(addr.wrapping_add(2), bus);
@@ -2791,12 +2603,107 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         } else {
             raw_limit
         };
-        Some(SegmentDescriptor {
+        Ok(SegmentDescriptor {
             base,
             limit,
             rights,
             granularity: b6,
         })
+    }
+
+    fn execute_with_prefixes(&mut self, bus: &mut impl common::Bus) -> Step {
+        // 80486 PRM 9.9.13: instructions longer than 15 bytes raise #GP.
+        // Track prefix bytes consumed and bail if a 15th would be next:
+        // a 15-byte all-prefix run still requires an opcode byte, so the
+        // total length necessarily exceeds the limit.
+        let mut prefix_count: u32 = 0;
+        let mut opcode = self.fetch(bus);
+        if self.fault_pending {
+            return Err(Fault);
+        }
+        loop {
+            match opcode {
+                0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 | 0x66 | 0x67 | 0xF0 => {
+                    if unlikely(prefix_count >= 14) {
+                        return self.raise_fault_with_code(13, 0, bus);
+                    }
+                    prefix_count += 1;
+                }
+                _ => {}
+            }
+            match opcode {
+                0x26 => {
+                    self.seg_prefix = true;
+                    self.prefix_seg = SegReg32::ES;
+                    self.clk(Self::timing(0, 1));
+                    opcode = self.fetch(bus);
+                }
+                0x2E => {
+                    self.seg_prefix = true;
+                    self.prefix_seg = SegReg32::CS;
+                    self.clk(Self::timing(0, 1));
+                    opcode = self.fetch(bus);
+                }
+                0x36 => {
+                    self.seg_prefix = true;
+                    self.prefix_seg = SegReg32::SS;
+                    self.clk(Self::timing(0, 1));
+                    opcode = self.fetch(bus);
+                }
+                0x3E => {
+                    self.seg_prefix = true;
+                    self.prefix_seg = SegReg32::DS;
+                    self.clk(Self::timing(0, 1));
+                    opcode = self.fetch(bus);
+                }
+                0x64 => {
+                    self.seg_prefix = true;
+                    self.prefix_seg = SegReg32::FS;
+                    self.clk(Self::timing(0, 1));
+                    opcode = self.fetch(bus);
+                }
+                0x65 => {
+                    self.seg_prefix = true;
+                    self.prefix_seg = SegReg32::GS;
+                    self.clk(Self::timing(0, 1));
+                    opcode = self.fetch(bus);
+                }
+                0x66 => {
+                    self.operand_size_override = !self.code_segment_32bit();
+                    self.clk(Self::timing(0, 1));
+                    opcode = self.fetch(bus);
+                }
+                0x67 => {
+                    self.address_size_override = !self.code_segment_32bit();
+                    self.clk(Self::timing(0, 1));
+                    opcode = self.fetch(bus);
+                }
+                0xF0 => {
+                    self.lock_prefix = true;
+                    self.clk(Self::timing(0, 1));
+                    opcode = self.fetch(bus);
+                }
+                _ => {
+                    if unlikely(self.lock_prefix && opcode != 0x0F && !Self::is_lockable(opcode)) {
+                        return self.raise_fault(6, bus);
+                    }
+                    if unlikely(
+                        self.lock_prefix
+                            && Self::is_lockable(opcode)
+                            && Self::lockable_modrm_is_register(self.peek_byte(bus)),
+                    ) {
+                        // 80486 PRM 13.1.1: LOCK with a lockable opcode
+                        // is still illegal when the destination operand
+                        // is a register (ModR/M mod == 11b).
+                        return self.raise_fault(6, bus);
+                    }
+                    return self.dispatch(opcode, bus);
+                }
+            }
+            if self.fault_pending {
+                return Err(Fault);
+            }
+        }
     }
 
     fn execute_one(&mut self, bus: &mut impl common::Bus) {
@@ -2828,98 +2735,9 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.address_size_override = d_bit;
 
         if self.rep_active {
-            self.continue_rep(bus);
+            let _ = self.continue_rep(bus);
         } else {
-            // 80486 PRM 9.9.13: instructions longer than 15 bytes raise #GP.
-            // Track prefix bytes consumed and bail if a 15th would be next:
-            // a 15-byte all-prefix run still requires an opcode byte, so the
-            // total length necessarily exceeds the limit.
-            let mut prefix_count: u32 = 0;
-            let mut opcode = self.fetch(bus);
-            while likely(!self.fault_pending) {
-                match opcode {
-                    0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 | 0x66 | 0x67 | 0xF0 => {
-                        if unlikely(prefix_count >= 14) {
-                            self.raise_fault_with_code(13, 0, bus);
-                            break;
-                        }
-                        prefix_count += 1;
-                    }
-                    _ => {}
-                }
-                match opcode {
-                    0x26 => {
-                        self.seg_prefix = true;
-                        self.prefix_seg = SegReg32::ES;
-                        self.clk(Self::timing(0, 1));
-                        opcode = self.fetch(bus);
-                    }
-                    0x2E => {
-                        self.seg_prefix = true;
-                        self.prefix_seg = SegReg32::CS;
-                        self.clk(Self::timing(0, 1));
-                        opcode = self.fetch(bus);
-                    }
-                    0x36 => {
-                        self.seg_prefix = true;
-                        self.prefix_seg = SegReg32::SS;
-                        self.clk(Self::timing(0, 1));
-                        opcode = self.fetch(bus);
-                    }
-                    0x3E => {
-                        self.seg_prefix = true;
-                        self.prefix_seg = SegReg32::DS;
-                        self.clk(Self::timing(0, 1));
-                        opcode = self.fetch(bus);
-                    }
-                    0x64 => {
-                        self.seg_prefix = true;
-                        self.prefix_seg = SegReg32::FS;
-                        self.clk(Self::timing(0, 1));
-                        opcode = self.fetch(bus);
-                    }
-                    0x65 => {
-                        self.seg_prefix = true;
-                        self.prefix_seg = SegReg32::GS;
-                        self.clk(Self::timing(0, 1));
-                        opcode = self.fetch(bus);
-                    }
-                    0x66 => {
-                        self.operand_size_override = !self.code_segment_32bit();
-                        self.clk(Self::timing(0, 1));
-                        opcode = self.fetch(bus);
-                    }
-                    0x67 => {
-                        self.address_size_override = !self.code_segment_32bit();
-                        self.clk(Self::timing(0, 1));
-                        opcode = self.fetch(bus);
-                    }
-                    0xF0 => {
-                        self.lock_prefix = true;
-                        self.clk(Self::timing(0, 1));
-                        opcode = self.fetch(bus);
-                    }
-                    _ => {
-                        if unlikely(
-                            self.lock_prefix && opcode != 0x0F && !Self::is_lockable(opcode),
-                        ) {
-                            self.raise_fault(6, bus);
-                        } else if unlikely(
-                            self.lock_prefix
-                                && Self::is_lockable(opcode)
-                                && Self::lockable_modrm_is_register(self.peek_byte(bus)),
-                        ) {
-                            // 80486 PRM 13.1.1: LOCK with a lockable opcode
-                            // is still illegal when the destination operand
-                            // is a register (ModR/M mod == 11b).
-                            self.raise_fault(6, bus);
-                        } else {
-                            self.dispatch(opcode, bus);
-                        }
-                        break;
-                    }
-                }
-            }
+            let _ = self.execute_with_prefixes(bus);
         }
 
         if likely(!self.preserve_resume_flag && !self.rep_active) {
@@ -2927,13 +2745,13 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
 
         if unlikely(tf_was_set && !self.fault_pending && !inhibit) {
-            self.raise_trap(1, bus);
+            let _ = self.raise_trap(1, bus);
         }
 
         if unlikely(self.debug_trap_pending && !self.fault_pending) {
             self.debug_trap_pending = false;
             self.dr6 |= 0x8000; // BT (bit 15) - task switch debug trap
-            self.raise_trap(1, bus);
+            let _ = self.raise_trap(1, bus);
         }
     }
 

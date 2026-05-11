@@ -60,8 +60,9 @@
 //!         as soon as they are available, but we are very confident, that our current V30 is
 //!         already 99% cycle accurate when beeing compared to an original V30.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
+#![warn(clippy::unnecessary_wraps)]
 
 mod i286;
 mod i386;

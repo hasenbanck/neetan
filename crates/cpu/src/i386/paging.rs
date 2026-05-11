@@ -1,4 +1,4 @@
-use super::{CPU_MODEL_486, I386};
+use super::{CPU_MODEL_486, Fault, I386, Step};
 
 const TLB_SIZE: usize = 64;
 const TLB_MASK: u32 = (TLB_SIZE as u32) - 1;
@@ -29,12 +29,12 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         linear: u32,
         write: bool,
         bus: &mut impl common::Bus,
-    ) -> Option<u32> {
+    ) -> Step<u32> {
         if self.fault_pending {
-            return None;
+            return Err(Fault);
         }
         if !self.is_paging_enabled() {
-            return Some(linear);
+            return Ok(linear);
         }
 
         let page = linear >> 12;
@@ -43,18 +43,16 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         if self.tlb_valid[slot] && self.tlb_tag[slot] == page {
             let is_user = self.is_user_page_access();
             if is_user && !self.tlb_user[slot] {
-                self.raise_page_fault(linear, write, true, bus);
-                return None;
+                return self.raise_page_fault(linear, write, true, bus);
             }
             let wp_enforced = CPU_MODEL == CPU_MODEL_486 && self.cr0 & 0x0001_0000 != 0;
             if write && (is_user || wp_enforced) && !self.tlb_writable[slot] {
-                self.raise_page_fault(linear, write, true, bus);
-                return None;
+                return self.raise_page_fault(linear, write, true, bus);
             }
             if write && !self.tlb_dirty[slot] {
                 return self.page_table_walk(linear, write, bus);
             }
-            return Some(self.tlb_phys[slot] | (linear & 0xFFF));
+            return Ok(self.tlb_phys[slot] | (linear & 0xFFF));
         }
 
         self.page_table_walk(linear, write, bus)
@@ -65,7 +63,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         linear: u32,
         write: bool,
         bus: &mut impl common::Bus,
-    ) -> Option<u32> {
+    ) -> Step<u32> {
         let dir_index = (linear >> 22) & 0x3FF;
         let table_index = (linear >> 12) & 0x3FF;
         let offset = linear & 0xFFF;
@@ -74,16 +72,14 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let pde = self.read_dword_phys_raw(bus, pde_addr);
 
         if pde & PTE_PRESENT == 0 {
-            self.raise_page_fault(linear, write, false, bus);
-            return None;
+            return self.raise_page_fault(linear, write, false, bus);
         }
 
         let pte_addr = (pde & 0xFFFF_F000) | (table_index << 2);
         let pte = self.read_dword_phys_raw(bus, pte_addr);
 
         if pte & PTE_PRESENT == 0 {
-            self.raise_page_fault(linear, write, false, bus);
-            return None;
+            return self.raise_page_fault(linear, write, false, bus);
         }
 
         // Permission check: user mode needs U/S=1 on both PDE and PTE.
@@ -95,20 +91,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let is_user = self.is_user_page_access();
         if is_user {
             if pde & PTE_USER == 0 || pte & PTE_USER == 0 {
-                self.raise_page_fault(linear, write, true, bus);
-                return None;
+                return self.raise_page_fault(linear, write, true, bus);
             }
             if write && (pde & PTE_WRITABLE == 0 || pte & PTE_WRITABLE == 0) {
-                self.raise_page_fault(linear, write, true, bus);
-                return None;
+                return self.raise_page_fault(linear, write, true, bus);
             }
         } else if write
             && CPU_MODEL == CPU_MODEL_486
             && self.cr0 & 0x0001_0000 != 0
             && (pde & PTE_WRITABLE == 0 || pte & PTE_WRITABLE == 0)
         {
-            self.raise_page_fault(linear, write, true, bus);
-            return None;
+            return self.raise_page_fault(linear, write, true, bus);
         }
 
         // Set accessed bit on PDE if not already set.
@@ -138,16 +131,16 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         self.tlb_writable[slot] = pde & PTE_WRITABLE != 0 && pte & PTE_WRITABLE != 0;
         self.tlb_user[slot] = pde & PTE_USER != 0 && pte & PTE_USER != 0;
 
-        Some(physical)
+        Ok(physical)
     }
 
-    fn raise_page_fault(
+    fn raise_page_fault<T>(
         &mut self,
         linear: u32,
         write: bool,
         present: bool,
         bus: &mut impl common::Bus,
-    ) {
+    ) -> Step<T> {
         self.cr2 = linear;
         let mut error_code: u16 = 0;
         if present {
@@ -160,7 +153,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             error_code |= 4; // U/S bit
         }
         self.fault_pending = true;
-        self.raise_fault_with_code(14, error_code, bus);
+        self.raise_fault_with_code(14, error_code, bus)
     }
 
     #[inline(always)]

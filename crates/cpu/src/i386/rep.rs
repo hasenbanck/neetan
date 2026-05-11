@@ -1,4 +1,4 @@
-use super::I386;
+use super::{I386, Step};
 use crate::{DwordReg, SegReg32, WordReg};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -26,7 +26,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         }
     }
 
-    fn start_rep(&mut self, rep_type: RepType, bus: &mut impl common::Bus) {
+    fn start_rep(&mut self, rep_type: RepType, bus: &mut impl common::Bus) -> Step {
         self.clk(Self::timing(0, 1));
         self.rep_restart_ip = self.prev_ip;
         self.rep_restart_ip_upper = self.prev_ip_upper;
@@ -91,15 +91,16 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             _ => 2,
         };
         self.clk(startup);
-        self.do_rep(rep_type, next, bus);
+        self.do_rep(rep_type, next, bus)?;
+        Ok(())
     }
 
-    fn do_rep(&mut self, rep_type: RepType, next: u8, bus: &mut impl common::Bus) {
+    fn do_rep(&mut self, rep_type: RepType, next: u8, bus: &mut impl common::Bus) -> Step {
         let mut count = self.rep_count();
 
         if count == 0 {
             self.rep_completed = true;
-            return;
+            return Ok(());
         }
 
         let is_cmps_scas = matches!(next, 0xA6 | 0xA7 | 0xAE | 0xAF);
@@ -116,7 +117,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let initial_ip_upper = self.ip_upper;
 
         loop {
-            match next {
+            let iter_result = match next {
                 0x6C => self.insb(bus),
                 0x6D => self.insw(bus),
                 0x6E => self.outsb(bus),
@@ -132,17 +133,18 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 0xAE => self.scasb(bus),
                 0xAF => self.scasw(bus),
                 _ => {
-                    self.dispatch(next, bus);
-                    return;
+                    self.dispatch(next, bus)?;
+                    return Ok(());
                 }
-            }
-            if self.fault_pending
+            };
+            if iter_result.is_err()
+                || self.fault_pending
                 || self.sregs[SegReg32::CS as usize] != initial_cs
                 || self.ip != initial_ip
                 || self.ip_upper != initial_ip_upper
             {
                 self.set_rep_count(count);
-                return;
+                return iter_result;
             }
             let per_iteration_adjust = match next {
                 0xA4 | 0xA5 => Self::timing(-3, -4),
@@ -201,16 +203,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 self.set_rep_count(count);
                 self.ip = self.rep_restart_ip;
                 self.ip_upper = self.rep_restart_ip_upper;
-                return;
+                return Ok(());
             }
         }
 
         self.set_rep_count(count);
         self.seg_prefix = false;
         self.rep_completed = true;
+        Ok(())
     }
 
-    pub(super) fn continue_rep(&mut self, bus: &mut impl common::Bus) {
+    pub(super) fn continue_rep(&mut self, bus: &mut impl common::Bus) -> Step {
         self.ip = self.rep_ip;
         self.ip_upper = self.rep_ip_upper;
         self.prev_ip = self.rep_restart_ip;
@@ -226,14 +229,17 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             RepType::RepE
         };
         self.rep_active = false;
-        self.do_rep(rep_type, next, bus);
+        self.do_rep(rep_type, next, bus)?;
+        Ok(())
     }
 
-    pub(super) fn repne(&mut self, bus: &mut impl common::Bus) {
-        self.start_rep(RepType::RepNe, bus);
+    pub(super) fn repne(&mut self, bus: &mut impl common::Bus) -> Step {
+        self.start_rep(RepType::RepNe, bus)?;
+        Ok(())
     }
 
-    pub(super) fn repe(&mut self, bus: &mut impl common::Bus) {
-        self.start_rep(RepType::RepE, bus);
+    pub(super) fn repe(&mut self, bus: &mut impl common::Bus) -> Step {
+        self.start_rep(RepType::RepE, bus)?;
+        Ok(())
     }
 }

@@ -1,5 +1,8 @@
 //! Implements the Intel 80286 emulation.
 //!
+//! The protected mode is not fully developed in this core.
+//! Only some version of OS/2 1.x should need it.
+//!
 //! Following references were used to write the emulator:
 //!
 //! - Intel Corporation, "80286 Programmer's Reference Manual".
