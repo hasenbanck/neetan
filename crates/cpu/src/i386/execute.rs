@@ -1156,34 +1156,80 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
     }
 
     fn pusha(&mut self, bus: &mut impl common::Bus) -> Step {
+        // Atomic PUSHA: probe writability of all 8 stack slots before
+        // committing SP, so a #PF mid-sequence leaves SP and memory
+        // unchanged from the OS handler's perspective. (Sequential pushes
+        // would commit SP between operations, leaving the saved-V86-ESP
+        // slot of an inter-priv fault frame pointing at a partial state
+        // that the IRET-back would observe.)
         let penalty = self.sp_penalty();
-        if self.operand_size_override {
-            let esp = self.regs.dword(DwordReg::ESP);
-            self.push_dword(bus, self.regs.dword(DwordReg::EAX))?;
-            self.push_dword(bus, self.regs.dword(DwordReg::ECX))?;
-            self.push_dword(bus, self.regs.dword(DwordReg::EDX))?;
-            self.push_dword(bus, self.regs.dword(DwordReg::EBX))?;
-            self.push_dword(bus, esp)?;
-            self.push_dword(bus, self.regs.dword(DwordReg::EBP))?;
-            self.push_dword(bus, self.regs.dword(DwordReg::ESI))?;
-            self.push_dword(bus, self.regs.dword(DwordReg::EDI))?;
+        let use_esp = self.use_esp();
+        let sp_orig = if use_esp {
+            self.regs.dword(DwordReg::ESP)
         } else {
-            let sp = self.regs.word(WordReg::SP);
-            let aw = self.regs.word(WordReg::AX);
-            self.push(bus, aw)?;
-            let cw = self.regs.word(WordReg::CX);
-            self.push(bus, cw)?;
-            let dw = self.regs.word(WordReg::DX);
-            self.push(bus, dw)?;
-            let bw = self.regs.word(WordReg::BX);
-            self.push(bus, bw)?;
-            self.push(bus, sp)?;
-            let bp = self.regs.word(WordReg::BP);
-            self.push(bus, bp)?;
-            let ix = self.regs.word(WordReg::SI);
-            self.push(bus, ix)?;
-            let iy = self.regs.word(WordReg::DI);
-            self.push(bus, iy)?;
+            self.regs.word(WordReg::SP) as u32
+        };
+        let stack_offset = |delta: u32| -> u32 {
+            if use_esp {
+                sp_orig.wrapping_sub(delta)
+            } else {
+                (sp_orig as u16).wrapping_sub(delta as u16) as u32
+            }
+        };
+        let ss_base = self.seg_base(SegReg32::SS);
+
+        if self.operand_size_override {
+            let values = [
+                self.regs.dword(DwordReg::EAX),
+                self.regs.dword(DwordReg::ECX),
+                self.regs.dword(DwordReg::EDX),
+                self.regs.dword(DwordReg::EBX),
+                self.regs.dword(DwordReg::ESP),
+                self.regs.dword(DwordReg::EBP),
+                self.regs.dword(DwordReg::ESI),
+                self.regs.dword(DwordReg::EDI),
+            ];
+            // Probe every byte of every slot before any commit.
+            for i in 1..=8u32 {
+                let offset = stack_offset(4 * i);
+                self.check_segment_access(SegReg32::SS, offset, 4, true, bus)?;
+                let l0 = ss_base.wrapping_add(offset);
+                for b in 0..4u32 {
+                    self.translate_linear(l0.wrapping_add(b), true, bus)?;
+                }
+            }
+            // All slots accessible -- commit SP and do all writes. The
+            // writes go through write_dword_seg which retranslates from
+            // the TLB primed by the probe loop above.
+            self.commit_sp(stack_offset(32));
+            for (i, &val) in values.iter().enumerate() {
+                let offset = stack_offset(4 * (i as u32 + 1));
+                self.write_dword_seg(bus, SegReg32::SS, offset, val)?;
+            }
+        } else {
+            let values = [
+                self.regs.word(WordReg::AX),
+                self.regs.word(WordReg::CX),
+                self.regs.word(WordReg::DX),
+                self.regs.word(WordReg::BX),
+                self.regs.word(WordReg::SP),
+                self.regs.word(WordReg::BP),
+                self.regs.word(WordReg::SI),
+                self.regs.word(WordReg::DI),
+            ];
+            for i in 1..=8u32 {
+                let offset = stack_offset(2 * i);
+                self.check_segment_access(SegReg32::SS, offset, 2, true, bus)?;
+                let l0 = ss_base.wrapping_add(offset);
+                for b in 0..2u32 {
+                    self.translate_linear(l0.wrapping_add(b), true, bus)?;
+                }
+            }
+            self.commit_sp(stack_offset(16));
+            for (i, &val) in values.iter().enumerate() {
+                let offset = stack_offset(2 * (i as u32 + 1));
+                self.write_word_seg(bus, SegReg32::SS, offset, val)?;
+            }
         }
         self.clk(Self::timing(18, 11) + penalty);
         Ok(())
@@ -2877,20 +2923,37 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
         let penalty = self.sp_penalty();
 
         if !self.is_protected_mode() {
+            let use_esp = self.use_esp();
+            let sp = if use_esp {
+                self.regs.dword(DwordReg::ESP)
+            } else {
+                self.regs.word(WordReg::SP) as u32
+            };
+            let stack_offset = |delta: u32| -> u32 {
+                if use_esp {
+                    sp.wrapping_add(delta)
+                } else {
+                    (sp as u16).wrapping_add(delta as u16) as u32
+                }
+            };
+            let ss_base = self.seg_base(SegReg32::SS);
             if self.operand_size_override {
-                let eip = self.pop_dword(bus)?;
-                let cs_dword = self.pop_dword(bus)?;
-                let cs = cs_dword as u16;
-                let eflags = self.pop_dword(bus)?;
-                self.load_segment(SegReg32::CS, cs, bus)?;
+                let eip = self.read_dword_linear(bus, ss_base.wrapping_add(stack_offset(0)))?;
+                let cs_dword =
+                    self.read_dword_linear(bus, ss_base.wrapping_add(stack_offset(4)))?;
+                let eflags = self.read_dword_linear(bus, ss_base.wrapping_add(stack_offset(8)))?;
+                self.load_segment(SegReg32::CS, cs_dword as u16, bus)?;
+                self.commit_sp(stack_offset(12));
                 self.ip = eip as u16;
                 self.ip_upper = eip & 0xFFFF_0000;
                 self.flags.load_flags(eflags as u16, 0, false);
             } else {
-                let ip = self.pop(bus)?;
-                let cs = self.pop(bus)?;
-                let flags_val = self.pop(bus)?;
+                let ip = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(0)))?;
+                let cs = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(2)))?;
+                let flags_val =
+                    self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(4)))?;
                 self.load_segment(SegReg32::CS, cs, bus)?;
+                self.commit_sp(stack_offset(6));
                 self.ip = ip;
                 self.ip_upper = 0;
                 self.flags.load_flags(flags_val, 0, false);
@@ -2905,25 +2968,44 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                 return Ok(());
             }
 
+            let use_esp = self.use_esp();
+            let sp = if use_esp {
+                self.regs.dword(DwordReg::ESP)
+            } else {
+                self.regs.word(WordReg::SP) as u32
+            };
+            let stack_offset = |delta: u32| -> u32 {
+                if use_esp {
+                    sp.wrapping_add(delta)
+                } else {
+                    (sp as u16).wrapping_add(delta as u16) as u32
+                }
+            };
+            let ss_base = self.seg_base(SegReg32::SS);
             if self.operand_size_override {
-                let new_eip = self.pop_dword(bus)?;
-                let new_cs_dword = self.pop_dword(bus)?;
+                let new_eip = self.read_dword_linear(bus, ss_base.wrapping_add(stack_offset(0)))?;
+                let new_cs_dword =
+                    self.read_dword_linear(bus, ss_base.wrapping_add(stack_offset(4)))?;
+                let new_eflags =
+                    self.read_dword_linear(bus, ss_base.wrapping_add(stack_offset(8)))?;
                 let new_cs = new_cs_dword as u16;
-                let new_eflags = self.pop_dword(bus)?;
 
                 self.sregs[SegReg32::CS as usize] = new_cs;
                 self.set_real_segment_cache(SegReg32::CS, new_cs);
+                self.commit_sp(stack_offset(12));
                 self.ip = new_eip as u16;
                 self.ip_upper = new_eip & 0xFFFF_0000;
                 self.flags.load_flags(new_eflags as u16, 3, true);
                 self.eflags_upper = (new_eflags & 0x00FF_0000) | 0x0002_0000;
             } else {
-                let new_ip = self.pop(bus)?;
-                let new_cs = self.pop(bus)?;
-                let new_flags = self.pop(bus)?;
+                let new_ip = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(0)))?;
+                let new_cs = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(2)))?;
+                let new_flags =
+                    self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(4)))?;
 
                 self.sregs[SegReg32::CS as usize] = new_cs;
                 self.set_real_segment_cache(SegReg32::CS, new_cs);
+                self.commit_sp(stack_offset(6));
                 self.ip = new_ip;
                 self.ip_upper = 0;
                 self.flags.load_flags(new_flags, 3, true);

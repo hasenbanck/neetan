@@ -3117,9 +3117,25 @@ fn assert_v86_pf_frame_preserves_sp(
     expected_user_esp: u32,
     expected_user_eip: u32,
 ) {
+    assert_v86_pf_frame_preserves_sp_with_cr2(
+        cpu,
+        bus,
+        expected_user_esp,
+        expected_user_eip,
+        0x1000,
+    );
+}
+
+fn assert_v86_pf_frame_preserves_sp_with_cr2(
+    cpu: &I386,
+    bus: &TestBus,
+    expected_user_esp: u32,
+    expected_user_eip: u32,
+    expected_cr2: u32,
+) {
     assert!(cpu.halted(), "ring-0 #PF handler must HLT");
     assert_eq!(cpu.ip(), PG_PF_HANDLER_IP as u32 + 1);
-    assert_eq!(cpu.cr2, 0x1000, "CR2 must point at the not-present CS slot");
+    assert_eq!(cpu.cr2, expected_cr2, "CR2 must point at the faulting slot");
 
     // Ring-0 ESP after the 10-dword V86 fault frame push.
     let handler_sp = cpu.esp();
@@ -3135,11 +3151,11 @@ fn assert_v86_pf_frame_preserves_sp(
 
     assert_eq!(
         saved_eip, expected_user_eip,
-        "saved EIP must point at the faulting RET FAR for restart"
+        "saved EIP must point at the faulting instruction for restart"
     );
     assert_eq!(
         saved_esp, expected_user_esp,
-        "saved V86 ESP must be the pre-instruction SP, not the partially-popped SP"
+        "saved V86 ESP must be the pre-instruction SP, not the partially-modified SP"
     );
 }
 
@@ -3202,4 +3218,103 @@ fn paging_fault_ret_far_o32_v86_preserves_esp_on_cs_fault() {
     cpu.step(&mut bus);
 
     assert_v86_pf_frame_preserves_sp(&cpu, &bus, 0x0FFC, 0);
+}
+
+/// IRET in V86 - 16-bit form pops IP, CS, FLAGS. SP=0x0FFE puts the IP
+/// slot in page 0 and the CS slot at the start of page 1 (not present).
+/// Buggy code commits SP from the first pop before the second runs.
+#[test]
+fn paging_fault_iret_v86_preserves_sp_on_cs_fault() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_v86_ret_far_fault(&mut bus, 0x0FFE);
+    cpu.load_state(&state);
+
+    place_at(&mut bus, V86_CS_BASE, &[0xCF]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert_v86_pf_frame_preserves_sp(&cpu, &bus, 0x0FFE, 0);
+}
+
+/// IRETD in V86 - 32-bit form pops 3 dwords.
+#[test]
+fn paging_fault_iretd_v86_preserves_sp_on_cs_fault() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let state = setup_v86_ret_far_fault(&mut bus, 0x0FFC);
+    cpu.load_state(&state);
+
+    place_at(&mut bus, V86_CS_BASE, &[0x66, 0xCF]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert_v86_pf_frame_preserves_sp(&cpu, &bus, 0x0FFC, 0);
+}
+
+/// Variant of the V86 fault harness with page 2 (linear 0x2000) present
+/// and page 1 (linear 0x1000) not present. Stack starts in page 2 and
+/// pushes descend into page 1 so push #2+ faults.
+fn setup_v86_descending_push_fault(bus: &mut TestBus, sp: u16) -> cpu::I386State {
+    let mut state = setup_paged_protected_mode(bus);
+    make_v86(&mut state, V86_CS_SELECTOR, V86_SS_SELECTOR);
+    state.set_esp(sp as u32);
+    state.ip = 0;
+    state.ip_upper = 0;
+
+    let pde = read_dword_at(bus, PG_PAGE_DIR);
+    write_dword_at(bus, PG_PAGE_DIR, pde | PTE_US);
+    for i in 0..512u32 {
+        let pte = read_dword_at(bus, PG_PAGE_TABLE_0 + i * 4);
+        if pte & PTE_P != 0 {
+            write_dword_at(bus, PG_PAGE_TABLE_0 + i * 4, pte | PTE_US);
+        }
+    }
+    // Page 1 (linear 0x1000) is NOT PRESENT.
+    write_dword_at(bus, PG_PAGE_TABLE_0 + 4, 0);
+    state
+}
+
+/// PUSHA in V86 - 8 sequential pushes. SP=0x2002: push #1 (AX) at 0x2000
+/// (page 2, OK), push #2 (CX) at 0x1FFE (page 1, FAULT).
+#[test]
+fn paging_fault_pusha_v86_preserves_sp_on_fault() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_v86_descending_push_fault(&mut bus, 0x2002);
+    state.set_eax(0xAAAA);
+    state.set_ecx(0xCCCC);
+    cpu.load_state(&state);
+
+    place_at(&mut bus, V86_CS_BASE, &[0x60]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert_v86_pf_frame_preserves_sp_with_cr2(&cpu, &bus, 0x2002, 0, 0x1FFE);
+}
+
+/// PUSHAD in V86 - 8 sequential dword pushes. SP=0x2004: push #1 (EAX)
+/// at 0x2000 (page 2, OK), push #2 (ECX) at 0x1FFC (page 1, FAULT).
+#[test]
+fn paging_fault_pushad_v86_preserves_sp_on_fault() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_v86_descending_push_fault(&mut bus, 0x2004);
+    state.set_eax(0xAAAAAAAA);
+    state.set_ecx(0xCCCCCCCC);
+    cpu.load_state(&state);
+
+    place_at(&mut bus, V86_CS_BASE, &[0x66, 0x60]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert_v86_pf_frame_preserves_sp_with_cr2(&cpu, &bus, 0x2004, 0, 0x1FFC);
 }
