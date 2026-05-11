@@ -865,8 +865,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     let cs = self.sregs[SegReg32::CS as usize];
                     let old_eip = self.ip_upper | self.ip as u32;
                     if !self.is_protected_mode() || self.is_virtual_mode() {
-                        self.push_dword(bus, cs as u32)?;
-                        self.push_dword(bus, old_eip)?;
+                        self.far_push_real_v86_dword(bus, cs as u32, old_eip)?;
                         self.load_segment(SegReg32::CS, segment, bus)?;
                         self.ip = offset as u16;
                         self.ip_upper = offset & 0xFFFF_0000;
@@ -900,8 +899,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
                     let cs = self.sregs[SegReg32::CS as usize];
                     let old_eip = self.ip_upper | self.ip as u32;
                     if !self.is_protected_mode() || self.is_virtual_mode() {
-                        self.push(bus, cs)?;
-                        self.push(bus, old_eip as u16)?;
+                        self.far_push_real_v86_word(bus, cs, old_eip as u16)?;
                         self.load_segment(SegReg32::CS, segment, bus)?;
                         self.ip = offset;
                         self.ip_upper = 0;
