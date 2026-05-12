@@ -1,5 +1,3 @@
-use std::mem;
-
 use common::Bus;
 
 use super::ADDRESS_MASK;
@@ -9,7 +7,6 @@ const DECODED_QUEUE_CAPACITY: u8 = 3;
 const COLD_START_PREFETCH_FETCHES: u8 = 4;
 const DECODED_QUEUE_REFILL_THRESHOLD: u8 = 2;
 const RESET_DATA_BUS_VALUE: u16 = 0xFFFF;
-const TERMINAL_HALT_MARKER_ADDRESS: u32 = 0x000002;
 const READ_TO_WRITEBACK_VISIBLE_CYCLES: u8 = 2;
 const READ_TO_WRITEBACK_OVERLAP_CREDIT: i32 = 4;
 const SPLIT_WORD_WRITEBACK_OVERLAP_CREDIT: i32 = 3;
@@ -21,11 +18,6 @@ pub(crate) const STACK_WORD_OVERLAP_CREDIT: i32 = 2;
 pub(crate) const LOCK_PREFIX_OVERLAP_CREDIT: i32 = 3;
 /// Internal-cycle credit applied for moffs operands that follow a prefix.
 pub(crate) const MOFFS_PREFIX_OVERLAP_CREDIT: i32 = 2;
-
-/// 80287 command-channel I/O port the 286 drives during ESC instructions.
-pub(crate) const FPU_COMMAND_PORT: u16 = 0x00F8;
-/// 80287 data-channel I/O port the 286 drives during ESC instructions.
-pub(crate) const FPU_DATA_PORT: u16 = 0x00FC;
 
 const DATA_BUS_HIGH_LANE_MASK: u16 = 0xFF00;
 const DATA_BUS_LOW_LANE_MASK: u16 = 0x00FF;
@@ -326,7 +318,6 @@ pub struct I286TimingMilestones {
 
 #[derive(Debug)]
 pub(crate) struct I286Timing {
-    capture_enabled: bool,
     cycle_counter: u64,
     pending_cycle_debt: i32,
     borrowed_internal_cycles: i32,
@@ -338,7 +329,6 @@ pub(crate) struct I286Timing {
     suppress_next_internal_prefetch_window: bool,
     passivize_next_demand_prefetch: bool,
     passivize_next_code_fetch: bool,
-    drive_next_write_low_byte_on_ts: bool,
     suppress_next_read_writeback_gap: bool,
     prefetch_offset: u16,
     cold_start_fetches_emitted: u8,
@@ -364,14 +354,11 @@ pub(crate) struct I286Timing {
     instruction_start_offset: u16,
     consumed_code_bytes: u8,
     milestones: I286TimingMilestones,
-    // TODO: Remove once 286 is cycle-count accurate and tracing is not needed anymore.
-    trace: Vec<I286CycleTraceEntry>,
 }
 
 impl I286Timing {
     pub(crate) fn new() -> Self {
         Self {
-            capture_enabled: false,
             cycle_counter: 0,
             pending_cycle_debt: 0,
             borrowed_internal_cycles: 0,
@@ -383,7 +370,6 @@ impl I286Timing {
             suppress_next_internal_prefetch_window: false,
             passivize_next_demand_prefetch: false,
             passivize_next_code_fetch: false,
-            drive_next_write_low_byte_on_ts: false,
             suppress_next_read_writeback_gap: false,
             prefetch_offset: 0,
             cold_start_fetches_emitted: 0,
@@ -409,7 +395,6 @@ impl I286Timing {
             instruction_start_offset: 0,
             consumed_code_bytes: 0,
             milestones: I286TimingMilestones::default(),
-            trace: Vec::new(),
         }
     }
 
@@ -425,7 +410,6 @@ impl I286Timing {
         self.suppress_next_internal_prefetch_window = false;
         self.passivize_next_demand_prefetch = false;
         self.passivize_next_code_fetch = false;
-        self.drive_next_write_low_byte_on_ts = false;
         self.suppress_next_read_writeback_gap = false;
         self.prefetch_offset = instruction_pointer;
         self.cold_start_fetches_emitted = 0;
@@ -451,32 +435,19 @@ impl I286Timing {
         self.instruction_start_offset = instruction_pointer;
         self.consumed_code_bytes = 0;
         self.milestones = I286TimingMilestones::default();
-        self.trace.clear();
-    }
-
-    pub(crate) fn set_capture_enabled(
-        &mut self,
-        capture_enabled: bool,
-        code_segment: u16,
-        instruction_pointer: u16,
-    ) {
-        self.capture_enabled = capture_enabled;
-        self.reset(code_segment, instruction_pointer);
     }
 
     /// Seeds the timing model with a pre-populated front-end state before the
     /// next instruction starts. Mirrors the 8086 `install_prefetch_queue` hook
     /// structurally; the 286 model does not store queue bytes, so
-    /// `prefetch_bytes` is consulted only for its length. The bus is re-read
-    /// for HLT sniffing and must already reflect the installed RAM image.
+    /// `prefetch_bytes` is consulted only for its length.
     ///
     /// Calling this with empty bytes, zero decoded entries, and a pending
     /// `ControlTransfer` flush is a noop because those are already the
     /// post-reset defaults.
+    #[cfg(feature = "verification")]
     pub(crate) fn install_front_end_state(
         &mut self,
-        _bus: &mut impl Bus,
-        _code_segment_base: u32,
         instruction_pointer: u16,
         prefetch_bytes: &[u8],
         decoded_entries: u8,
@@ -513,22 +484,10 @@ impl I286Timing {
         }
     }
 
-    pub(crate) fn milestones(&self) -> I286TimingMilestones {
-        self.milestones
-    }
-
-    pub(crate) fn capture_enabled(&self) -> bool {
-        self.capture_enabled
-    }
-
     pub(crate) fn take_cycle_debt(&mut self) -> i32 {
         let cycle_debt = self.pending_cycle_debt;
         self.pending_cycle_debt = 0;
         cycle_debt
-    }
-
-    pub(crate) fn drain_cycle_trace(&mut self) -> Vec<I286CycleTraceEntry> {
-        mem::take(&mut self.trace)
     }
 
     pub(crate) fn begin_instruction(
@@ -559,7 +518,6 @@ impl I286Timing {
         self.suppress_next_internal_prefetch_window = false;
         self.passivize_next_demand_prefetch = false;
         self.passivize_next_code_fetch = false;
-        self.drive_next_write_low_byte_on_ts = false;
         self.suppress_next_read_writeback_gap = false;
         self.last_demand_prefetch_fetches = 0;
         self.demand_prefetch_policy = I286DemandPrefetchPolicy::BeforeTurnaround;
@@ -616,7 +574,6 @@ impl I286Timing {
         self.suppress_next_internal_prefetch_window = false;
         self.passivize_next_demand_prefetch = false;
         self.passivize_next_code_fetch = false;
-        self.drive_next_write_low_byte_on_ts = false;
         self.suppress_next_read_writeback_gap = false;
         self.lock_active = false;
         self.lock_prefix_passive_cycles_pending = false;
@@ -706,10 +663,6 @@ impl I286Timing {
         self.prefetch_queue_fill < PREFETCH_QUEUE_CAPACITY
     }
 
-    pub(crate) fn prefetch_queue_is_full(&self) -> bool {
-        self.prefetch_queue_fill >= PREFETCH_QUEUE_CAPACITY
-    }
-
     pub(crate) fn prefetch_queue_is_one_byte_from_full(&self) -> bool {
         self.prefetch_queue_fill + 1 == PREFETCH_QUEUE_CAPACITY
     }
@@ -730,73 +683,51 @@ impl I286Timing {
         &mut self,
         bus: &mut impl Bus,
         code_segment_base: u32,
-    ) -> u8 {
+    ) {
         if self.lock_prefix_passive_cycles_pending {
-            return 0;
+            return;
         }
 
         if !self.can_prefix_overlap_prefetch() {
-            return 0;
+            return;
         }
 
         self.emit_prefetch_fetch(bus, code_segment_base);
-        2
     }
 
-    pub(crate) fn advance_prefix_overlap_passive(&mut self) -> u8 {
+    pub(crate) fn advance_prefix_overlap_passive(&mut self) {
         if self.lock_prefix_passive_cycles_pending {
-            return 0;
+            return;
         }
 
         if !self.can_prefix_overlap_prefetch() {
-            return 0;
+            return;
         }
 
         for _ in 0..2 {
-            self.emit_cycle(
-                I286BusPhase::Ti,
-                I286PendingBusRequest::None,
-                I286TraceBusStatus::Passive,
-                None,
-                None,
-            );
+            self.emit_cycle(I286BusPhase::Ti, I286PendingBusRequest::None);
         }
-        2
     }
 
-    pub(crate) fn advance_prefix_overlap_single_passive(&mut self) -> u8 {
+    pub(crate) fn advance_prefix_overlap_single_passive(&mut self) {
         if self.lock_prefix_passive_cycles_pending {
-            return 0;
+            return;
         }
 
         if !self.can_prefix_overlap_prefetch() {
-            return 0;
+            return;
         }
 
-        self.emit_cycle(
-            I286BusPhase::Ti,
-            I286PendingBusRequest::None,
-            I286TraceBusStatus::Passive,
-            None,
-            None,
-        );
-        1
+        self.emit_cycle(I286BusPhase::Ti, I286PendingBusRequest::None);
     }
 
-    pub(crate) fn advance_lock_prefix_passive_cycle(&mut self) -> u8 {
+    pub(crate) fn advance_lock_prefix_passive_cycle(&mut self) {
         if !self.lock_prefix_passive_cycles_pending {
-            return 0;
+            return;
         }
 
         self.lock_prefix_passive_cycles_pending = false;
-        self.emit_cycle(
-            I286BusPhase::Ti,
-            I286PendingBusRequest::None,
-            I286TraceBusStatus::Passive,
-            None,
-            None,
-        );
-        1
+        self.emit_cycle(I286BusPhase::Ti, I286PendingBusRequest::None);
     }
 
     pub(crate) fn clear_lock_prefix_pending_cycle(&mut self) {
@@ -807,14 +738,13 @@ impl I286Timing {
         &mut self,
         bus: &mut impl Bus,
         code_segment_base: u32,
-    ) -> u8 {
+    ) {
         if !self.lock_prefix_passive_cycles_pending {
-            return 0;
+            return;
         }
 
         self.lock_prefix_passive_cycles_pending = false;
         self.emit_prefetch_fetch(bus, code_segment_base);
-        2
     }
 
     pub(crate) fn note_rep_startup(&mut self) {
@@ -930,10 +860,6 @@ impl I286Timing {
         self.passivize_next_code_fetch = true;
     }
 
-    pub(crate) fn drive_next_write_low_byte_on_ts(&mut self) {
-        self.drive_next_write_low_byte_on_ts = true;
-    }
-
     pub(crate) fn note_exception_entry(&mut self) {
         if self.milestones.exception_entry_cycle.is_none() {
             self.milestones.exception_entry_cycle = Some(self.cycle_counter);
@@ -970,13 +896,7 @@ impl I286Timing {
         };
 
         for _ in 0..initial_internal_cycles {
-            self.emit_cycle(
-                I286BusPhase::Ti,
-                I286PendingBusRequest::None,
-                I286TraceBusStatus::Passive,
-                None,
-                None,
-            );
+            self.emit_cycle(I286BusPhase::Ti, I286PendingBusRequest::None);
         }
 
         for _ in 0..timing.restart_prefetch_fetches {
@@ -984,13 +904,7 @@ impl I286Timing {
         }
 
         for _ in 0..timing.final_internal_cycles {
-            self.emit_cycle(
-                I286BusPhase::Ti,
-                I286PendingBusRequest::None,
-                I286TraceBusStatus::Passive,
-                None,
-                None,
-            );
+            self.emit_cycle(I286BusPhase::Ti, I286PendingBusRequest::None);
         }
 
         self.flush_state = I286FlushState::None;
@@ -1008,13 +922,7 @@ impl I286Timing {
 
     pub(crate) fn advance_control_transfer_internal_cycles(&mut self, cycles: u8) {
         for _ in 0..cycles {
-            self.emit_cycle(
-                I286BusPhase::Ti,
-                I286PendingBusRequest::None,
-                I286TraceBusStatus::Passive,
-                None,
-                None,
-            );
+            self.emit_cycle(I286BusPhase::Ti, I286PendingBusRequest::None);
         }
     }
 
@@ -1036,17 +944,9 @@ impl I286Timing {
 
     pub(crate) fn note_halt(&mut self) {
         self.eu_stage = I286EuStage::Halted;
-        if self.capture_enabled {
-            self.emit_cycle(
-                I286BusPhase::Ts,
-                I286PendingBusRequest::Halt,
-                I286TraceBusStatus::Halt,
-                Some(TERMINAL_HALT_MARKER_ADDRESS),
-                Some(self.data_bus_value),
-            );
-            self.bus_phase = I286BusPhase::Ti;
-            self.pending_bus_request = I286PendingBusRequest::None;
-        }
+        self.emit_cycle(I286BusPhase::Ts, I286PendingBusRequest::Halt);
+        self.bus_phase = I286BusPhase::Ti;
+        self.pending_bus_request = I286PendingBusRequest::None;
         self.milestones.terminal_halt_cycle = Some(self.cycle_counter);
     }
 
@@ -1057,25 +957,13 @@ impl I286Timing {
         }
 
         for _ in 0..remaining_cycles {
-            self.emit_cycle(
-                I286BusPhase::Ti,
-                I286PendingBusRequest::None,
-                I286TraceBusStatus::Passive,
-                None,
-                None,
-            );
+            self.emit_cycle(I286BusPhase::Ti, I286PendingBusRequest::None);
         }
     }
 
     pub(crate) fn advance_visible_internal_cycles(&mut self, cycles: u8) {
         for _ in 0..cycles {
-            self.emit_cycle(
-                I286BusPhase::Ti,
-                I286PendingBusRequest::None,
-                I286TraceBusStatus::Passive,
-                None,
-                None,
-            );
+            self.emit_cycle(I286BusPhase::Ti, I286PendingBusRequest::None);
         }
     }
 
@@ -1099,13 +987,7 @@ impl I286Timing {
                 continue;
             }
 
-            self.emit_cycle(
-                I286BusPhase::Ti,
-                I286PendingBusRequest::None,
-                I286TraceBusStatus::Passive,
-                None,
-                None,
-            );
+            self.emit_cycle(I286BusPhase::Ti, I286PendingBusRequest::None);
             remaining_cycles -= 1;
         }
         self.suppress_next_internal_prefetch_window = false;
@@ -1129,17 +1011,17 @@ impl I286Timing {
             self.advance_visible_internal_cycles(timing.pre_io_cycles);
         }
 
-        self.emit_fpu_io_write(FPU_COMMAND_PORT, None);
+        self.emit_fpu_io_write(None);
 
         if let Some((operand_offset, operand_segment)) = timing.operand_pointer {
             self.advance_visible_internal_cycles(1);
-            self.emit_fpu_io_write(FPU_DATA_PORT, Some(timing.instruction_pointer));
-            self.emit_fpu_io_write(FPU_DATA_PORT, Some(timing.code_segment));
-            self.emit_fpu_io_write(FPU_DATA_PORT, Some(operand_offset));
-            self.emit_fpu_io_write(FPU_DATA_PORT, Some(operand_segment));
+            self.emit_fpu_io_write(Some(timing.instruction_pointer));
+            self.emit_fpu_io_write(Some(timing.code_segment));
+            self.emit_fpu_io_write(Some(operand_offset));
+            self.emit_fpu_io_write(Some(operand_segment));
         } else {
-            self.emit_fpu_io_write(FPU_DATA_PORT, Some(timing.instruction_pointer));
-            self.emit_fpu_io_write(FPU_DATA_PORT, Some(timing.code_segment));
+            self.emit_fpu_io_write(Some(timing.instruction_pointer));
+            self.emit_fpu_io_write(Some(timing.code_segment));
         }
 
         self.advance_visible_internal_cycles(4);
@@ -1149,13 +1031,8 @@ impl I286Timing {
         &mut self,
         bus: &mut impl Bus,
         code_segment_base: u32,
-    ) -> i32 {
-        if !self.capture_enabled {
-            return 2;
-        }
-
-        self.emit_prefetch_fetch(bus, code_segment_base)
-            .internal_cycle_cost()
+    ) {
+        self.emit_prefetch_fetch(bus, code_segment_base);
     }
 
     pub(crate) fn note_code_byte_consumed(
@@ -1222,12 +1099,7 @@ impl I286Timing {
         if masked_low_address.wrapping_add(1) & ADDRESS_MASK == masked_high_address
             && masked_low_address & 1 == 0
         {
-            self.emit_read_bus_transaction(
-                I286PendingBusRequest::MemoryReadWord,
-                I286TraceBusStatus::MemoryRead,
-                Some(masked_low_address),
-                Some(value),
-            );
+            self.emit_read_bus_transaction(I286PendingBusRequest::MemoryReadWord, Some(value));
             self.writeback_after_read_pending = true;
             return;
         }
@@ -1275,30 +1147,11 @@ impl I286Timing {
             allow_opportunistic_prefetch,
         );
         if contiguous_word && masked_low_address & 1 == 0 {
-            let ts_data_override = if self.drive_next_write_low_byte_on_ts {
-                self.drive_next_write_low_byte_on_ts = false;
-                Some(self.merge_byte_data_bus(masked_low_address, value as u8))
-            } else {
-                None
-            };
-            self.emit_bus_transaction_with_ts_data(
-                I286PendingBusRequest::MemoryWriteWord,
-                I286TraceBusStatus::MemoryWrite,
-                Some(masked_low_address),
-                Some(value),
-                ts_data_override,
-            );
+            self.emit_bus_transaction(I286PendingBusRequest::MemoryWriteWord, Some(value));
             return;
         }
 
-        let drive_low_byte_on_ts = self.drive_next_write_low_byte_on_ts;
-        self.drive_next_write_low_byte_on_ts = false;
-        self.emit_memory_write_word_split(
-            masked_low_address,
-            masked_high_address,
-            value,
-            drive_low_byte_on_ts,
-        );
+        self.emit_memory_write_word_split(masked_low_address, masked_high_address, value);
     }
 
     pub(crate) fn note_io_read_byte(
@@ -1312,8 +1165,6 @@ impl I286Timing {
         self.maybe_prefetch_before_demand(bus, code_segment_base);
         self.emit_read_bus_transaction(
             I286PendingBusRequest::IoReadByte,
-            I286TraceBusStatus::IoRead,
-            Some(u32::from(port)),
             Some(self.merge_byte_data_bus(u32::from(port), value)),
         );
         self.writeback_after_read_pending = true;
@@ -1333,25 +1184,16 @@ impl I286Timing {
             let high_port = low_port.wrapping_add(1);
             self.emit_read_bus_transaction(
                 I286PendingBusRequest::IoReadByte,
-                I286TraceBusStatus::IoRead,
-                Some(low_port),
                 Some(self.merge_byte_data_bus(low_port, value as u8)),
             );
             self.emit_read_bus_transaction(
                 I286PendingBusRequest::IoReadByte,
-                I286TraceBusStatus::IoRead,
-                Some(high_port),
                 Some(self.merge_byte_data_bus(high_port, (value >> 8) as u8)),
             );
             self.writeback_after_read_pending = true;
             return;
         }
-        self.emit_read_bus_transaction(
-            I286PendingBusRequest::IoReadWord,
-            I286TraceBusStatus::IoRead,
-            Some(u32::from(port)),
-            Some(value),
-        );
+        self.emit_read_bus_transaction(I286PendingBusRequest::IoReadWord, Some(value));
         self.writeback_after_read_pending = true;
     }
 
@@ -1370,7 +1212,6 @@ impl I286Timing {
         }
         self.emit_byte_write_bus_transaction(
             I286PendingBusRequest::IoWriteByte,
-            I286TraceBusStatus::IoWrite,
             u32::from(port),
             value,
         );
@@ -1394,24 +1235,17 @@ impl I286Timing {
             let high_port = low_port.wrapping_add(1);
             self.emit_byte_write_bus_transaction(
                 I286PendingBusRequest::IoWriteByte,
-                I286TraceBusStatus::IoWrite,
                 low_port,
                 value as u8,
             );
             self.emit_byte_write_bus_transaction(
                 I286PendingBusRequest::IoWriteByte,
-                I286TraceBusStatus::IoWrite,
                 high_port,
                 (value >> 8) as u8,
             );
             return;
         }
-        self.emit_bus_transaction(
-            I286PendingBusRequest::IoWriteWord,
-            I286TraceBusStatus::IoWrite,
-            Some(u32::from(port)),
-            Some(value),
-        );
+        self.emit_bus_transaction(I286PendingBusRequest::IoWriteWord, Some(value));
     }
 
     fn ensure_prefetch_ready(
@@ -1434,7 +1268,7 @@ impl I286Timing {
                         COLD_START_PREFETCH_FETCHES.saturating_sub(1)
                     }
                 };
-                while self.capture_enabled && self.cold_start_fetches_emitted < cold_start_fetches {
+                while self.cold_start_fetches_emitted < cold_start_fetches {
                     if cold_start_prefetch_policy
                         == I286ColdStartPrefetchPolicy::PassiveLastFetchWindow
                         && self.cold_start_fetches_emitted + 1 == COLD_START_PREFETCH_FETCHES
@@ -1445,8 +1279,7 @@ impl I286Timing {
                         self.emit_prefetch_fetch(bus, code_segment_base);
                     }
                 }
-                if self.capture_enabled
-                    && self.milestones.cold_start_prefetch_complete_cycle.is_none()
+                if self.milestones.cold_start_prefetch_complete_cycle.is_none()
                     && self.cold_start_fetches_emitted >= cold_start_fetches
                 {
                     self.milestones.cold_start_prefetch_complete_cycle = Some(self.cycle_counter);
@@ -1456,7 +1289,7 @@ impl I286Timing {
             self.flush_state = I286FlushState::None;
         }
 
-        while self.capture_enabled && self.prefetch_queue_fill == 0 {
+        while self.prefetch_queue_fill == 0 {
             if self.passivize_next_code_fetch {
                 self.passivize_next_code_fetch = false;
                 self.emit_passive_prefetch_fetch(bus, code_segment_base);
@@ -1480,13 +1313,7 @@ impl I286Timing {
         self.prefetch_offset = self.prefetch_offset.wrapping_add(u16::from(fetch_width));
 
         for _ in 0..fetch_kind.internal_cycle_cost() {
-            self.emit_cycle(
-                I286BusPhase::Ti,
-                I286PendingBusRequest::None,
-                I286TraceBusStatus::Passive,
-                None,
-                None,
-            );
+            self.emit_cycle(I286BusPhase::Ti, I286PendingBusRequest::None);
         }
 
         fetch_kind
@@ -1494,13 +1321,7 @@ impl I286Timing {
 
     fn emit_passive_prefetch_slot(&mut self) {
         for _ in 0..2 {
-            self.emit_cycle(
-                I286BusPhase::Ti,
-                I286PendingBusRequest::None,
-                I286TraceBusStatus::Passive,
-                None,
-                None,
-            );
+            self.emit_cycle(I286BusPhase::Ti, I286PendingBusRequest::None);
         }
     }
 
@@ -1512,13 +1333,9 @@ impl I286Timing {
         let in_cold_start_window = self.flush_state == I286FlushState::ControlTransfer
             && self.flush_prefetch_policy == I286FlushPrefetchPolicy::InitialColdStart
             && self.cold_start_fetches_emitted < COLD_START_PREFETCH_FETCHES;
-        if !self.capture_enabled || (!in_cold_start_window && self.prefetch_queue_is_full()) {
-            return I286PrefetchFetchKind::Word;
-        }
 
         let current_address =
             code_segment_base.wrapping_add(u32::from(self.prefetch_offset)) & ADDRESS_MASK;
-        let ts_data = self.data_bus_value;
         let fetch_kind = self.prefetch_fetch_kind();
         if fetch_kind != I286PrefetchFetchKind::Word {
             let fetch_width = fetch_kind.stored_bytes();
@@ -1534,20 +1351,8 @@ impl I286Timing {
             } else {
                 self.merge_byte_data_bus(current_address, value)
             };
-            self.emit_cycle(
-                I286BusPhase::Ts,
-                I286PendingBusRequest::CodeFetchByte,
-                I286TraceBusStatus::Code,
-                Some(current_address),
-                Some(ts_data),
-            );
-            self.emit_cycle(
-                I286BusPhase::Tc,
-                I286PendingBusRequest::None,
-                I286TraceBusStatus::Passive,
-                None,
-                Some(self.data_bus_value),
-            );
+            self.emit_cycle(I286BusPhase::Ts, I286PendingBusRequest::CodeFetchByte);
+            self.emit_cycle(I286BusPhase::Tc, I286PendingBusRequest::None);
             self.bus_phase = I286BusPhase::Ti;
             self.pending_bus_request = I286PendingBusRequest::None;
             if in_cold_start_window {
@@ -1564,20 +1369,8 @@ impl I286Timing {
         self.decoded_queue_fill = (self.decoded_queue_fill + 2).min(DECODED_QUEUE_CAPACITY);
         self.prefetch_offset = self.prefetch_offset.wrapping_add(2);
         self.data_bus_value = value;
-        self.emit_cycle(
-            I286BusPhase::Ts,
-            I286PendingBusRequest::CodeFetchWord,
-            I286TraceBusStatus::Code,
-            Some(low_address & ADDRESS_MASK),
-            Some(ts_data),
-        );
-        self.emit_cycle(
-            I286BusPhase::Tc,
-            I286PendingBusRequest::None,
-            I286TraceBusStatus::Passive,
-            None,
-            Some(self.data_bus_value),
-        );
+        self.emit_cycle(I286BusPhase::Ts, I286PendingBusRequest::CodeFetchWord);
+        self.emit_cycle(I286BusPhase::Tc, I286PendingBusRequest::None);
         self.bus_phase = I286BusPhase::Ti;
         self.pending_bus_request = I286PendingBusRequest::None;
         if in_cold_start_window {
@@ -1589,45 +1382,13 @@ impl I286Timing {
     fn emit_bus_transaction(
         &mut self,
         pending_bus_request: I286PendingBusRequest,
-        bus_status: I286TraceBusStatus,
-        address: Option<u32>,
         data: Option<u16>,
     ) {
-        self.emit_bus_transaction_with_ts_data(
-            pending_bus_request,
-            bus_status,
-            address,
-            data,
-            None,
-        );
-    }
-
-    fn emit_bus_transaction_with_ts_data(
-        &mut self,
-        pending_bus_request: I286PendingBusRequest,
-        bus_status: I286TraceBusStatus,
-        address: Option<u32>,
-        data: Option<u16>,
-        ts_data_override: Option<u16>,
-    ) {
-        let ts_data = ts_data_override.unwrap_or(self.data_bus_value);
-        self.emit_cycle(
-            I286BusPhase::Ts,
-            pending_bus_request,
-            bus_status,
-            address,
-            Some(ts_data),
-        );
+        self.emit_cycle(I286BusPhase::Ts, pending_bus_request);
         if let Some(value) = data {
             self.data_bus_value = value;
         }
-        self.emit_cycle(
-            I286BusPhase::Tc,
-            I286PendingBusRequest::None,
-            I286TraceBusStatus::Passive,
-            None,
-            Some(self.data_bus_value),
-        );
+        self.emit_cycle(I286BusPhase::Tc, I286PendingBusRequest::None);
         self.bus_phase = I286BusPhase::Ti;
         self.pending_bus_request = I286PendingBusRequest::None;
     }
@@ -1642,32 +1403,14 @@ impl I286Timing {
             if self.passivize_next_demand_prefetch {
                 self.passivize_next_demand_prefetch = false;
                 for _ in 0..2 {
-                    self.emit_cycle(
-                        I286BusPhase::Ti,
-                        I286PendingBusRequest::None,
-                        I286TraceBusStatus::Passive,
-                        None,
-                        None,
-                    );
+                    self.emit_cycle(I286BusPhase::Ti, I286PendingBusRequest::None);
                 }
                 return;
             }
 
             if !self.prefetch_is_on_current_instruction_path() {
-                self.emit_cycle(
-                    I286BusPhase::Ti,
-                    I286PendingBusRequest::None,
-                    I286TraceBusStatus::Passive,
-                    None,
-                    None,
-                );
-                self.emit_cycle(
-                    I286BusPhase::Ti,
-                    I286PendingBusRequest::None,
-                    I286TraceBusStatus::Passive,
-                    None,
-                    None,
-                );
+                self.emit_cycle(I286BusPhase::Ti, I286PendingBusRequest::None);
+                self.emit_cycle(I286BusPhase::Ti, I286PendingBusRequest::None);
                 self.borrowed_internal_cycles += 2;
                 return;
             }
@@ -1687,8 +1430,7 @@ impl I286Timing {
     }
 
     fn can_internal_cycle_prefetch(&self) -> bool {
-        self.capture_enabled
-            && self.flush_state == I286FlushState::None
+        self.flush_state == I286FlushState::None
             && self.prefetch_queue_has_room()
             && self.decoded_queue_is_empty()
             && !self.suppress_next_internal_prefetch_window
@@ -1713,16 +1455,14 @@ impl I286Timing {
     }
 
     fn can_consider_demand_prefetch(&self) -> bool {
-        self.capture_enabled
-            && self.flush_state == I286FlushState::None
+        self.flush_state == I286FlushState::None
             && self.au_stage == I286AuStage::AddressReady
             && self.prefetch_queue_has_room()
             && self.decoded_queue_needs_refill()
     }
 
     fn can_prefix_overlap_prefetch(&self) -> bool {
-        self.capture_enabled
-            && self.flush_state == I286FlushState::None
+        self.flush_state == I286FlushState::None
             && self.eu_stage == I286EuStage::Prefix
             && self.prefix_count_is_odd()
             && self.prefetch_queue_has_room()
@@ -1947,13 +1687,7 @@ impl I286Timing {
         };
 
         for _ in 0..visible_cycles {
-            self.emit_cycle(
-                I286BusPhase::Ti,
-                I286PendingBusRequest::None,
-                I286TraceBusStatus::Passive,
-                None,
-                None,
-            );
+            self.emit_cycle(I286BusPhase::Ti, I286PendingBusRequest::None);
         }
         self.borrowed_internal_cycles += overlap_credit;
         if split_word_writeback {
@@ -1970,20 +1704,12 @@ impl I286Timing {
     }
 
     fn emit_memory_demand_gap_cycle(&mut self) {
-        self.emit_cycle(
-            I286BusPhase::Ti,
-            I286PendingBusRequest::None,
-            I286TraceBusStatus::Passive,
-            None,
-            None,
-        );
+        self.emit_cycle(I286BusPhase::Ti, I286PendingBusRequest::None);
     }
 
     fn emit_memory_read_byte(&mut self, address: u32, value: u8) {
         self.emit_read_bus_transaction(
             I286PendingBusRequest::MemoryReadByte,
-            I286TraceBusStatus::MemoryRead,
-            Some(address & ADDRESS_MASK),
             Some(self.merge_byte_data_bus(address, value)),
         );
     }
@@ -1991,63 +1717,30 @@ impl I286Timing {
     fn emit_memory_write_byte(&mut self, address: u32, value: u8) {
         self.emit_byte_write_bus_transaction(
             I286PendingBusRequest::MemoryWriteByte,
-            I286TraceBusStatus::MemoryWrite,
             address & ADDRESS_MASK,
             value,
         );
     }
 
-    fn emit_memory_write_word_split(
-        &mut self,
-        low_address: u32,
-        high_address: u32,
-        value: u16,
-        drive_low_byte_on_ts: bool,
-    ) {
+    fn emit_memory_write_word_split(&mut self, low_address: u32, high_address: u32, value: u16) {
         let low_byte = value as u8;
         let high_byte = (value >> 8) as u8;
-        let first_ts_data = if drive_low_byte_on_ts && low_address & 1 != 0 {
-            (self.data_bus_value & DATA_BUS_HIGH_LANE_MASK) | u16::from(high_byte)
-        } else if drive_low_byte_on_ts {
-            self.merge_byte_data_bus(low_address, low_byte)
-        } else {
-            self.data_bus_value
-        };
         let first_tc_data = self.active_byte_data_bus(low_address, low_byte);
 
         self.emit_cycle(
             I286BusPhase::Ts,
             I286PendingBusRequest::MemoryWriteWordSplit,
-            I286TraceBusStatus::MemoryWrite,
-            Some(low_address),
-            Some(first_ts_data),
         );
-        self.emit_cycle(
-            I286BusPhase::Tc,
-            I286PendingBusRequest::None,
-            I286TraceBusStatus::Passive,
-            None,
-            Some(first_tc_data),
-        );
+        self.emit_cycle(I286BusPhase::Tc, I286PendingBusRequest::None);
 
         self.data_bus_value = first_tc_data;
 
         let second_ts_data = self.merge_byte_data_bus(high_address, high_byte);
-        let second_tc_data = self.active_byte_data_bus(high_address, high_byte);
         self.emit_cycle(
             I286BusPhase::Ts,
             I286PendingBusRequest::MemoryWriteWordSplit,
-            I286TraceBusStatus::MemoryWrite,
-            Some(high_address),
-            Some(second_ts_data),
         );
-        self.emit_cycle(
-            I286BusPhase::Tc,
-            I286PendingBusRequest::None,
-            I286TraceBusStatus::Passive,
-            None,
-            Some(second_tc_data),
-        );
+        self.emit_cycle(I286BusPhase::Tc, I286PendingBusRequest::None);
 
         self.data_bus_value = second_ts_data;
         self.bus_phase = I286BusPhase::Ti;
@@ -2057,48 +1750,22 @@ impl I286Timing {
     fn emit_byte_write_bus_transaction(
         &mut self,
         pending_bus_request: I286PendingBusRequest,
-        bus_status: I286TraceBusStatus,
         address: u32,
         value: u8,
     ) {
-        let ts_data = self.data_bus_value;
         let tc_data = self.merge_byte_data_bus(address, value);
-        self.emit_cycle(
-            I286BusPhase::Ts,
-            pending_bus_request,
-            bus_status,
-            Some(address & ADDRESS_MASK),
-            Some(ts_data),
-        );
-        self.emit_cycle(
-            I286BusPhase::Tc,
-            I286PendingBusRequest::None,
-            I286TraceBusStatus::Passive,
-            None,
-            Some(tc_data),
-        );
+        self.emit_cycle(I286BusPhase::Ts, pending_bus_request);
+        self.emit_cycle(I286BusPhase::Tc, I286PendingBusRequest::None);
         self.data_bus_value = tc_data;
         self.bus_phase = I286BusPhase::Ti;
         self.pending_bus_request = I286PendingBusRequest::None;
     }
 
-    fn emit_fpu_io_write(&mut self, port: u16, data_override: Option<u16>) {
+    fn emit_fpu_io_write(&mut self, data_override: Option<u16>) {
         let data = data_override.unwrap_or(self.data_bus_value);
-        self.emit_cycle(
-            I286BusPhase::Ts,
-            I286PendingBusRequest::IoWriteWord,
-            I286TraceBusStatus::IoWrite,
-            Some(u32::from(port)),
-            Some(data),
-        );
+        self.emit_cycle(I286BusPhase::Ts, I286PendingBusRequest::IoWriteWord);
         self.data_bus_value = data;
-        self.emit_cycle(
-            I286BusPhase::Tc,
-            I286PendingBusRequest::None,
-            I286TraceBusStatus::Passive,
-            None,
-            Some(self.data_bus_value),
-        );
+        self.emit_cycle(I286BusPhase::Tc, I286PendingBusRequest::None);
         self.bus_phase = I286BusPhase::Ti;
         self.pending_bus_request = I286PendingBusRequest::None;
     }
@@ -2106,126 +1773,21 @@ impl I286Timing {
     fn emit_read_bus_transaction(
         &mut self,
         pending_bus_request: I286PendingBusRequest,
-        bus_status: I286TraceBusStatus,
-        address: Option<u32>,
         sampled_data: Option<u16>,
     ) {
-        let ts_data = self.data_bus_value;
-        self.emit_cycle(
-            I286BusPhase::Ts,
-            pending_bus_request,
-            bus_status,
-            address,
-            Some(ts_data),
-        );
+        self.emit_cycle(I286BusPhase::Ts, pending_bus_request);
         if let Some(value) = sampled_data {
             self.data_bus_value = value;
         }
-        self.emit_cycle(
-            I286BusPhase::Tc,
-            I286PendingBusRequest::None,
-            I286TraceBusStatus::Passive,
-            None,
-            Some(self.data_bus_value),
-        );
+        self.emit_cycle(I286BusPhase::Tc, I286PendingBusRequest::None);
         self.bus_phase = I286BusPhase::Ti;
         self.pending_bus_request = I286PendingBusRequest::None;
     }
 
-    // TODO: Once we pass all timings, remove the need to call this mutliple-times in a loop and instead add a "cycles: u64" field instead.
-    fn emit_cycle(
-        &mut self,
-        bus_phase: I286BusPhase,
-        pending_bus_request: I286PendingBusRequest,
-        bus_status: I286TraceBusStatus,
-        address: Option<u32>,
-        data: Option<u16>,
-    ) {
+    fn emit_cycle(&mut self, bus_phase: I286BusPhase, pending_bus_request: I286PendingBusRequest) {
         self.bus_phase = bus_phase;
         self.pending_bus_request = pending_bus_request;
-
-        if self.capture_enabled {
-            self.pending_cycle_debt += 1;
-            self.trace.push(I286CycleTraceEntry {
-                cycle: self.cycle_counter,
-                state: self.cycle_state(),
-                address,
-                data,
-                bus_status,
-            });
-        }
-
+        self.pending_cycle_debt += 1;
         self.cycle_counter = self.cycle_counter.wrapping_add(1);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct StubBus;
-
-    impl Bus for StubBus {
-        fn read_byte(&mut self, _address: u32) -> u8 {
-            0
-        }
-        fn write_byte(&mut self, _address: u32, _value: u8) {}
-        fn io_read_byte(&mut self, _port: u16) -> u8 {
-            0
-        }
-        fn io_write_byte(&mut self, _port: u16, _value: u8) {}
-        fn has_irq(&self) -> bool {
-            false
-        }
-        fn acknowledge_irq(&mut self) -> u8 {
-            0
-        }
-        fn has_nmi(&self) -> bool {
-            false
-        }
-        fn acknowledge_nmi(&mut self) {}
-        fn current_cycle(&self) -> u64 {
-            0
-        }
-        fn set_current_cycle(&mut self, _cycle: u64) {}
-    }
-
-    #[test]
-    fn install_front_end_state_empty_args_is_noop() {
-        let mut timing = I286Timing::new();
-        let before = timing.cycle_state();
-        let before_prefetch_offset = timing.prefetch_offset;
-        let before_cold_start_fetches = timing.cold_start_fetches_emitted;
-        let before_flush_policy = timing.flush_prefetch_policy;
-
-        let mut bus = StubBus;
-        timing.install_front_end_state(&mut bus, 0, 0, &[], 0, I286FlushState::ControlTransfer);
-
-        assert_eq!(before, timing.cycle_state());
-        assert_eq!(before_prefetch_offset, timing.prefetch_offset);
-        assert_eq!(before_cold_start_fetches, timing.cold_start_fetches_emitted);
-        assert_eq!(before_flush_policy, timing.flush_prefetch_policy);
-    }
-
-    #[test]
-    fn install_front_end_state_seeds_warm_queue() {
-        let mut timing = I286Timing::new();
-        let mut bus = StubBus;
-        let bytes = [0x90u8, 0x90, 0x90, 0x90];
-
-        timing.install_front_end_state(&mut bus, 0, 0x1000, &bytes, 2, I286FlushState::None);
-
-        assert_eq!(timing.prefetch_queue_fill, 4);
-        assert_eq!(timing.decoded_queue_fill, 2);
-        assert_eq!(timing.prefetch_offset, 0x1004);
-        assert_eq!(timing.flush_state, I286FlushState::None);
-        assert_eq!(
-            timing.flush_prefetch_policy,
-            I286FlushPrefetchPolicy::DemandDriven
-        );
-        assert_eq!(
-            timing.cold_start_fetches_emitted,
-            COLD_START_PREFETCH_FETCHES
-        );
     }
 }

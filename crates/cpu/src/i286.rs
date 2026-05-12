@@ -1,7 +1,7 @@
 //! Implements the Intel 80286 emulation.
 //!
 //! The protected mode is not fully developed in this core.
-//! Only some version of OS/2 1.x should need it.
+//! Only OS/2 1.x should need it, which is currently lost.
 //!
 //! Following references were used to write the emulator:
 //!
@@ -293,54 +293,33 @@ impl I286 {
     #[inline(always)]
     fn clk(&mut self, cycles: i32) {
         self.timing.advance_internal_cycles(cycles);
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
-        } else {
-            self.cycles_remaining -= cycles as i64;
-        }
+        self.sync_timing_cycles();
     }
 
     #[inline(always)]
     fn clk_visible(&mut self, cycles: u8) {
         self.timing.advance_visible_internal_cycles(cycles);
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
-        } else {
-            self.cycles_remaining -= i64::from(cycles);
-        }
+        self.sync_timing_cycles();
     }
 
     #[inline(always)]
     fn clk_prefix(&mut self, bus: &mut impl common::Bus) {
         let code_segment_base = self.seg_bases[SegReg16::CS as usize];
-        let visible_cycles = self
-            .timing
+        self.timing
             .advance_prefix_overlap_prefetch(bus, code_segment_base);
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
-        } else {
-            self.cycles_remaining -= i64::from(visible_cycles);
-        }
+        self.sync_timing_cycles();
     }
 
     #[inline(always)]
     fn clk_prefix_passive(&mut self) {
-        let visible_cycles = self.timing.advance_prefix_overlap_passive();
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
-        } else {
-            self.cycles_remaining -= i64::from(visible_cycles);
-        }
+        self.timing.advance_prefix_overlap_passive();
+        self.sync_timing_cycles();
     }
 
     #[inline(always)]
     fn clk_prefix_single_passive(&mut self) {
-        let visible_cycles = self.timing.advance_prefix_overlap_single_passive();
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
-        } else {
-            self.cycles_remaining -= i64::from(visible_cycles);
-        }
+        self.timing.advance_prefix_overlap_single_passive();
+        self.sync_timing_cycles();
     }
 
     #[inline(always)]
@@ -358,25 +337,22 @@ impl I286 {
                 && (Self::segment_override_prefix(next_opcode)
                     || prefix_count_before_lock & 1 == 1)
                 && self.lock_prefix_followed_by_xlat(bus, next_opcode));
-        let visible_cycles = if prefetches_during_lock_prefix {
+
+        if prefetches_during_lock_prefix {
             self.timing
                 .advance_lock_prefix_prefetch(bus, code_segment_base)
         } else if suppress_lock_prefix_cycle {
             self.timing.clear_lock_prefix_pending_cycle();
-            0
         } else {
             self.timing.advance_lock_prefix_passive_cycle()
         };
+
         if self.consumed_opcode_lookahead(next_opcode).is_les_or_lds()
             && prefix_count_before_lock & 1 == 1
         {
             self.timing.suppress_next_demand_prefetch();
         }
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
-        } else {
-            self.cycles_remaining -= i64::from(visible_cycles);
-        }
+        self.sync_timing_cycles();
     }
 
     #[inline(always)]
@@ -587,25 +563,16 @@ impl I286 {
         self.timing.note_execution_cycles();
         self.timing
             .advance_internal_cycles_with_prefetch(bus, code_segment_base, cycles);
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
-        } else {
-            self.cycles_remaining -= cycles as i64;
-        }
+        self.sync_timing_cycles();
     }
 
     #[inline(always)]
     fn clk_forced_prefetch(&mut self, bus: &mut impl common::Bus) {
         let code_segment_base = self.seg_bases[SegReg16::CS as usize];
         self.timing.note_execution_cycles();
-        let visible_cycles = self
-            .timing
+        self.timing
             .advance_forced_prefetch_fetch(bus, code_segment_base);
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
-        } else {
-            self.cycles_remaining -= i64::from(visible_cycles);
-        }
+        self.sync_timing_cycles();
     }
 
     #[inline(always)]
@@ -621,16 +588,7 @@ impl I286 {
             .arm_control_transfer_restart(instruction_pointer);
         self.timing
             .advance_control_transfer_restart(bus, code_segment_base, timing);
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
-        } else {
-            let visible_cycles = i64::from(
-                timing.initial_internal_cycles
-                    + timing.final_internal_cycles
-                    + timing.restart_prefetch_fetches.saturating_mul(2),
-            );
-            self.cycles_remaining -= visible_cycles;
-        }
+        self.sync_timing_cycles();
     }
 
     #[inline(always)]
@@ -646,16 +604,7 @@ impl I286 {
             .arm_control_transfer_restart_without_gap_credit(instruction_pointer);
         self.timing
             .advance_control_transfer_restart(bus, code_segment_base, timing);
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
-        } else {
-            let visible_cycles = i64::from(
-                timing.initial_internal_cycles
-                    + timing.final_internal_cycles
-                    + timing.restart_prefetch_fetches.saturating_mul(2),
-            );
-            self.cycles_remaining -= visible_cycles;
-        }
+        self.sync_timing_cycles();
     }
 
     #[inline(always)]
@@ -1957,105 +1906,28 @@ impl I286 {
         self.execute_one(bus);
     }
 
-    /// Returns the number of cycles consumed by the last `step()` call.
-    pub fn cycles_consumed(&self) -> u64 {
-        (i64::MAX - self.cycles_remaining) as u64
-    }
-
-    /// Enables or disables cycle-trace capture for the current CPU state.
-    pub fn set_cycle_trace_capture(&mut self, capture_enabled: bool) {
-        self.timing.set_capture_enabled(
-            capture_enabled,
-            self.sregs[SegReg16::CS as usize],
-            self.ip,
-        );
-    }
-
-    /// Returns the currently exposed timing EFSM state.
-    pub fn timing_state(&self) -> I286CycleState {
-        self.timing.cycle_state()
-    }
-
-    /// Returns the current timing milestones snapshot.
-    pub fn timing_milestones(&self) -> I286TimingMilestones {
-        self.timing.milestones()
-    }
-
-    /// Returns and clears the accumulated timing trace.
-    pub fn drain_cycle_trace(&mut self) -> Vec<I286CycleTraceEntry> {
-        self.timing.drain_cycle_trace()
-    }
-
-    /// Returns the last computed effective address (for alignment checks).
-    pub fn last_ea(&self) -> u32 {
-        self.ea
-    }
-
-    /// Returns the addressing-mode class of the current instruction's
-    /// ModR/M operand, or `EaClass::Register` for instructions without a
-    /// memory operand.
-    pub fn last_ea_class(&self) -> EaClass {
-        self.ea_class
-    }
-
-    /// Returns the finish state declared by the current instruction
-    /// handler. `Linear` is the default for instructions that just fall
-    /// through to the next one.
-    pub fn last_finish_state(&self) -> I286FinishState {
-        self.finish_state
+    /// Signals a maskable interrupt request (IRQ).
+    pub fn signal_irq(&mut self) {
+        self.pending_irq |= crate::PENDING_IRQ;
     }
 
     /// Seeds the timing model with a warm front-end state so the next
     /// instruction starts from an already-filled queue.
     /// Calling this with empty bytes, zero decoded entries, and a pending
     /// `ControlTransfer` flush preserves the post-reset defaults.
+    #[cfg(feature = "verification")]
     pub fn install_front_end_state(
         &mut self,
-        bus: &mut impl common::Bus,
         prefetch_bytes: &[u8],
         decoded_entries: u8,
         pending_flush: I286FlushState,
     ) {
-        let code_segment_base = self.seg_bases[SegReg16::CS as usize];
         self.timing.install_front_end_state(
-            bus,
-            code_segment_base,
             self.ip,
             prefetch_bytes,
             decoded_entries,
             pending_flush,
         );
-    }
-
-    /// Diagnostic-only: seeds a synthetic warm front-end state from a
-    /// [`I286WarmStartConfig`] and the already-populated instruction bytes
-    /// at `CS:IP`. The caller is responsible for staging the instruction
-    /// bytes on the bus before calling this. Intended for analysis tools
-    /// comparing cold-start versus warm-start cycle counts; MUST NOT be
-    /// used as a substitute for corpus-driven correctness testing.
-    pub fn install_warm_start(
-        &mut self,
-        bus: &mut impl common::Bus,
-        config: I286WarmStartConfig,
-        instruction_bytes: &[u8],
-    ) {
-        let prefetch_len = (config.prefetch_bytes_before as usize).min(instruction_bytes.len());
-        self.install_front_end_state(
-            bus,
-            &instruction_bytes[..prefetch_len],
-            config.decoded_entries_before,
-            config.pending_flush,
-        );
-    }
-
-    /// Signals a maskable interrupt request (IRQ).
-    pub fn signal_irq(&mut self) {
-        self.pending_irq |= crate::PENDING_IRQ;
-    }
-
-    /// Signals a non-maskable interrupt (NMI).
-    pub fn signal_nmi(&mut self) {
-        self.pending_irq |= crate::PENDING_NMI;
     }
 }
 
