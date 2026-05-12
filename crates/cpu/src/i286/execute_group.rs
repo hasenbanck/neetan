@@ -1034,11 +1034,6 @@ impl I286 {
                     self.timing
                         .advance_control_transfer_fetches(bus, code_segment_base, 1);
                     self.sync_timing_cycles();
-                    if address_is_odd(
-                        code_segment_base.wrapping_add(u32::from(self.ip)) & ADDRESS_MASK,
-                    ) {
-                        self.timing.drive_next_write_low_byte_on_ts();
-                    }
                     self.push(bus, return_ip);
                     if !stack_write_split {
                         self.timing
@@ -1111,11 +1106,6 @@ impl I286 {
                     self.timing
                         .advance_control_transfer_fetches(bus, code_segment_base, 1);
                     self.sync_timing_cycles();
-                    if address_is_odd(
-                        code_segment_base.wrapping_add(u32::from(self.ip)) & ADDRESS_MASK,
-                    ) {
-                        self.timing.drive_next_write_low_byte_on_ts();
-                    }
                     self.push(bus, return_ip);
                     self.timing.advance_control_transfer_fetches(
                         bus,

@@ -1556,9 +1556,6 @@ impl I286 {
             self.timing
                 .advance_control_transfer_fetches(bus, code_segment_base, 1);
             self.sync_timing_cycles();
-            if address_is_odd(code_segment_base.wrapping_add(u32::from(self.ip)) & ADDRESS_MASK) {
-                self.timing.drive_next_write_low_byte_on_ts();
-            }
             self.push(bus, ip);
             self.timing
                 .advance_control_transfer_fetches(bus, code_segment_base, 1);
@@ -1584,10 +1581,6 @@ impl I286 {
             .advance_control_transfer_fetches(bus, code_segment_base, 1);
 
         let stack_write_even = self.regs.word(WordReg::SP) & 1 == 0;
-        let target_odd = self.ip & 1 != 0;
-        if target_odd && stack_write_even {
-            self.timing.drive_next_write_low_byte_on_ts();
-        }
         self.push(bus, return_instruction_pointer);
 
         if stack_write_even {
@@ -1651,12 +1644,7 @@ impl I286 {
 
     fn ret_near(&mut self, bus: &mut impl common::Bus) {
         self.finish_state = I286FinishState::ControlTransferRestart;
-        let penalty = self.sp_penalty(1);
         self.ip = self.pop(bus);
-        if !self.timing.capture_enabled() {
-            self.cycles_remaining -= i64::from(11 + penalty);
-            return;
-        }
 
         self.timing.arm_control_transfer_restart(self.ip);
         let code_segment_base = self.seg_bases[SegReg16::CS as usize];
@@ -2535,12 +2523,8 @@ impl I286 {
                 operand_pointer,
             },
         );
-        if self.timing.capture_enabled() {
-            self.sync_timing_cycles();
-        } else {
-            let io_cycles = if operand_pointer.is_some() { 11 } else { 6 };
-            self.cycles_remaining -= i64::from(pre_io_cycles) + i64::from(io_cycles) + i64::from(4);
-        }
+
+        self.sync_timing_cycles();
     }
 
     fn clc(&mut self) {
@@ -2583,9 +2567,6 @@ impl I286 {
         self.halted = true;
         self.timing.note_halt();
         self.sync_timing_cycles();
-        if !self.timing.capture_enabled() {
-            self.clk(2);
-        }
     }
 
     fn invalid(&mut self, bus: &mut impl common::Bus) {
