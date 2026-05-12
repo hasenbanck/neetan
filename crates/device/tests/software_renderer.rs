@@ -416,8 +416,9 @@ fn pegc_renders_palette_indexed_pixel() {
 }
 
 #[test]
-#[cfg(target_arch = "x86_64")]
-fn scalar_and_avx2_paths_match() {
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn scalar_and_simd_paths_match() {
+    #[cfg(target_arch = "x86_64")]
     if !std::is_x86_feature_detected!("avx2") {
         return;
     }
@@ -575,30 +576,30 @@ fn scalar_and_avx2_paths_match() {
             })),
         };
 
-        let mut renderer_avx2 = SoftwareRenderer::new(&font_rom);
-        renderer_avx2.set_avx2_enabled(true);
-        renderer_avx2.render(&inputs);
-        let avx2_frame: Vec<u8> = renderer_avx2.framebuffer().to_vec();
+        let mut renderer_simd = SoftwareRenderer::new(&font_rom);
+        renderer_simd.set_simd_enabled(true);
+        renderer_simd.render(&inputs);
+        let simd_frame: Vec<u8> = renderer_simd.framebuffer().to_vec();
 
         let mut renderer_scalar = SoftwareRenderer::new(&font_rom);
-        renderer_scalar.set_avx2_enabled(false);
+        renderer_scalar.set_simd_enabled(false);
         renderer_scalar.render(&inputs);
         let scalar_frame: Vec<u8> = renderer_scalar.framebuffer().to_vec();
 
-        if scalar_frame != avx2_frame {
+        if scalar_frame != simd_frame {
             let differing_pixel = (0..SoftwareRenderer::PIXEL_COUNT).find(|i| {
                 let off = i * 4;
-                scalar_frame[off..off + 4] != avx2_frame[off..off + 4]
+                scalar_frame[off..off + 4] != simd_frame[off..off + 4]
             });
             if let Some(i) = differing_pixel {
                 let off = i * 4;
                 let x = i % SoftwareRenderer::WIDTH;
                 let y = i / SoftwareRenderer::WIDTH;
                 panic!(
-                    "{name}: scalar/avx2 framebuffer mismatch at pixel ({x},{y}): \
-                     scalar={:?}, avx2={:?}",
+                    "{name}: scalar/simd framebuffer mismatch at pixel ({x},{y}): \
+                     scalar={:?}, simd={:?}",
                     &scalar_frame[off..off + 4],
-                    &avx2_frame[off..off + 4],
+                    &simd_frame[off..off + 4],
                 );
             } else {
                 panic!("{name}: framebuffer length mismatch?");
@@ -607,7 +608,7 @@ fn scalar_and_avx2_paths_match() {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 struct ParityCase {
     global_enabled: bool,
     text_enabled: bool,
@@ -618,7 +619,7 @@ struct ParityCase {
     pegc: bool,
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn build_diagonal_font_rom() -> Vec<u8> {
     let mut rom = vec![0u8; 0x83000];
     for byte in 0..256 {
@@ -636,7 +637,7 @@ fn build_diagonal_font_rom() -> Vec<u8> {
     rom
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn build_dense_text_vram() -> [u8; TEXT_VRAM_BYTES] {
     let mut vram = [0u8; TEXT_VRAM_BYTES];
     for cell in 0..(80 * 25) {
@@ -650,7 +651,7 @@ fn build_dense_text_vram() -> [u8; TEXT_VRAM_BYTES] {
     vram
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn build_dense_graphics_planes() -> ([u8; 0x8000], [u8; 0x8000], [u8; 0x8000], [u8; 0x8000]) {
     let mut b = [0u8; 0x8000];
     let mut r = [0u8; 0x8000];
@@ -665,7 +666,7 @@ fn build_dense_graphics_planes() -> ([u8; 0x8000], [u8; 0x8000], [u8; 0x8000], [
     (b, r, g, e)
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn build_palette_16() -> [u32; 16] {
     let mut palette = [0u32; 16];
     for (i, slot) in palette.iter_mut().enumerate() {
@@ -681,7 +682,7 @@ fn build_palette_16() -> [u32; 16] {
     palette
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn build_palette_256() -> [u32; 256] {
     let mut palette = [0u32; 256];
     for (i, slot) in palette.iter_mut().enumerate() {

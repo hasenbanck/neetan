@@ -31,8 +31,9 @@ pub struct SoftwareRenderer {
     pub state: SoftwareRendererState,
     /// Per-row scratch reused every frame; not part of save/restore.
     scratch: Box<compose::ComposeScratch>,
-    /// Cached AVX2 detection result; queried once at construction time.
-    has_avx2: bool,
+    /// Cached SIMD availability for the compose pass (AVX2 on x86_64, NEON
+    /// on aarch64). Always false on other architectures.
+    has_simd: bool,
 }
 
 /// Persistent buffers owned by the renderer.
@@ -103,9 +104,6 @@ pub struct RenderInputs<'a> {
 /// Graphics rendering source. PC-98 hardware exposes either the four GDC
 /// bitplanes (B/R/G/E) or the linear PEGC 256-color framebuffer at any one
 /// time, never both simultaneously.
-///
-/// The PEGC variant is boxed because its 256-entry palette dominates the
-/// enum size (about 1 KiB) while the GDC variant fits in roughly 80 bytes.
 pub enum GraphicsInput<'a> {
     /// Traditional GDC/GRCG/EGC bitplane mode (8-color or 16-color analog).
     Gdc(GdcGraphicsInput<'a>),
@@ -171,7 +169,7 @@ impl SoftwareRenderer {
                 text_cells,
             },
             scratch: compose::ComposeScratch::new(),
-            has_avx2: detect_avx2(),
+            has_simd: detect_simd(),
         }
     }
 
@@ -180,11 +178,11 @@ impl SoftwareRenderer {
         copy_font_rom(&mut self.state.font_rom, font_rom_data);
     }
 
-    /// Enables or disables the AVX2 compose dispatch. Intended for parity
+    /// Enables or disables the SIMD compose dispatch. Intended for parity
     /// testing of the scalar fallback against the SIMD path; production
-    /// callers should leave the renderer at its default (AVX2 if detected).
-    pub fn set_avx2_enabled(&mut self, enabled: bool) {
-        self.has_avx2 = enabled && detect_avx2();
+    /// callers should leave the renderer at its default (SIMD if available).
+    pub fn set_simd_enabled(&mut self, enabled: bool) {
+        self.has_simd = enabled && detect_simd();
     }
 
     /// Renders one frame into the internal framebuffer.
@@ -208,7 +206,7 @@ impl SoftwareRenderer {
             inputs,
             &mut self.state.framebuffer,
             &mut self.scratch,
-            self.has_avx2,
+            self.has_simd,
         );
     }
 
@@ -248,12 +246,16 @@ impl SoftwareRenderer {
     }
 }
 
-fn detect_avx2() -> bool {
+fn detect_simd() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
         is_x86_feature_detected!("avx2")
     }
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(target_arch = "aarch64")]
+    {
+        true
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
         false
     }

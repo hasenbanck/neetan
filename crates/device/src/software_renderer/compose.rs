@@ -7,8 +7,8 @@
 //! indexed reads against the scratch, which is the shape the auto-vectorizer
 //! might turn into SIMD.
 //!
-//! On x86_64 with AVX2 we additionally dispatch the per-scanline cell combine
-//! into a hand-written AVX2 path (see `avx2`); pre-passes stay scalar.
+//! On x86_64 with AVX2 and aarch64 we additionally dispatch the per-scanline cell combine
+//! into a hand-written SIMD path; pre-passes stay scalar.
 //!
 //! The digital path renders the standard B/R/G/E planar graphics modes. The
 //! PEGC path renders the 256-color byte-per-pixel framebuffer. Both paths use
@@ -18,6 +18,10 @@
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
 mod avx2;
+
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+mod neon;
 
 use super::{
     GdcGraphicsInput, GraphicsInput, PegcRenderInputs, RenderInputs, SoftwareRenderer,
@@ -136,13 +140,137 @@ const fn build_fixed_text_lut() -> [u32; 8] {
     table
 }
 
+/// Stride of one composed cell in bytes (8 pixels x 4 channels).
+const CELL_STRIDE: usize = PIXELS_PER_CELL * PIXEL_BYTES;
+
+/// SIMD palette used by both the AVX2 and NEON compose paths.
+///
+/// The four-channel shuffle tables hold one byte per palette entry per
+/// channel. The first 16 bytes carry palette entries 0..16; the second
+/// 16 bytes mirror the first half so AVX2's lane-local `vpshufb` can
+/// resolve both halves of a cell against the same 16-entry palette. NEON
+/// reads only the first 16 bytes from each table.
+pub(super) struct DigitalSimdPalette {
+    /// Shuffle tables for color digital and 16-color graphics paths.
+    pub graphics_red: [u8; CELL_STRIDE],
+    pub graphics_green: [u8; CELL_STRIDE],
+    pub graphics_blue: [u8; CELL_STRIDE],
+    pub graphics_alpha: [u8; CELL_STRIDE],
+    /// Shuffle tables for monochrome graphics-only output.
+    pub mono_red: [u8; CELL_STRIDE],
+    pub mono_green: [u8; CELL_STRIDE],
+    pub mono_blue: [u8; CELL_STRIDE],
+    pub mono_alpha: [u8; CELL_STRIDE],
+    /// Per-palette-index on/off mask for monochrome mixed text/graphics mode.
+    pub mono_mask: [u8; CELL_STRIDE],
+    /// Text colors are broadcast as full pixels, not shuffled from the graphics
+    /// palette, because analog and PEGC text use fixed BRG colors.
+    pub text_pixels: [u32; 8],
+    pub palette_zero: u32,
+    pub text_enabled: bool,
+}
+
+impl DigitalSimdPalette {
+    pub(super) fn new(palette_rgba: &[u32; 16], mono_lookup: &[u8; 16], mode: CombineMode) -> Self {
+        let mut palette = Self {
+            graphics_red: [0; CELL_STRIDE],
+            graphics_green: [0; CELL_STRIDE],
+            graphics_blue: [0; CELL_STRIDE],
+            graphics_alpha: [0; CELL_STRIDE],
+            mono_red: [0; CELL_STRIDE],
+            mono_green: [0; CELL_STRIDE],
+            mono_blue: [0; CELL_STRIDE],
+            mono_alpha: [0; CELL_STRIDE],
+            mono_mask: [0; CELL_STRIDE],
+            text_pixels: [0; 8],
+            palette_zero: palette_rgba[0],
+            text_enabled: mode.text_enabled,
+        };
+
+        for (index, mono_lookup_entry) in mono_lookup.iter().enumerate() {
+            // In 8-color digital graphics mode, graphics colors live at
+            // palette indices 8-15. In 16-color analog mode they use 0-15.
+            let graphics_index = if mode.graphics_enabled && !mode.is_16_color {
+                DIGITAL_GRAPHICS_PALETTE_BASE as usize + (index & 0x07)
+            } else {
+                index
+            };
+            let graphics_pixel = palette_rgba[graphics_index];
+            write_shuffle_pixel(
+                &mut palette.graphics_red,
+                &mut palette.graphics_green,
+                &mut palette.graphics_blue,
+                &mut palette.graphics_alpha,
+                index,
+                graphics_pixel,
+            );
+
+            let mono_pixel = if *mono_lookup_entry != 0 {
+                FIXED_TEXT_LUT[MONOCHROME_GRAPHICS_COLOR as usize]
+            } else {
+                palette_rgba[0]
+            };
+            write_shuffle_pixel(
+                &mut palette.mono_red,
+                &mut palette.mono_green,
+                &mut palette.mono_blue,
+                &mut palette.mono_alpha,
+                index,
+                mono_pixel,
+            );
+            let mono_mask = if *mono_lookup_entry != 0 { 0xFF } else { 0 };
+            // Duplicate into both 128-bit lanes. `vpshufb` control bytes are
+            // lane-local, so each half needs its own copy of entries 0-15.
+            palette.mono_mask[index] = mono_mask;
+            palette.mono_mask[index + 16] = mono_mask;
+        }
+
+        for index in 0..8 {
+            palette.text_pixels[index] = if mode.is_16_color {
+                FIXED_TEXT_LUT[index]
+            } else {
+                palette_rgba[index]
+            };
+        }
+
+        palette
+    }
+}
+
+fn write_shuffle_pixel(
+    red_table: &mut [u8; CELL_STRIDE],
+    green_table: &mut [u8; CELL_STRIDE],
+    blue_table: &mut [u8; CELL_STRIDE],
+    alpha_table: &mut [u8; CELL_STRIDE],
+    index: usize,
+    pixel: u32,
+) {
+    let red = pixel as u8;
+    let green = (pixel >> 8) as u8;
+    let blue = (pixel >> 16) as u8;
+    let alpha = (pixel >> 24) as u8;
+
+    red_table[index] = red;
+    green_table[index] = green;
+    blue_table[index] = blue;
+    alpha_table[index] = alpha;
+
+    // `vpshufb` operates independently on the low and high 128-bit lanes of
+    // the AVX2 register, so the 16-entry palette has to appear in both lanes.
+    // NEON ignores bytes 16..32; this duplication is harmless there.
+    red_table[index + 16] = red;
+    green_table[index + 16] = green;
+    blue_table[index + 16] = blue;
+    alpha_table[index + 16] = alpha;
+}
+
 pub(super) fn compose(
     font_rom: &[u8],
     text_cells: &[u32; TEXT_CELL_COUNT],
     inputs: &RenderInputs<'_>,
     framebuffer: &mut [u8],
     scratch: &mut ComposeScratch,
-    has_avx2: bool,
+    has_simd: bool,
 ) {
     debug_assert_eq!(framebuffer.len(), SoftwareRenderer::FRAMEBUFFER_BYTES);
 
@@ -162,7 +290,7 @@ pub(super) fn compose(
             max_y,
             framebuffer,
             scratch,
-            has_avx2,
+            has_simd,
         ),
         GraphicsInput::Pegc(pegc) => compose_pegc(
             font_rom,
@@ -172,7 +300,7 @@ pub(super) fn compose(
             max_y,
             framebuffer,
             scratch,
-            has_avx2,
+            has_simd,
         ),
     }
 
@@ -194,7 +322,7 @@ fn compose_digital(
     max_y: u32,
     framebuffer: &mut [u8],
     scratch: &mut ComposeScratch,
-    has_avx2: bool,
+    has_simd: bool,
 ) {
     let video_mode = inputs.video_mode;
     let width40_mode = (video_mode & VIDEO_MODE_WIDTH_40) != 0;
@@ -238,9 +366,9 @@ fn compose_digital(
         is_monochrome,
         is_16_color,
     };
-    #[cfg(target_arch = "x86_64")]
-    let digital_avx2_palette = if has_avx2 {
-        Some(avx2::DigitalAvx2Palette::new(
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    let digital_simd_palette = if has_simd {
+        Some(DigitalSimdPalette::new(
             &inputs.palette_rgba,
             &mono_lookup,
             mode,
@@ -310,19 +438,27 @@ fn compose_digital(
         let row_offset = (y as usize) * ROW_BYTES;
         let row_buf = &mut framebuffer[row_offset..row_offset + ROW_BYTES];
 
-        #[cfg(not(target_arch = "x86_64"))]
-        let _ = has_avx2;
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        let _ = has_simd;
 
-        #[cfg(target_arch = "x86_64")]
-        if let Some(palette) = digital_avx2_palette.as_ref() {
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+        if let Some(palette) = digital_simd_palette.as_ref() {
             #[allow(unsafe_code)]
-            // SAFETY: `has_avx2` is set from `is_x86_feature_detected!("avx2")`
-            // at construction time, so AVX2 is guaranteed available here.
+            // SAFETY: `has_simd` was validated at renderer construction:
+            // `is_x86_feature_detected!("avx2")` on x86_64, unconditional on
+            // aarch64 where NEON is in the baseline ISA.
             unsafe {
+                #[cfg(target_arch = "x86_64")]
                 if mode.is_monochrome && mode.graphics_enabled {
                     avx2::combine_cells_digital_mono_avx2(row_buf, scratch, palette);
                 } else {
                     avx2::combine_cells_digital_color_avx2(row_buf, scratch, palette);
+                }
+                #[cfg(target_arch = "aarch64")]
+                if mode.is_monochrome && mode.graphics_enabled {
+                    neon::combine_cells_digital_mono_neon(row_buf, scratch, palette);
+                } else {
+                    neon::combine_cells_digital_color_neon(row_buf, scratch, palette);
                 }
             }
             continue;
@@ -341,10 +477,10 @@ fn compose_pegc(
     max_y: u32,
     framebuffer: &mut [u8],
     scratch: &mut ComposeScratch,
-    has_avx2: bool,
+    has_simd: bool,
 ) {
-    #[cfg(not(target_arch = "x86_64"))]
-    let _ = has_avx2;
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let _ = has_simd;
     let video_mode = inputs.video_mode;
     let width40_mode = (video_mode & VIDEO_MODE_WIDTH_40) != 0;
     let fontsel_8x16 = (video_mode & VIDEO_MODE_FONTSEL_8X16) != 0;
@@ -434,13 +570,22 @@ fn compose_pegc(
         let row_offset = (y as usize) * ROW_BYTES;
         let row_buf = &mut framebuffer[row_offset..row_offset + ROW_BYTES];
 
-        #[cfg(target_arch = "x86_64")]
-        if has_avx2 {
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+        if has_simd {
             #[allow(unsafe_code)]
-            // SAFETY: `has_avx2` was validated via `is_x86_feature_detected!`
-            // at construction time.
+            // SAFETY: `has_simd` was validated at renderer construction:
+            // `is_x86_feature_detected!("avx2")` on x86_64, unconditional on
+            // aarch64 where NEON is in the baseline ISA.
             unsafe {
+                #[cfg(target_arch = "x86_64")]
                 avx2::combine_cells_pegc_avx2(
+                    row_buf,
+                    scratch,
+                    &pegc.palette_rgba_256,
+                    graphics_enabled,
+                );
+                #[cfg(target_arch = "aarch64")]
+                neon::combine_cells_pegc_neon(
                     row_buf,
                     scratch,
                     &pegc.palette_rgba_256,
@@ -455,13 +600,13 @@ fn compose_pegc(
 }
 
 #[derive(Clone, Copy)]
-struct CombineMode {
+pub(super) struct CombineMode {
     /// Text and graphics enable bits are kept here so the scalar and AVX2
     /// combine paths make the same palette choices.
-    text_enabled: bool,
-    graphics_enabled: bool,
-    is_monochrome: bool,
-    is_16_color: bool,
+    pub text_enabled: bool,
+    pub graphics_enabled: bool,
+    pub is_monochrome: bool,
+    pub is_16_color: bool,
 }
 
 #[derive(Clone, Copy)]
