@@ -1,16 +1,8 @@
 # Neetan (ねーたん)
 
-An emulator for the PC-98 written in Rust and using a Vulkan based graphics engine.
+An emulator for the PC-98 written in Rust.
 
 [Game Compatibility](https://github.com/hasenbanck/neetan/wiki/Game-Compatibility)
-
-## Design rationale
-
-neetan's main goal is to be able to run PC-98 exclusive games and software on modern hardware.
-It aims to provide high accuracy emulation, especially for the emulated CPUs, while still providing a good default,
-out of the box experience. The default requires no font file, sound files or any ROM files. We build our own font ROM
-using open source fonts, provide HLE SASI and HLE BIOS implementations. Providing original font ROM files and bios ROM
-files is supported, but should provide no additional benefit.
 
 ## Supported systems
 
@@ -64,7 +56,8 @@ neetan <COMMAND>
 | `--cdrom <PATH>`             | CD-ROM disc image CUE file (repeatable, PC-9821 only)                               | -          |
 | `--audio-volume <FLOAT>`     | Audio volume 0.0–1.0                                                                | `1.0`      |
 | `--aspect-mode <MODE>`       | Display aspect mode: `4:3` or `1:1`                                                 | `4:3`      |
-| `--crt <on\|off>`            | Enable the CRT effect                                                               | `on`       |
+| `--crt <on\|off>`            | Enable the CRT effect. Not avialable when using the SDL rendering backend.          | `on`       |
+| `--backend <BACKEND>`        | Rendering backend: `vulkan` or `sdl`                                                | `vulkan`   |
 | `--window-mode <MODE>`       | Window mode: `windowed` or `fullscreen`                                             | `windowed` |
 | `--force-gdc-clock <2.5\|5>` | Force GDC clock to 2.5 or 5 MHz. VX and later only                                  | auto       |
 | `--bios-rom <PATH>`          | Path to BIOS ROM file                                                               | HLE BIOS   |

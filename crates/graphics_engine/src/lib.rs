@@ -9,6 +9,7 @@ mod passes;
 mod pipeline_loader;
 mod plumbing;
 mod resources;
+mod sdl;
 
 use std::{
     ffi::{CString, c_char},
@@ -18,8 +19,10 @@ use std::{
 use common::{Context, OptionContext, StackVec, bail, error, info};
 pub use errors::Error;
 pub use instructions::RenderInstructions;
-use jay_ash::vk;
+use jay_ash::{vk, vk::Handle};
+use sdl3::video::Window;
 
+pub use crate::sdl::SdlGraphicsEngine;
 use crate::{
     descriptors::{DescriptorResources, FrameDescriptorSets},
     layout_transitioner::LayoutTransitioner,
@@ -37,6 +40,30 @@ use crate::{
 
 /// Crate-wide result type.
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// A backend-neutral interface for the graphics engine.
+pub trait GraphicsEngine {
+    /// Called when the window is resuming. Creates the rendering surface/context.
+    fn on_resume(
+        &mut self,
+        window: &mut Window,
+        vsync_enabled: bool,
+        width: u32,
+        height: u32,
+    ) -> Result<()>;
+
+    /// Handles a window resize event.
+    fn on_resize(&mut self, width: u32, height: u32) -> Result<()>;
+
+    /// Called when the rendering surface should be torn down (e.g., Android suspend).
+    fn on_destroy_surface(&mut self);
+
+    /// Tries to wait for the previous frame's presentation to complete.
+    fn try_wait_for_previous_present(&self, timeout_ms: u64) -> Result<bool>;
+
+    /// Renders the next frame.
+    fn render_frame(&mut self, render_instructions: Option<&RenderInstructions>) -> Result<()>;
+}
 
 const INITIAL_WINDOW_WIDTH: u32 = 1280;
 const INITIAL_WINDOW_HEIGHT_4_BY_3: u32 = 960;
@@ -62,7 +89,7 @@ impl DisplayAspectMode {
         }
     }
 
-    fn display_aspect_ratio(self) -> f64 {
+    pub(crate) fn display_aspect_ratio(self) -> f64 {
         match self {
             Self::Aspect4By3 => 4.0 / 3.0,
             Self::Aspect1By1 => 640.0 / 400.0,
@@ -70,7 +97,7 @@ impl DisplayAspectMode {
     }
 }
 
-fn compute_color_target_extent(
+pub(crate) fn compute_color_target_extent(
     surface_width: u32,
     surface_height: u32,
     aspect_ratio: f64,
@@ -87,8 +114,8 @@ fn compute_color_target_extent(
     }
 }
 
-/// The graphics engine of the game.
-pub struct GraphicsEngine {
+/// Vulkan-backed graphics engine.
+pub struct VulkanGraphicsEngine {
     /// The global descriptor resources.
     descriptor_resources: DescriptorResources,
     /// General resources of the engine.
@@ -131,8 +158,8 @@ pub struct GraphicsEngine {
     display_aspect_mode: DisplayAspectMode,
 }
 
-impl GraphicsEngine {
-    /// Creates a new graphics engine.
+impl VulkanGraphicsEngine {
+    /// Creates a new Vulkan graphics engine.
     pub fn new(
         platform_extension_names: &[String],
         display_aspect_mode: DisplayAspectMode,
@@ -230,13 +257,18 @@ impl GraphicsEngine {
         Ok(engine)
     }
 
-    /// Returns the raw `VkInstance` handle for interop with external libraries.
-    pub fn raw_instance_handle(&self) -> vk::Instance {
-        self.device.context().instance().handle()
+    /// Creates a Vulkan surface for the given window using this engine's instance.
+    fn create_window_surface(&self, window: &mut Window) -> Result<vk::SurfaceKHR> {
+        let instance_handle = self.device.context().instance().handle();
+        let sdl_instance = instance_handle.as_raw() as sdl3::video::VkInstance;
+        // Safety: the engine ensures the Vulkan instance is valid for as long as it lives.
+        let sdl_surface = unsafe { window.vulkan_create_surface(sdl_instance) }
+            .context("SDL_Vulkan_CreateSurface failed")?;
+        Ok(vk::SurfaceKHR::from_raw(sdl_surface as u64))
     }
 
-    /// Called when the window is resuming.
-    pub fn on_resume(
+    /// Called when the window is resuming. Creates the Vulkan surface from the window.
+    fn resume_with_surface(
         &mut self,
         surface_handle: vk::SurfaceKHR,
         vsync_enabled: bool,
@@ -388,7 +420,7 @@ impl GraphicsEngine {
     /// Returns `true` if the previous present completed (or no wait needed),
     /// `false` if it timed out. Uses a short timeout to avoid blocking the
     /// emulation loop.
-    pub fn try_wait_for_previous_present(&self, timeout_ms: u64) -> Result<bool> {
+    fn try_wait_for_previous_present_impl(&self, timeout_ms: u64) -> Result<bool> {
         let frame_resources = match self.frame_resources.as_ref() {
             Some(r) => r,
             None => return Ok(true),
@@ -408,7 +440,10 @@ impl GraphicsEngine {
     }
 
     /// Renders the next frame.
-    pub fn render_frame(&mut self, render_instructions: Option<&RenderInstructions>) -> Result<()> {
+    fn render_frame_impl(
+        &mut self,
+        render_instructions: Option<&RenderInstructions>,
+    ) -> Result<()> {
         let frame = self.acquire_frame()?;
 
         self.clear_graveyard()?;
@@ -723,7 +758,7 @@ impl GraphicsEngine {
     }
 
     /// Handles window resize by immediately recreating the swapchain.
-    pub fn on_resize(&mut self, width: u32, height: u32) -> Result<()> {
+    fn on_resize_impl(&mut self, width: u32, height: u32) -> Result<()> {
         if width == 0 || height == 0 {
             return Ok(());
         }
@@ -775,7 +810,7 @@ impl GraphicsEngine {
     }
 
     /// Called when the window is suspending.
-    pub fn on_destroy_surface(&mut self) {
+    fn on_destroy_surface_impl(&mut self) {
         // Android devices are expected to drop their surface view.
         if cfg!(target_os = "android") {
             self.surface = None;
@@ -783,7 +818,37 @@ impl GraphicsEngine {
     }
 }
 
-impl Drop for GraphicsEngine {
+impl GraphicsEngine for VulkanGraphicsEngine {
+    fn on_resume(
+        &mut self,
+        window: &mut Window,
+        vsync_enabled: bool,
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        let surface_handle = self.create_window_surface(window)?;
+        self.resume_with_surface(surface_handle, vsync_enabled, width, height);
+        Ok(())
+    }
+
+    fn on_resize(&mut self, width: u32, height: u32) -> Result<()> {
+        self.on_resize_impl(width, height)
+    }
+
+    fn on_destroy_surface(&mut self) {
+        self.on_destroy_surface_impl();
+    }
+
+    fn try_wait_for_previous_present(&self, timeout_ms: u64) -> Result<bool> {
+        self.try_wait_for_previous_present_impl(timeout_ms)
+    }
+
+    fn render_frame(&mut self, render_instructions: Option<&RenderInstructions>) -> Result<()> {
+        self.render_frame_impl(render_instructions)
+    }
+}
+
+impl Drop for VulkanGraphicsEngine {
     fn drop(&mut self) {
         // Wait for all GPU operations to complete before dropping resources.
         // This prevents validation errors from destroying resources still in use.

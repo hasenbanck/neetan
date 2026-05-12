@@ -10,19 +10,20 @@ use std::{
 use audio_engine::AudioEngine;
 use common::{Context, Machine, MachineModel, StringError, ensure, error, info, warn};
 use device::disk::{HddGeometry, load_hdd_image};
-use graphics_engine::{DisplayAspectMode, GraphicsEngine, RenderInstructions};
-use jay_ash::{vk, vk::Handle};
+use graphics_engine::{
+    DisplayAspectMode, GraphicsEngine, RenderInstructions, SdlGraphicsEngine, VulkanGraphicsEngine,
+};
 use sdl3::{
     Sdl,
     audio::AudioSubsystem,
     event::{DisplayEvent, Event, WindowEvent},
     keyboard::Scancode,
     mouse::MouseButton,
-    video::{VideoSubsystem, Window},
+    video::{VideoSubsystem, Window, WindowBuilder},
 };
 
 use crate::{
-    config::{AspectMode, EmulatorConfig, ForceGdcClock, WindowMode},
+    config::{AspectMode, Backend, EmulatorConfig, ForceGdcClock, WindowMode},
     errors::Error,
     image_selector::{ImageEntry, ImageSelector, MediaType},
     keyboard::{KeyMap, KeyboardForwardingState},
@@ -62,21 +63,20 @@ pub fn run(config: EmulatorConfig) -> Result<()> {
 
     print_system_into();
 
-    let mut builder = video_subsystem
-        .window(GAME_NAME, initial_width, initial_height)
-        .high_pixel_density()
-        .resizable()
-        .position_centered()
-        .hidden()
-        .vulkan();
+    let (graphics_engine, backend) =
+        select_graphics_backend(&video_subsystem, graphics_display_aspect_mode, &config)?;
 
-    if config.window_mode == WindowMode::Fullscreen {
-        builder = builder.fullscreen();
+    if backend == Backend::Sdl && config.crt {
+        warn!("CRT filter is not supported by the SDL backend");
     }
 
-    let mut window = builder
-        .build()
-        .context("Failed to create window with SDL3")?;
+    let mut window = build_window(
+        &video_subsystem,
+        initial_width,
+        initial_height,
+        config.window_mode == WindowMode::Fullscreen,
+        backend,
+    )?;
 
     if config.window_mode != WindowMode::Fullscreen
         && let Err(error) = window.set_aspect_ratio(aspect_ratio)
@@ -87,24 +87,19 @@ pub fn run(config: EmulatorConfig) -> Result<()> {
     let (width, height) = window.size();
     let (pixel_width, pixel_height) = window.size_in_pixels();
 
-    let platform_extension_names = window
-        .vulkan_instance_extensions()
-        .context("SDL_Vulkan_GetInstanceExtensions failed")?;
-
     let mut application = Application::new(
         config,
         audio_subsystem,
         &window,
-        platform_extension_names.as_slice(),
-        graphics_display_aspect_mode,
+        graphics_engine,
+        backend,
         (width as f32, height as f32),
     )?;
 
-    let surface_handle = create_surface(&mut window, &mut application)?;
-
     application
         .graphics_engine
-        .on_resume(surface_handle, true, pixel_width, pixel_height);
+        .on_resume(&mut window, true, pixel_width, pixel_height)
+        .context("Failed to initialize rendering surface")?;
 
     window.show();
 
@@ -250,25 +245,78 @@ fn graphics_display_aspect_mode(aspect_mode: AspectMode) -> DisplayAspectMode {
     }
 }
 
-fn create_surface(window: &mut Window, application: &mut Application) -> Result<vk::SurfaceKHR> {
-    // TODO: We have access to both our graphics engine and also the SDL3 crate, so we should find
-    //       a way to move the unsafe code into them.
-    let instance_handle = application.graphics_engine.raw_instance_handle();
-    let sdl_instance = instance_handle.as_raw() as sdl3::video::VkInstance;
-    // Safety: The graphics engine ensures the Vulkan instance is valid.
-    #[allow(unsafe_code)]
-    let sdl_surface = unsafe { window.vulkan_create_surface(sdl_instance) }
-        .context("SDL_Vulkan_CreateSurface failed")?;
-    let surface_handle = vk::SurfaceKHR::from_raw(sdl_surface as u64);
+fn build_window(
+    video_subsystem: &VideoSubsystem,
+    initial_width: u32,
+    initial_height: u32,
+    fullscreen: bool,
+    backend: Backend,
+) -> Result<Window> {
+    let mut builder: WindowBuilder = video_subsystem
+        .window(GAME_NAME, initial_width, initial_height)
+        .high_pixel_density()
+        .resizable()
+        .position_centered()
+        .hidden();
 
-    Ok(surface_handle)
+    if backend == Backend::Vulkan {
+        builder = builder.vulkan();
+    }
+
+    if fullscreen {
+        builder = builder.fullscreen();
+    }
+
+    let window = builder
+        .build()
+        .context("Failed to create window with SDL3")?;
+
+    Ok(window)
+}
+
+/// Picks the rendering backend. Falls back to SDL automatically when Vulkan is
+/// requested but unavailable. Returns the engine plus whether the SDL window
+/// should be created with the `SDL_WINDOW_VULKAN` flag.
+fn select_graphics_backend(
+    video_subsystem: &VideoSubsystem,
+    aspect_mode: DisplayAspectMode,
+    config: &EmulatorConfig,
+) -> Result<(Box<dyn GraphicsEngine>, Backend)> {
+    match config.backend {
+        Backend::Sdl => {
+            info!("Using SDL 2D backend");
+            Ok((Box::new(SdlGraphicsEngine::new(aspect_mode)), Backend::Sdl))
+        }
+        Backend::Vulkan => match try_init_vulkan(video_subsystem, aspect_mode) {
+            Ok(engine) => Ok((Box::new(engine), Backend::Vulkan)),
+            Err(error) => {
+                warn!("Vulkan backend unavailable, falling back to SDL renderer: {error:#}");
+                Ok((Box::new(SdlGraphicsEngine::new(aspect_mode)), Backend::Sdl))
+            }
+        },
+    }
+}
+
+fn try_init_vulkan(
+    video_subsystem: &VideoSubsystem,
+    aspect_mode: DisplayAspectMode,
+) -> Result<VulkanGraphicsEngine> {
+    video_subsystem
+        .load_vulkan_library(None)
+        .context("Failed to load Vulkan library")?;
+    let extensions = video_subsystem
+        .vulkan_instance_extensions()
+        .context("SDL_Vulkan_GetInstanceExtensions failed")?;
+    let engine = VulkanGraphicsEngine::new(&extensions, aspect_mode)
+        .context("Failed to create Vulkan graphics engine")?;
+    Ok(engine)
 }
 
 struct Application {
     /// The emulated machine.
     machine: Box<dyn Machine>,
     /// The graphics engine.
-    graphics_engine: GraphicsEngine,
+    graphics_engine: Box<dyn GraphicsEngine>,
     /// Audio engine which outputs using the SDL3 push-based stream. Drives emulation speed.
     audio_engine: AudioEngine,
     /// The speed of the CPU on cycles per second.
@@ -310,6 +358,8 @@ struct Application {
     image_selector: Option<ImageSelector>,
     /// Whether the CRT effect is enabled.
     crt_enabled: bool,
+    /// The active graphics backend.
+    backend: Backend,
     /// Whether the window is currently in fullscreen mode.
     fullscreen: bool,
     /// Accumulated emulation busy time in the current measurement window.
@@ -331,8 +381,8 @@ impl Application {
         config: EmulatorConfig,
         audio_subsystem: AudioSubsystem,
         window: &Window,
-        platform_extensions: &[String],
-        display_aspect_mode: DisplayAspectMode,
+        graphics_engine: Box<dyn GraphicsEngine>,
+        backend: Backend,
         logical_size: (f32, f32),
     ) -> Result<Self> {
         let audio_engine = AudioEngine::new(audio_subsystem, config.audio_volume)
@@ -380,15 +430,14 @@ impl Application {
         }
 
         let cpu_hz = machine.cpu_clock_hz();
-        let crt_enabled = config.crt;
-
-        let graphics_engine = GraphicsEngine::new(platform_extensions, display_aspect_mode)
-            .context("Failed to create graphics engine")?;
+        let crt_enabled = config.crt && backend != Backend::Sdl;
 
         let scale_factor = window.display_scale();
 
         info!("Window created with scale factor: {scale_factor}");
-        info!("CRT effect set to {}", on_off(crt_enabled));
+        if backend != Backend::Sdl {
+            info!("CRT effect set to {}", on_off(crt_enabled));
+        }
 
         Ok(Self {
             machine,
@@ -415,6 +464,7 @@ impl Application {
             cdrom_index,
             image_selector: None,
             crt_enabled,
+            backend,
             fullscreen: config.window_mode == WindowMode::Fullscreen,
             busy_duration: Duration::ZERO,
             window_title_last_update: Instant::now(),
@@ -717,6 +767,9 @@ impl Application {
     }
 
     fn toggle_crt(&mut self) {
+        if self.backend == Backend::Sdl {
+            return;
+        }
         self.crt_enabled = !self.crt_enabled;
         info!("CRT effect set to {}", on_off(self.crt_enabled));
     }
