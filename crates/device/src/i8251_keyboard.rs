@@ -35,11 +35,6 @@ const STATUS_OE: u8 = 1 << 4;
 /// Ref: undoc98 `io_kb.txt` port 0x43 bit 5
 const STATUS_FE: u8 = 1 << 5;
 
-// TODO: Why is this unused?
-/// Status register bit: SYNC/BRK detect.
-/// Ref: undoc98 `io_kb.txt` port 0x43 bit 6
-const _STATUS_SYNDET: u8 = 1 << 6;
-
 /// Status register bit: Data Set Ready.
 /// Ref: undoc98 `io_kb.txt` port 0x43 bit 7
 const STATUS_DSR: u8 = 1 << 7;
