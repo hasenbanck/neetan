@@ -43,7 +43,8 @@ Options:
       --cdrom <PATH>            CD-ROM disc image CUE file (repeatable, PC-9821 only)
       --audio-volume <FLOAT>    Audio volume 0.0-1.0
       --aspect-mode <MODE>      Display aspect mode: 4:3 or 1:1
-      --crt <on|off>            Enable CRT effect (default: on)
+      --crt <on|off>            Enable CRT effect (default: on; Vulkan backend only)
+      --backend <BACKEND>       Rendering backend: vulkan or sdl (default: vulkan)
       --window-mode <MODE>      Window mode: windowed or fullscreen
       --force-gdc-clock <2.5|5> Force GDC clock to 2.5 or 5 MHz (default: auto)
       --bios-rom <PATH>         Path to BIOS ROM file
@@ -436,6 +437,10 @@ fn parse_args_from(
                 let val = value(&flag)?;
                 config.xms = parse_on_off(&val, &flag)?;
             }
+            "--backend" => {
+                let val = value(&flag)?;
+                config.backend = val.parse::<Backend>().map_err(StringError)?;
+            }
             "--force-gdc-clock" => {
                 let val = value(&flag)?;
                 config.force_gdc_clock = Some(val.parse::<ForceGdcClock>().map_err(StringError)?);
@@ -514,6 +519,7 @@ pub struct EmulatorConfig {
     pub key_map: KeyMap,
     pub ems: bool,
     pub xms: bool,
+    pub backend: Backend,
 }
 
 impl Default for EmulatorConfig {
@@ -543,6 +549,7 @@ impl Default for EmulatorConfig {
             key_map: KeyMap::new(),
             ems: true,
             xms: true,
+            backend: Backend::Vulkan,
         }
     }
 }
@@ -618,6 +625,10 @@ fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<
                 "on" => config.xms = true,
                 "off" => config.xms = false,
                 _ => warn!("Invalid xms in config: {val}, expected on or off"),
+            },
+            "backend" => match val.parse::<Backend>() {
+                Ok(backend) => config.backend = backend,
+                Err(_) => warn!("Invalid backend in config: {val}, expected vulkan or sdl"),
             },
             "force-gdc-clock" => match val.parse::<ForceGdcClock>() {
                 Ok(mode) => config.force_gdc_clock = Some(mode),
@@ -787,6 +798,37 @@ impl std::str::FromStr for WindowMode {
             _ => Err(format!(
                 "unknown window mode '{s}', expected windowed or fullscreen"
             )),
+        }
+    }
+}
+
+/// Rendering backend selection.
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+pub enum Backend {
+    /// Vulkan hardware-accelerated renderer.
+    #[default]
+    Vulkan,
+    /// SDL 2D renderer fallback.
+    Sdl,
+}
+
+impl std::fmt::Display for Backend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Vulkan => f.write_str("vulkan"),
+            Self::Sdl => f.write_str("sdl"),
+        }
+    }
+}
+
+impl std::str::FromStr for Backend {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "vulkan" => Ok(Self::Vulkan),
+            "sdl" => Ok(Self::Sdl),
+            _ => Err(format!("unknown backend '{s}', expected vulkan or sdl")),
         }
     }
 }

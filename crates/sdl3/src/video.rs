@@ -36,6 +36,25 @@ impl VideoSubsystem {
         Ok(())
     }
 
+    /// Returns the Vulkan instance extensions required for surface creation.
+    ///
+    /// Requires the Vulkan library to be loaded (see [`load_vulkan_library`]).
+    pub fn vulkan_instance_extensions(&self) -> Result<Vec<String>, Error> {
+        let mut count: u32 = 0;
+        // Safety: count is a valid pointer; SDL3 does not require a window for this call.
+        let names_ptr = unsafe { vulkan::SDL_Vulkan_GetInstanceExtensions(&raw mut count) };
+        if names_ptr.is_null() {
+            return Err(crate::get_error());
+        }
+        let mut extensions = Vec::with_capacity(count as usize);
+        for i in 0..count as usize {
+            // Safety: names_ptr points to an array of `count` valid C strings.
+            let cstr = unsafe { CStr::from_ptr(*names_ptr.add(i)) };
+            extensions.push(cstr.to_string_lossy().into_owned());
+        }
+        Ok(extensions)
+    }
+
     /// Creates a [`WindowBuilder`] with the given title and dimensions.
     pub fn window(&self, title: &str, width: u32, height: u32) -> WindowBuilder {
         WindowBuilder {
@@ -215,21 +234,9 @@ impl Window {
         Ok(())
     }
 
-    /// Returns the Vulkan instance extensions required for surface creation.
-    pub fn vulkan_instance_extensions(&self) -> Result<Vec<String>, Error> {
-        let mut count: u32 = 0;
-        // Safety: count is a valid pointer. SDL3 no longer requires a window for this.
-        let names_ptr = unsafe { vulkan::SDL_Vulkan_GetInstanceExtensions(&raw mut count) };
-        if names_ptr.is_null() {
-            return Err(crate::get_error());
-        }
-        let mut extensions = Vec::with_capacity(count as usize);
-        for i in 0..count as usize {
-            // Safety: names_ptr points to an array of `count` valid C strings.
-            let cstr = unsafe { CStr::from_ptr(*names_ptr.add(i)) };
-            extensions.push(cstr.to_string_lossy().into_owned());
-        }
-        Ok(extensions)
+    /// Creates a 2D rendering context for this window. SDL picks the best driver.
+    pub fn create_renderer(&self) -> Result<crate::render::Renderer, Error> {
+        crate::render::Renderer::new_for_raw_window(self.ptr)
     }
 
     /// Creates a Vulkan surface for this window.

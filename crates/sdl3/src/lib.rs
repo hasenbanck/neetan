@@ -15,6 +15,8 @@ pub mod keyboard;
 pub mod log;
 /// Mouse button types.
 pub mod mouse;
+/// 2D rendering with `SDL_Renderer` and `SDL_Texture`.
+pub mod render;
 /// Date and time utilities.
 pub mod time;
 /// Video subsystem, window creation, and Vulkan surface management.

@@ -73,6 +73,7 @@ version = "0.1.0"
 dependencies = [
  "common",
  "jay-ash",
+ "sdl3",
 ]
 
 [[package]]
