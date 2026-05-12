@@ -19,14 +19,12 @@
 #[allow(unsafe_code)]
 mod avx2;
 
-use super::{DISPLAY_FLAG_PEGC_256_COLOR, RenderInputs, SoftwareRenderer, TEXT_CELL_COUNT};
+use super::{
+    GdcGraphicsInput, GraphicsInput, PegcRenderInputs, RenderInputs, SoftwareRenderer,
+    TEXT_CELL_COUNT,
+};
 
 const BLACK: u32 = 0xFF00_0000;
-
-const DISPLAY_FLAG_16_COLOR: u32 = 0x08;
-const DISPLAY_FLAG_TEXT_ENABLED: u32 = 0x10;
-const DISPLAY_FLAG_GRAPHICS_ENABLED: u32 = 0x20;
-const DISPLAY_FLAG_GLOBAL_ENABLED: u32 = 0x40;
 
 const VIDEO_MODE_MONOCHROME: u32 = 0x02;
 const VIDEO_MODE_WIDTH_40: u32 = 0x04;
@@ -149,34 +147,33 @@ pub(super) fn compose(
     debug_assert_eq!(framebuffer.len(), SoftwareRenderer::FRAMEBUFFER_BYTES);
 
     let max_y = compute_max_y(inputs);
-    let global_enabled = (inputs.display_flags & DISPLAY_FLAG_GLOBAL_ENABLED) != 0;
 
-    if !global_enabled {
+    if !inputs.global_enabled {
         fill_black(framebuffer);
         return;
     }
 
-    let is_pegc = (inputs.display_flags & DISPLAY_FLAG_PEGC_256_COLOR) != 0;
-    if is_pegc {
-        compose_pegc(
+    match &inputs.graphics {
+        GraphicsInput::Gdc(gdc) => compose_digital(
             font_rom,
             text_cells,
             inputs,
+            gdc,
             max_y,
             framebuffer,
             scratch,
             has_avx2,
-        );
-    } else {
-        compose_digital(
+        ),
+        GraphicsInput::Pegc(pegc) => compose_pegc(
             font_rom,
             text_cells,
             inputs,
+            pegc,
             max_y,
             framebuffer,
             scratch,
             has_avx2,
-        );
+        ),
     }
 
     let inactive_start = (max_y as usize) * ROW_BYTES;
@@ -188,10 +185,12 @@ pub(super) fn compose(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compose_digital(
     font_rom: &[u8],
     text_cells: &[u32; TEXT_CELL_COUNT],
     inputs: &RenderInputs<'_>,
+    gdc: &GdcGraphicsInput<'_>,
     max_y: u32,
     framebuffer: &mut [u8],
     scratch: &mut ComposeScratch,
@@ -201,9 +200,9 @@ fn compose_digital(
     let width40_mode = (video_mode & VIDEO_MODE_WIDTH_40) != 0;
     let fontsel_8x16 = (video_mode & VIDEO_MODE_FONTSEL_8X16) != 0;
     let is_monochrome = (video_mode & VIDEO_MODE_MONOCHROME) != 0;
-    let is_16_color = (inputs.display_flags & DISPLAY_FLAG_16_COLOR) != 0;
-    let text_enabled = (inputs.display_flags & DISPLAY_FLAG_TEXT_ENABLED) != 0;
-    let graphics_enabled = (inputs.display_flags & DISPLAY_FLAG_GRAPHICS_ENABLED) != 0;
+    let is_16_color = gdc.is_16_color;
+    let text_enabled = inputs.text_enabled;
+    let graphics_enabled = inputs.graphics_enabled;
 
     // CRTC values are packed as low/high 16-bit fields by the bus snapshot,
     // but the hardware registers themselves are 5-bit quantities.
@@ -224,13 +223,13 @@ fn compose_digital(
     let cursor_top = inputs.cursor_top as i32;
     let cursor_bottom = inputs.cursor_bottom as i32;
 
-    let lines_per_row = inputs.gdc_graphics_lines_per_row.max(1);
-    let zoom = inputs.gdc_graphics_zoom_display + 1;
+    let lines_per_row = gdc.lines_per_row.max(1);
+    let zoom = gdc.zoom_display + 1;
     let graphics_y_divisor = lines_per_row * zoom;
     let graphics_pitch = inputs.gdc_graphics_pitch;
     let text_pitch = inputs.gdc_text_pitch;
 
-    let mono_lookup = compute_mono_lookup(inputs.graphics_monochrome_mask);
+    let mono_lookup = compute_mono_lookup(gdc.monochrome_mask);
     // Monochrome graphics reduce a 4-bit graphics color to an on/off mask.
     // The final color still depends on whether text is enabled for the scanline.
     let mode = CombineMode {
@@ -293,27 +292,11 @@ fn compose_digital(
         }
 
         if graphics_enabled {
-            load_graphics_row(
-                inputs.graphics_b_plane,
-                graphics_byte_base,
-                &mut scratch.graphics_b,
-            );
-            load_graphics_row(
-                inputs.graphics_r_plane,
-                graphics_byte_base,
-                &mut scratch.graphics_r,
-            );
-            load_graphics_row(
-                inputs.graphics_g_plane,
-                graphics_byte_base,
-                &mut scratch.graphics_g,
-            );
+            load_graphics_row(gdc.b_plane, graphics_byte_base, &mut scratch.graphics_b);
+            load_graphics_row(gdc.r_plane, graphics_byte_base, &mut scratch.graphics_r);
+            load_graphics_row(gdc.g_plane, graphics_byte_base, &mut scratch.graphics_g);
             if is_16_color {
-                load_graphics_row(
-                    inputs.graphics_e_plane,
-                    graphics_byte_base,
-                    &mut scratch.graphics_e,
-                );
+                load_graphics_row(gdc.e_plane, graphics_byte_base, &mut scratch.graphics_e);
             } else {
                 scratch.graphics_e.fill(0);
             }
@@ -349,10 +332,12 @@ fn compose_digital(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compose_pegc(
     font_rom: &[u8],
     text_cells: &[u32; TEXT_CELL_COUNT],
     inputs: &RenderInputs<'_>,
+    pegc: &PegcRenderInputs<'_>,
     max_y: u32,
     framebuffer: &mut [u8],
     scratch: &mut ComposeScratch,
@@ -363,8 +348,8 @@ fn compose_pegc(
     let video_mode = inputs.video_mode;
     let width40_mode = (video_mode & VIDEO_MODE_WIDTH_40) != 0;
     let fontsel_8x16 = (video_mode & VIDEO_MODE_FONTSEL_8X16) != 0;
-    let text_enabled = (inputs.display_flags & DISPLAY_FLAG_TEXT_ENABLED) != 0;
-    let graphics_enabled = (inputs.display_flags & DISPLAY_FLAG_GRAPHICS_ENABLED) != 0;
+    let text_enabled = inputs.text_enabled;
+    let graphics_enabled = inputs.graphics_enabled;
 
     let crtc_pl_bl = inputs.crtc_pl_bl;
     let pl = crtc_pl_bl & 0x1F;
@@ -382,13 +367,6 @@ fn compose_pegc(
     let cursor_bottom = inputs.cursor_bottom as i32;
     let text_pitch = inputs.gdc_text_pitch;
     let graphics_pitch = inputs.gdc_graphics_pitch;
-
-    let Some(pegc) = inputs.pegc.as_ref() else {
-        debug_assert!(false, "PEGC display flag set without a PEGC snapshot");
-        let active = (max_y as usize) * ROW_BYTES;
-        fill_black(&mut framebuffer[..active]);
-        return;
-    };
 
     let pegc_flags = pegc.pegc_flags;
     let is_one_screen = (pegc_flags & 0x02) != 0;
@@ -875,7 +853,7 @@ fn load_pegc_indices(vram: &[u8], scanline_base: u32, vram_mask: u32, dst: &mut 
 }
 
 fn compute_max_y(inputs: &RenderInputs<'_>) -> u32 {
-    let is_pegc = (inputs.display_flags & DISPLAY_FLAG_PEGC_256_COLOR) != 0;
+    let is_pegc = matches!(inputs.graphics, GraphicsInput::Pegc(_));
     // Standard PC-98 modes expose 400 active lines. PEGC can switch to a
     // 480-line display; clamp to the native framebuffer height.
     if is_pegc && inputs.gdc_graphics_al > 400 {

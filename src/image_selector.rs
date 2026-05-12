@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use common::{JisChar, StackVec, str_to_jis};
 use device::software_renderer::{
-    PegcRenderInputs, RenderInputs, SoftwareRenderer, TEXT_VRAM_BYTES,
+    GdcGraphicsInput, GraphicsInput, RenderInputs, SoftwareRenderer, TEXT_VRAM_BYTES,
 };
 
 const VISIBLE_ITEMS: usize = 19;
@@ -399,23 +399,25 @@ fn rebuild_render(
         cursor_addr: 0,
         cursor_top: 0,
         cursor_bottom: 0,
-
-        graphics_b_plane: &ZERO_PLANE,
-        graphics_r_plane: &ZERO_PLANE,
-        graphics_g_plane: &ZERO_PLANE,
-        graphics_e_plane: &ZERO_PLANE,
         gdc_graphics_pitch: 0,
         gdc_graphics_scroll: [0; 4],
-        gdc_graphics_lines_per_row: 1,
-        gdc_graphics_zoom_display: 0,
         gdc_graphics_al: 0,
-        graphics_monochrome_mask: 0,
 
         palette_rgba,
-        // bit 0 GDC started, bit 1 blink visible, bit 4 text enabled, bit 6 global enabled.
-        display_flags: 0x53,
+        global_enabled: true,
+        text_enabled: true,
+        graphics_enabled: false,
 
-        pegc: Option::<PegcRenderInputs<'_>>::None,
+        graphics: GraphicsInput::Gdc(GdcGraphicsInput {
+            b_plane: &ZERO_PLANE,
+            r_plane: &ZERO_PLANE,
+            g_plane: &ZERO_PLANE,
+            e_plane: &ZERO_PLANE,
+            lines_per_row: 1,
+            zoom_display: 0,
+            monochrome_mask: 0,
+            is_16_color: false,
+        }),
     };
 
     renderer.render(&inputs);

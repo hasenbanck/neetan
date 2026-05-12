@@ -20,9 +20,6 @@ mod text_normalizer;
 /// layout.
 pub const TEXT_VRAM_BYTES: usize = 0x4000;
 
-/// Display flag bit 7: PEGC 256-color mode active.
-pub const DISPLAY_FLAG_PEGC_256_COLOR: u32 = 0x80;
-
 /// Number of normalized text cells (covers a maximum 80x52 logical text plane).
 const TEXT_CELL_COUNT: usize = 4096;
 
@@ -82,34 +79,58 @@ pub struct RenderInputs<'a> {
     /// Last scanline of the cursor (CSRFORM cursor_bottom, 0-31).
     pub cursor_bottom: u32,
 
-    /// Graphics VRAM B-plane (32 KB) for the active display page.
-    pub graphics_b_plane: &'a [u8],
-    /// Graphics VRAM R-plane (32 KB) for the active display page.
-    pub graphics_r_plane: &'a [u8],
-    /// Graphics VRAM G-plane (32 KB) for the active display page.
-    pub graphics_g_plane: &'a [u8],
-    /// Graphics VRAM E-plane (32 KB) for the active display page.
-    pub graphics_e_plane: &'a [u8],
     /// Graphics GDC byte pitch.
     pub gdc_graphics_pitch: u32,
     /// Four packed graphics scroll descriptors.
     pub gdc_graphics_scroll: [u32; 4],
-    /// Graphics GDC line repeat factor (CSRFORM).
-    pub gdc_graphics_lines_per_row: u32,
-    /// Graphics GDC display zoom factor (0-15, rendered as zoom+1).
-    pub gdc_graphics_zoom_display: u32,
     /// Graphics GDC active display lines (AL from SYNC command).
     pub gdc_graphics_al: u32,
-    /// Bitmask of graphics color indices that are "on" in monochrome mode.
-    pub graphics_monochrome_mask: u32,
 
     /// 16-entry palette packed as `0xAA_BB_GG_RR`.
     pub palette_rgba: [u32; 16],
-    /// Display flags (see `DISPLAY_FLAG_*` constants).
-    pub display_flags: u32,
+    /// Master display enable: when false, the compose pass outputs an all-black frame.
+    pub global_enabled: bool,
+    /// Text plane display enable (master GDC DE).
+    pub text_enabled: bool,
+    /// Graphics plane display enable (slave GDC DE).
+    pub graphics_enabled: bool,
 
-    /// PEGC 256-color inputs, present when `DISPLAY_FLAG_PEGC_256_COLOR` is set.
-    pub pegc: Option<PegcRenderInputs<'a>>,
+    /// Graphics source: either the GDC bitplane stack or PEGC 256-color VRAM.
+    /// The two modes are mutually exclusive on real hardware.
+    pub graphics: GraphicsInput<'a>,
+}
+
+/// Graphics rendering source. PC-98 hardware exposes either the four GDC
+/// bitplanes (B/R/G/E) or the linear PEGC 256-color framebuffer at any one
+/// time, never both simultaneously.
+///
+/// The PEGC variant is boxed because its 256-entry palette dominates the
+/// enum size (about 1 KiB) while the GDC variant fits in roughly 80 bytes.
+pub enum GraphicsInput<'a> {
+    /// Traditional GDC/GRCG/EGC bitplane mode (8-color or 16-color analog).
+    Gdc(GdcGraphicsInput<'a>),
+    /// PEGC 256-color packed-pixel mode.
+    Pegc(Box<PegcRenderInputs<'a>>),
+}
+
+/// Inputs consumed by the GDC bitplane compose path.
+pub struct GdcGraphicsInput<'a> {
+    /// Graphics VRAM B-plane (32 KB) for the active display page.
+    pub b_plane: &'a [u8],
+    /// Graphics VRAM R-plane (32 KB) for the active display page.
+    pub r_plane: &'a [u8],
+    /// Graphics VRAM G-plane (32 KB) for the active display page.
+    pub g_plane: &'a [u8],
+    /// Graphics VRAM E-plane (32 KB) for the active display page.
+    pub e_plane: &'a [u8],
+    /// Graphics GDC line repeat factor (CSRFORM).
+    pub lines_per_row: u32,
+    /// Graphics GDC display zoom factor (0-15, rendered as zoom+1).
+    pub zoom_display: u32,
+    /// Bitmask of graphics color indices that are "on" in monochrome mode.
+    pub monochrome_mask: u32,
+    /// 16-color analog graphics mode (vs 8-color/monochrome digital).
+    pub is_16_color: bool,
 }
 
 /// Extra inputs required for PEGC 256-color rendering.
@@ -198,7 +219,7 @@ impl SoftwareRenderer {
 
     /// Computes the active display height (400, or up to 480 for PEGC 480-line mode).
     pub fn native_height(inputs: &RenderInputs<'_>) -> u32 {
-        let is_pegc_256_color = (inputs.display_flags & DISPLAY_FLAG_PEGC_256_COLOR) != 0;
+        let is_pegc_256_color = matches!(inputs.graphics, GraphicsInput::Pegc(_));
         if is_pegc_256_color && inputs.gdc_graphics_al > 400 {
             inputs.gdc_graphics_al.min(Self::HEIGHT as u32)
         } else {
