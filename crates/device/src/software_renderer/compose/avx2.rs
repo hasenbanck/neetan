@@ -8,11 +8,10 @@
 use core::arch::x86_64::*;
 
 use super::{
-    BLACK, CELLS_PER_ROW, CombineMode, ComposeScratch, DIGITAL_GRAPHICS_PALETTE_BASE,
-    FIXED_TEXT_LUT, MONOCHROME_GRAPHICS_COLOR, PIXEL_BYTES, PIXELS_PER_CELL, ROW_BYTES,
+    BLACK, CELL_STRIDE, CELLS_PER_ROW, ComposeScratch, DigitalSimdPalette, FIXED_TEXT_LUT,
+    PIXEL_BYTES, PIXELS_PER_CELL, ROW_BYTES,
 };
 
-const CELL_STRIDE: usize = PIXELS_PER_CELL * PIXEL_BYTES;
 const CHANNEL_COUNT: usize = PIXEL_BYTES;
 
 // One AVX2 register holds one 8-pixel RGBA cell: 8 pixels * 4 bytes = 32
@@ -158,124 +157,11 @@ struct ChannelVectors {
     alpha: __m256i,
 }
 
-pub(super) struct DigitalAvx2Palette {
-    // Shuffle tables for color digital and 16-color graphics paths.
-    graphics_red: [u8; CELL_STRIDE],
-    graphics_green: [u8; CELL_STRIDE],
-    graphics_blue: [u8; CELL_STRIDE],
-    graphics_alpha: [u8; CELL_STRIDE],
-    // Shuffle tables for monochrome graphics-only output.
-    mono_red: [u8; CELL_STRIDE],
-    mono_green: [u8; CELL_STRIDE],
-    mono_blue: [u8; CELL_STRIDE],
-    mono_alpha: [u8; CELL_STRIDE],
-    // Per-palette-index on/off mask for monochrome mixed text/graphics mode.
-    mono_mask: [u8; CELL_STRIDE],
-    // Text colors are broadcast as full pixels, not shuffled from the graphics
-    // palette, because analog and PEGC text use fixed BRG colors.
-    text_pixels: [u32; 8],
-    palette_zero: u32,
-    text_enabled: bool,
-}
-
-impl DigitalAvx2Palette {
-    pub(super) fn new(palette_rgba: &[u32; 16], mono_lookup: &[u8; 16], mode: CombineMode) -> Self {
-        let mut palette = Self {
-            graphics_red: [0; CELL_STRIDE],
-            graphics_green: [0; CELL_STRIDE],
-            graphics_blue: [0; CELL_STRIDE],
-            graphics_alpha: [0; CELL_STRIDE],
-            mono_red: [0; CELL_STRIDE],
-            mono_green: [0; CELL_STRIDE],
-            mono_blue: [0; CELL_STRIDE],
-            mono_alpha: [0; CELL_STRIDE],
-            mono_mask: [0; CELL_STRIDE],
-            text_pixels: [0; 8],
-            palette_zero: palette_rgba[0],
-            text_enabled: mode.text_enabled,
-        };
-
-        for (index, mono_lookup_entry) in mono_lookup.iter().enumerate() {
-            // In 8-color digital graphics mode, graphics colors live at
-            // palette indices 8-15. In 16-color analog mode they use 0-15.
-            let graphics_index = if mode.graphics_enabled && !mode.is_16_color {
-                DIGITAL_GRAPHICS_PALETTE_BASE as usize + (index & 0x07)
-            } else {
-                index
-            };
-            let graphics_pixel = palette_rgba[graphics_index];
-            write_shuffle_pixel(
-                &mut palette.graphics_red,
-                &mut palette.graphics_green,
-                &mut palette.graphics_blue,
-                &mut palette.graphics_alpha,
-                index,
-                graphics_pixel,
-            );
-
-            let mono_pixel = if *mono_lookup_entry != 0 {
-                FIXED_TEXT_LUT[MONOCHROME_GRAPHICS_COLOR as usize]
-            } else {
-                palette_rgba[0]
-            };
-            write_shuffle_pixel(
-                &mut palette.mono_red,
-                &mut palette.mono_green,
-                &mut palette.mono_blue,
-                &mut palette.mono_alpha,
-                index,
-                mono_pixel,
-            );
-            let mono_mask = if *mono_lookup_entry != 0 { 0xFF } else { 0 };
-            // Duplicate into both 128-bit lanes. `vpshufb` control bytes are
-            // lane-local, so each half needs its own copy of entries 0-15.
-            palette.mono_mask[index] = mono_mask;
-            palette.mono_mask[index + 16] = mono_mask;
-        }
-
-        for index in 0..8 {
-            palette.text_pixels[index] = if mode.is_16_color {
-                FIXED_TEXT_LUT[index]
-            } else {
-                palette_rgba[index]
-            };
-        }
-
-        palette
-    }
-}
-
-fn write_shuffle_pixel(
-    red_table: &mut [u8; CELL_STRIDE],
-    green_table: &mut [u8; CELL_STRIDE],
-    blue_table: &mut [u8; CELL_STRIDE],
-    alpha_table: &mut [u8; CELL_STRIDE],
-    index: usize,
-    pixel: u32,
-) {
-    let red = pixel as u8;
-    let green = (pixel >> 8) as u8;
-    let blue = (pixel >> 16) as u8;
-    let alpha = (pixel >> 24) as u8;
-
-    red_table[index] = red;
-    green_table[index] = green;
-    blue_table[index] = blue;
-    alpha_table[index] = alpha;
-
-    // `vpshufb` operates independently on the low and high 128-bit lanes of
-    // the AVX2 register, so the 16-entry palette has to appear in both lanes.
-    red_table[index + 16] = red;
-    green_table[index + 16] = green;
-    blue_table[index + 16] = blue;
-    alpha_table[index + 16] = alpha;
-}
-
 #[target_feature(enable = "avx2")]
 pub(super) unsafe fn combine_cells_digital_color_avx2(
     row_buf: &mut [u8],
     scratch: &ComposeScratch,
-    palette: &DigitalAvx2Palette,
+    palette: &DigitalSimdPalette,
 ) {
     debug_assert_eq!(row_buf.len(), ROW_BYTES);
 
@@ -315,7 +201,7 @@ pub(super) unsafe fn combine_cells_digital_color_avx2(
 pub(super) unsafe fn combine_cells_digital_mono_avx2(
     row_buf: &mut [u8],
     scratch: &ComposeScratch,
-    palette: &DigitalAvx2Palette,
+    palette: &DigitalSimdPalette,
 ) {
     debug_assert_eq!(row_buf.len(), ROW_BYTES);
 
@@ -335,7 +221,7 @@ pub(super) unsafe fn combine_cells_digital_mono_avx2(
 unsafe fn combine_cells_digital_mono_text_avx2(
     row_buf: &mut [u8],
     scratch: &ComposeScratch,
-    palette: &DigitalAvx2Palette,
+    palette: &DigitalSimdPalette,
 ) {
     unsafe {
         let mono_mask_table = load_bytes_256!(&palette.mono_mask);
@@ -372,7 +258,7 @@ unsafe fn combine_cells_digital_mono_text_avx2(
 unsafe fn combine_cells_digital_mono_graphics_avx2(
     row_buf: &mut [u8],
     scratch: &ComposeScratch,
-    palette: &DigitalAvx2Palette,
+    palette: &DigitalSimdPalette,
 ) {
     unsafe {
         let mono = ChannelVectors {
@@ -406,7 +292,7 @@ unsafe fn combine_cells_digital_mono_graphics_avx2(
 #[target_feature(enable = "avx2")]
 unsafe fn compose_digital_color_cell(
     scratch: &ComposeScratch,
-    palette: &DigitalAvx2Palette,
+    palette: &DigitalSimdPalette,
     cell: usize,
     graphics: ChannelVectors,
     controls: ChannelVectors,
@@ -434,7 +320,7 @@ unsafe fn compose_digital_color_cell(
 #[target_feature(enable = "avx2")]
 unsafe fn compose_digital_mono_text_cell(
     scratch: &ComposeScratch,
-    palette: &DigitalAvx2Palette,
+    palette: &DigitalSimdPalette,
     cell: usize,
     mono_mask_table: __m256i,
     palette_zero: __m256i,
