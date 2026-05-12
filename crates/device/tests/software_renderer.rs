@@ -1,7 +1,8 @@
 use std::{env, fs};
 
 use device::software_renderer::{
-    PegcRenderInputs, RenderInputs, SoftwareRenderer, TEXT_VRAM_BYTES,
+    GdcGraphicsInput, GraphicsInput, PegcRenderInputs, RenderInputs, SoftwareRenderer,
+    TEXT_VRAM_BYTES,
 };
 
 static ZERO_PLANE: [u8; 0x8000] = [0u8; 0x8000];
@@ -30,21 +31,32 @@ fn base_inputs<'a>(
         cursor_top: 0,
         cursor_bottom: 0,
 
-        graphics_b_plane: graphics_b,
-        graphics_r_plane: graphics_r,
-        graphics_g_plane: graphics_g,
-        graphics_e_plane: graphics_e,
         gdc_graphics_pitch: 0,
         gdc_graphics_scroll: [0; 4],
-        gdc_graphics_lines_per_row: 1,
-        gdc_graphics_zoom_display: 0,
         gdc_graphics_al: 0,
-        graphics_monochrome_mask: 0,
 
         palette_rgba: [0u32; 16],
-        display_flags: 0,
+        global_enabled: false,
+        text_enabled: false,
+        graphics_enabled: false,
 
-        pegc: Option::<PegcRenderInputs<'_>>::None,
+        graphics: GraphicsInput::Gdc(GdcGraphicsInput {
+            b_plane: graphics_b,
+            r_plane: graphics_r,
+            g_plane: graphics_g,
+            e_plane: graphics_e,
+            lines_per_row: 1,
+            zoom_display: 0,
+            monochrome_mask: 0,
+            is_16_color: false,
+        }),
+    }
+}
+
+fn gdc_mut<'a, 'b>(inputs: &'b mut RenderInputs<'a>) -> &'b mut GdcGraphicsInput<'a> {
+    match &mut inputs.graphics {
+        GraphicsInput::Gdc(gdc) => gdc,
+        _ => panic!("expected GDC graphics variant"),
     }
 }
 
@@ -76,7 +88,9 @@ fn renders_text_cell_color_and_writes_ppm() {
         &ZERO_PLANE,
         &ZERO_PLANE,
     );
-    inputs.display_flags = 0x40 | 0x10 | 0x08;
+    inputs.global_enabled = true;
+    inputs.text_enabled = true;
+    gdc_mut(&mut inputs).is_16_color = true;
     inputs.gdc_text_pitch = 80;
     inputs.gdc_scroll_start_line[0] = 400 << 16;
     inputs.video_mode = 0x08;
@@ -128,12 +142,12 @@ fn renders_graphics_only_monochrome_from_mask() {
         &graphics_g,
         &ZERO_PLANE,
     );
-    inputs.display_flags = 0x40 | 0x20; // global + graphics
+    inputs.global_enabled = true;
+    inputs.graphics_enabled = true;
     inputs.video_mode = 0x02; // monochrome
     inputs.gdc_graphics_pitch = 80;
     inputs.gdc_graphics_scroll[0] = 400 << 16;
-    inputs.gdc_graphics_lines_per_row = 1;
-    inputs.graphics_monochrome_mask = 0x0000_F0F0;
+    gdc_mut(&mut inputs).monochrome_mask = 0x0000_F0F0;
     inputs.palette_rgba[0] = 0xFF00_0000;
     inputs.palette_rgba[7] = 0xFFFF_FFFF; // monochrome graphics color
 
@@ -160,10 +174,10 @@ fn uses_digital_graphics_palette_offset() {
         &ZERO_PLANE,
         &ZERO_PLANE,
     );
-    inputs.display_flags = 0x40 | 0x20;
+    inputs.global_enabled = true;
+    inputs.graphics_enabled = true;
     inputs.gdc_graphics_pitch = 80;
     inputs.gdc_graphics_scroll[0] = 400 << 16;
-    inputs.gdc_graphics_lines_per_row = 1;
     inputs.palette_rgba[0] = 0xFF00_0000;
     inputs.palette_rgba[2] = 0xFF00_00FF;
     inputs.palette_rgba[8 + 2] = 0xFFFF_FFFF;
@@ -193,7 +207,9 @@ fn text_color_takes_priority_in_monochrome_mixed_mode() {
         &ZERO_PLANE,
         &ZERO_PLANE,
     );
-    inputs.display_flags = 0x40 | 0x20 | 0x10;
+    inputs.global_enabled = true;
+    inputs.graphics_enabled = true;
+    inputs.text_enabled = true;
     inputs.video_mode = 0x02 | 0x08;
     inputs.gdc_text_pitch = 80;
     inputs.gdc_scroll_start_line[0] = 400 << 16;
@@ -201,8 +217,7 @@ fn text_color_takes_priority_in_monochrome_mixed_mode() {
     inputs.crtc_cl_ssl = 16;
     inputs.gdc_graphics_pitch = 80;
     inputs.gdc_graphics_scroll[0] = 400 << 16;
-    inputs.gdc_graphics_lines_per_row = 1;
-    inputs.graphics_monochrome_mask = 0x0000_0002;
+    gdc_mut(&mut inputs).monochrome_mask = 0x0000_0002;
     inputs.palette_rgba[0] = 0xFF00_0000;
     inputs.palette_rgba[2] = 0xFF00_00FF;
 
@@ -239,10 +254,11 @@ fn renders_analog_16_color_using_extended_plane() {
         &ZERO_PLANE,
         &graphics_e,
     );
-    inputs.display_flags = 0x40 | 0x20 | 0x08;
+    inputs.global_enabled = true;
+    inputs.graphics_enabled = true;
+    gdc_mut(&mut inputs).is_16_color = true;
     inputs.gdc_graphics_pitch = 80;
     inputs.gdc_graphics_scroll[0] = 400 << 16;
-    inputs.gdc_graphics_lines_per_row = 1;
     inputs.palette_rgba[9] = 0xFF11_2233;
 
     let mut renderer = SoftwareRenderer::new(&font_rom);
@@ -271,7 +287,9 @@ fn renders_text_in_width40_mode_doubles_pixels() {
         &ZERO_PLANE,
         &ZERO_PLANE,
     );
-    inputs.display_flags = 0x40 | 0x10 | 0x08;
+    inputs.global_enabled = true;
+    inputs.text_enabled = true;
+    gdc_mut(&mut inputs).is_16_color = true;
     inputs.gdc_text_pitch = 80;
     inputs.gdc_scroll_start_line[0] = 400 << 16;
     inputs.video_mode = 0x04 | 0x08;
@@ -315,7 +333,9 @@ fn underline_attribute_lights_right_half_of_underline_scanline() {
         &ZERO_PLANE,
         &ZERO_PLANE,
     );
-    inputs.display_flags = 0x40 | 0x10 | 0x08;
+    inputs.global_enabled = true;
+    inputs.text_enabled = true;
+    gdc_mut(&mut inputs).is_16_color = true;
     inputs.gdc_text_pitch = 80;
     inputs.gdc_scroll_start_line[0] = 400 << 16;
     inputs.video_mode = 0x08;
@@ -373,11 +393,12 @@ fn pegc_renders_palette_indexed_pixel() {
         &ZERO_PLANE,
         &ZERO_PLANE,
     );
-    inputs.display_flags = 0x40 | 0x20 | 0x80;
+    inputs.global_enabled = true;
+    inputs.graphics_enabled = true;
     inputs.gdc_graphics_pitch = 0;
     inputs.gdc_graphics_scroll[0] = 480 << 16;
     inputs.gdc_graphics_al = 480;
-    inputs.pegc = Some(pegc);
+    inputs.graphics = GraphicsInput::Pegc(Box::new(pegc));
 
     let mut renderer = SoftwareRenderer::new(&font_rom);
     renderer.render(&inputs);
@@ -417,7 +438,10 @@ fn scalar_and_avx2_paths_match() {
         (
             "digital_8color_text_graphics",
             ParityCase {
-                display_flags: 0x40 | 0x10 | 0x20,
+                global_enabled: true,
+                text_enabled: true,
+                graphics_enabled: true,
+                is_16_color: false,
                 video_mode: 0x08,
                 graphics_monochrome_mask: 0,
                 pegc: false,
@@ -426,7 +450,10 @@ fn scalar_and_avx2_paths_match() {
         (
             "digital_16color_text_graphics",
             ParityCase {
-                display_flags: 0x40 | 0x10 | 0x20 | 0x08,
+                global_enabled: true,
+                text_enabled: true,
+                graphics_enabled: true,
+                is_16_color: true,
                 video_mode: 0x08,
                 graphics_monochrome_mask: 0,
                 pegc: false,
@@ -435,7 +462,10 @@ fn scalar_and_avx2_paths_match() {
         (
             "monochrome_text_graphics",
             ParityCase {
-                display_flags: 0x40 | 0x10 | 0x20,
+                global_enabled: true,
+                text_enabled: true,
+                graphics_enabled: true,
+                is_16_color: false,
                 video_mode: 0x02 | 0x08,
                 graphics_monochrome_mask: 0x0000_F0F0,
                 pegc: false,
@@ -444,7 +474,10 @@ fn scalar_and_avx2_paths_match() {
         (
             "monochrome_graphics_only",
             ParityCase {
-                display_flags: 0x40 | 0x20,
+                global_enabled: true,
+                text_enabled: false,
+                graphics_enabled: true,
+                is_16_color: false,
                 video_mode: 0x02 | 0x08,
                 graphics_monochrome_mask: 0x0000_AAAA,
                 pegc: false,
@@ -453,7 +486,10 @@ fn scalar_and_avx2_paths_match() {
         (
             "width40_text_graphics",
             ParityCase {
-                display_flags: 0x40 | 0x10 | 0x20,
+                global_enabled: true,
+                text_enabled: true,
+                graphics_enabled: true,
+                is_16_color: false,
                 video_mode: 0x04 | 0x08,
                 graphics_monochrome_mask: 0,
                 pegc: false,
@@ -462,7 +498,10 @@ fn scalar_and_avx2_paths_match() {
         (
             "graphics_only_no_text",
             ParityCase {
-                display_flags: 0x40 | 0x20,
+                global_enabled: true,
+                text_enabled: false,
+                graphics_enabled: true,
+                is_16_color: false,
                 video_mode: 0x08,
                 graphics_monochrome_mask: 0,
                 pegc: false,
@@ -471,7 +510,10 @@ fn scalar_and_avx2_paths_match() {
         (
             "pegc_text_and_graphics",
             ParityCase {
-                display_flags: 0x40 | 0x10 | 0x20 | 0x80,
+                global_enabled: true,
+                text_enabled: true,
+                graphics_enabled: true,
+                is_16_color: false,
                 video_mode: 0x08,
                 graphics_monochrome_mask: 0,
                 pegc: true,
@@ -480,7 +522,10 @@ fn scalar_and_avx2_paths_match() {
         (
             "pegc_graphics_only",
             ParityCase {
-                display_flags: 0x40 | 0x20 | 0x80,
+                global_enabled: true,
+                text_enabled: false,
+                graphics_enabled: true,
+                is_16_color: false,
                 video_mode: 0x08,
                 graphics_monochrome_mask: 0,
                 pegc: true,
@@ -489,16 +534,6 @@ fn scalar_and_avx2_paths_match() {
     ];
 
     for (name, case) in cases {
-        let pegc_inputs = if case.pegc {
-            Some(PegcRenderInputs {
-                palette_rgba_256,
-                pegc_flags: 0x02,
-                vram: &pegc_vram,
-            })
-        } else {
-            None
-        };
-
         let mut inputs = base_inputs(
             &text_vram,
             &graphics_b,
@@ -506,14 +541,14 @@ fn scalar_and_avx2_paths_match() {
             &graphics_g,
             &graphics_e,
         );
-        inputs.display_flags = case.display_flags;
+        inputs.global_enabled = case.global_enabled;
+        inputs.text_enabled = case.text_enabled;
+        inputs.graphics_enabled = case.graphics_enabled;
         inputs.video_mode = case.video_mode;
-        inputs.graphics_monochrome_mask = case.graphics_monochrome_mask;
         inputs.gdc_text_pitch = 80;
         inputs.gdc_scroll_start_line[0] = 400 << 16;
         inputs.gdc_graphics_pitch = 80;
         inputs.gdc_graphics_scroll[0] = if case.pegc { 480 << 16 } else { 400 << 16 };
-        inputs.gdc_graphics_lines_per_row = 1;
         inputs.gdc_graphics_al = if case.pegc { 480 } else { 400 };
         inputs.crtc_pl_bl = 15 << 16;
         inputs.crtc_cl_ssl = 16;
@@ -522,7 +557,23 @@ fn scalar_and_avx2_paths_match() {
         inputs.cursor_top = 0;
         inputs.cursor_bottom = 15;
         inputs.palette_rgba = palette_rgba;
-        inputs.pegc = pegc_inputs;
+        inputs.graphics = match case.pegc {
+            false => GraphicsInput::Gdc(GdcGraphicsInput {
+                b_plane: &graphics_b,
+                r_plane: &graphics_r,
+                g_plane: &graphics_g,
+                e_plane: &graphics_e,
+                lines_per_row: 1,
+                zoom_display: 0,
+                monochrome_mask: case.graphics_monochrome_mask,
+                is_16_color: case.is_16_color,
+            }),
+            true => GraphicsInput::Pegc(Box::new(PegcRenderInputs {
+                palette_rgba_256,
+                pegc_flags: 0x02,
+                vram: &pegc_vram,
+            })),
+        };
 
         let mut renderer_avx2 = SoftwareRenderer::new(&font_rom);
         renderer_avx2.set_avx2_enabled(true);
@@ -558,7 +609,10 @@ fn scalar_and_avx2_paths_match() {
 
 #[cfg(target_arch = "x86_64")]
 struct ParityCase {
-    display_flags: u32,
+    global_enabled: bool,
+    text_enabled: bool,
+    graphics_enabled: bool,
+    is_16_color: bool,
     video_mode: u32,
     graphics_monochrome_mask: u32,
     pegc: bool,

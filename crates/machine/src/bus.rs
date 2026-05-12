@@ -40,7 +40,7 @@ use device::{
     sasi::SasiController,
     sdip::Sdip,
     software_renderer::{
-        DISPLAY_FLAG_PEGC_256_COLOR, PegcRenderInputs, RenderInputs, SoftwareRenderer,
+        GdcGraphicsInput, GraphicsInput, PegcRenderInputs, RenderInputs, SoftwareRenderer,
     },
     sound_blaster_16::{SoundBlaster16, SoundboardSb16Action},
     soundboard_14::{Soundboard14, Soundboard14Action},
@@ -1178,9 +1178,6 @@ impl<T: Tracing> Pc9801Bus<T> {
                 .update_font_rom(self.memory.font_rom_data());
         }
 
-        let display_page_base = self.display_page_index() * GRAPHICS_PAGE_SIZE_BYTES;
-        let e_page_base = self.display_page_index() * E_PLANE_PAGE_SIZE_BYTES;
-
         // Blink timing: derive a phase counter from the monotonic VSYNC blink_counter.
         //   threshold = cursor_blink_rate * 2, or 64 when rate == 0
         //   count increments every `threshold` VSYNCs
@@ -1195,11 +1192,10 @@ impl<T: Tracing> Pc9801Bus<T> {
         let text_blink_visible = (blink_count & 3) != 0;
 
         let video_mode = self.display_control.state.video_mode;
-        let hide_odd_rasters = u32::from(self.display_control.is_hide_odd_rasters_enabled());
-        let is_16_color = u32::from(self.display_control.is_16_color());
-        let text_display_enabled = u32::from(self.gdc_master.state.display_enabled);
-        let graphics_display_enabled = u32::from(self.gdc_slave.state.display_enabled);
-        let global_display_enabled = u32::from(self.display_control.is_display_enabled_global());
+        let is_16_color = self.display_control.is_16_color();
+        let text_enabled = self.gdc_master.state.display_enabled;
+        let graphics_enabled = self.gdc_slave.state.display_enabled;
+        let global_enabled = self.display_control.is_display_enabled_global();
         let is_graphics_monochrome = self.display_control.is_graphics_monochrome();
         let is_palette_analog_mode = self.display_control.is_palette_analog_mode();
         let is_kac_dot_access_mode = self.display_control.is_kac_dot_access_mode();
@@ -1223,23 +1219,6 @@ impl<T: Tracing> Pc9801Bus<T> {
                 *slot = pack_digital_graphics_color(&self.palette.state.digital, i);
             }
         }
-
-        // Display flag layout:
-        // bit 0 = GDC started,
-        // bit 1 = blink visible,
-        // bit 2 = hide odd rasters,
-        // bit 3 = 16-color mode,
-        // bit 4 = text display enabled (master GDC DE),
-        // bit 5 = graphics display enabled (slave GDC DE),
-        // bit 6 = global display enable (mode1 bit 7),
-        // bit 7 = PEGC 256-color mode (set below if active).
-        let mut display_flags = 1
-            | (u32::from(text_blink_visible) << 1)
-            | (hide_odd_rasters << 2)
-            | (is_16_color << 3)
-            | (text_display_enabled << 4)
-            | (graphics_display_enabled << 5)
-            | (global_display_enabled << 6);
 
         let gdc_text_pitch = u32::from(self.gdc_master.state.pitch);
 
@@ -1311,40 +1290,57 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         let gdc_graphics_al = u32::from(self.gdc_slave.state.al);
 
-        let pegc_inputs = if self.pegc.is_256_color_active() {
-            display_flags |= DISPLAY_FLAG_PEGC_256_COLOR;
-            let is_packed = self.pegc.is_packed_pixel_mode();
-            let is_one_screen =
-                self.pegc.state.screen_mode == device::pegc::PegcScreenMode::OneScreen;
-            let display_page = self.display_page_index() as u32;
-
-            let mut palette_rgba_256 = [0u32; 256];
-            for (i, slot) in palette_rgba_256.iter_mut().enumerate() {
-                let [green, red, blue] = self.pegc.state.palette_256[i];
-                *slot = u32::from(red)
-                    | (u32::from(green) << 8)
-                    | (u32::from(blue) << 16)
-                    | 0xFF00_0000;
+        let graphics = match self.pegc.is_256_color_active() {
+            false => {
+                let display_page_base = self.display_page_index() * GRAPHICS_PAGE_SIZE_BYTES;
+                let e_page_base = self.display_page_index() * E_PLANE_PAGE_SIZE_BYTES;
+                GraphicsInput::Gdc(GdcGraphicsInput {
+                    b_plane: &self.memory.state.graphics_vram
+                        [display_page_base..display_page_base + 0x8000],
+                    r_plane: &self.memory.state.graphics_vram
+                        [display_page_base + 0x8000..display_page_base + 0x10000],
+                    g_plane: &self.memory.state.graphics_vram
+                        [display_page_base + 0x10000..display_page_base + 0x18000],
+                    e_plane: &self.memory.state.e_plane_vram
+                        [e_page_base..e_page_base + E_PLANE_PAGE_SIZE_BYTES],
+                    lines_per_row: gdc_graphics_lines_per_row,
+                    zoom_display: gdc_graphics_zoom_display,
+                    monochrome_mask: graphics_monochrome_mask,
+                    is_16_color,
+                })
             }
+            true => {
+                let is_packed = self.pegc.is_packed_pixel_mode();
+                let is_one_screen =
+                    self.pegc.state.screen_mode == device::pegc::PegcScreenMode::OneScreen;
+                let display_page = self.display_page_index() as u32;
 
-            let pegc_flags =
-                u32::from(is_packed) | (u32::from(is_one_screen) << 1) | (display_page << 2);
+                let mut palette_rgba_256 = [0u32; 256];
+                for (i, slot) in palette_rgba_256.iter_mut().enumerate() {
+                    let [green, red, blue] = self.pegc.state.palette_256[i];
+                    *slot = u32::from(red)
+                        | (u32::from(green) << 8)
+                        | (u32::from(blue) << 16)
+                        | 0xFF00_0000;
+                }
 
-            let vram: &[u8] = self
-                .memory
-                .state
-                .pegc_vram
-                .as_ref()
-                .map(|v| v.as_ref().as_ref())
-                .unwrap_or(&[]);
+                let pegc_flags =
+                    u32::from(is_packed) | (u32::from(is_one_screen) << 1) | (display_page << 2);
 
-            Some(PegcRenderInputs {
-                palette_rgba_256,
-                pegc_flags,
-                vram,
-            })
-        } else {
-            None
+                let vram: &[u8] = self
+                    .memory
+                    .state
+                    .pegc_vram
+                    .as_ref()
+                    .map(|v| v.as_ref().as_ref())
+                    .unwrap_or(&[]);
+
+                GraphicsInput::Pegc(Box::new(PegcRenderInputs {
+                    palette_rgba_256,
+                    pegc_flags,
+                    vram,
+                }))
+            }
         };
 
         let inputs = RenderInputs {
@@ -1363,26 +1359,14 @@ impl<T: Tracing> Pc9801Bus<T> {
             cursor_addr,
             cursor_top,
             cursor_bottom,
-
-            graphics_b_plane: &self.memory.state.graphics_vram
-                [display_page_base..display_page_base + 0x8000],
-            graphics_r_plane: &self.memory.state.graphics_vram
-                [display_page_base + 0x8000..display_page_base + 0x10000],
-            graphics_g_plane: &self.memory.state.graphics_vram
-                [display_page_base + 0x10000..display_page_base + 0x18000],
-            graphics_e_plane: &self.memory.state.e_plane_vram
-                [e_page_base..e_page_base + E_PLANE_PAGE_SIZE_BYTES],
             gdc_graphics_pitch,
             gdc_graphics_scroll,
-            gdc_graphics_lines_per_row,
-            gdc_graphics_zoom_display,
             gdc_graphics_al,
-            graphics_monochrome_mask,
-
             palette_rgba,
-            display_flags,
-
-            pegc: pegc_inputs,
+            global_enabled,
+            text_enabled,
+            graphics_enabled,
+            graphics,
         };
 
         self.last_native_height = SoftwareRenderer::native_height(&inputs);
