@@ -1,10 +1,10 @@
-use std::{ffi::CStr, marker::PhantomData};
+use std::marker::PhantomData;
 
 use sdl3_sys::{
     pixels::SDL_PixelFormat,
     rect::{SDL_FRect, SDL_Rect},
     render as ffi,
-    surface::{SDL_SCALEMODE_LINEAR, SDL_SCALEMODE_NEAREST, SDL_ScaleMode},
+    surface::{SDL_SCALEMODE_LINEAR, SDL_SCALEMODE_NEAREST, SDL_SCALEMODE_PIXELART, SDL_ScaleMode},
     video::SDL_Window,
 };
 
@@ -17,6 +17,8 @@ pub enum ScaleMode {
     Nearest,
     /// Bilinear sampling.
     Linear,
+    /// Pixelart sampling.
+    Pixelart,
 }
 
 impl ScaleMode {
@@ -24,6 +26,7 @@ impl ScaleMode {
         match self {
             Self::Nearest => SDL_SCALEMODE_NEAREST,
             Self::Linear => SDL_SCALEMODE_LINEAR,
+            Self::Pixelart => SDL_SCALEMODE_PIXELART,
         }
     }
 }
@@ -201,18 +204,6 @@ impl Renderer {
             return Err(crate::get_error());
         }
         Ok(())
-    }
-
-    /// Returns the name of the active rendering backend, if available.
-    pub fn name(&self) -> Option<String> {
-        // Safety: renderer pointer is valid.
-        let ptr = unsafe { ffi::SDL_GetRendererName(self.ptr) };
-        if ptr.is_null() {
-            return None;
-        }
-        // Safety: name pointer points to a valid C string owned by SDL.
-        let cstr = unsafe { CStr::from_ptr(ptr) };
-        Some(cstr.to_string_lossy().into_owned())
     }
 }
 

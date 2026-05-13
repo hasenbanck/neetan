@@ -43,8 +43,9 @@ Options:
       --cdrom <PATH>            CD-ROM disc image CUE file (repeatable, PC-9821 only)
       --audio-volume <FLOAT>    Audio volume 0.0-1.0
       --aspect-mode <MODE>      Display aspect mode: 4:3 or 1:1
-      --crt <on|off>            Enable CRT effect (default: on; Vulkan backend only)
-      --backend <BACKEND>       Rendering backend: vulkan or sdl (default: vulkan)
+      --crt <on|off>            Enable CRT effect (default: on; modern backend only)
+      --scaling <MODE>          Scaling method: nearest, bilinear, pixelart (default: pixelart)
+      --backend <BACKEND>       Rendering backend: modern or legacy (default: modern)
       --window-mode <MODE>      Window mode: windowed or fullscreen
       --force-gdc-clock <2.5|5> Force GDC clock to 2.5 or 5 MHz (default: auto)
       --bios-rom <PATH>         Path to BIOS ROM file
@@ -415,6 +416,10 @@ fn parse_args_from(
                 let val = value(&flag)?;
                 config.crt = parse_on_off(&val, &flag)?;
             }
+            "--scaling" => {
+                let val = value(&flag)?;
+                config.scaling = val.parse::<ScalingMode>().map_err(StringError)?;
+            }
             "--window-mode" => {
                 let val = value(&flag)?;
                 config.window_mode = val.parse::<WindowMode>().map_err(StringError)?;
@@ -504,6 +509,7 @@ pub struct EmulatorConfig {
     pub cdrom: Vec<PathBuf>,
     pub aspect_mode: AspectMode,
     pub crt: bool,
+    pub scaling: ScalingMode,
     pub window_mode: WindowMode,
     pub audio_volume: f32,
     pub bios_rom: Option<PathBuf>,
@@ -534,6 +540,7 @@ impl Default for EmulatorConfig {
             cdrom: Vec::new(),
             aspect_mode: AspectMode::Aspect4By3,
             crt: true,
+            scaling: ScalingMode::Pixelart,
             window_mode: WindowMode::Windowed,
             audio_volume: 1.0,
             bios_rom: None,
@@ -549,7 +556,7 @@ impl Default for EmulatorConfig {
             key_map: KeyMap::new(),
             ems: true,
             xms: true,
-            backend: Backend::Vulkan,
+            backend: Backend::Modern,
         }
     }
 }
@@ -597,6 +604,10 @@ fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<
                 "off" => config.crt = false,
                 _ => warn!("Invalid crt in config: {val}, expected on or off"),
             },
+            "scaling" => match val.parse::<ScalingMode>() {
+                Ok(mode) => config.scaling = mode,
+                Err(_) => warn!("Unknown scaling in config: {val}"),
+            },
             "window-mode" => match val.parse::<WindowMode>() {
                 Ok(mode) => config.window_mode = mode,
                 Err(_) => warn!("Unknown window mode in config: {val}"),
@@ -628,7 +639,7 @@ fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<
             },
             "backend" => match val.parse::<Backend>() {
                 Ok(backend) => config.backend = backend,
-                Err(_) => warn!("Invalid backend in config: {val}, expected vulkan or sdl"),
+                Err(_) => warn!("Invalid backend in config: {val}, expected modern or legacy"),
             },
             "force-gdc-clock" => match val.parse::<ForceGdcClock>() {
                 Ok(mode) => config.force_gdc_clock = Some(mode),
@@ -773,6 +784,39 @@ impl std::str::FromStr for AspectMode {
     }
 }
 
+/// Scaling method used.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ScalingMode {
+    Nearest,
+    Bilinear,
+    Pixelart,
+}
+
+impl std::fmt::Display for ScalingMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Nearest => f.write_str("nearest"),
+            Self::Bilinear => f.write_str("bilinear"),
+            Self::Pixelart => f.write_str("pixelart"),
+        }
+    }
+}
+
+impl std::str::FromStr for ScalingMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "nearest" => Ok(Self::Nearest),
+            "bilinear" => Ok(Self::Bilinear),
+            "pixelart" => Ok(Self::Pixelart),
+            _ => Err(format!(
+                "unknown scaling '{s}', expected nearest, bilinear or pixelart"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum WindowMode {
     Windowed,
@@ -805,18 +849,19 @@ impl std::str::FromStr for WindowMode {
 /// Rendering backend selection.
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
 pub enum Backend {
-    /// Vulkan hardware-accelerated renderer.
+    /// SDL3 GPU API renderer (Vulkan / D3D12 / Metal under the hood).
     #[default]
-    Vulkan,
-    /// SDL 2D renderer fallback.
-    Sdl,
+    Modern,
+    /// SDL3 2D renderer fallback. Used automatically when the GPU API is
+    /// unavailable or fails to initialize.
+    Legacy,
 }
 
 impl std::fmt::Display for Backend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Vulkan => f.write_str("vulkan"),
-            Self::Sdl => f.write_str("sdl"),
+            Self::Modern => f.write_str("modern"),
+            Self::Legacy => f.write_str("legacy"),
         }
     }
 }
@@ -826,9 +871,9 @@ impl std::str::FromStr for Backend {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
-            "vulkan" => Ok(Self::Vulkan),
-            "sdl" => Ok(Self::Sdl),
-            _ => Err(format!("unknown backend '{s}', expected vulkan or sdl")),
+            "modern" => Ok(Self::Modern),
+            "legacy" => Ok(Self::Legacy),
+            _ => Err(format!("unknown backend '{s}', expected modern or legacy")),
         }
     }
 }

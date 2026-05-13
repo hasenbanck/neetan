@@ -68,21 +68,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
-name = "graphics_engine"
-version = "0.1.0"
-dependencies = [
- "common",
- "jay-ash",
- "sdl3",
-]
-
-[[package]]
-name = "jay-ash"
-version = "0.5.0+1.4.349"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21e59d7646329ed7d1f5dddff45dcbb6e615d606c436b54b8c6aacccc445d0a8"
-
-[[package]]
 name = "machine"
 version = "0.1.0"
 dependencies = [
@@ -110,10 +95,9 @@ dependencies = [
  "common",
  "cpu",
  "device",
- "graphics_engine",
- "jay-ash",
  "machine",
  "sdl3",
+ "sdl3_backend",
 ]
 
 [[package]]
@@ -176,6 +160,14 @@ dependencies = [
  "rpkg-config",
  "sdl3-src",
  "vcpkg",
+]
+
+[[package]]
+name = "sdl3_backend"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "sdl3",
 ]
 
 [[package]]

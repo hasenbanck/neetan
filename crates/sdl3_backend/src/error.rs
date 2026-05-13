@@ -1,12 +1,9 @@
-use std::ffi::NulError;
-
-use common::StringError;
-
+/// Backend-wide error type.
 pub enum Error {
+    /// An error with context.
     Context(common::ContextError),
+    /// An error with a message.
     Message(common::StringError),
-    Graphics(sdl3_backend::Error),
-    Audio(audio_engine::Error),
 }
 
 impl std::fmt::Display for Error {
@@ -14,8 +11,6 @@ impl std::fmt::Display for Error {
         match self {
             Self::Context(e) => std::fmt::Display::fmt(e, f),
             Self::Message(e) => std::fmt::Display::fmt(e, f),
-            Self::Graphics(e) => std::fmt::Display::fmt(e, f),
-            Self::Audio(e) => std::fmt::Display::fmt(e, f),
         }
     }
 }
@@ -25,8 +20,6 @@ impl std::fmt::Debug for Error {
         match self {
             Self::Context(e) => std::fmt::Debug::fmt(e, f),
             Self::Message(e) => std::fmt::Debug::fmt(e, f),
-            Self::Graphics(e) => std::fmt::Debug::fmt(e, f),
-            Self::Audio(e) => std::fmt::Debug::fmt(e, f),
         }
     }
 }
@@ -36,15 +29,7 @@ impl std::error::Error for Error {
         match self {
             Self::Context(e) => e.source(),
             Self::Message(e) => e.source(),
-            Self::Graphics(e) => e.source(),
-            Self::Audio(e) => e.source(),
         }
-    }
-}
-
-impl From<NulError> for Error {
-    fn from(e: NulError) -> Self {
-        Self::Message(StringError(e.to_string()))
     }
 }
 
@@ -57,17 +42,5 @@ impl From<common::ContextError> for Error {
 impl From<common::StringError> for Error {
     fn from(e: common::StringError) -> Self {
         Self::Message(e)
-    }
-}
-
-impl From<sdl3_backend::Error> for Error {
-    fn from(e: sdl3_backend::Error) -> Self {
-        Self::Graphics(e)
-    }
-}
-
-impl From<audio_engine::Error> for Error {
-    fn from(e: audio_engine::Error) -> Self {
-        Self::Audio(e)
     }
 }

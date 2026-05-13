@@ -56,8 +56,9 @@ neetan <COMMAND>
 | `--cdrom <PATH>`             | CD-ROM disc image CUE file (repeatable, PC-9821 only)                               | -          |
 | `--audio-volume <FLOAT>`     | Audio volume 0.0–1.0                                                                | `1.0`      |
 | `--aspect-mode <MODE>`       | Display aspect mode: `4:3` or `1:1`                                                 | `4:3`      |
-| `--crt <on\|off>`            | Enable the CRT effect. Not avialable when using the SDL rendering backend.          | `on`       |
-| `--backend <BACKEND>`        | Rendering backend: `vulkan` or `sdl`                                                | `vulkan`   |
+| `--crt <on\|off>`            | Enable the CRT effect. Not avialable when using the legacy backend.                 | `on`       |
+| `--scaling <MODE>`           | Scaling method: `nearest`, `bilinear`, `pixelart`                                   | `pixelart` |
+| `--backend <BACKEND>`        | Rendering backend: `modern` or `legacy`                                             | `modern`   |
 | `--window-mode <MODE>`       | Window mode: `windowed` or `fullscreen`                                             | `windowed` |
 | `--force-gdc-clock <2.5\|5>` | Force GDC clock to 2.5 or 5 MHz. VX and later only                                  | auto       |
 | `--bios-rom <PATH>`          | Path to BIOS ROM file                                                               | HLE BIOS   |
@@ -113,6 +114,7 @@ force-gdc-clock = 2.5
 audio-volume = 0.8
 aspect-mode = 4:3
 crt = on
+scaling = pixelart
 fdd1 = /path/to/disk_a.d88
 fdd1 = /path/to/disk_b.d88
 fdd2 = /path/to/save_game.d88
@@ -163,6 +165,7 @@ For example, if your global config sets `machine = PC9801RA` and you run
 | GUI + Alt + Enter  | Toggle fullscreen                |
 | GUI + Alt + Escape | Quit the emulator                |
 | GUI + Alt + F1     | Toggle CRT effect                |
+| GUI + Alt + F2     | Cycle scaling method             |
 | GUI + Alt + F9     | Open floppy selector for drive 1 |
 | GUI + Alt + F10    | Open floppy selector for drive 2 |
 | GUI + Alt + F11    | Open CD-ROM selector             |
@@ -332,14 +335,9 @@ available host key names, PC-98 key names, and the default mappings.
 
 ## Build requirements
 
-* [Rust 1.94](https://rustup.rs/)
-* [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) 
+* [Rust 1.95](https://rustup.rs/)
 * [SDL3](https://github.com/libsdl-org/SDL) (See [sdl3_sys descriptio](https://docs.rs/sdl3-sys/latest/sdl3_sys/#usage))
-* [slang](https://github.com/shader-slang/slang/) (comes normally bundled with the Vulkan SDK) 
-
-For Mac users:
-
-* [MoltenVK](https://github.com/KhronosGroup/MoltenVK)
+* [slang](https://github.com/shader-slang/slang/)
 
 ## Acknowledgement
 
