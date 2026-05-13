@@ -34,7 +34,7 @@ impl<const CPU_MODEL: u8> I386<CPU_MODEL> {
             return Err(Fault);
         }
         if !self.is_paging_enabled() {
-            return Ok(linear);
+            return Ok(linear & 0x00FF_FFFF);
         }
 
         let page = linear >> 12;

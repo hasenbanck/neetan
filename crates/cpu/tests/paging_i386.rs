@@ -2634,6 +2634,44 @@ fn paging_passes_high_physical_address_to_bus() {
     );
 }
 
+/// PC-9801RA uses a 386DX whose chipset only decodes 24 physical address bits
+/// while paging is disabled (real mode and unpaged protected mode). The RA BIOS
+/// enumerates extended memory by writing test patterns at addresses above 16MB
+/// and observing the chipset wrap to low memory; that probe fails if the CPU
+/// forwards the full 32-bit linear address to the bus. With paging enabled,
+/// addresses must still pass through unmodified.
+#[test]
+fn paging_disabled_masks_address_to_24_bit() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_paged_protected_mode(&mut bus);
+    state.cr0 = 0x0000_0001; // PE only, PG=0
+    state.seg_bases[cpu::SegReg32::DS as usize] = 0x0E00_0000;
+    cpu.load_state(&state);
+
+    // MOV BYTE [0x0050], 0x42 ; C6 06 50 00 42
+    place_at(&mut bus, PG_CODE_BASE, &[0xC6, 0x06, 0x50, 0x00, 0x42]);
+    cpu.step(&mut bus);
+
+    let unmasked = 0x0E00_0050;
+    let masked = unmasked & 0x00FF_FFFF;
+    assert!(
+        bus.write_address_log.contains(&masked),
+        "bus.write_byte must receive the 24-bit-masked address {:#010X}; \
+         observed writes: {:?}",
+        masked,
+        bus.write_address_log,
+    );
+    assert!(
+        !bus.write_address_log.contains(&unmasked),
+        "bus.write_byte must NOT receive the unmasked address {:#010X}; \
+         observed writes: {:?}",
+        unmasked,
+        bus.write_address_log,
+    );
+}
+
 /// Validate-then-commit IRET path: a #PF raised while reading the new SS/CS
 /// descriptor must deliver the fault with the source IRET frame intact - the
 /// pushed CS:EIP must still point at the IRET, EFLAGS/ESP must be unchanged,
