@@ -10,9 +10,6 @@ use std::{
 use audio_engine::AudioEngine;
 use common::{Context, Machine, MachineModel, StringError, ensure, error, info, warn};
 use device::disk::{HddGeometry, load_hdd_image};
-use graphics_engine::{
-    DisplayAspectMode, GraphicsEngine, RenderInstructions, SdlGraphicsEngine, VulkanGraphicsEngine,
-};
 use sdl3::{
     Sdl,
     audio::AudioSubsystem,
@@ -21,9 +18,13 @@ use sdl3::{
     mouse::MouseButton,
     video::{VideoSubsystem, Window, WindowBuilder},
 };
+use sdl3_backend::{
+    DisplayAspectMode, GraphicsEngine, LegacySdlBackend, ModernSdlGpuBackend, RenderInstructions,
+    Scaling,
+};
 
 use crate::{
-    config::{AspectMode, Backend, EmulatorConfig, ForceGdcClock, WindowMode},
+    config::{AspectMode, Backend, EmulatorConfig, ForceGdcClock, ScalingMode, WindowMode},
     errors::Error,
     image_selector::{ImageEntry, ImageSelector, MediaType},
     keyboard::{KeyMap, KeyboardForwardingState},
@@ -63,19 +64,11 @@ pub fn run(config: EmulatorConfig) -> Result<()> {
 
     print_system_into();
 
-    let (graphics_engine, backend) =
-        select_graphics_backend(&video_subsystem, graphics_display_aspect_mode, &config)?;
-
-    if backend == Backend::Sdl && config.crt {
-        warn!("CRT filter is not supported by the SDL backend");
-    }
-
     let mut window = build_window(
         &video_subsystem,
         initial_width,
         initial_height,
         config.window_mode == WindowMode::Fullscreen,
-        backend,
     )?;
 
     if config.window_mode != WindowMode::Fullscreen
@@ -85,7 +78,13 @@ pub fn run(config: EmulatorConfig) -> Result<()> {
     }
 
     let (width, height) = window.size();
-    let (pixel_width, pixel_height) = window.size_in_pixels();
+
+    let (graphics_engine, backend) =
+        select_graphics_backend(graphics_display_aspect_mode, &config, &mut window)?;
+
+    if backend == Backend::Legacy && config.crt {
+        warn!("CRT filter is not supported by the legacy SDL backend");
+    }
 
     let mut application = Application::new(
         config,
@@ -98,18 +97,9 @@ pub fn run(config: EmulatorConfig) -> Result<()> {
 
     application
         .graphics_engine
-        .on_resume(&mut window, true, pixel_width, pixel_height)
-        .context("Failed to initialize rendering surface")?;
+        .set_scaling(graphics_scaling(application.scaling));
 
     window.show();
-
-    let (pixel_width, pixel_height) = window.size_in_pixels();
-    if let Err(error) = application
-        .graphics_engine
-        .on_resize(pixel_width, pixel_height)
-    {
-        error!("Error on initial resize after show: {error}");
-    }
 
     let mut event_pump = sdl_context
         .event_pump()
@@ -126,12 +116,7 @@ pub fn run(config: EmulatorConfig) -> Result<()> {
         application.run_emulation();
         application.busy_duration += busy_start.elapsed();
 
-        let gpu_ready = application
-            .graphics_engine
-            .try_wait_for_previous_present(1)
-            .unwrap_or(true);
-
-        if gpu_ready && let Err(error) = application.render_frame() {
+        if let Err(error) = application.render_frame(&window) {
             error!("Failed to render next frame: {error:#}");
         }
 
@@ -180,9 +165,6 @@ fn initialize_sdl3() -> Result<(Sdl, AudioSubsystem, VideoSubsystem)> {
         .video()
         .context("Failed to initialize SDL3 video subsystem")?;
 
-    #[cfg(target_os = "macos")]
-    load_vulkan_library(&video_subsystem)?;
-
     Ok((sdl_context, audio_subsystem, video_subsystem))
 }
 
@@ -199,28 +181,6 @@ fn sdl3_log_callback(_category: i32, priority: sdl3::log::LogPriority, message: 
         }
     };
     common::log::log_record(level, "sdl3", format_args!("{message}"));
-}
-
-#[cfg(target_os = "macos")]
-fn load_vulkan_library(video_subsystem: &VideoSubsystem) -> Result<()> {
-    use std::ffi::CString;
-
-    let c_path = if let Ok(sdk) = std::env::var("VULKAN_SDK") {
-        let lib = format!("{sdk}/lib/libvulkan.1.dylib");
-        Some(CString::new(lib).map_err(|e| Error::Message(StringError(e.to_string())))?)
-    } else {
-        None
-    };
-
-    video_subsystem
-        .load_vulkan_library(c_path.as_deref())
-        .map_err(|error| -> Error {
-            StringError(format!(
-                "Failed to load Vulkan library: {error}. \
-                 Install the LunarG Vulkan SDK and set VULKAN_SDK in your environment."
-            ))
-            .into()
-        })
 }
 
 fn initial_window_size(aspect_mode: AspectMode) -> (u32, u32) {
@@ -245,12 +205,19 @@ fn graphics_display_aspect_mode(aspect_mode: AspectMode) -> DisplayAspectMode {
     }
 }
 
+fn graphics_scaling(mode: ScalingMode) -> Scaling {
+    match mode {
+        ScalingMode::Nearest => Scaling::Nearest,
+        ScalingMode::Bilinear => Scaling::Bilinear,
+        ScalingMode::Pixelart => Scaling::Pixelart,
+    }
+}
+
 fn build_window(
     video_subsystem: &VideoSubsystem,
     initial_width: u32,
     initial_height: u32,
     fullscreen: bool,
-    backend: Backend,
 ) -> Result<Window> {
     let mut builder: WindowBuilder = video_subsystem
         .window(GAME_NAME, initial_width, initial_height)
@@ -258,10 +225,6 @@ fn build_window(
         .resizable()
         .position_centered()
         .hidden();
-
-    if backend == Backend::Vulkan {
-        builder = builder.vulkan();
-    }
 
     if fullscreen {
         builder = builder.fullscreen();
@@ -274,42 +237,46 @@ fn build_window(
     Ok(window)
 }
 
-/// Picks the rendering backend. Falls back to SDL automatically when Vulkan is
-/// requested but unavailable. Returns the engine plus whether the SDL window
-/// should be created with the `SDL_WINDOW_VULKAN` flag.
+/// Constructs the rendering backend and initializes its rendering surface.
+///
+/// When the modern SDL3 GPU API backend is requested, falls back to the legacy
+/// SDL 2D Renderer automatically if either constructing the backend or
+/// initializing its surface fails. Returns the engine plus the backend
+/// actually selected.
 fn select_graphics_backend(
-    video_subsystem: &VideoSubsystem,
     aspect_mode: DisplayAspectMode,
     config: &EmulatorConfig,
+    window: &mut Window,
 ) -> Result<(Box<dyn GraphicsEngine>, Backend)> {
     match config.backend {
-        Backend::Sdl => {
-            info!("Using SDL 2D backend");
-            Ok((Box::new(SdlGraphicsEngine::new(aspect_mode)), Backend::Sdl))
+        Backend::Legacy => {
+            info!("Using legacy backend");
+            let mut engine = LegacySdlBackend::new(aspect_mode);
+            engine
+                .on_resume(window, true)
+                .context("Failed to initialize legacy SDL backend")?;
+            Ok((Box::new(engine), Backend::Legacy))
         }
-        Backend::Vulkan => match try_init_vulkan(video_subsystem, aspect_mode) {
-            Ok(engine) => Ok((Box::new(engine), Backend::Vulkan)),
-            Err(error) => {
-                warn!("Vulkan backend unavailable, falling back to SDL renderer: {error:#}");
-                Ok((Box::new(SdlGraphicsEngine::new(aspect_mode)), Backend::Sdl))
-            }
-        },
-    }
-}
+        Backend::Modern => {
+            let modern_result = ModernSdlGpuBackend::new(aspect_mode)
+                .and_then(|mut engine| engine.on_resume(window, true).map(|()| engine));
 
-fn try_init_vulkan(
-    video_subsystem: &VideoSubsystem,
-    aspect_mode: DisplayAspectMode,
-) -> Result<VulkanGraphicsEngine> {
-    video_subsystem
-        .load_vulkan_library(None)
-        .context("Failed to load Vulkan library")?;
-    let extensions = video_subsystem
-        .vulkan_instance_extensions()
-        .context("SDL_Vulkan_GetInstanceExtensions failed")?;
-    let engine = VulkanGraphicsEngine::new(&extensions, aspect_mode)
-        .context("Failed to create Vulkan graphics engine")?;
-    Ok(engine)
+            match modern_result {
+                Ok(engine) => {
+                    info!("Using modern backend");
+                    Ok((Box::new(engine), Backend::Modern))
+                }
+                Err(error) => {
+                    warn!("Modern backend unavailable, falling back to legacy backend: {error:#}");
+                    let mut legacy = LegacySdlBackend::new(aspect_mode);
+                    legacy
+                        .on_resume(window, true)
+                        .context("Failed to initialize legacy backend after fallback")?;
+                    Ok((Box::new(legacy), Backend::Legacy))
+                }
+            }
+        }
+    }
 }
 
 struct Application {
@@ -358,6 +325,8 @@ struct Application {
     image_selector: Option<ImageSelector>,
     /// Whether the CRT effect is enabled.
     crt_enabled: bool,
+    /// Scaling method of the native texture.
+    scaling: ScalingMode,
     /// The active graphics backend.
     backend: Backend,
     /// Whether the window is currently in fullscreen mode.
@@ -430,14 +399,16 @@ impl Application {
         }
 
         let cpu_hz = machine.cpu_clock_hz();
-        let crt_enabled = config.crt && backend != Backend::Sdl;
+        let crt_enabled = config.crt && backend == Backend::Modern;
+        let scaling = config.scaling;
 
         let scale_factor = window.display_scale();
 
         info!("Window created with scale factor: {scale_factor}");
-        if backend != Backend::Sdl {
+        if backend == Backend::Modern {
             info!("CRT effect set to {}", on_off(crt_enabled));
         }
+        info!("Scaling set to {scaling}");
 
         Ok(Self {
             machine,
@@ -464,6 +435,7 @@ impl Application {
             cdrom_index,
             image_selector: None,
             crt_enabled,
+            scaling,
             backend,
             fullscreen: config.window_mode == WindowMode::Fullscreen,
             busy_duration: Duration::ZERO,
@@ -486,18 +458,6 @@ impl Application {
                 let width = *width as u32;
                 let height = *height as u32;
                 let logical_size = (width as f32, height as f32);
-                let physical_size = (
-                    (width as f32 * self.scale_factor) as u32,
-                    (height as f32 * self.scale_factor) as u32,
-                );
-
-                if let Err(error) = self
-                    .graphics_engine
-                    .on_resize(physical_size.0, physical_size.1)
-                {
-                    error!("Error on resize: {error}");
-                }
-
                 self.logical_size = logical_size;
             }
             Event::Window {
@@ -511,15 +471,6 @@ impl Application {
                     width as f32 / self.scale_factor,
                     height as f32 / self.scale_factor,
                 );
-                let physical_size = (width, height);
-
-                if let Err(error) = self
-                    .graphics_engine
-                    .on_resize(physical_size.0, physical_size.1)
-                {
-                    error!("Error on resize: {error}");
-                }
-
                 self.logical_size = logical_size;
             }
             Event::Window {
@@ -583,6 +534,8 @@ impl Application {
                         }
                     } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F1) {
                         self.toggle_crt();
+                    } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F2) {
+                        self.toggle_scaling();
                     } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F9) {
                         self.open_or_toggle_selector(MediaType::Floppy(0));
                     } else if !repeat && keymod.alt_gui() && *scancode == Some(Scancode::F10) {
@@ -767,11 +720,22 @@ impl Application {
     }
 
     fn toggle_crt(&mut self) {
-        if self.backend == Backend::Sdl {
+        if self.backend == Backend::Legacy {
             return;
         }
         self.crt_enabled = !self.crt_enabled;
         info!("CRT effect set to {}", on_off(self.crt_enabled));
+    }
+
+    fn toggle_scaling(&mut self) {
+        self.scaling = match self.scaling {
+            ScalingMode::Nearest => ScalingMode::Bilinear,
+            ScalingMode::Bilinear => ScalingMode::Pixelart,
+            ScalingMode::Pixelart => ScalingMode::Nearest,
+        };
+        self.graphics_engine
+            .set_scaling(graphics_scaling(self.scaling));
+        info!("Scaling set to {}", self.scaling);
     }
 
     fn handle_selector_key(&mut self, scancode: Option<Scancode>, alt_gui_held: bool) {
@@ -878,7 +842,7 @@ impl Application {
         }
     }
 
-    fn render_frame(&mut self) -> Result<()> {
+    fn render_frame(&mut self, window: &Window) -> Result<()> {
         let (framebuffer, native_height) = if let Some(ref mut selector) = self.image_selector {
             let (entries, loaded_index) = match selector.media_type() {
                 MediaType::Floppy(0) => (&self.fdd1_entries, self.fdd1_index),
@@ -895,11 +859,14 @@ impl Application {
         };
 
         self.graphics_engine
-            .render_frame(Some(&RenderInstructions {
-                framebuffer,
-                native_height,
-                crt: self.crt_enabled,
-            }))
+            .render_frame(
+                window,
+                Some(&RenderInstructions {
+                    framebuffer,
+                    native_height,
+                    crt: self.crt_enabled,
+                }),
+            )
             .context("Graphics engine failed to render frame")?;
 
         Ok(())

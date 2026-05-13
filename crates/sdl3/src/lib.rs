@@ -7,6 +7,8 @@ pub mod audio;
 pub mod event;
 /// Filesystem path utilities.
 pub mod filesystem;
+/// SDL3 GPU API.
+pub mod gpu;
 /// System information queries (version, platform, CPU, RAM).
 pub mod info;
 /// Keyboard scancodes and modifiers.
@@ -15,11 +17,13 @@ pub mod keyboard;
 pub mod log;
 /// Mouse button types.
 pub mod mouse;
+/// SDL3 property groups (`SDL_Properties*`).
+pub mod properties;
 /// 2D rendering with `SDL_Renderer` and `SDL_Texture`.
 pub mod render;
 /// Date and time utilities.
 pub mod time;
-/// Video subsystem, window creation, and Vulkan surface management.
+/// Video subsystem and window creation.
 pub mod video;
 
 use std::{ffi::CStr, marker::PhantomData};

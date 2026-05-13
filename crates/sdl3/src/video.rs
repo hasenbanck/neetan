@@ -1,10 +1,6 @@
-use std::{
-    ffi::{CStr, CString},
-    marker::PhantomData,
-};
+use std::{ffi::CString, marker::PhantomData};
 
-pub use sdl3_sys::vulkan::VkInstance;
-use sdl3_sys::{init, mouse as mouse_ffi, video as ffi, vulkan};
+use sdl3_sys::{init, mouse as mouse_ffi, video as ffi};
 
 use crate::Error;
 
@@ -23,36 +19,6 @@ impl VideoSubsystem {
         Ok(Self {
             _marker: PhantomData,
         })
-    }
-
-    /// Loads the Vulkan library. Pass `None` to use the system default.
-    pub fn load_vulkan_library(&self, path: Option<&CStr>) -> Result<(), Error> {
-        let ptr = path.map_or(std::ptr::null(), |p| p.as_ptr());
-        // Safety: ptr is either null or a valid C string pointer.
-        let ok = unsafe { vulkan::SDL_Vulkan_LoadLibrary(ptr) };
-        if !ok {
-            return Err(crate::get_error());
-        }
-        Ok(())
-    }
-
-    /// Returns the Vulkan instance extensions required for surface creation.
-    ///
-    /// Requires the Vulkan library to be loaded (see [`load_vulkan_library`]).
-    pub fn vulkan_instance_extensions(&self) -> Result<Vec<String>, Error> {
-        let mut count: u32 = 0;
-        // Safety: count is a valid pointer; SDL3 does not require a window for this call.
-        let names_ptr = unsafe { vulkan::SDL_Vulkan_GetInstanceExtensions(&raw mut count) };
-        if names_ptr.is_null() {
-            return Err(crate::get_error());
-        }
-        let mut extensions = Vec::with_capacity(count as usize);
-        for i in 0..count as usize {
-            // Safety: names_ptr points to an array of `count` valid C strings.
-            let cstr = unsafe { CStr::from_ptr(*names_ptr.add(i)) };
-            extensions.push(cstr.to_string_lossy().into_owned());
-        }
-        Ok(extensions)
     }
 
     /// Creates a [`WindowBuilder`] with the given title and dimensions.
@@ -111,12 +77,6 @@ impl WindowBuilder {
     /// Creates the window in fullscreen (borderless desktop) mode.
     pub fn fullscreen(mut self) -> Self {
         self.flags.0 |= ffi::SDL_WINDOW_FULLSCREEN.0;
-        self
-    }
-
-    /// Marks the window for use with Vulkan rendering.
-    pub fn vulkan(mut self) -> Self {
-        self.flags.0 |= ffi::SDL_WINDOW_VULKAN.0;
         self
     }
 
@@ -179,17 +139,6 @@ impl Window {
         (w as u32, h as u32)
     }
 
-    /// Returns the window's size in pixels (physical size on high-DPI displays).
-    pub fn size_in_pixels(&self) -> (u32, u32) {
-        let mut w: i32 = 0;
-        let mut h: i32 = 0;
-        // Safety: Window pointer is valid; w and h are valid pointers.
-        unsafe {
-            ffi::SDL_GetWindowSizeInPixels(self.ptr, &raw mut w, &raw mut h);
-        }
-        (w as u32, h as u32)
-    }
-
     /// Returns the display scale factor for this window.
     pub fn display_scale(&self) -> f32 {
         // Safety: Window pointer is valid.
@@ -237,25 +186,6 @@ impl Window {
     /// Creates a 2D rendering context for this window. SDL picks the best driver.
     pub fn create_renderer(&self) -> Result<crate::render::Renderer, Error> {
         crate::render::Renderer::new_for_raw_window(self.ptr)
-    }
-
-    /// Creates a Vulkan surface for this window.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that `instance` is a valid Vulkan instance handle.
-    pub unsafe fn vulkan_create_surface(
-        &mut self,
-        instance: VkInstance,
-    ) -> Result<vulkan::VkSurfaceKHR, Error> {
-        let mut surface = unsafe { std::mem::zeroed::<vulkan::VkSurfaceKHR>() };
-        let ok = unsafe {
-            vulkan::SDL_Vulkan_CreateSurface(self.ptr, instance, std::ptr::null(), &raw mut surface)
-        };
-        if !ok {
-            return Err(crate::get_error());
-        }
-        Ok(surface)
     }
 }
 

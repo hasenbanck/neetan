@@ -15,17 +15,16 @@ blake3 = { path = "crates/blake3" }
 common = { path = "crates/common" }
 cpu = { path = "crates/cpu" }
 device = { path = "crates/device" }
-graphics_engine = { path = "crates/graphics_engine" }
 machine = { path = "crates/machine" }
 os = { path = "crates/os" }
 resampler = { path = "crates/resampler" }
 sdl3 = { path = "crates/sdl3" }
+sdl3_backend = { path = "crates/sdl3_backend" }
 softfloat = { path = "crates/softfloat" }
 munt_oxide = { path = "crates/munt_oxide" }
 nuked_sc55_oxide = { path = "crates/nuked_sc55_oxide" }
 ymfm_oxide = { path = "crates/ymfm_oxide" }
 # External dependencies
-jay-ash = { version = "0.5", default-features = false }
 sdl3-sys = "0.6"
 # Dependencies only used for the CPU verification tests
 zlib-rs = { version = "0.6", default-features = false, features = ["rust-allocator"] }
@@ -53,10 +52,9 @@ audio_engine = { workspace = true }
 cpu = { workspace = true }
 common = { workspace = true }
 device = { workspace = true }
-graphics_engine = { workspace = true }
-jay-ash = { workspace = true }
 machine = { workspace = true }
 sdl3 = { workspace = true }
+sdl3_backend = { workspace = true }
 
 [dev-dependencies]
 
@@ -94,10 +92,6 @@ codegen-units = 1
 opt-level = 3
 codegen-units = 1
 
-[profile.dev.package.graphics_engine]
-opt-level = 3
-codegen-units = 1
-
 [profile.dev.package.machine]
 opt-level = 3
 codegen-units = 1
@@ -119,6 +113,10 @@ opt-level = 3
 codegen-units = 1
 
 [profile.dev.package.sdl3]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.sdl3_backend]
 opt-level = 3
 codegen-units = 1
 
