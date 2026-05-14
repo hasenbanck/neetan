@@ -86,6 +86,10 @@ pub struct RenderInputs<'a> {
     pub gdc_graphics_scroll: [u32; 4],
     /// Graphics GDC active display lines (AL from SYNC command).
     pub gdc_graphics_al: u32,
+    /// CRT horizontal-scan-frequency flag (port 09A8h).
+    /// True = 31.778 kHz / 480-line capable, false = 24.823 kHz / 400 lines.
+    /// Required in combination with `gdc_graphics_al > 400` for 480-line PEGC output.
+    pub crt_31khz_enabled: bool,
 
     /// 16-entry palette packed as `0xAA_BB_GG_RR`.
     pub palette_rgba: [u32; 16],
@@ -216,9 +220,12 @@ impl SoftwareRenderer {
     }
 
     /// Computes the active display height (400, or up to 480 for PEGC 480-line mode).
+    ///
+    /// PEGC 480-line output requires both `gdc_graphics_al > 400` AND the CRT
+    /// 31.778 kHz scan frequency flag (port 09A8h).
     pub fn native_height(inputs: &RenderInputs<'_>) -> u32 {
         let is_pegc_256_color = matches!(inputs.graphics, GraphicsInput::Pegc(_));
-        if is_pegc_256_color && inputs.gdc_graphics_al > 400 {
+        if is_pegc_256_color && inputs.gdc_graphics_al > 400 && inputs.crt_31khz_enabled {
             inputs.gdc_graphics_al.min(Self::HEIGHT as u32)
         } else {
             400

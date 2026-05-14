@@ -19,7 +19,6 @@ fn create_pegc_bus() -> Pc9801Bus<NoTracing> {
 
 fn enable_pegc_packed_pixel(bus: &mut Pc9801Bus<NoTracing>) {
     bus.io_write_byte(0x6A, 0x21); // PEGC 256-color enable
-    bus.io_write_byte(0x6A, 0x63); // packed pixel mode
     bus.io_write_byte(0x6A, 0x68); // two-screen mode (640x400)
 }
 
@@ -182,4 +181,199 @@ fn pegc_bank_switching_across_boundary() {
 
     set_bank_a8(&mut bus, 1);
     assert_eq!(bus.read_byte(PEGC_VRAM_A), 0xBB);
+}
+
+const PEGC_LINEAR_FB_LOW: u32 = 0xF00000;
+const PEGC_LINEAR_FB_HIGH: u32 = 0xFFF00000;
+
+fn enable_pegc_linear_fb(bus: &mut Pc9801Bus<NoTracing>) {
+    enable_pegc_packed_pixel(bus);
+    bus.write_byte(0xE0102, 0x01);
+    // The linear FB at F00000h sits above the 1 MB A20 line. Without A20 the
+    // address is masked to E00000h and falls into DRAM.
+    bus.io_write_byte(0xF2, 0);
+}
+
+#[test]
+fn pegc_linear_fb_word_access_low_alias() {
+    let mut bus = create_pegc_bus();
+    enable_pegc_linear_fb(&mut bus);
+
+    bus.write_word(PEGC_LINEAR_FB_LOW + 0x100, 0xBEEF);
+    assert_eq!(bus.read_word(PEGC_LINEAR_FB_LOW + 0x100), 0xBEEF);
+    assert_eq!(bus.read_byte(PEGC_LINEAR_FB_LOW + 0x100), 0xEF);
+    assert_eq!(bus.read_byte(PEGC_LINEAR_FB_LOW + 0x101), 0xBE);
+}
+
+#[test]
+fn pegc_linear_fb_dword_access_both_aliases() {
+    let mut bus = create_pegc_bus();
+    enable_pegc_linear_fb(&mut bus);
+
+    bus.write_dword(PEGC_LINEAR_FB_LOW + 0x200, 0xDEAD_BEEF);
+    // Both linear FB aliases see the same 512 KB buffer.
+    assert_eq!(bus.read_dword(PEGC_LINEAR_FB_LOW + 0x200), 0xDEAD_BEEF);
+    assert_eq!(bus.read_dword(PEGC_LINEAR_FB_HIGH + 0x200), 0xDEAD_BEEF);
+}
+
+#[test]
+fn pegc_linear_fb_disabled_returns_all_ones() {
+    let mut bus = create_pegc_bus();
+    enable_pegc_packed_pixel(&mut bus);
+    bus.io_write_byte(0xF2, 0); // open A20 so F00000h is reachable
+    // E0102h bit 0 not set: linear FB disabled.
+    assert_eq!(bus.read_word(PEGC_LINEAR_FB_LOW), 0xFFFF);
+    assert_eq!(bus.read_dword(PEGC_LINEAR_FB_LOW), 0xFFFF_FFFF);
+}
+
+#[test]
+fn pegc_linear_fb_not_shadowed_by_extended_ram() {
+    let mut bus = create_pegc_bus();
+    enable_pegc_linear_fb(&mut bus);
+
+    // Extended RAM lies in 0x100000..0xF00000 on PC9821AS by default.
+    // Write a distinctive value just below F00000 (last DRAM word) and at the
+    // PEGC FB base. They must remain independent.
+    bus.write_word(PEGC_LINEAR_FB_LOW - 2, 0x1234);
+    bus.write_word(PEGC_LINEAR_FB_LOW, 0xABCD);
+    assert_eq!(bus.read_word(PEGC_LINEAR_FB_LOW - 2), 0x1234);
+    assert_eq!(bus.read_word(PEGC_LINEAR_FB_LOW), 0xABCD);
+}
+
+#[test]
+fn pegc_port_09a8_readback_round_trips() {
+    let mut bus = create_pegc_bus();
+    assert_eq!(bus.io_read_byte(0x09A8), 0);
+    bus.io_write_byte(0x09A8, 1);
+    assert_eq!(bus.io_read_byte(0x09A8), 1);
+    bus.io_write_byte(0x09A8, 0);
+    assert_eq!(bus.io_read_byte(0x09A8), 0);
+}
+
+const BDA_GRPH_ARCH: u32 = 0x045C;
+const BDA_GRPH_ARCH_PEGC_BIT: u8 = 0x40;
+
+#[test]
+fn pegc_machines_advertise_extended_graph_architecture() {
+    for model in [MachineModel::PC9821AS, MachineModel::PC9821AP] {
+        let mut bus = Pc9801Bus::<NoTracing>::new(model, CpuMode::High, 48000);
+        let flags = bus.read_byte(BDA_GRPH_ARCH);
+        assert_eq!(
+            flags & BDA_GRPH_ARCH_PEGC_BIT,
+            BDA_GRPH_ARCH_PEGC_BIT,
+            "{model}: BDA 0x045C bit 6 (extended graph architecture) must be set",
+        );
+    }
+}
+
+#[test]
+fn non_pegc_machines_do_not_advertise_extended_graph_architecture() {
+    for model in [
+        MachineModel::PC9801F,
+        MachineModel::PC9801VM,
+        MachineModel::PC9801VX,
+        MachineModel::PC9801RA,
+    ] {
+        let mut bus = Pc9801Bus::<NoTracing>::new(model, CpuMode::High, 48000);
+        let flags = bus.read_byte(BDA_GRPH_ARCH);
+        assert_eq!(
+            flags & BDA_GRPH_ARCH_PEGC_BIT,
+            0,
+            "{model}: BDA 0x045C bit 6 (extended graph architecture) must be clear",
+        );
+    }
+}
+
+#[test]
+fn pegc_plane_dword_write_bus_dispatch() {
+    let mut bus = create_pegc_bus();
+    enable_pegc_packed_pixel(&mut bus);
+    // Switch to plane mode via MMIO E0100h and enable the linear FB so we can
+    // verify the 32 pixels written via the plane bank window are visible at
+    // the same VRAM bytes through the linear F00000h alias.
+    bus.write_word(0xE0100, 0x0001);
+    bus.write_byte(0xE0102, 0x01);
+    bus.io_write_byte(0xF2, 0); // open A20 to reach F00000h
+
+    // ROP register: source = CPU data (bit 8 set).
+    bus.write_word(0xE0108, 0x0100);
+    bus.write_word(0xE010C, 0xFFFF); // write mask bits 0..15
+    bus.write_word(0xE010E, 0xFFFF); // write mask bits 16..31
+    bus.write_word(0xE0110, 0x0FFF); // block length max
+
+    // A dword write at A8000 in plane mode should flip 32 pixels.
+    bus.write_dword(0xA8000, 0xFFFF_FFFF);
+
+    // Each of the 32 pixel bytes at the start of plane VRAM must now be 0xFF.
+    for i in 0..32 {
+        assert_eq!(
+            bus.read_byte(PEGC_LINEAR_FB_LOW + i),
+            0xFF,
+            "pixel {i} of 32-pixel dword write",
+        );
+    }
+}
+
+/// Verifies that the renderer reads PEGC packed-pixel VRAM with a 640-byte
+/// scanline stride when the GDC is in 2.5 MHz mode.
+#[test]
+fn pegc_packed_pixel_pitch_in_2_5mhz_mode_renders_correct_scanlines() {
+    let mut bus = create_pegc_bus();
+    enable_pegc_packed_pixel(&mut bus);
+
+    // Two distinct palette colors for the two scanlines under test.
+    bus.io_write_byte(0xA8, 0x11);
+    bus.io_write_byte(0xAA, 0xFF); // green
+    bus.io_write_byte(0xAC, 0x00); // red
+    bus.io_write_byte(0xAE, 0x00); // blue
+
+    bus.io_write_byte(0xA8, 0x22);
+    bus.io_write_byte(0xAA, 0x00);
+    bus.io_write_byte(0xAC, 0xFF);
+    bus.io_write_byte(0xAE, 0x00);
+
+    // Fill the first 1280 bytes of PEGC VRAM: bytes 0..640 with palette index
+    // 0x11 (green), bytes 640..1280 with palette index 0x22 (red). At 1 byte
+    // per pixel and 640 pixels per line this is exactly scanlines 0 and 1.
+    set_bank_a8(&mut bus, 0);
+    for offset in 0..640u32 {
+        bus.write_byte(PEGC_VRAM_A + offset, 0x11);
+    }
+    for offset in 640..1280u32 {
+        bus.write_byte(PEGC_VRAM_A + offset, 0x22);
+    }
+
+    // Enable display: global display on (mode1 bit 7) and slave-GDC SYNC with
+    // DE=1 so the renderer treats graphics as enabled.
+    bus.io_write_byte(0x68, 0x0F); // mode1 bit 7 = display on
+    bus.io_write_byte(0xA2, 0x0F); // GDC SYNC command, DE bit set
+
+    bus.render_display_frame();
+    let framebuffer = bus.display_framebuffer();
+
+    // Read the first pixel of scanlines 0 and 1.
+    let pixel_at = |x: u32, y: u32| -> (u8, u8, u8) {
+        let i = ((y * 640 + x) * 4) as usize;
+        (framebuffer[i], framebuffer[i + 1], framebuffer[i + 2])
+    };
+    let scanline_0 = pixel_at(0, 0);
+    let scanline_1 = pixel_at(0, 1);
+
+    // Palette[0x11] = (G=0xFF, R=0x00, B=0x00) -> the renderer multiplies the
+    // 4-bit components by 17, so 0xF maps to 255 in the corresponding channel.
+    // Framebuffer pixels are packed `R, G, B, A`.
+    assert_eq!(
+        scanline_0,
+        (0, 255, 0),
+        "scanline 0 should render with palette index 0x11 (green)",
+    );
+    // Palette[0x22] = (G=0x00, R=0xFF, B=0x00). With the pitch bug, scanline 1
+    // would skip past the 640..1280 block (reading byte 1280 instead) and the
+    // expected red would not appear.
+    assert_eq!(
+        scanline_1,
+        (255, 0, 0),
+        "scanline 1 should render with palette index 0x22 (red); a doubled \
+         pitch would skip past the second 640-byte block",
+    );
 }

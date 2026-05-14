@@ -1,234 +1,280 @@
-; debug_pegc.asm - PEGC 256-color test ROM for Neetan
+; debug_pegc.asm - PEGC test ROM for Neetan
 ; Assembles to a 192KB dual-bank ROM image for PC-9821 machines.
-;   Bank 0 (first 96KB, file offset 0x00000): F8000-FFFFF — reset vector only
-;   Bank 1 (second 96KB, file offset 0x18000): E8000-F7FFF — all code and data
-; Cycles through 3 fullscreen test patterns with Enter key:
-;   Page 1: 16-color analog quadrant pattern (blue, red, green, white)
-;   Page 2: PEGC 256-color 640x400 two-screen mode (256 hue blocks)
-;   Page 3: PEGC 256-color 640x480 one-screen mode (256 hue blocks)
+;   Bank 0 (first 96KB, file offset 0x00000): F8000-FFFFF - reset vector only
+;   Bank 1 (second 96KB, file offset 0x18000): E8000-F7FFF - all code and data
+;
+; Reads the mode-selector byte from physical address 0x0500 on startup:
+;   0  Interactive: cycle through modes 1..4 with Enter
+;   1  PEGC 256-color packed, 640x400 two-screen
+;   2  PEGC 256-color packed, 640x480 one-screen (port 09A8h + GDC SYNC 480)
+;   3  PEGC 256-color plane mode quadrant fill, 640x400 two-screen
+;   4  PEGC 256-color plane mode quadrant fill, 640x480 one-screen
+;
+; Non-zero mode values render the page once and HLT, for integration tests.
+; Zero (the default for zero-initialized RAM) keeps the original interactive UX.
 
 [bits 16]
 [cpu 186]
 
 ROM_SEGMENT     equ 0xE800
 
-; Text VRAM
 TEXT_VRAM       equ 0xA000
 
-; VRAM plane segments (16-color mode)
-VRAM_B          equ 0xA800
-VRAM_R          equ 0xB000
-VRAM_G          equ 0xB800
-VRAM_E          equ 0xE000
-
-; PEGC VRAM bank window A
 PEGC_VRAM_A     equ 0xA800
-
-; PEGC MMIO segment (replaces E-plane when PEGC is active)
 PEGC_MMIO       equ 0xE000
 
-; PEGC MMIO register: bank select for A8000 window
 MMIO_BANK_A8    equ 0x0004
+MMIO_MODE       equ 0x0100
+MMIO_PLANE_ACC  equ 0x0104
+MMIO_ROP_LOW    equ 0x0108
+MMIO_MASK_LOW   equ 0x010C
+MMIO_MASK_HIGH  equ 0x010E
+MMIO_LENGTH     equ 0x0110
+MMIO_SHIFT_R    equ 0x0112
+MMIO_SHIFT_W    equ 0x0113
+MMIO_PATTERN    equ 0x0120
 
-; PEGC bank size
 BANK_SIZE       equ 0x8000
-
-; Screen parameters
 BYTES_PER_LINE  equ 80
-PLANE_SIZE      equ BYTES_PER_LINE * 400   ; 32000 bytes per plane
 GRID_ROWS       equ 16
 GRID_COLS       equ 16
-CELL_WIDTH      equ 40          ; 640 / 16 = 40 pixels per cell
+CELL_WIDTH      equ 40
 
-; Quadrant start offsets (half-width = 40 bytes, half-height = 200 lines)
-Q_TL            equ 0
-Q_TR            equ 40
-Q_BL            equ 200 * BYTES_PER_LINE
-Q_BR            equ 200 * BYTES_PER_LINE + 40
+; Mode-selector byte at physical 0x00500 (zero-initialized RAM => interactive).
+MODE_BYTE_ADDR  equ 0x0500
 
-; ============================================================================
-; Bank 0 — mapped to F8000-FFFFF. Contains only the reset vector.
-; ============================================================================
+; Plane-mode quadrant colors (256-color palette indices).
+PLANE_COLOR_TL  equ 0x33
+PLANE_COLOR_TR  equ 0x66
+PLANE_COLOR_BL  equ 0x99
+PLANE_COLOR_BR  equ 0xCC
+
+; Bank 0 - mapped to F8000-FFFFF. Reset vector only.
 section bank0 start=0 vstart=0
 
     times (0x18000 - 16) db 0xFF
 
-; Reset vector at physical 0xFFFF0 — jumps to bank 1 entry at E800:0000
-    db 0xEA             ; far jmp opcode
-    dw 0x0000           ; IP = 0 (start of bank 1 code)
-    dw ROM_SEGMENT      ; CS = E800
+    db 0xEA
+    dw 0x0000
+    dw ROM_SEGMENT
     times 0x18000 - ($ - $$) db 0xFF
 
-; ============================================================================
-; Bank 1 — always mapped to E8000-F7FFF. Contains all executable code.
-; ============================================================================
+; Bank 1 - mapped to E8000-F7FFF. All executable code and data.
 section bank1 start=0x18000 vstart=0
 
-; ============================================================================
-; Entry point (jumped to from reset vector in bank 0)
-; ============================================================================
 entry:
     cli
 
-    ; Set up stack
     xor ax, ax
     mov ss, ax
     mov sp, 0x7C00
 
-    ; Set DS = CS = ROM segment
+    mov ds, ax
+    mov bl, [MODE_BYTE_ADDR]
+
     mov ax, ROM_SEGMENT
     mov ds, ax
 
-    ; Enable 16-color analog palette (mode2 bit 0)
     mov al, 0x01
     out 0x6A, al
-
-    ; Set mode change permission (mode2 bit 3, needed for PEGC later)
     mov al, 0x07
     out 0x6A, al
 
-    ; Start GDC slave (graphics)
     mov al, 0x6B
     out 0xA2, al
-
-    ; Start GDC master (text)
     mov al, 0x6B
     out 0x62, al
 
-    ; Clear text VRAM
     call clear_text_vram
 
-    ; Main loop: cycle through 3 pages
-.main_loop:
-    ; === Page 1: 16-color analog quadrant pattern ===
-    ; Disable PEGC (no-op on first iteration, needed on loop back)
-    mov al, 0x20
+    cmp bl, 0
+    je interactive_loop
+    cmp bl, 1
+    je .mode_1
+    cmp bl, 2
+    je .mode_2
+    cmp bl, 3
+    je .mode_3
+    cmp bl, 4
+    je .mode_4
+    jmp halt_forever
+
+.mode_1:
+    call render_mode_1_packed_400
+    jmp halt_forever
+.mode_2:
+    call render_mode_2_packed_480
+    jmp halt_forever
+.mode_3:
+    call render_mode_3_plane_400
+    jmp halt_forever
+.mode_4:
+    call render_mode_4_plane_480
+    jmp halt_forever
+
+halt_forever:
+    hlt
+    jmp halt_forever
+
+interactive_loop:
+.loop:
+    call render_mode_1_packed_400
+    call wait_enter
+    call render_mode_2_packed_480
+    call wait_enter
+    call render_mode_3_plane_400
+    call wait_enter
+    call render_mode_4_plane_480
+    call wait_enter
+    jmp .loop
+
+; Mode 1 - PEGC packed 256-color, 640x400 two-screen.
+render_mode_1_packed_400:
+    call crt_400_line
+
+    mov al, 0x21
     out 0x6A, al
 
-    call set_16color_palette
-    call clear_all_planes
-    call draw_16color_pattern
-    call wait_enter
-
-    ; === Page 2: PEGC 256-color 640x400 ===
-    mov al, 0x21
-    out 0x6A, al            ; enable PEGC 256-color
-    mov al, 0x63
-    out 0x6A, al            ; packed pixel mode
+    call pegc_set_packed_mode
     call set_palette_256
 
     mov al, 0x68
-    out 0x6A, al            ; two-screen mode (640x400)
-    mov bp, 25              ; 400 / 16 = 25 lines per hue band
-    call fill_screen
-    call wait_enter
+    out 0x6A, al
 
-    ; === Page 3: PEGC 256-color 640x480 ===
+    mov bp, 25
+    call fill_screen_packed
+    ret
+
+; Mode 2 - PEGC packed 256-color, 640x480 one-screen.
+render_mode_2_packed_480:
+    mov al, 0x21
+    out 0x6A, al
+
+    call pegc_set_packed_mode
+    call set_palette_256
+
+    call crt_480_line
+    call gdc_sync_480
+
     mov al, 0x69
-    out 0x6A, al            ; one-screen mode (640x480)
-    mov bp, 30              ; 480 / 16 = 30 lines per hue band
-    call fill_screen
-    call wait_enter
+    out 0x6A, al
 
-    jmp .main_loop
-
-; ============================================================================
-; draw_16color_pattern — Fill 4 quadrants with different 16-color colors.
-; TL=1 (blue), TR=2 (red), BL=4 (green), BR=7 (white)
-; ============================================================================
-draw_16color_pattern:
-    ; TL: color 1 = B plane only
-    mov ax, VRAM_B
-    mov es, ax
-    mov di, Q_TL
-    mov ax, 0xFFFF
-    mov bp, 200
-    call fill_half_lines
-
-    ; TR: color 2 = R plane only
-    mov ax, VRAM_R
-    mov es, ax
-    mov di, Q_TR
-    mov ax, 0xFFFF
-    mov bp, 200
-    call fill_half_lines
-
-    ; BL: color 4 = G plane only
-    mov ax, VRAM_G
-    mov es, ax
-    mov di, Q_BL
-    mov ax, 0xFFFF
-    mov bp, 200
-    call fill_half_lines
-
-    ; BR: color 7 = B+R+G planes
-    mov ax, VRAM_B
-    mov es, ax
-    mov di, Q_BR
-    mov ax, 0xFFFF
-    mov bp, 200
-    call fill_half_lines
-
-    mov ax, VRAM_R
-    mov es, ax
-    mov di, Q_BR
-    mov ax, 0xFFFF
-    mov bp, 200
-    call fill_half_lines
-
-    mov ax, VRAM_G
-    mov es, ax
-    mov di, Q_BR
-    mov ax, 0xFFFF
-    mov bp, 200
-    call fill_half_lines
-
+    mov bp, 30
+    call fill_screen_packed
     ret
 
-; ============================================================================
-; fill_half_lines — Fill half-width band (40 bytes/line) via rep stosw
-; ES = plane segment, DI = start offset, AX = fill value, BP = line count
-; ============================================================================
-fill_half_lines:
-.loop:
-    push di
-    mov cx, 20              ; 20 words = 40 bytes per half-line
-    rep stosw
-    pop di
-    add di, BYTES_PER_LINE
-    dec bp
-    jnz .loop
+; Mode 3 - PEGC plane-mode quadrant fill, 640x400 two-screen.
+render_mode_3_plane_400:
+    call crt_400_line
+
+    mov al, 0x21
+    out 0x6A, al
+    call set_palette_256
+
+    mov al, 0x68
+    out 0x6A, al
+
+    mov bp, 200
+    call fill_quadrants_plane
     ret
 
-; ============================================================================
-; fill_screen — Fill PEGC VRAM with 16x16 grid of 256 color blocks
-; Input: BP = lines per row (25 for 640x400, 30 for 640x480)
-; Uses bank window A (A8000-AFFFF) with MMIO bank switching at E0004h.
-; ============================================================================
-fill_screen:
-    ; Reset to bank 0
+; Mode 4 - PEGC plane-mode quadrant fill, 640x480 one-screen.
+render_mode_4_plane_480:
+    mov al, 0x21
+    out 0x6A, al
+    call set_palette_256
+
+    call crt_480_line
+    call gdc_sync_480
+
+    mov al, 0x69
+    out 0x6A, al
+
+    mov bp, 240
+    call fill_quadrants_plane
+    ret
+
+; crt_400_line - Write port 09A8h bit 0 = 0 (24.823 kHz scan).
+crt_400_line:
+    push ax
+    push dx
+    mov dx, 0x09A8
+    xor al, al
+    out dx, al
+    pop dx
+    pop ax
+    ret
+
+; crt_480_line - Write port 09A8h bit 0 = 1 (31.778 kHz scan).
+crt_480_line:
+    push ax
+    push dx
+    mov dx, 0x09A8
+    mov al, 0x01
+    out dx, al
+    pop dx
+    pop ax
+    ret
+
+; pegc_set_packed_mode - Force MMIO E0100h bit 0 to 0 (packed CPU access).
+pegc_set_packed_mode:
+    push es
+    push ax
+    mov ax, PEGC_MMIO
+    mov es, ax
+    xor ax, ax
+    mov [es:MMIO_MODE], ax
+    pop ax
+    pop es
+    ret
+
+; gdc_sync_480 - Reprogram GDC slave for 31.778 kHz 480-line timing.
+gdc_sync_480:
+    mov al, 0x0F
+    out 0xA2, al
+    xor al, al
+    out 0xA0, al
+    mov al, 0x26
+    out 0xA0, al
+    mov al, 0x03
+    out 0xA0, al
+    mov al, 0x11
+    out 0xA0, al
+    mov al, 0x03
+    out 0xA0, al
+    mov al, 0x07
+    out 0xA0, al
+    mov al, 0xE0
+    out 0xA0, al           ; P7 AL_low (480 & 0xFF)
+    mov al, 0x65
+    out 0xA0, al           ; P8 AL_high | VBP<<2
+    ret
+
+; fill_screen_packed - Fill PEGC VRAM with 16x16 grid of 256 colors via
+; bank-switched window A (A8000-AFFFF) using MMIO bank select at E0004h.
+; Input: BP = lines per row (25 for 400-line, 30 for 480-line).
+fill_screen_packed:
     xor dx, dx
     call set_bank_a8
-    xor di, di              ; DI = offset within current bank
+    xor di, di
 
-    ; Set ES = PEGC VRAM window A
     mov ax, PEGC_VRAM_A
     mov es, ax
 
-    xor bh, bh             ; BH = base palette index (row * 16)
-    mov si, GRID_ROWS       ; SI = row counter
+    xor bh, bh
+    mov si, GRID_ROWS
 
 .row_loop:
-    push bp                 ; save lines_per_row
-    mov cx, bp              ; CX = line counter
+    push bp
+    mov cx, bp
 
 .line_loop:
     push cx
-    xor bl, bl              ; BL = column index (0-15)
+    xor bl, bl
 
 .col_loop:
     mov al, bh
-    add al, bl              ; AL = palette index (row * 16 + col)
+    add al, bl
     call write_cell_pixels
     inc bl
     cmp bl, GRID_COLS
@@ -238,45 +284,39 @@ fill_screen:
     dec cx
     jnz .line_loop
 
-    pop bp                  ; restore lines_per_row
-    add bh, 16             ; next row base palette
+    pop bp
+    add bh, 16
     dec si
     jnz .row_loop
     ret
 
-; ============================================================================
-; write_cell_pixels — Write 40 bytes of AL to VRAM, handling bank boundaries
-; Input: AL = fill byte, DI = offset in bank, DX = bank, ES = PEGC_VRAM_A
-; Output: DI updated, DX updated if bank changed
-; Clobbers: CX
-; ============================================================================
+; write_cell_pixels - Write CELL_WIDTH bytes of AL to PEGC VRAM via window A,
+; advancing DI and switching to the next bank when the boundary is crossed.
+; Input: AL = fill byte, DI = offset in current bank, DX = bank index,
+;        ES = PEGC_VRAM_A. Clobbers CX.
 write_cell_pixels:
     mov cx, BANK_SIZE
-    sub cx, di              ; CX = space remaining in current bank
+    sub cx, di
     cmp cx, CELL_WIDTH
     jae .no_split
 
-    ; Split: CX bytes fit in current bank, remainder goes to next bank
-    push cx                 ; save first chunk size
-    rep stosb               ; write first chunk (AL unchanged by rep stosb)
+    push cx
+    rep stosb
 
-    ; Switch to next bank
     inc dx
     call set_bank_a8
     xor di, di
 
-    ; Compute remaining = 40 - first_chunk
     pop cx
     neg cx
-    add cx, CELL_WIDTH      ; CX = CELL_WIDTH - first_chunk
-    rep stosb               ; write remaining bytes
+    add cx, CELL_WIDTH
+    rep stosb
     ret
 
 .no_split:
     mov cx, CELL_WIDTH
     rep stosb
 
-    ; Check if we exactly hit the bank boundary
     cmp di, BANK_SIZE
     jb .done
     inc dx
@@ -285,11 +325,7 @@ write_cell_pixels:
 .done:
     ret
 
-; ============================================================================
-; Utility: set_bank_a8 — Set PEGC VRAM bank for window A (A8000-AFFFF)
-; Input: DL = bank number (0-15)
-; Preserves: all registers except flags
-; ============================================================================
+; set_bank_a8 - Set PEGC bank for window A (A8000-AFFFF). DL = bank (0-15).
 set_bank_a8:
     push es
     push ax
@@ -300,81 +336,146 @@ set_bank_a8:
     pop es
     ret
 
-; ============================================================================
-; Utility: set_16color_palette — Set standard 16-color analog palette
-; ============================================================================
-set_16color_palette:
+; fill_quadrants_plane - Fill 4 quadrants (320 x BP pixels each) via plane
+; mode using pattern register + ROP. Input: BP = rows per quadrant.
+fill_quadrants_plane:
+    call pegc_plane_setup
+
+    mov al, PLANE_COLOR_TL
+    call pattern_broadcast_color
+    xor ax, ax
+    mov cx, bp
+    call fill_strip_plane
+
+    mov al, PLANE_COLOR_TR
+    call pattern_broadcast_color
+    mov ax, 40
+    mov cx, bp
+    call fill_strip_plane
+
+    mov al, PLANE_COLOR_BL
+    call pattern_broadcast_color
+    mov ax, bp
+    mov dx, BYTES_PER_LINE
+    mul dx
+    mov cx, bp
+    call fill_strip_plane
+
+    mov al, PLANE_COLOR_BR
+    call pattern_broadcast_color
+    mov ax, bp
+    mov dx, BYTES_PER_LINE
+    mul dx
+    add ax, 40
+    mov cx, bp
+    call fill_strip_plane
+
+    ret
+
+; pegc_plane_setup - Configure MMIO for plane-mode pattern-fill writes.
+; ROP register layout: bit 15 = transposed pattern access, bit 12 = ROP enabled,
+; bits 11..10 = pattern method 0 (from pattern register), bit 8 = source from
+; CPU (skip last-vram-data path), bits 7..0 = ROP code 0xAA (D := P).
+pegc_plane_setup:
+    push es
+    push ax
+    mov ax, PEGC_MMIO
+    mov es, ax
+
+    mov byte [es:MMIO_MODE], 0x01
+    mov byte [es:MMIO_PLANE_ACC], 0x00
+    mov word [es:MMIO_MASK_LOW], 0xFFFF
+    mov word [es:MMIO_MASK_HIGH], 0xFFFF
+    mov word [es:MMIO_LENGTH], 0x0FFF
+    mov byte [es:MMIO_SHIFT_R], 0x00
+    mov byte [es:MMIO_SHIFT_W], 0x00
+    mov word [es:MMIO_ROP_LOW], 0x91AA
+
+    pop ax
+    pop es
+    ret
+
+; pattern_broadcast_color - Write color in AL to all 16 transposed pattern
+; slots (E0120h + 0, +4, +8, ..., +60) so each of the 16 pixels in the pattern
+; register has the same 8-bit color.
+pattern_broadcast_color:
+    push es
+    push cx
+    push di
+    push ax
+
+    mov cx, PEGC_MMIO
+    mov es, cx
+    mov di, MMIO_PATTERN
+    mov cx, 16
+.loop:
+    mov [es:di], al
+    add di, 4
+    loop .loop
+
+    pop ax
+    pop di
+    pop cx
+    pop es
+    ret
+
+; fill_strip_plane - Issue plane-mode word writes for a 320-pixel-wide strip.
+; Input: AX = starting byte offset (= y_start*80 + x_start/8),
+;        CX = rows.
+; Strip width is 320 pixels = 20 word writes per row.
+fill_strip_plane:
+    push es
+    push bx
+    push si
+
+    mov bx, PEGC_VRAM_A
+    mov es, bx
+
+    mov di, ax
+
+.row_loop:
+    push cx
+    push di
+    mov cx, 20
+    mov ax, 0xFFFF
+.word_loop:
+    mov [es:di], ax
+    add di, 2
+    loop .word_loop
+    pop di
+    add di, BYTES_PER_LINE
+    pop cx
+    loop .row_loop
+
+    pop si
+    pop bx
+    pop es
+    ret
+
+; set_palette_256 - Program all 256 PEGC palette entries from palette_256.
+set_palette_256:
     xor cx, cx
 
 .pal_loop:
     mov al, cl
     out 0xA8, al
 
-    mov bx, cx
-    imul bx, 3
-    add bx, palette_16
+    imul bx, cx, 3
+    add bx, palette_256
 
     mov al, [bx]
-    out 0xAA, al            ; green
+    out 0xAA, al
     mov al, [bx+1]
-    out 0xAC, al            ; red
+    out 0xAC, al
     mov al, [bx+2]
-    out 0xAE, al            ; blue
-
-    inc cx
-    cmp cx, 16
-    jb .pal_loop
-    ret
-
-; ============================================================================
-; Utility: set_palette_256 — Program 256-entry PEGC palette from table
-; ============================================================================
-set_palette_256:
-    xor cx, cx              ; CX = palette index (0-255)
-
-.pal_loop:
-    mov al, cl
-    out 0xA8, al            ; select palette index
-
-    imul bx, cx, 3          ; BX = index * 3
-    add bx, palette_256     ; BX = pointer into palette table
-
-    mov al, [bx]
-    out 0xAA, al            ; green
-
-    mov al, [bx+1]
-    out 0xAC, al            ; red
-
-    mov al, [bx+2]
-    out 0xAE, al            ; blue
+    out 0xAE, al
 
     inc cx
     cmp cx, 256
     jb .pal_loop
     ret
 
-; ============================================================================
-; Utility: clear_all_planes — Zero out B, R, G, E planes
-; ============================================================================
-clear_all_planes:
-    mov bx, VRAM_B
-    call .fill_zero
-    mov bx, VRAM_R
-    call .fill_zero
-    mov bx, VRAM_G
-    call .fill_zero
-    mov bx, VRAM_E
-.fill_zero:
-    mov es, bx
-    xor di, di
-    xor ax, ax
-    mov cx, PLANE_SIZE / 2
-    rep stosw
-    ret
-
-; ============================================================================
-; Utility: clear_text_vram — Fill text VRAM with spaces + invisible attribute
-; ============================================================================
+; clear_text_vram - Fill text VRAM with spaces + invisible attribute.
 clear_text_vram:
     mov ax, TEXT_VRAM
     mov es, ax
@@ -388,9 +489,7 @@ clear_text_vram:
     rep stosw
     ret
 
-; ============================================================================
-; Utility: wait_enter — Wait for Enter key press
-; ============================================================================
+; wait_enter - Block until Enter is pressed and released.
 wait_enter:
 .wait_make:
     in al, 0x43
@@ -400,7 +499,6 @@ wait_enter:
     cmp al, 0x1C
     jne .wait_make
 
-    ; Drain the break code
 .wait_break:
     in al, 0x43
     test al, 0x02
@@ -409,40 +507,9 @@ wait_enter:
 
     ret
 
-; ============================================================================
-; 16-color analog palette data: G, R, B per entry (4-bit values, 0-0x0F)
-; ============================================================================
-palette_16:
-    ;       G    R    B
-    db      0,   0,   0       ; 0  Black
-    db      0,   0,   7       ; 1  Blue
-    db      0,   7,   0       ; 2  Red
-    db      0,   7,   7       ; 3  Magenta
-    db      7,   0,   0       ; 4  Green
-    db      7,   0,   7       ; 5  Cyan
-    db      7,   7,   0       ; 6  Yellow
-    db      7,   7,   7       ; 7  White (dim)
-    db      4,   4,   4       ; 8  Dark Gray
-    db      0,   0, 0x0F      ; 9  Bright Blue
-    db      0, 0x0F,   0       ; 10 Bright Red
-    db      0, 0x0F, 0x0F     ; 11 Bright Magenta
-    db   0x0F,   0,   0       ; 12 Bright Green
-    db   0x0F,   0, 0x0F      ; 13 Bright Cyan
-    db   0x0F, 0x0F,   0       ; 14 Bright Yellow
-    db   0x0F, 0x0F, 0x0F     ; 15 Bright White
-
-; ============================================================================
 ; 256-color PEGC palette data: G, R, B per entry (8-bit values).
 ; Full HSV hue cycle: H = i/256 * 360 deg, S = 1.0, V = 1.0.
 ; All 256 entries are distinct fully-saturated colors.
-; Formula: h6 = i*6, sector = h6/256, f = h6%256, t = f, q = 255-f
-;   Sector 0 (red->yellow):   G=t, R=255, B=0
-;   Sector 1 (yellow->green): G=255, R=q, B=0
-;   Sector 2 (green->cyan):   G=255, R=0, B=t
-;   Sector 3 (cyan->blue):    G=q, R=0, B=255
-;   Sector 4 (blue->magenta): G=0, R=t, B=255
-;   Sector 5 (magenta->red):  G=0, R=255, B=q
-; ============================================================================
 palette_256:
     db    0,255,  0,    6,255,  0,   12,255,  0,   18,255,  0  ; i=0..3
     db   24,255,  0,   30,255,  0,   36,255,  0,   42,255,  0  ; i=4..7
@@ -509,5 +576,4 @@ palette_256:
     db    0,255, 47,    0,255, 41,    0,255, 35,    0,255, 29  ; i=248..251
     db    0,255, 23,    0,255, 17,    0,255, 11,    0,255,  5  ; i=252..255
 
-; Pad bank 1 to exactly 96KB
     times 0x18000 - ($ - $$) db 0xFF

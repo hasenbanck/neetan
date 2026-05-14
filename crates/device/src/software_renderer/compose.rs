@@ -999,9 +999,10 @@ fn load_pegc_indices(vram: &[u8], scanline_base: u32, vram_mask: u32, dst: &mut 
 
 fn compute_max_y(inputs: &RenderInputs<'_>) -> u32 {
     let is_pegc = matches!(inputs.graphics, GraphicsInput::Pegc(_));
-    // Standard PC-98 modes expose 400 active lines. PEGC can switch to a
-    // 480-line display; clamp to the native framebuffer height.
-    if is_pegc && inputs.gdc_graphics_al > 400 {
+    // PEGC 480-line output requires BOTH a GDC active-line count above 400
+    // AND the 31.778 kHz CRT scan-frequency flag (port 09A8h).
+    // Standard PC-98 modes always cap at 400 active lines.
+    if is_pegc && inputs.gdc_graphics_al > 400 && inputs.crt_31khz_enabled {
         inputs.gdc_graphics_al.min(SoftwareRenderer::HEIGHT as u32)
     } else {
         400

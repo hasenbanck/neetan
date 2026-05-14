@@ -604,3 +604,22 @@ fn boot_inject_run_ra(scancodes: &[u8], code: &[u8], budget: u64) -> Pc9801Ra {
     machine.run_for(budget);
     machine
 }
+
+fn boot_inject_run_pc9821as(scancodes: &[u8], code: &[u8], budget: u64) -> Pc9821As {
+    let mut machine = create_machine_pc9821as_hdd();
+    boot_to_halt_hdd!(machine);
+    for &sc in scancodes {
+        machine.bus.push_keyboard_scancode(sc);
+    }
+    write_bytes(&mut machine.bus, TEST_CODE, code);
+    machine.cpu.load_state(&{
+        let mut s = cpu::I386State {
+            ip: TEST_CODE as u16,
+            ..Default::default()
+        };
+        s.set_esp(0x4000);
+        s
+    });
+    machine.run_for(budget);
+    machine
+}

@@ -1,12 +1,10 @@
-//! Note: AH=44h (border color set) is not tested here - NP21W's implementation is
-//! fully commented out, and the real BIOS ROMs for VM/VX/RA do not appear to
-//! write to port 0x6C either.
 use common::{Bus, Cpu};
 
 use super::{
-    KB_COUNT, KB_HEAD, KB_TAIL, TEST_CODE, boot_inject_run_f, boot_inject_run_ra,
-    boot_inject_run_vm, boot_inject_run_vx, create_machine_f, create_machine_ra, create_machine_vm,
-    create_machine_vx, read_ivt_vector, read_ram_u16, write_bytes,
+    KB_COUNT, KB_HEAD, KB_TAIL, TEST_CODE, boot_inject_run_f, boot_inject_run_pc9821as,
+    boot_inject_run_ra, boot_inject_run_vm, boot_inject_run_vx, create_machine_f,
+    create_machine_ra, create_machine_vm, create_machine_vx, read_ivt_vector, read_ram_u16,
+    write_bytes,
 };
 
 const RESULT: u32 = 0x0600;
@@ -4633,4 +4631,77 @@ fn line_draw_three_byte_horizontal_has_no_byte_aligned_gaps() {
         return;
     }
     panic!("line draw produced no writes in any of B/R/G planes");
+}
+
+/// Verifies that INT 18h AH=4Dh CH=01h enables PEGC 256-color extended
+/// graphics mode and that CH=00h returns to standard graphics mode.
+#[test]
+fn int18h_ah4d_extended_graphics_toggles_pegc_256_color_mode() {
+    #[rustfmt::skip]
+    let enable: &[u8] = &[
+        0xB4, 0x4D, // MOV AH, 4Dh
+        0xB5, 0x01, // MOV CH, 01h (extended graphics mode)
+        0xCD, 0x18, // INT 18h
+        0xF4,       // HLT
+    ];
+    let mut machine = boot_inject_run_pc9821as(&[], enable, INT18H_BUDGET);
+    assert!(
+        machine.cpu.halted(),
+        "INT 18h AH=4Dh CH=01h program did not reach HLT",
+    );
+    assert_eq!(
+        machine.bus.read_byte(0x054D) & 0x80,
+        0x80,
+        "INT 18h AH=4Dh CH=01h must set BDA 054Dh bit 7 (extended graphics mode flag)",
+    );
+
+    // With PEGC active, ports 0xA8..0xAE route to the 256-entry PEGC palette.
+    // Indices 0x00 and 0x80 share the same low nibble, so a 16-color palette
+    // would alias them onto entry 0; the 256-color palette keeps them distinct.
+    machine.bus.io_write_byte(0xA8, 0x00);
+    machine.bus.io_write_byte(0xAA, 0x11);
+    machine.bus.io_write_byte(0xAC, 0x22);
+    machine.bus.io_write_byte(0xAE, 0x33);
+    machine.bus.io_write_byte(0xA8, 0x80);
+    machine.bus.io_write_byte(0xAA, 0x44);
+    machine.bus.io_write_byte(0xAC, 0x55);
+    machine.bus.io_write_byte(0xAE, 0x66);
+
+    machine.bus.io_write_byte(0xA8, 0x00);
+    assert_eq!(machine.bus.io_read_byte(0xAA), 0x11);
+    assert_eq!(machine.bus.io_read_byte(0xAC), 0x22);
+    assert_eq!(machine.bus.io_read_byte(0xAE), 0x33);
+    machine.bus.io_write_byte(0xA8, 0x80);
+    assert_eq!(
+        machine.bus.io_read_byte(0xAA),
+        0x44,
+        "palette[0x80] would alias palette[0x00] if PEGC 256-color mode were inactive",
+    );
+    assert_eq!(machine.bus.io_read_byte(0xAC), 0x55);
+    assert_eq!(machine.bus.io_read_byte(0xAE), 0x66);
+
+    // INT 18h AH=4Dh CH=00h returns to standard graphics mode.
+    #[rustfmt::skip]
+    let disable: &[u8] = &[
+        0xB4, 0x4D, // MOV AH, 4Dh
+        0xB5, 0x00, // MOV CH, 00h (standard graphics mode)
+        0xCD, 0x18, // INT 18h
+        0xF4,       // HLT
+    ];
+    write_bytes(&mut machine.bus, TEST_CODE, disable);
+    machine.cpu.load_state(&{
+        let mut state = cpu::I386State {
+            ip: TEST_CODE as u16,
+            ..Default::default()
+        };
+        state.set_esp(0x4000);
+        state
+    });
+    machine.run_for(INT18H_BUDGET);
+    assert!(machine.cpu.halted());
+    assert_eq!(
+        machine.bus.read_byte(0x054D) & 0x80,
+        0x00,
+        "INT 18h AH=4Dh CH=00h must clear BDA 054Dh bit 7",
+    );
 }

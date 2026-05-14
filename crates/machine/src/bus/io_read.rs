@@ -589,9 +589,9 @@ impl<T: Tracing> Pc9801Bus<T> {
                 }
             }
 
-            // 31 kHz GDC mode register. The BIOS probes this during POST to
-            // detect monitor frequency support. No 31 kHz monitor attached.
-            0x09A8 => 0x00,
+            // 31 kHz horizontal scan-frequency register (port 09A8h).
+            // 0 = 24.823 kHz / 400 lines, 1 = 31.778 kHz / 480 lines.
+            0x09A8 => u8::from(self.display_control.is_crt_31khz_enabled()),
 
             // IDE bank status and select registers, presence detection
             0x0430 if self.machine_model.has_ide() => self.ide.read_bank0_status(),

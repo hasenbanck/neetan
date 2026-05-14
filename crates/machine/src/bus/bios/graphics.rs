@@ -476,6 +476,33 @@ impl<T: Tracing> Pc9801Bus<T> {
         }
     }
 
+    /// INT 18h AH=4Dh: Select extended (256-color) or standard graphics mode
+    /// while in 640x400 mode.
+    ///
+    /// `CH=00h` selects standard 16/8/2-color graphics, `CH=01h` selects PEGC
+    /// 256-color extended graphics. Has no effect when the current graphics
+    /// resolution is not 640x400. Mirrors the current selection into BDA
+    /// `0000:054Dh` bit 7 so callers that inspect that flag stay in sync.
+    pub(super) fn int18h_extended_graphics_select(&mut self, cpu: &mut impl Cpu) {
+        if !self.machine_model.has_pegc() {
+            return;
+        }
+        let ch = cpu.ch();
+        match ch {
+            0x00 => {
+                self.pegc.set_256_color_enabled(false);
+                self.memory.state.ram[0x054D] &= !0x80;
+                self.update_plane_e_mapping();
+            }
+            0x01 => {
+                self.pegc.set_256_color_enabled(true);
+                self.memory.state.ram[0x054D] |= 0x80;
+                self.memory.set_e_plane_enabled(false);
+            }
+            _ => {}
+        }
+    }
+
     fn apply_gdc_dot(byte: &mut u8, mask: u8, ope: u8, dot: bool) {
         match (ope & 3, dot) {
             (GDC_OPE_REPLACE, true) | (GDC_OPE_SET, true) => *byte |= mask,

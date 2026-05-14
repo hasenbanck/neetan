@@ -246,6 +246,26 @@ impl Pegc {
         self.mmio_write_byte(offset + 1, (value >> 8) as u8);
     }
 
+    /// Reads a dword from the PEGC MMIO register space (offset within E0000-E7FFF).
+    pub fn mmio_read_dword(&self, offset: u32) -> u32 {
+        if offset >= MMIO2_BASE {
+            return self.mmio2_read_dword(offset - MMIO2_BASE);
+        }
+        let low = u32::from(self.mmio_read_word(offset));
+        let high = u32::from(self.mmio_read_word(offset + 2));
+        low | (high << 16)
+    }
+
+    /// Writes a dword to the PEGC MMIO register space (offset within E0000-E7FFF).
+    pub fn mmio_write_dword(&mut self, offset: u32, value: u32) {
+        if offset >= MMIO2_BASE {
+            self.mmio2_write_dword(offset - MMIO2_BASE, value);
+            return;
+        }
+        self.mmio_write_word(offset, value as u16);
+        self.mmio_write_word(offset + 2, (value >> 16) as u16);
+    }
+
     fn mmio2_read_byte(&self, offset: u32) -> u8 {
         if (REG_PATTERN..=0x9F).contains(&offset) {
             return self.pattern_read_byte(offset - REG_PATTERN);
@@ -336,21 +356,55 @@ impl Pegc {
         self.mmio2_write_byte(offset + 1, (value >> 8) as u8);
     }
 
+    fn mmio2_read_dword(&self, offset: u32) -> u32 {
+        if (REG_PATTERN..=0x9F).contains(&offset) {
+            return self.pattern_read_dword(offset - REG_PATTERN);
+        }
+        let low = u32::from(self.mmio2_read_word(offset));
+        let high = u32::from(self.mmio2_read_word(offset + 2));
+        low | (high << 16)
+    }
+
+    fn mmio2_write_dword(&mut self, offset: u32, value: u32) {
+        if (REG_PATTERN..=0x9F).contains(&offset) {
+            self.pattern_write_dword(offset - REG_PATTERN, value);
+            return;
+        }
+        self.mmio2_write_word(offset, value as u16);
+        self.mmio2_write_word(offset + 2, (value >> 16) as u16);
+    }
+
+    fn plane_pattern_read_u32(&self, plane: u32) -> u32 {
+        let plane_offset = (plane * 4) as usize;
+        u32::from(self.state.pattern_data[plane_offset])
+            | (u32::from(self.state.pattern_data[plane_offset + 1]) << 8)
+            | (u32::from(self.state.pattern_data[plane_offset + 2]) << 16)
+            | (u32::from(self.state.pattern_data[plane_offset + 3]) << 24)
+    }
+
+    fn plane_pattern_write_bit(&mut self, plane: u32, bit: u32, value: u32) {
+        let plane_offset = (plane * 4) as usize;
+        let mut reg = self.plane_pattern_read_u32(plane);
+        reg = (reg & !(1u32 << bit)) | ((value & 1) << bit);
+        self.state.pattern_data[plane_offset] = reg as u8;
+        self.state.pattern_data[plane_offset + 1] = (reg >> 8) as u8;
+        self.state.pattern_data[plane_offset + 2] = (reg >> 16) as u8;
+        self.state.pattern_data[plane_offset + 3] = (reg >> 24) as u8;
+    }
+
     fn pattern_read_byte(&self, pattern_pos: u32) -> u8 {
         if pattern_pos & 0x03 != 0 {
             return 0x00;
         }
         if self.state.rop_register & 0x8000 != 0 {
-            if pattern_pos >= 0x60 {
+            if pattern_pos >= 0x80 {
                 return 0x00;
             }
-            let bit = (pattern_pos / 4) as u16;
+            let bit = pattern_pos / 4;
             let mut color = 0u8;
             for plane in 0..8u32 {
-                let plane_offset = (plane * 4) as usize;
-                let word = u16::from(self.state.pattern_data[plane_offset])
-                    | (u16::from(self.state.pattern_data[plane_offset + 1]) << 8);
-                color |= (((word >> bit) & 1) as u8) << plane;
+                let reg = self.plane_pattern_read_u32(plane);
+                color |= (((reg >> bit) & 1) as u8) << plane;
             }
             color
         } else {
@@ -366,19 +420,13 @@ impl Pegc {
             return;
         }
         if self.state.rop_register & 0x8000 != 0 {
-            if pattern_pos >= 0x60 {
+            if pattern_pos >= 0x80 {
                 return;
             }
-            let bit = (pattern_pos / 4) as u16;
-            let mut val = value;
+            let bit = pattern_pos / 4;
             for plane in 0..8u32 {
-                let plane_offset = (plane * 4) as usize;
-                let mut word = u16::from(self.state.pattern_data[plane_offset])
-                    | (u16::from(self.state.pattern_data[plane_offset + 1]) << 8);
-                word = (word & !(1 << bit)) | (u16::from(val & 1) << bit);
-                self.state.pattern_data[plane_offset] = word as u8;
-                self.state.pattern_data[plane_offset + 1] = (word >> 8) as u8;
-                val >>= 1;
+                let val = (u32::from(value) >> plane) & 1;
+                self.plane_pattern_write_bit(plane, bit, val);
             }
         } else {
             if pattern_pos >= 0x40 {
@@ -393,16 +441,14 @@ impl Pegc {
             return 0x0000;
         }
         if self.state.rop_register & 0x8000 != 0 {
-            if pattern_pos >= 0x60 {
+            if pattern_pos >= 0x80 {
                 return 0x0000;
             }
-            let bit = (pattern_pos / 4) as u16;
+            let bit = pattern_pos / 4;
             let mut color = 0u16;
             for plane in 0..8u32 {
-                let plane_offset = (plane * 4) as usize;
-                let word = u16::from(self.state.pattern_data[plane_offset])
-                    | (u16::from(self.state.pattern_data[plane_offset + 1]) << 8);
-                color |= ((word >> bit) & 1) << plane;
+                let reg = self.plane_pattern_read_u32(plane);
+                color |= (((reg >> bit) & 1) as u16) << plane;
             }
             color
         } else {
@@ -419,19 +465,13 @@ impl Pegc {
             return;
         }
         if self.state.rop_register & 0x8000 != 0 {
-            if pattern_pos >= 0x60 {
+            if pattern_pos >= 0x80 {
                 return;
             }
-            let bit = (pattern_pos / 4) as u16;
-            let mut val = value;
+            let bit = pattern_pos / 4;
             for plane in 0..8u32 {
-                let plane_offset = (plane * 4) as usize;
-                let mut word = u16::from(self.state.pattern_data[plane_offset])
-                    | (u16::from(self.state.pattern_data[plane_offset + 1]) << 8);
-                word = (word & !(1 << bit)) | ((val & 1) << bit);
-                self.state.pattern_data[plane_offset] = word as u8;
-                self.state.pattern_data[plane_offset + 1] = (word >> 8) as u8;
-                val >>= 1;
+                let val = (u32::from(value) >> plane) & 1;
+                self.plane_pattern_write_bit(plane, bit, val);
             }
         } else {
             if pattern_pos >= 0x40 {
@@ -439,6 +479,54 @@ impl Pegc {
             }
             self.state.pattern_data[pattern_pos as usize] = value as u8;
             self.state.pattern_data[pattern_pos as usize + 1] = (value >> 8) as u8;
+        }
+    }
+
+    fn pattern_read_dword(&self, pattern_pos: u32) -> u32 {
+        if pattern_pos & 0x03 != 0 {
+            return 0;
+        }
+        if self.state.rop_register & 0x8000 != 0 {
+            if pattern_pos >= 0x80 {
+                return 0;
+            }
+            let bit = pattern_pos / 4;
+            let mut color = 0u32;
+            for plane in 0..8u32 {
+                let reg = self.plane_pattern_read_u32(plane);
+                color |= ((reg >> bit) & 1) << plane;
+            }
+            color
+        } else {
+            if pattern_pos >= 0x40 {
+                return 0;
+            }
+            self.plane_pattern_read_u32(pattern_pos / 4)
+        }
+    }
+
+    fn pattern_write_dword(&mut self, pattern_pos: u32, value: u32) {
+        if pattern_pos & 0x03 != 0 {
+            return;
+        }
+        if self.state.rop_register & 0x8000 != 0 {
+            if pattern_pos >= 0x80 {
+                return;
+            }
+            let bit = pattern_pos / 4;
+            for plane in 0..8u32 {
+                let val = (value >> plane) & 1;
+                self.plane_pattern_write_bit(plane, bit, val);
+            }
+        } else {
+            if pattern_pos >= 0x40 {
+                return;
+            }
+            let plane_offset = pattern_pos as usize;
+            self.state.pattern_data[plane_offset] = value as u8;
+            self.state.pattern_data[plane_offset + 1] = (value >> 8) as u8;
+            self.state.pattern_data[plane_offset + 2] = (value >> 16) as u8;
+            self.state.pattern_data[plane_offset + 3] = (value >> 24) as u8;
         }
     }
 
@@ -487,6 +575,19 @@ impl Pegc {
     /// (considering only the planes allowed by the plane access mask).
     /// Optionally updates the pattern register from the read data.
     pub fn plane_read_word(&mut self, offset: u32, vram: &[u8]) -> u16 {
+        self.plane_read_impl(offset, vram, 16) as u16
+    }
+
+    /// Reads a dword from PEGC VRAM in plane mode.
+    ///
+    /// Same semantics as `plane_read_word` but processes 32 consecutive pixels
+    /// in a single transaction. Shift register bit 4 is valid (16-31 pixel shift)
+    /// and the pattern register is updated across the full 32-pixel width.
+    pub fn plane_read_dword(&mut self, offset: u32, vram: &[u8]) -> u32 {
+        self.plane_read_impl(offset, vram, 32)
+    }
+
+    fn plane_read_impl(&mut self, offset: u32, vram: &[u8], pixels: u32) -> u32 {
         let rop_reg = self.state.rop_register;
         let source_shift = u32::from(self.state.shift_read);
         let dest_shift = u32::from(self.state.shift_write);
@@ -498,23 +599,17 @@ impl Pegc {
         let palette1 = self.state.palette_color_1;
 
         let base_address = offset.wrapping_mul(8).wrapping_add(source_shift);
-        let base_address = if !shift_direction_decrement {
-            if self.state.remain != block_length + 1 {
-                base_address.wrapping_sub(dest_shift)
-            } else {
-                base_address
-            }
-        } else if self.state.remain != block_length + 1 {
+        let base_address = if self.state.remain != block_length + 1 {
             base_address.wrapping_sub(dest_shift)
         } else {
             base_address
         };
 
-        let mut result: u16 = 0;
+        let mut result: u32 = 0;
         self.state.last_data_length = 0;
 
         if !source_from_cpu {
-            for i in 0u32..16 {
+            for i in 0u32..pixels {
                 let pixel_address = if shift_direction_decrement {
                     base_address.wrapping_sub(i) & (PEGC_VRAM_SIZE as u32 - 1)
                 } else {
@@ -524,26 +619,22 @@ impl Pegc {
                 let data = vram[pixel_address as usize];
 
                 if (data ^ palette1) & !plane_mask != 0 {
-                    result |= 1 << i;
+                    result |= 1u32 << i;
                 }
 
                 self.state.last_vram_data[i as usize] = data;
 
                 if pattern_update {
-                    for plane in (0..8).rev() {
-                        let pattern_offset = (plane * 4) as usize;
-                        let mut reg_data = u16::from(self.state.pattern_data[pattern_offset])
-                            | (u16::from(self.state.pattern_data[pattern_offset + 1]) << 8);
-                        reg_data = (reg_data & !(1 << i)) | (u16::from((data >> plane) & 1) << i);
-                        self.state.pattern_data[pattern_offset] = reg_data as u8;
-                        self.state.pattern_data[pattern_offset + 1] = (reg_data >> 8) as u8;
+                    for plane in 0..8u32 {
+                        let bit_value = u32::from((data >> plane) & 1);
+                        self.plane_pattern_write_bit(plane, i, bit_value);
                     }
                 }
             }
         }
 
         if self.state.last_data_length < 32 {
-            self.state.last_data_length += 16;
+            self.state.last_data_length = (self.state.last_data_length + pixels as i32).min(32);
         }
 
         result
@@ -554,6 +645,18 @@ impl Pegc {
     /// Processes 16 consecutive pixels, applying the configured raster operation
     /// (source, destination, pattern truth table) with plane masking and pixel masking.
     pub fn plane_write_word(&mut self, offset: u32, value: u16, vram: &mut [u8]) {
+        self.plane_write_impl(offset, u32::from(value), vram, 16);
+    }
+
+    /// Writes a dword to PEGC VRAM in plane mode with ROP operations.
+    ///
+    /// Same semantics as `plane_write_word` but processes 32 pixels per call.
+    /// Shift register bit 4 is valid and the write mask covers all 32 pixels.
+    pub fn plane_write_dword(&mut self, offset: u32, value: u32, vram: &mut [u8]) {
+        self.plane_write_impl(offset, value, vram, 32);
+    }
+
+    fn plane_write_impl(&mut self, offset: u32, value: u32, vram: &mut [u8], pixels: u32) {
         let rop_reg = self.state.rop_register;
         let rop_code = (rop_reg & 0xFF) as u8;
         let rop_method = ((rop_reg >> 10) & 0x03) as u8;
@@ -570,10 +673,11 @@ impl Pegc {
             self.state.last_data_length = 0;
         }
 
-        let extended_shift_mode = !source_from_cpu || ((block_length + 1) & 0x0F) != 0;
+        let pixels_signed = pixels as i32;
+        let extended_shift_mode = !source_from_cpu || ((block_length + 1) & (pixels - 1)) != 0;
 
         let mut base_address = offset.wrapping_mul(8);
-        let mut data_length: i32 = 16;
+        let mut data_length: i32 = pixels_signed;
 
         if extended_shift_mode {
             if self.state.remain == block_length + 1 {
@@ -585,92 +689,52 @@ impl Pegc {
         }
         base_address &= PEGC_VRAM_SIZE as u32 - 1;
 
-        if !shift_direction_decrement {
-            for i in 0..data_length {
-                let pixel_address =
-                    base_address.wrapping_add(i as u32) & (PEGC_VRAM_SIZE as u32 - 1);
-                let pixel_mask_bit = pixel_mask_position(i as u32);
+        for i in 0..data_length {
+            let pixel_address = if shift_direction_decrement {
+                base_address.wrapping_sub(i as u32) & (PEGC_VRAM_SIZE as u32 - 1)
+            } else {
+                base_address.wrapping_add(i as u32) & (PEGC_VRAM_SIZE as u32 - 1)
+            };
+            let pixel_mask_bit = pixel_mask_position(i as u32);
 
-                if pixel_mask & pixel_mask_bit != 0 {
-                    let source = if source_from_cpu {
-                        if value & pixel_mask_bit as u16 != 0 {
-                            0xFF
-                        } else {
-                            0x00
-                        }
+            if pixel_mask & pixel_mask_bit != 0 {
+                let source = if source_from_cpu {
+                    if value & pixel_mask_bit != 0 {
+                        0xFF
                     } else {
-                        self.state.last_vram_data[i as usize]
-                    };
-
-                    let destination = vram[pixel_address as usize];
-
-                    if rop_enabled {
-                        let (pattern1, pattern2) = self.get_pattern_colors(rop_method, i as u32);
-                        let result = apply_rop(
-                            rop_code,
-                            source,
-                            destination,
-                            pattern1,
-                            pattern2,
-                            plane_mask,
-                        );
-                        vram[pixel_address as usize] = (destination & plane_mask) | result;
-                    } else {
-                        vram[pixel_address as usize] =
-                            apply_source_copy(source, destination, plane_mask);
+                        0x00
                     }
-                }
+                } else {
+                    self.state.last_vram_data[i as usize]
+                };
 
-                self.state.remain -= 1;
-                if self.state.remain == 0 {
-                    break;
+                let destination = vram[pixel_address as usize];
+
+                if rop_enabled {
+                    let (pattern1, pattern2) = self.get_pattern_colors(rop_method, i as u32);
+                    let result = apply_rop(
+                        rop_code,
+                        source,
+                        destination,
+                        pattern1,
+                        pattern2,
+                        plane_mask,
+                    );
+                    vram[pixel_address as usize] = (destination & plane_mask) | result;
+                } else {
+                    vram[pixel_address as usize] =
+                        apply_source_copy(source, destination, plane_mask);
                 }
             }
-        } else {
-            for i in 0..data_length {
-                let pixel_address =
-                    base_address.wrapping_sub(i as u32) & (PEGC_VRAM_SIZE as u32 - 1);
-                let pixel_mask_bit = pixel_mask_position(i as u32);
 
-                if pixel_mask & pixel_mask_bit != 0 {
-                    let source = if source_from_cpu {
-                        if value & pixel_mask_bit as u16 != 0 {
-                            0xFF
-                        } else {
-                            0x00
-                        }
-                    } else {
-                        self.state.last_vram_data[i as usize]
-                    };
-
-                    let destination = vram[pixel_address as usize];
-
-                    if rop_enabled {
-                        let (pattern1, pattern2) = self.get_pattern_colors(rop_method, i as u32);
-                        let result = apply_rop(
-                            rop_code,
-                            source,
-                            destination,
-                            pattern1,
-                            pattern2,
-                            plane_mask,
-                        );
-                        vram[pixel_address as usize] = (destination & plane_mask) | result;
-                    } else {
-                        vram[pixel_address as usize] =
-                            apply_source_copy(source, destination, plane_mask);
-                    }
-                }
-
-                self.state.remain -= 1;
-                if self.state.remain == 0 {
-                    break;
-                }
+            self.state.remain -= 1;
+            if self.state.remain == 0 {
+                break;
             }
         }
 
-        if self.state.last_data_length > 16 {
-            self.state.last_data_length -= 16;
+        if self.state.last_data_length > pixels_signed {
+            self.state.last_data_length -= pixels_signed;
         } else {
             self.state.last_data_length = 0;
         }
@@ -680,10 +744,8 @@ impl Pegc {
         match method {
             0 => {
                 let mut color = 0u8;
-                for plane in (0..8).rev() {
-                    let pattern_offset = (plane * 4) as usize;
-                    let reg_data = u16::from(self.state.pattern_data[pattern_offset])
-                        | (u16::from(self.state.pattern_data[pattern_offset + 1]) << 8);
+                for plane in (0..8u32).rev() {
+                    let reg_data = self.plane_pattern_read_u32(plane);
                     color |= (((reg_data >> pixel_index) & 1) as u8) << plane;
                 }
                 (color, color)
@@ -1003,11 +1065,11 @@ mod tests {
     }
 
     #[test]
-    fn mmio_pattern_register_transposed_rejects_above_0x60() {
+    fn mmio_pattern_register_transposed_rejects_above_0x80() {
         let mut pegc = Pegc::new();
         pegc.state.rop_register = 0x8000;
-        pegc.mmio_write_byte(MMIO2_BASE + REG_PATTERN + 0x60, 0xDD);
-        assert_eq!(pegc.mmio_read_byte(MMIO2_BASE + REG_PATTERN + 0x60), 0x00);
+        pegc.mmio_write_byte(MMIO2_BASE + REG_PATTERN + 0x80, 0xDD);
+        assert_eq!(pegc.mmio_read_byte(MMIO2_BASE + REG_PATTERN + 0x80), 0x00);
     }
 
     #[test]
@@ -1335,5 +1397,89 @@ mod tests {
         assert_eq!(pixel_mask_position(7), 0x01);
         assert_eq!(pixel_mask_position(8), 0x8000);
         assert_eq!(pixel_mask_position(15), 0x0100);
+        // The same formula maps pixels 16..31 to bits 16..31 of the mask.
+        assert_eq!(pixel_mask_position(16), 0x0080_0000);
+        assert_eq!(pixel_mask_position(23), 0x0001_0000);
+        assert_eq!(pixel_mask_position(24), 0x8000_0000);
+        assert_eq!(pixel_mask_position(31), 0x0100_0000);
+    }
+
+    #[test]
+    fn plane_dword_processes_32_pixels() {
+        let mut pegc = Pegc::new();
+        pegc.state.mode_register = 1;
+        pegc.state.plane_access_mask = 0x00;
+        pegc.state.rop_register = 0x0100; // source = CPU data
+        pegc.state.write_mask = 0xFFFF_FFFF;
+        pegc.state.block_length = 0x0FFF;
+
+        let mut vram = vec![0u8; PEGC_VRAM_SIZE];
+        // Source value with alternating bits across all 32 pixel slots.
+        pegc.plane_write_dword(0, 0xAAAA_AAAA, &mut vram);
+
+        // 32 pixels written. Pixel 0 maps to bit 7 of the low byte (0xAA bit 7 = 1)
+        // so VRAM[0] should be 0xFF. Pixel 1 maps to bit 6 (0xAA bit 6 = 0), so 0x00.
+        // The full pattern alternates 0xFF / 0x00 / ... across 32 bytes.
+        for (i, byte) in vram.iter().enumerate().take(32) {
+            let expected = if i % 2 == 0 { 0xFF } else { 0x00 };
+            assert_eq!(*byte, expected, "pixel {i}: expected {expected:#04X}");
+        }
+    }
+
+    #[test]
+    fn plane_dword_shift_write_bit_4_valid() {
+        let mut pegc = Pegc::new();
+        pegc.state.mode_register = 1;
+        pegc.state.plane_access_mask = 0x00;
+        pegc.state.rop_register = 0x0100; // source = CPU data
+        pegc.state.write_mask = 0xFFFF_FFFF;
+        pegc.state.block_length = 0x0FFF;
+        pegc.state.shift_write = 0x10; // shift by 16 pixels (bit 4 set)
+
+        let mut vram = vec![0u8; PEGC_VRAM_SIZE];
+        // Source = all-ones: every pixel from byte 16 onwards must be 0xFF.
+        pegc.plane_write_dword(0, 0xFFFF_FFFF, &mut vram);
+        for (i, byte) in vram.iter().enumerate().take(16) {
+            assert_eq!(*byte, 0x00, "pixel {i} before shift should be untouched");
+        }
+        for (i, byte) in vram.iter().enumerate().take(32).skip(16) {
+            assert_eq!(*byte, 0xFF, "pixel {i} after shift should be 0xFF");
+        }
+    }
+
+    #[test]
+    fn pattern_register_dword_transposed_32_pixels() {
+        let mut pegc = Pegc::new();
+        pegc.state.rop_register = 0x8000; // transposed mode
+        for pixel in 0..32u32 {
+            let color = (pixel as u8).wrapping_mul(7);
+            pegc.mmio_write_byte(MMIO2_BASE + REG_PATTERN + pixel * 4, color);
+        }
+        for pixel in 0..32u32 {
+            let expected = (pixel as u8).wrapping_mul(7);
+            assert_eq!(
+                pegc.mmio_read_byte(MMIO2_BASE + REG_PATTERN + pixel * 4),
+                expected,
+                "pixel {pixel} colour roundtrip",
+            );
+        }
+    }
+
+    #[test]
+    fn pattern_register_dword_normal_per_plane_32_bits() {
+        let mut pegc = Pegc::new();
+        // Normal mode (rop bit 15 = 0). Write 32-bit pattern words per plane.
+        for plane in 0..8u32 {
+            let value = 0xDEAD_BE00u32 | plane;
+            pegc.mmio_write_dword(MMIO2_BASE + REG_PATTERN + plane * 4, value);
+        }
+        for plane in 0..8u32 {
+            let expected = 0xDEAD_BE00u32 | plane;
+            assert_eq!(
+                pegc.mmio_read_dword(MMIO2_BASE + REG_PATTERN + plane * 4),
+                expected,
+                "plane {plane} 32-bit pattern roundtrip",
+            );
+        }
     }
 }
