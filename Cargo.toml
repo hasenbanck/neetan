@@ -20,6 +20,7 @@ os = { path = "crates/os" }
 resampler = { path = "crates/resampler" }
 sdl3 = { path = "crates/sdl3" }
 sdl3_backend = { path = "crates/sdl3_backend" }
+software_renderer = { path = "crates/software_renderer" }
 softfloat = { path = "crates/softfloat" }
 text_extractor = { path = "crates/text_extractor" }
 munt_oxide = { path = "crates/munt_oxide" }
@@ -56,6 +57,7 @@ device = { workspace = true }
 machine = { workspace = true }
 sdl3 = { workspace = true }
 sdl3_backend = { workspace = true }
+software_renderer = { workspace = true }
 text_extractor = { workspace = true }
 
 [dev-dependencies]
@@ -119,6 +121,10 @@ opt-level = 3
 codegen-units = 1
 
 [profile.dev.package.sdl3_backend]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.software_renderer]
 opt-level = 3
 codegen-units = 1
 

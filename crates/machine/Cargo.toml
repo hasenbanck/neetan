@@ -16,6 +16,7 @@ common = { workspace = true }
 cpu = { workspace = true }
 device = { workspace = true }
 os = { workspace = true }
+software_renderer = { workspace = true }
 
 [dev-dependencies]
 resampler = { workspace = true }

@@ -18,12 +18,12 @@ use device::{
     printer::Printer,
     sasi::SasiController,
     sdip::Sdip,
-    software_renderer::SoftwareRenderer,
     upd765a_fdc::FloppyController,
     upd4990a_rtc::Upd4990aRtc,
     upd7220_gdc::{Gdc, GdcScrollPartition},
     upd52611_crtc::Upd52611Crtc,
 };
+use software_renderer::SoftwareRenderer;
 
 use crate::{
     ClockConfig, Pc9801Bus, Tracing,

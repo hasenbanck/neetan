@@ -39,9 +39,6 @@ use device::{
     printer::Printer,
     sasi::SasiController,
     sdip::Sdip,
-    software_renderer::{
-        GdcGraphicsInput, GraphicsInput, PegcRenderInputs, RenderInputs, SoftwareRenderer,
-    },
     sound_blaster_16::{SoundBlaster16, SoundboardSb16Action},
     soundboard_14::{Soundboard14, Soundboard14Action},
     soundboard_26k::{Soundboard26k, Soundboard26kAction},
@@ -50,6 +47,9 @@ use device::{
     upd4990a_rtc::Upd4990aRtc,
     upd7220_gdc::Gdc,
     upd52611_crtc::Upd52611Crtc,
+};
+use software_renderer::{
+    GdcGraphicsInput, GraphicsInput, PegcRenderInputs, RenderInputs, SoftwareRenderer,
 };
 
 use crate::{NoTracing, Tracing, config::ClockConfig, memory::Pc9801Memory};
