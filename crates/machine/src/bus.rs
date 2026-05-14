@@ -457,6 +457,10 @@ pub struct Pc9801Bus<T: Tracing = NoTracing> {
     xms_32_enabled: bool,
     /// /HMAMIN= threshold in KB for XMS Request HMA (XMS.txt priority).
     xms_hmamin_kb: u16,
+    /// Optional sink that receives JIS codes observed at the CGROM glyph
+    /// fetch port (0xA9). Host-side runtime configuration; intentionally
+    /// excluded from save/load.
+    text_extractor: Option<Box<dyn common::TextExtractor>>,
 }
 
 impl<T: Tracing> Pc9801Bus<T> {
@@ -663,6 +667,20 @@ impl<T: Tracing> Pc9801Bus<T> {
     /// Flushes the printer output file.
     pub fn flush_printer(&mut self) {
         self.printer.flush();
+    }
+
+    /// Installs a text extractor sink that receives JIS codes observed at
+    /// the CGROM glyph fetch port.
+    pub fn install_text_extractor(&mut self, extractor: Box<dyn common::TextExtractor>) {
+        self.text_extractor = Some(extractor);
+    }
+
+    /// Drives the installed text extractor's heartbeat. No-op when no
+    /// extractor is installed.
+    pub fn tick_text_extractor(&mut self) {
+        if let Some(extractor) = self.text_extractor.as_deref_mut() {
+            extractor.tick();
+        }
     }
 
     /// Injects one keyboard scan code and raises IRQ1.

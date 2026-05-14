@@ -69,6 +69,7 @@ neetan <COMMAND>
 | `--sc55-roms <PATH>`         | Path to SC-55 ROM directory (requires `sc55` feature)                               | -          |
 | `--boot-device <DEVICE>`     | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2`, `os`                           | `auto`     |
 | `--printer <PATH>`           | Output file for printer (must exist)                                                | -          |
+| `--enable-extractor`         | Copy on-screen Japanese text to the system clipboard, one line at a time            | off        |
 | `-h, --help`                 | Print help                                                                          | -          |
 | `-V, --version`              | Print version                                                                       | -          |
 
@@ -172,6 +173,23 @@ For example, if your global config sets `machine = PC9801RA` and you run
 | GUI + Alt + F12    | Log HLE DOS memory overview      |
 
 (GUI is the Windows / Command key)
+
+### Text extraction
+
+When started with `--enable-extractor` (or `enable-extractor = on` in a
+configuration file), Neetan observes glyph fetches from the CGROM and
+copies on-screen text to the system clipboard, one completed line at a time.
+This is intended for use with external machine-translation tools such as
+Textractor, Translator++, or other translation tools that watch
+the clipboard.
+
+Limitations:
+
+- This iteration covers games that render text by reading the CGROM
+  (visual novels and similar engines). Titles that draw text solely from
+  the text VRAM (most DOS prompts and menus) are not captured yet.
+- Characters that the JIS-to-Unicode conversion cannot map (custom
+  user-defined glyphs, etc.) are silently dropped.
 
 ### Supported floppy disk image formats
 

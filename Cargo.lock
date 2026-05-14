@@ -98,6 +98,7 @@ dependencies = [
  "machine",
  "sdl3",
  "sdl3_backend",
+ "text_extractor",
 ]
 
 [[package]]
@@ -179,6 +180,14 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 [[package]]
 name = "softfloat"
 version = "0.1.0"
+
+[[package]]
+name = "text_extractor"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "sdl3",
+]
 
 [[package]]
 name = "vcpkg"

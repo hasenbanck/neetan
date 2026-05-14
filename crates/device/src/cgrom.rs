@@ -7,6 +7,29 @@
 //! Read/write of glyph data at port 0xA9 is handled by the bus using
 //! the address computed by this device.
 
+use common::{JisChar, TextExtractor};
+
+/// Converts a `state.code` value into a [`JisChar`] using the PC-98
+/// CGROM port convention.
+///
+/// For full-width characters, port 0xA1 carries the JIS column (ten) in
+/// the high byte of `code`, and port 0xA3 carries `ku - 0x20` in the
+/// low byte. To reconstruct a proper JIS code `(ku << 8) | ten`, we
+/// add 0x20 back to the low byte and swap the two bytes.
+///
+/// For ANK / half-width characters (`code & 0xFF00 == 0`), the low byte
+/// is the character code directly and [`JisChar::from_u16`] does the
+/// right thing.
+fn decode_jis_from_state_code(code: u16) -> JisChar {
+    if (code & 0xFF00) == 0 {
+        JisChar::from_u16(code)
+    } else {
+        let ten = u16::from((code >> 8) as u8);
+        let ku = u16::from(((code & 0x00FF) as u8).wrapping_add(0x20));
+        JisChar::from_u16((ku << 8) | ten)
+    }
+}
+
 /// Line selector mask: bits 0-4 select glyph scanline (0-31).
 const LINE_MASK: u8 = 0x1F;
 
@@ -93,6 +116,11 @@ impl Cgrom {
                 cg_ram: false,
             },
         }
+    }
+
+    /// Reports the currently addressed glyph to the given sink.
+    pub fn notify_read(&self, extractor: &mut dyn TextExtractor) {
+        extractor.push_jis(decode_jis_from_state_code(self.state.code));
     }
 
     /// Writes the code high byte (port 0xA1).
@@ -233,7 +261,23 @@ impl Cgrom {
 
 #[cfg(test)]
 mod tests {
+    use std::{cell::RefCell, rc::Rc};
+
+    use common::{JisChar, TextExtractor};
+
     use super::{Cgrom, HALFWIDTH_BASE, KAC_CODE_ACCESS_OFFSET};
+
+    struct CollectingExtractor {
+        pushes: Rc<RefCell<Vec<JisChar>>>,
+    }
+
+    impl TextExtractor for CollectingExtractor {
+        fn push_jis(&mut self, code: JisChar) {
+            self.pushes.borrow_mut().push(code);
+        }
+
+        fn tick(&mut self) {}
+    }
 
     #[test]
     fn lr_offset_follows_line_selector_bit5() {
@@ -291,5 +335,64 @@ mod tests {
             code_access_address,
             dot_access_address + KAC_CODE_ACCESS_OFFSET
         );
+    }
+
+    #[test]
+    fn decode_jis_from_state_code_handles_fullwidth() {
+        // JIS 0x2121 stored as ten=0x21 in high byte, ku-0x20=0x01 in low byte.
+        assert_eq!(
+            super::decode_jis_from_state_code(0x2101),
+            JisChar::from_u16(0x2121)
+        );
+        // JIS 0x4F50 stored as ten=0x50, ku-0x20=0x2F.
+        assert_eq!(
+            super::decode_jis_from_state_code(0x502F),
+            JisChar::from_u16(0x4F50)
+        );
+    }
+
+    #[test]
+    fn decode_jis_from_state_code_handles_ank() {
+        assert_eq!(
+            super::decode_jis_from_state_code(0x0041),
+            JisChar::from_u16(0x0041)
+        );
+    }
+
+    #[test]
+    fn notify_read_pushes_ank_code() {
+        let pushes = Rc::new(RefCell::new(Vec::new()));
+        let mut sink = CollectingExtractor {
+            pushes: pushes.clone(),
+        };
+        let mut cgrom = Cgrom::new();
+
+        cgrom.write_code_high(0x00);
+        cgrom.write_code_low(0x41); // ANK 'A'
+        cgrom.notify_read(&mut sink);
+
+        let pushes = pushes.borrow();
+        assert_eq!(pushes.len(), 1);
+        assert_eq!(pushes[0], JisChar::from_u16(0x0041));
+        assert!(pushes[0].is_ank());
+    }
+
+    #[test]
+    fn notify_read_pushes_fullwidth_code() {
+        let pushes = Rc::new(RefCell::new(Vec::new()));
+        let mut sink = CollectingExtractor {
+            pushes: pushes.clone(),
+        };
+        let mut cgrom = Cgrom::new();
+
+        // JIS 0x2121 (full-width space): port 0xA1 = ten = 0x21,
+        // port 0xA3 = ku - 0x20 = 0x01.
+        cgrom.write_code_high(0x21);
+        cgrom.write_code_low(0x01);
+        cgrom.notify_read(&mut sink);
+
+        let pushes = pushes.borrow();
+        assert_eq!(pushes.len(), 1);
+        assert_eq!(pushes[0], JisChar::from_u16(0x2121));
     }
 }

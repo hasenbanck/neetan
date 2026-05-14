@@ -321,6 +321,14 @@ impl<T: Tracing> common::Machine for Machine<cpu::VX0, T> {
     fn flush_printer(&mut self) {
         self.bus.flush_printer();
     }
+
+    fn install_text_extractor(&mut self, extractor: Box<dyn common::TextExtractor>) {
+        self.bus.install_text_extractor(extractor);
+    }
+
+    fn tick_text_extractor(&mut self) {
+        self.bus.tick_text_extractor();
+    }
 }
 
 impl<T: Tracing> common::Machine for Machine<cpu::I286, T> {
@@ -390,6 +398,14 @@ impl<T: Tracing> common::Machine for Machine<cpu::I286, T> {
 
     fn flush_printer(&mut self) {
         self.bus.flush_printer();
+    }
+
+    fn install_text_extractor(&mut self, extractor: Box<dyn common::TextExtractor>) {
+        self.bus.install_text_extractor(extractor);
+    }
+
+    fn tick_text_extractor(&mut self) {
+        self.bus.tick_text_extractor();
     }
 }
 
@@ -461,6 +477,14 @@ impl<const CPU_MODEL: u8, T: Tracing> common::Machine for Machine<cpu::I386<CPU_
     fn flush_printer(&mut self) {
         self.bus.flush_printer();
     }
+
+    fn install_text_extractor(&mut self, extractor: Box<dyn common::TextExtractor>) {
+        self.bus.install_text_extractor(extractor);
+    }
+
+    fn tick_text_extractor(&mut self) {
+        self.bus.tick_text_extractor();
+    }
 }
 
 impl<T: Tracing> common::Machine for Machine<cpu::I8086, T> {
@@ -530,5 +554,13 @@ impl<T: Tracing> common::Machine for Machine<cpu::I8086, T> {
 
     fn flush_printer(&mut self) {
         self.bus.flush_printer();
+    }
+
+    fn install_text_extractor(&mut self, extractor: Box<dyn common::TextExtractor>) {
+        self.bus.install_text_extractor(extractor);
+    }
+
+    fn tick_text_extractor(&mut self) {
+        self.bus.tick_text_extractor();
     }
 }

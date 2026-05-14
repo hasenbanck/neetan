@@ -271,6 +271,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             xms_enabled: true,
             xms_32_enabled: false,
             xms_hmamin_kb: 0,
+            text_extractor: None,
         };
 
         match machine_model {
