@@ -89,11 +89,10 @@ VEC_N88_BASIC   equ 0xF3        ; N88-BASIC ROM entry was invoked
 ; ===========================================================================
 ; Section 0: HLE ROM entry traps
 ; ===========================================================================
-; BASIC boot sectors jump to E800:0002 for the N88-BASIC ROM cold entry.
-; HLE BIOS cannot run N88-BASIC programs, so trap that entry explicitly.
-
+; The N88-BASIC ROM sits at E8000-EFFFF. HLE BIOS cannot emulate BASIC so any
+; transfer into this region must surface a clear warning.
 basic_cold_entry:
-    jmp short basic_entry
+    times 0x10 nop
 
 basic_entry:
     hle_entry_halt VEC_N88_BASIC

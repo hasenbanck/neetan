@@ -547,8 +547,8 @@ impl<T: Tracing> Pc9801Bus<T> {
         self.memory.state.ram[0x05C8] = 0x80; // KB_CODE_SEG low
         self.memory.state.ram[0x05C9] = 0xFD; // KB_CODE_SEG high
 
-        // IVT: INT 1Eh at 0x0078 -> E800:000A.
-        self.memory.state.ram[0x0078] = 0x0A; // offset low
+        // IVT: INT 1Eh at 0x0078 -> E800:0000.
+        self.memory.state.ram[0x0078] = 0x00; // offset low
         self.memory.state.ram[0x0079] = 0x00; // offset high
         self.memory.state.ram[0x007A] = 0x00; // segment low
         self.memory.state.ram[0x007B] = 0xE8; // segment high
