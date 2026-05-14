@@ -34,6 +34,7 @@ fn base_inputs<'a>(
         gdc_graphics_pitch: 0,
         gdc_graphics_scroll: [0; 4],
         gdc_graphics_al: 0,
+        crt_31khz_enabled: false,
 
         palette_rgba: [0u32; 16],
         global_enabled: false,

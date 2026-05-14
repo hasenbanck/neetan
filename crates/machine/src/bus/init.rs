@@ -419,6 +419,14 @@ impl<T: Tracing> Pc9801Bus<T> {
         let expmmsz = (self.memory.state.extended_ram.len() / 0x20000) as u8;
         self.memory.state.ram[0x0401] = expmmsz;
 
+        // GRPH_ARCH (0x045C): extended graph architecture identification.
+        //   bit 6: 1 = PC-9821 with PEGC (Pure Enhanced Graphics Controller).
+        // Ref: undoc98 `memsys.txt` (port 0x045C bit 6).
+        self.memory.state.ram[0x045C] = match self.machine_model.has_pegc() {
+            false => 0x00,
+            true => 0x40,
+        };
+
         // BIOS_FLAG3 (0x0481): 386 machines have bit 5 set.
         self.memory.state.ram[0x0481] = match cpu_type {
             CpuType::I8086 | CpuType::I286 | CpuType::V30 => 0x00,

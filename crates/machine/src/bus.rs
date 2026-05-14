@@ -1248,11 +1248,18 @@ impl<T: Tracing> Pc9801Bus<T> {
 
         // In 2.5 MHz mode (mode2 bits 9-10 clear): pitch is in words, multiply by 2.
         // In 5 MHz mode (mode2 bits 9-10 set):     pitch is already in bytes.
+        //
+        // PEGC packed-pixel mode is special: the display engine bypasses the
+        // µPD7220's planar/word interpretation and addresses VRAM as a flat
+        // byte stream (1 byte per pixel). The pitch the renderer feeds to the
+        // PEGC scanline iterator is then `slave.pitch` taken verbatim - the
+        // 2.5 MHz word doubling does not apply.
         let gdc_5mhz = self.display_control.is_gdc_5mhz();
-        let graphics_pitch = if gdc_5mhz {
-            self.gdc_slave.state.pitch
+        let raw_pitch = self.gdc_slave.state.pitch;
+        let graphics_pitch = if gdc_5mhz || self.pegc.is_256_color_active() {
+            raw_pitch
         } else {
-            self.gdc_slave.state.pitch * 2
+            raw_pitch * 2
         };
         let gdc_graphics_pitch = u32::from(graphics_pitch & 0xFE);
 
@@ -1380,6 +1387,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             gdc_graphics_pitch,
             gdc_graphics_scroll,
             gdc_graphics_al,
+            crt_31khz_enabled: self.display_control.is_crt_31khz_enabled(),
             palette_rgba,
             global_enabled,
             text_enabled,
@@ -2152,6 +2160,20 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             return value;
         }
         let address = self.a20_mask(address);
+        if self.machine_model.has_pegc()
+            && ((0xF00000..=0xF7FFFE).contains(&address)
+                || (0xFFF00000..=0xFFF7FFFE).contains(&address))
+        {
+            let value = if self.pegc.is_upper_vram_enabled() {
+                let vram = self.memory.state.pegc_vram.as_ref().unwrap();
+                let offset = (address & 0x7FFFF) as usize;
+                vram[offset] as u16 | ((vram[offset + 1] as u16) << 8)
+            } else {
+                0xFFFF
+            };
+            self.tracer.trace_mem_read_word(address, value);
+            return value;
+        }
         if address >= 0x100000 {
             let base = (address - 0x100000) as usize;
             if base + 1 < self.memory.extended_ram.len() {
@@ -2235,6 +2257,19 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             return;
         }
         let address = self.a20_mask(address);
+        if self.machine_model.has_pegc()
+            && ((0xF00000..=0xF7FFFE).contains(&address)
+                || (0xFFF00000..=0xFFF7FFFE).contains(&address))
+        {
+            if self.pegc.is_upper_vram_enabled() {
+                let vram = self.memory.state.pegc_vram.as_mut().unwrap();
+                let offset = (address & 0x7FFFF) as usize;
+                vram[offset] = value as u8;
+                vram[offset + 1] = (value >> 8) as u8;
+            }
+            self.tracer.trace_mem_write_word(address, value);
+            return;
+        }
         if address >= 0x100000 {
             let base = (address - 0x100000) as usize;
             if base + 1 < self.memory.extended_ram.len() {
@@ -2310,25 +2345,70 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
     fn read_dword(&mut self, address: u32) -> u32 {
         if address.wrapping_add(3) < 0x80000 {
             let a = address as usize;
-            let value = self.memory.state.ram[a] as u32
+            return self.memory.state.ram[a] as u32
                 | ((self.memory.state.ram[a + 1] as u32) << 8)
                 | ((self.memory.state.ram[a + 2] as u32) << 16)
                 | ((self.memory.state.ram[a + 3] as u32) << 24);
-            return value;
         }
         let address_masked = self.a20_mask(address);
-        if address_masked >= 0x100000 {
-            let base = (address_masked - 0x100000) as usize;
-            if base + 3 < self.memory.extended_ram.len() {
-                return self.memory.extended_ram[base] as u32
-                    | ((self.memory.extended_ram[base + 1] as u32) << 8)
-                    | ((self.memory.extended_ram[base + 2] as u32) << 16)
-                    | ((self.memory.extended_ram[base + 3] as u32) << 24);
+        let pegc_active = self.pegc.is_256_color_active();
+        let has_pegc = self.machine_model.has_pegc();
+
+        match address_masked {
+            0xA8000..=0xB7FFC if pegc_active && self.pegc.is_plane_mode() => {
+                self.pending_wait_cycles += self.vram_wait;
+                let mut offset = address_masked - 0xA8000;
+                if self.pegc.state.screen_mode == device::pegc::PegcScreenMode::TwoScreen
+                    && self.access_page_index() != 0
+                {
+                    offset += 0x8000;
+                }
+                let vram = self.memory.state.pegc_vram.as_ref().unwrap().as_slice();
+                let value = self.pegc.plane_read_dword(offset, vram);
+                self.tracer.trace_mem_read_word(address, value as u16);
+                self.tracer
+                    .trace_mem_read_word(address.wrapping_add(2), (value >> 16) as u16);
+                value
+            }
+            0xE0000..=0xE7FFC if pegc_active => {
+                self.pending_wait_cycles += self.vram_wait;
+                let value = self.pegc.mmio_read_dword(address_masked - 0xE0000);
+                self.tracer.trace_mem_read_word(address, value as u16);
+                self.tracer
+                    .trace_mem_read_word(address.wrapping_add(2), (value >> 16) as u16);
+                value
+            }
+            0xF00000..=0xF7FFFC | 0xFFF00000..=0xFFF7FFFC if has_pegc => {
+                let value = if self.pegc.is_upper_vram_enabled() {
+                    let vram = self.memory.state.pegc_vram.as_ref().unwrap();
+                    let offset = (address_masked & 0x7FFFF) as usize;
+                    vram[offset] as u32
+                        | ((vram[offset + 1] as u32) << 8)
+                        | ((vram[offset + 2] as u32) << 16)
+                        | ((vram[offset + 3] as u32) << 24)
+                } else {
+                    0xFFFF_FFFF
+                };
+                self.tracer.trace_mem_read_word(address, value as u16);
+                self.tracer
+                    .trace_mem_read_word(address.wrapping_add(2), (value >> 16) as u16);
+                value
+            }
+            _ => {
+                if address_masked >= 0x100000 {
+                    let base = (address_masked - 0x100000) as usize;
+                    if base + 3 < self.memory.extended_ram.len() {
+                        return self.memory.extended_ram[base] as u32
+                            | ((self.memory.extended_ram[base + 1] as u32) << 8)
+                            | ((self.memory.extended_ram[base + 2] as u32) << 16)
+                            | ((self.memory.extended_ram[base + 3] as u32) << 24);
+                    }
+                }
+                let low = self.read_word(address) as u32;
+                let high = self.read_word(address.wrapping_add(2)) as u32;
+                low | (high << 16)
             }
         }
-        let low = self.read_word(address) as u32;
-        let high = self.read_word(address.wrapping_add(2)) as u32;
-        low | (high << 16)
     }
 
     fn write_dword(&mut self, address: u32, value: u32) {
@@ -2341,18 +2421,59 @@ impl<T: Tracing> common::Bus for Pc9801Bus<T> {
             return;
         }
         let address_masked = self.a20_mask(address);
-        if address_masked >= 0x100000 {
-            let base = (address_masked - 0x100000) as usize;
-            if base + 3 < self.memory.extended_ram.len() {
-                self.memory.extended_ram[base] = value as u8;
-                self.memory.extended_ram[base + 1] = (value >> 8) as u8;
-                self.memory.extended_ram[base + 2] = (value >> 16) as u8;
-                self.memory.extended_ram[base + 3] = (value >> 24) as u8;
-                return;
+        let pegc_active = self.pegc.is_256_color_active();
+        let has_pegc = self.machine_model.has_pegc();
+
+        match address_masked {
+            0xA8000..=0xB7FFC if pegc_active && self.pegc.is_plane_mode() => {
+                self.pending_wait_cycles += self.vram_wait;
+                let mut offset = address_masked - 0xA8000;
+                if self.pegc.state.screen_mode == device::pegc::PegcScreenMode::TwoScreen
+                    && self.access_page_index() != 0
+                {
+                    offset += 0x8000;
+                }
+                let vram = self.memory.state.pegc_vram.as_mut().unwrap().as_mut_slice();
+                self.pegc.plane_write_dword(offset, value, vram);
+                self.tracer.trace_mem_write_word(address, value as u16);
+                self.tracer
+                    .trace_mem_write_word(address.wrapping_add(2), (value >> 16) as u16);
+            }
+            0xE0000..=0xE7FFC if pegc_active => {
+                self.pending_wait_cycles += self.vram_wait;
+                self.pegc.mmio_write_dword(address_masked - 0xE0000, value);
+                self.tracer.trace_mem_write_word(address, value as u16);
+                self.tracer
+                    .trace_mem_write_word(address.wrapping_add(2), (value >> 16) as u16);
+            }
+            0xF00000..=0xF7FFFC | 0xFFF00000..=0xFFF7FFFC if has_pegc => {
+                if self.pegc.is_upper_vram_enabled() {
+                    let vram = self.memory.state.pegc_vram.as_mut().unwrap();
+                    let offset = (address_masked & 0x7FFFF) as usize;
+                    vram[offset] = value as u8;
+                    vram[offset + 1] = (value >> 8) as u8;
+                    vram[offset + 2] = (value >> 16) as u8;
+                    vram[offset + 3] = (value >> 24) as u8;
+                }
+                self.tracer.trace_mem_write_word(address, value as u16);
+                self.tracer
+                    .trace_mem_write_word(address.wrapping_add(2), (value >> 16) as u16);
+            }
+            _ => {
+                if address_masked >= 0x100000 {
+                    let base = (address_masked - 0x100000) as usize;
+                    if base + 3 < self.memory.extended_ram.len() {
+                        self.memory.extended_ram[base] = value as u8;
+                        self.memory.extended_ram[base + 1] = (value >> 8) as u8;
+                        self.memory.extended_ram[base + 2] = (value >> 16) as u8;
+                        self.memory.extended_ram[base + 3] = (value >> 24) as u8;
+                        return;
+                    }
+                }
+                self.write_word(address, value as u16);
+                self.write_word(address.wrapping_add(2), (value >> 16) as u16);
             }
         }
-        self.write_word(address, value as u16);
-        self.write_word(address.wrapping_add(2), (value >> 16) as u16);
     }
 
     fn io_read_byte(&mut self, port: u16) -> u8 {
@@ -3023,26 +3144,6 @@ mod tests {
     }
 
     #[test]
-    fn pegc_port_6a_0x62_sets_plane_mode() {
-        let mut bus = create_pc9821_bus();
-        enable_pegc(&mut bus);
-        assert!(bus.pegc.is_packed_pixel_mode());
-
-        bus.io_write_byte(0x6A, 0x62);
-        assert!(bus.pegc.is_plane_mode());
-
-        bus.io_write_byte(0x6A, 0x63);
-        assert!(bus.pegc.is_packed_pixel_mode());
-    }
-
-    #[test]
-    fn pegc_port_6a_0x62_0x63_ignored_on_non_9821() {
-        let mut bus = Pc9801Bus::<NoTracing>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
-        bus.io_write_byte(0x6A, 0x62);
-        assert!(bus.pegc.is_packed_pixel_mode());
-    }
-
-    #[test]
     fn pegc_port_09a0_readback_vram_access_mode() {
         let mut bus = create_pc9821_bus();
         enable_pegc(&mut bus);
@@ -3050,11 +3151,11 @@ mod tests {
         bus.io_write_byte(0x09A0, 0x0B);
         assert_eq!(bus.io_read_byte(0x09A0), 1);
 
-        bus.io_write_byte(0x6A, 0x62);
+        bus.write_word(0xE0100, 0x0001);
         bus.io_write_byte(0x09A0, 0x0B);
         assert_eq!(bus.io_read_byte(0x09A0), 0);
 
-        bus.io_write_byte(0x6A, 0x63);
+        bus.write_word(0xE0100, 0x0000);
         bus.io_write_byte(0x09A0, 0x0B);
         assert_eq!(bus.io_read_byte(0x09A0), 1);
     }

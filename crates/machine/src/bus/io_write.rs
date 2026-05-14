@@ -133,8 +133,6 @@ impl<T: Tracing> Pc9801Bus<T> {
                             self.pegc.set_256_color_enabled(true);
                             self.update_pegc_mapping();
                         }
-                        0x62 => self.pegc.set_vram_access_mode_plane(),
-                        0x63 => self.pegc.set_vram_access_mode_packed(),
                         0x68 => self.pegc.set_screen_mode(false),
                         0x69 => self.pegc.set_screen_mode(true),
                         _ => {}
@@ -612,8 +610,11 @@ impl<T: Tracing> Pc9801Bus<T> {
                 }
             }
 
-            // 31 kHz GDC mode register (no-op write).
-            0x09A8 => {}
+            // 31 kHz horizontal scan-frequency register (port 09A8h).
+            // 0 = 24.823 kHz / 400 lines, 1 = 31.778 kHz / 480 lines.
+            0x09A8 => {
+                self.display_control.set_crt_31khz_enabled(value & 1 != 0);
+            }
 
             // IDE bank select
             0x0430 if self.machine_model.has_ide() => self.ide.write_bank(0, value),

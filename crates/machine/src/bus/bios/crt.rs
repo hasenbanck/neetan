@@ -40,6 +40,7 @@ impl<T: Tracing> Pc9801Bus<T> {
             0x47 | 0x48 => self.int18h_vector_draw(cpu),
             0x49 => self.int18h_graphic_char(cpu),
             0x4A => self.int18h_draw_mode_set(cpu),
+            0x4D => self.int18h_extended_graphics_select(cpu),
             _ => {}
         }
     }
