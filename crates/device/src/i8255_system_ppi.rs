@@ -18,7 +18,8 @@ const PORT_B_CLOCK_8MHZ: u8 = 0x20;
 const _PORT_B_LCD: u8 = 0x10;
 
 /// Port B bit 3: HGC - mirrors DIP SW 1-8 (graphics extension).
-/// 1 = basic mode (OFF), 0 = expanded mode (ON).
+/// 1 = DIP SW 1-8 OFF = basic mode (no analog 16-color extension).
+/// 0 = DIP SW 1-8 ON  = expanded mode (analog 16-color extension installed).
 /// Ref: undoc98 `io_prn.txt` (I/O 0042h bit 3)
 const PORT_B_GRAPHICS_EXT: u8 = 0x08;
 
@@ -302,13 +303,13 @@ impl I8255SystemPpi {
         }
     }
 
-    /// Sets the graphics extension bit in port B (bit 3).
+    /// Sets the graphics extension bit (HGC, bit 3) in port B.
     /// Ref: undoc98 `io_prn.txt` (I/O 0042h bit 3)
     pub fn set_graphics_extension_bit(&mut self, enabled: bool) {
         if enabled {
-            self.state.port_b |= PORT_B_GRAPHICS_EXT;
-        } else {
             self.state.port_b &= !PORT_B_GRAPHICS_EXT;
+        } else {
+            self.state.port_b |= PORT_B_GRAPHICS_EXT;
         }
     }
 }
