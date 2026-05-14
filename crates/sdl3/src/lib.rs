@@ -3,6 +3,8 @@
 
 /// Audio subsystem.
 pub mod audio;
+/// Clipboard text I/O.
+pub mod clipboard;
 /// Event polling.
 pub mod event;
 /// Filesystem path utilities.

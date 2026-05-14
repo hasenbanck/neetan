@@ -209,6 +209,9 @@ impl<T: Tracing> Pc9801Bus<T> {
             }
             // CGROM glyph data read
             0xA9 => {
+                if let Some(extractor) = self.text_extractor.as_deref_mut() {
+                    self.cgrom.notify_read(extractor);
+                }
                 if let Some(addr) = self
                     .cgrom
                     .read_address(self.display_control.is_kac_dot_access_mode())

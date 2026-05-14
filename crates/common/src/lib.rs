@@ -13,6 +13,7 @@ mod jis;
 pub mod log;
 mod os;
 mod stack_vec;
+mod text_extractor;
 mod trace;
 
 pub use error::{Context, ContextError, OptionContext, StringError};
@@ -25,6 +26,7 @@ pub use os::{
     ConsoleIo, CpuAccess, CursorAccess, DiskIo, DriveIo, HardwareCursorState, MemoryAccess,
 };
 pub use stack_vec::StackVec;
+pub use text_extractor::TextExtractor;
 pub use trace::{NoTracing, OsBootStage, Tracing};
 
 /// CPU generation.
@@ -1183,6 +1185,17 @@ pub trait Machine {
 
     /// Flushes the printer output file, if attached.
     fn flush_printer(&mut self);
+
+    /// Installs a text extractor sink that receives glyphs fetched from
+    /// the CGROM. Default implementation is a no-op for machines that
+    /// have no text extractor support wired up.
+    fn install_text_extractor(&mut self, _extractor: Box<dyn TextExtractor>) {}
+
+    /// Drives the installed text extractor's idle-flush check.
+    ///
+    /// Called once per host frame from the main loop. Default implementation
+    /// is a no-op.
+    fn tick_text_extractor(&mut self) {}
 }
 
 /// Kinds of scheduled events.

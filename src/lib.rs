@@ -114,6 +114,7 @@ pub fn run(config: EmulatorConfig) -> Result<()> {
 
         let busy_start = Instant::now();
         application.run_emulation();
+        application.machine.tick_text_extractor();
         application.busy_duration += busy_start.elapsed();
 
         if let Err(error) = application.render_frame(&window) {
@@ -365,6 +366,12 @@ impl Application {
             config.cdrom.iter().cloned().map(ImageEntry::new).collect();
 
         let mut machine = initialize_machine(&config, audio_engine::SAMPLE_RATE as u32)?;
+
+        if config.enable_extractor {
+            machine.install_text_extractor(Box::new(text_extractor::ClipboardExtractor::new()));
+            info!("Text extractor enabled (clipboard sink)");
+        }
+
         let key_map = config.key_map;
 
         let mut fdd1_index = None;

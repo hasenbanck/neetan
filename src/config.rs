@@ -59,6 +59,7 @@ Options:
       --sc55-roms <PATH>        Path to SC55 ROM directory
       --boot-device <DEVICE>    Boot device: auto, fdd1, fdd2, hdd1, hdd2, os (default: auto)
       --printer <PATH>          Output file for printer (must exist)
+      --enable-extractor        Copy on-screen text to the system clipboard
   -h, --help                    Print help
   -V, --version                 Print version
 
@@ -461,6 +462,7 @@ fn parse_args_from(
                 let val = value(&flag)?;
                 config.boot_device = val.parse::<machine::BootDevice>().map_err(StringError)?;
             }
+            "--enable-extractor" => config.enable_extractor = true,
             other => bail!("unknown argument: {other}"),
         }
     }
@@ -526,6 +528,7 @@ pub struct EmulatorConfig {
     pub ems: bool,
     pub xms: bool,
     pub backend: Backend,
+    pub enable_extractor: bool,
 }
 
 impl Default for EmulatorConfig {
@@ -557,6 +560,7 @@ impl Default for EmulatorConfig {
             ems: true,
             xms: true,
             backend: Backend::Modern,
+            enable_extractor: false,
         }
     }
 }
@@ -655,6 +659,11 @@ fn apply_config_file(config: &mut EmulatorConfig, path: &Path) -> crate::Result<
             "boot-device" => match val.parse::<machine::BootDevice>() {
                 Ok(device) => config.boot_device = device,
                 Err(_) => warn!("Unknown boot device in config: {val}"),
+            },
+            "enable-extractor" => match val {
+                "on" => config.enable_extractor = true,
+                "off" => config.enable_extractor = false,
+                _ => warn!("Invalid enable-extractor in config: {val}, expected on or off"),
             },
             key if key.starts_with("key.") => {
                 let host_name = &key[4..];
