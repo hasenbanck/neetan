@@ -1,6 +1,6 @@
 use std::{env, fs};
 
-use device::software_renderer::{
+use software_renderer::{
     GdcGraphicsInput, GraphicsInput, PegcRenderInputs, RenderInputs, SoftwareRenderer,
     TEXT_VRAM_BYTES,
 };

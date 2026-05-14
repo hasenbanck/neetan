@@ -35,7 +35,6 @@ pub mod sasi;
 #[cfg(feature = "sc55")]
 pub mod sc55;
 pub mod sdip;
-pub mod software_renderer;
 pub mod sound_blaster_16;
 pub mod soundboard_14;
 pub mod soundboard_26k;

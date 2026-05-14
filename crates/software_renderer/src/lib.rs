@@ -1,8 +1,7 @@
 //! CPU-side software renderer for the PC-98 display.
-//!
-//! Composes a 640x480 sRGB framebuffer that the graphics engine uploads to
-//! a sampled image. Owns its own font ROM and framebuffer; `render` does not
-//! allocate.
+
+#![warn(missing_docs)]
+#![deny(unsafe_code)]
 
 use std::{
     fs::File,

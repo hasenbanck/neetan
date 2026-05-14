@@ -6,8 +6,8 @@
 use common::{Bus, Cpu, CpuMode, MachineModel};
 use machine::{Pc9801Bus, Pc9821Ap};
 
-const DEBUG_PEGC_ROM: &[u8] = include_bytes!("../utils/debug/debug_pegc.rom");
-const FONT_ROM_DATA: &[u8] = include_bytes!("../utils/font/font.rom");
+const DEBUG_PEGC_ROM: &[u8] = include_bytes!("../../../utils/debug/debug_pegc.rom");
+const FONT_ROM_DATA: &[u8] = include_bytes!("../../../utils/font/font.rom");
 
 const MODE_BYTE_ADDR: u32 = 0x0500;
 const RUN_BUDGET_CYCLES: u64 = 50_000_000;

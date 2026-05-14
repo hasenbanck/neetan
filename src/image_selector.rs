@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use common::{JisChar, StackVec, str_to_jis};
-use device::software_renderer::{
+use software_renderer::{
     GdcGraphicsInput, GraphicsInput, RenderInputs, SoftwareRenderer, TEXT_VRAM_BYTES,
 };
 

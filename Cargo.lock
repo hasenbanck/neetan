@@ -76,6 +76,7 @@ dependencies = [
  "device",
  "os",
  "resampler",
+ "software_renderer",
 ]
 
 [[package]]
@@ -98,6 +99,7 @@ dependencies = [
  "machine",
  "sdl3",
  "sdl3_backend",
+ "software_renderer",
  "text_extractor",
 ]
 
@@ -180,6 +182,15 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 [[package]]
 name = "softfloat"
 version = "0.1.0"
+
+[[package]]
+name = "software_renderer"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "cpu",
+ "machine",
+]
 
 [[package]]
 name = "text_extractor"
