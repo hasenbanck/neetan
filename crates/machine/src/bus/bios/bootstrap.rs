@@ -14,27 +14,50 @@ use crate::Tracing;
 
 impl<T: Tracing> Pc9801Bus<T> {
     fn try_boot_fdd(&mut self, cpu: &mut impl Cpu, drive: usize) -> bool {
-        if self.floppy.has_drive(drive)
-            && let Some(n) = self.floppy.boot_sector_size_code(drive)
-            && let Some(data) = self.floppy.read_sector_data(drive, 0, 0, 0, 1, n)
-        {
-            let boot_data: Vec<u8> = data.to_vec();
-            let is_2hd = self
-                .floppy
-                .drive(drive)
-                .is_some_and(|d| d.media_type == D88MediaType::Disk2HD);
-            let da_base: usize = if is_2hd { 0x90 } else { 0x70 };
-            if !is_2hd {
-                let equipped = self.floppy.fdc_1mb().state.drive_equipped & 0x0F;
-                self.memory.state.ram[0x055C] &= !equipped;
-                self.memory.state.ram[0x055D] |= equipped << 4;
-                self.memory.state.ram[0x0494] = (equipped & 0x03) << 6;
-            }
-            if self.try_boot_from_data(cpu, &boot_data, (da_base | drive) as u8) {
-                return true;
-            }
+        if !self.floppy.has_drive(drive) {
+            return false;
         }
-        false
+        let Some(n) = self.floppy.boot_sector_size_code(drive) else {
+            return false;
+        };
+
+        let is_2hd = self
+            .floppy
+            .drive(drive)
+            .is_some_and(|d| d.media_type == D88MediaType::Disk2HD);
+
+        // Load the entire IPL block, not a single sector.
+        let total_bytes: usize = if is_2hd { 0x400 } else { 0x200 };
+        let sector_size: usize = 128usize << usize::from(n);
+        let mut boot_data: Vec<u8> = Vec::with_capacity(total_bytes);
+        let mut sector_record: u8 = 1;
+        while boot_data.len() < total_bytes {
+            let Some(sector) = self
+                .floppy
+                .read_sector_data(drive, 0, 0, 0, sector_record, n)
+            else {
+                break;
+            };
+            let take = (total_bytes - boot_data.len()).min(sector.len());
+            boot_data.extend_from_slice(&sector[..take]);
+            if take < sector.len() || sector_record == u8::MAX {
+                break;
+            }
+            sector_record += 1;
+        }
+
+        if boot_data.len() < sector_size {
+            return false;
+        }
+
+        let da_base: usize = if is_2hd { 0x90 } else { 0x70 };
+        if !is_2hd {
+            let equipped = self.floppy.fdc_1mb().state.drive_equipped & 0x0F;
+            self.memory.state.ram[0x055C] &= !equipped;
+            self.memory.state.ram[0x055D] |= equipped << 4;
+            self.memory.state.ram[0x0494] = (equipped & 0x03) << 6;
+        }
+        self.try_boot_from_data(cpu, &boot_data, (da_base | drive) as u8)
     }
 
     fn try_boot_from_data(
