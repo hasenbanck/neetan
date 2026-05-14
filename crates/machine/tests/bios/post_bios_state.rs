@@ -297,7 +297,7 @@ fn post_bios_state_vm() {
     check!(f, state.fdc_640k.drive_equipped, 3, "FDC 640K equipped");
 
     // === System PPI ===
-    check!(f, state.system_ppi.port_b, 0x8A, "System PPI port B");
+    check!(f, state.system_ppi.port_b, 0x82, "System PPI port B");
     check!(f, state.system_ppi.port_c, 0x18, "System PPI port C");
     check!(f, state.system_ppi.dip_switch_2, 0xF3, "DIP switch 2");
     check!(
@@ -624,7 +624,7 @@ fn post_bios_state_f() {
     check!(f, state.fdc_640k.drive_equipped, 3, "FDC 640K equipped");
 
     // === System PPI ===
-    check!(f, state.system_ppi.port_b, 0xA8, "System PPI port B");
+    check!(f, state.system_ppi.port_b, 0xA0, "System PPI port B");
     check!(f, state.system_ppi.port_c, 0x18, "System PPI port C");
 
     // === CGROM ===
@@ -853,7 +853,7 @@ fn post_bios_state_vx() {
     check!(f, state.fdc_640k.control, 0x48, "FDC 640K control");
 
     // === System PPI ===
-    check!(f, state.system_ppi.port_b, 0x88, "System PPI port B");
+    check!(f, state.system_ppi.port_b, 0x80, "System PPI port B");
     check!(f, state.system_ppi.port_c, 0xB8, "System PPI port C");
     check!(f, state.system_ppi.dip_switch_2, 0xF3, "DIP switch 2");
 
@@ -1132,7 +1132,7 @@ fn post_bios_state_ra() {
     check_true!(f, state.serial.expect_mode, "Serial expecting mode");
 
     // === System PPI ===
-    check!(f, state.system_ppi.port_b, 0xA8, "System PPI port B");
+    check!(f, state.system_ppi.port_b, 0xA0, "System PPI port B");
     check!(f, state.system_ppi.port_c, 0xB8, "System PPI port C");
 
     // === FDC 1MB ===
@@ -1409,7 +1409,7 @@ fn post_bios_state_pc9821as_ide() {
     check_true!(f, state.serial.expect_mode, "Serial expecting mode");
 
     // === System PPI ===
-    check!(f, state.system_ppi.port_b, 0xA8, "System PPI port B");
+    check!(f, state.system_ppi.port_b, 0xA0, "System PPI port B");
     check!(f, state.system_ppi.port_c, 0xB8, "System PPI port C");
 
     // === FDC 1MB ===
