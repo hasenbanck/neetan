@@ -1,4 +1,7 @@
-all: debug_grcg.rom debug_text.rom debug_egc.rom debug_mouse.rom debug_crtc.rom debug_fpu.rom debug_pegc.rom
+all: debug_gdc.rom debug_grcg.rom debug_text.rom debug_egc.rom debug_mouse.rom debug_crtc.rom debug_fpu.rom debug_pegc.rom
+
+debug_gdc.rom: debug_gdc.asm
+	nasm -f bin -o $@ $<
 
 debug_grcg.rom: debug_grcg.asm
 	nasm -f bin -o $@ $<
@@ -22,6 +25,6 @@ debug_pegc.rom: debug_pegc.asm
 	nasm -f bin -o $@ $<
 
 clean:
-	rm -f debug_grcg.rom debug_text.rom debug_egc.rom debug_mouse.rom debug_crtc.rom debug_fpu.rom debug_pegc.rom
+	rm -f debug_gdc.rom debug_grcg.rom debug_text.rom debug_egc.rom debug_mouse.rom debug_crtc.rom debug_fpu.rom debug_pegc.rom
 
 .PHONY: all clean

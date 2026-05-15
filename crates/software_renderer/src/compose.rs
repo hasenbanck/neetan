@@ -29,6 +29,7 @@ use super::{
 };
 
 const BLACK: u32 = 0xFF00_0000;
+const BLACK_PALETTE: [u32; 16] = [BLACK; 16];
 
 const VIDEO_MODE_MONOCHROME: u32 = 0x02;
 const VIDEO_MODE_WIDTH_40: u32 = 0x04;
@@ -171,7 +172,12 @@ pub(super) struct DigitalSimdPalette {
 }
 
 impl DigitalSimdPalette {
-    pub(super) fn new(palette_rgba: &[u32; 16], mono_lookup: &[u8; 16], mode: CombineMode) -> Self {
+    pub(super) fn new(
+        graphics_palette_rgba: &[u32; 16],
+        text_palette_rgba: &[u32; 16],
+        mono_lookup: &[u8; 16],
+        mode: CombineMode,
+    ) -> Self {
         let mut palette = Self {
             graphics_red: [0; CELL_STRIDE],
             graphics_green: [0; CELL_STRIDE],
@@ -183,7 +189,7 @@ impl DigitalSimdPalette {
             mono_alpha: [0; CELL_STRIDE],
             mono_mask: [0; CELL_STRIDE],
             text_pixels: [0; 8],
-            palette_zero: palette_rgba[0],
+            palette_zero: graphics_palette_rgba[0],
             text_enabled: mode.text_enabled,
         };
 
@@ -195,7 +201,7 @@ impl DigitalSimdPalette {
             } else {
                 index
             };
-            let graphics_pixel = palette_rgba[graphics_index];
+            let graphics_pixel = graphics_palette_rgba[graphics_index];
             write_shuffle_pixel(
                 &mut palette.graphics_red,
                 &mut palette.graphics_green,
@@ -208,7 +214,7 @@ impl DigitalSimdPalette {
             let mono_pixel = if *mono_lookup_entry != 0 {
                 FIXED_TEXT_LUT[MONOCHROME_GRAPHICS_COLOR as usize]
             } else {
-                palette_rgba[0]
+                graphics_palette_rgba[0]
             };
             write_shuffle_pixel(
                 &mut palette.mono_red,
@@ -229,7 +235,7 @@ impl DigitalSimdPalette {
             palette.text_pixels[index] = if mode.is_16_color {
                 FIXED_TEXT_LUT[index]
             } else {
-                palette_rgba[index]
+                text_palette_rgba[index]
             };
         }
 
@@ -366,9 +372,25 @@ fn compose_digital(
         is_monochrome,
         is_16_color,
     };
+
+    // Skipline is gated on the GDC line-repeat factor only.
+    let skipline_enabled = gdc.lines_per_row > 1;
+
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     let digital_simd_palette = if has_simd {
         Some(DigitalSimdPalette::new(
+            &inputs.palette_rgba,
+            &inputs.palette_rgba,
+            &mono_lookup,
+            mode,
+        ))
+    } else {
+        None
+    };
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    let digital_simd_palette_dim = if has_simd && skipline_enabled {
+        Some(DigitalSimdPalette::new(
+            &BLACK_PALETTE,
             &inputs.palette_rgba,
             &mono_lookup,
             mode,
@@ -397,7 +419,8 @@ fn compose_digital(
         let cursor_active_for_scanline = font_line >= cursor_top && font_line <= cursor_bottom;
         let text_cell_base = text_scroll_start.wrapping_add(row.wrapping_mul(text_pitch));
 
-        let graphics_byte_base = graphics_byte_iter.next();
+        let (graphics_byte_base, is_first_raster) = graphics_byte_iter.next();
+        let is_skipline = skipline_enabled && !is_first_raster;
 
         if text_enabled {
             decode_text_row(
@@ -443,6 +466,11 @@ fn compose_digital(
 
         #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         if let Some(palette) = digital_simd_palette.as_ref() {
+            let active_palette = if is_skipline {
+                digital_simd_palette_dim.as_ref().unwrap_or(palette)
+            } else {
+                palette
+            };
             #[allow(unsafe_code)]
             // SAFETY: `has_simd` was validated at renderer construction:
             // `is_x86_feature_detected!("avx2")` on x86_64, unconditional on
@@ -450,21 +478,33 @@ fn compose_digital(
             unsafe {
                 #[cfg(target_arch = "x86_64")]
                 if mode.is_monochrome && mode.graphics_enabled {
-                    avx2::combine_cells_digital_mono_avx2(row_buf, scratch, palette);
+                    avx2::combine_cells_digital_mono_avx2(row_buf, scratch, active_palette);
                 } else {
-                    avx2::combine_cells_digital_color_avx2(row_buf, scratch, palette);
+                    avx2::combine_cells_digital_color_avx2(row_buf, scratch, active_palette);
                 }
                 #[cfg(target_arch = "aarch64")]
                 if mode.is_monochrome && mode.graphics_enabled {
-                    neon::combine_cells_digital_mono_neon(row_buf, scratch, palette);
+                    neon::combine_cells_digital_mono_neon(row_buf, scratch, active_palette);
                 } else {
-                    neon::combine_cells_digital_color_neon(row_buf, scratch, palette);
+                    neon::combine_cells_digital_color_neon(row_buf, scratch, active_palette);
                 }
             }
             continue;
         }
 
-        combine_cells_digital(row_buf, scratch, &inputs.palette_rgba, &mono_lookup, mode);
+        let active_graphics_palette = if is_skipline {
+            &BLACK_PALETTE
+        } else {
+            &inputs.palette_rgba
+        };
+        combine_cells_digital(
+            row_buf,
+            scratch,
+            active_graphics_palette,
+            &inputs.palette_rgba,
+            &mono_lookup,
+            mode,
+        );
     }
 }
 
@@ -706,8 +746,11 @@ impl GraphicsByteBaseIter {
         }
     }
 
-    fn next(&mut self) -> u32 {
-        if self.repeat_remaining == 0 {
+    /// Returns the byte base for the current raster and whether this raster is
+    /// the first of a fresh VRAM row cycle (i.e. not a repeat).
+    fn next(&mut self) -> (u32, bool) {
+        let is_first = self.repeat_remaining == 0;
+        if is_first {
             let (start_address, scanline) = self.scroll_iter.next();
             // `repeat` folds together GDC lines-per-row and zoom so each VRAM
             // scanline can be reused for multiple output scanlines.
@@ -718,7 +761,7 @@ impl GraphicsByteBaseIter {
         }
 
         self.repeat_remaining = self.repeat_remaining.wrapping_sub(1);
-        self.current_byte_base
+        (self.current_byte_base, is_first)
     }
 }
 
@@ -753,7 +796,8 @@ impl PegcScanlineBaseIter {
 fn combine_cells_digital(
     row_buf: &mut [u8],
     scratch: &ComposeScratch,
-    palette_rgba: &[u32; 16],
+    graphics_palette_rgba: &[u32; 16],
+    text_palette_rgba: &[u32; 16],
     mono_lookup: &[u8; 16],
     mode: CombineMode,
 ) {
@@ -783,7 +827,8 @@ fn combine_cells_digital(
                 text_on,
                 text_color,
                 graphics_color,
-                palette_rgba,
+                graphics_palette_rgba,
+                text_palette_rgba,
                 mono_lookup,
                 mode,
             );
@@ -799,39 +844,46 @@ fn combine_pixel_digital(
     text_on: bool,
     text_color: u32,
     graphics_color: u32,
-    palette_rgba: &[u32; 16],
+    graphics_palette_rgba: &[u32; 16],
+    text_palette_rgba: &[u32; 16],
     mono_lookup: &[u8; 16],
     mode: CombineMode,
 ) -> u32 {
-    let (use_fixed_color, color_index) = if mode.is_monochrome && mode.graphics_enabled {
-        let graphics_on = mono_lookup[graphics_color as usize] != 0;
-        // Mixed monochrome mode treats graphics as a mask. When text is also
-        // enabled, graphics-on pixels inherit the current text cell color so
-        // text and graphics share the foreground color for that cell.
-        if text_on || (graphics_on && mode.text_enabled) {
-            (mode.is_16_color, text_color)
-        } else if graphics_on {
-            (true, MONOCHROME_GRAPHICS_COLOR)
+    // `is_text_pixel` carries whether the resolved color comes from the text
+    // plane. On skip rasters the graphics palette is dimmed but the text
+    // palette stays at full brightness.
+    let (use_fixed_color, is_text_pixel, color_index) =
+        if mode.is_monochrome && mode.graphics_enabled {
+            let graphics_on = mono_lookup[graphics_color as usize] != 0;
+            // Mixed monochrome mode treats graphics as a mask. When text is also
+            // enabled, graphics-on pixels inherit the current text cell color so
+            // text and graphics share the foreground color for that cell.
+            if text_on || (graphics_on && mode.text_enabled) {
+                (mode.is_16_color, true, text_color)
+            } else if graphics_on {
+                (true, false, MONOCHROME_GRAPHICS_COLOR)
+            } else {
+                (false, false, 0)
+            }
+        } else if text_on {
+            (mode.is_16_color, true, text_color)
         } else {
-            (false, 0)
-        }
-    } else if text_on {
-        (mode.is_16_color, text_color)
-    } else {
-        let palette_index = if mode.graphics_enabled && !mode.is_16_color {
-            graphics_color + DIGITAL_GRAPHICS_PALETTE_BASE
-        } else {
-            graphics_color
+            let palette_index = if mode.graphics_enabled && !mode.is_16_color {
+                graphics_color + DIGITAL_GRAPHICS_PALETTE_BASE
+            } else {
+                graphics_color
+            };
+            (false, false, palette_index)
         };
-        (false, palette_index)
-    };
 
     if use_fixed_color {
         // Fixed text colors are used for text in 16-color analog mode and for
         // monochrome graphics, independent of palette register contents.
         FIXED_TEXT_LUT[(color_index & 0x07) as usize]
+    } else if is_text_pixel {
+        text_palette_rgba[(color_index & 0x0F) as usize]
     } else {
-        palette_rgba[(color_index & 0x0F) as usize]
+        graphics_palette_rgba[(color_index & 0x0F) as usize]
     }
 }
 
