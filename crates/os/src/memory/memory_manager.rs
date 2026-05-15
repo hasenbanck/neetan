@@ -1,10 +1,10 @@
 //! Unified EMS/XMS/UMB memory manager.
 //!
 //! All EMS/XMS data lives in the machine's extended RAM (accessed via
-//! `MemoryAccess` at addresses 0x100000 + offset). The TLSF allocator
+//! `MemoryAccess` at addresses 0x100000 + offset). The extended-memory allocator
 //! tracks which byte ranges within extended RAM are allocated.
 
-use super::tlsf::{ALIGN_MASK, Allocation, TlsfAllocator};
+use super::best_fit::{ALIGN_MASK, Allocation, BestFitAllocator};
 use crate::{MemoryAccess, memory, tables::*};
 
 pub(crate) const EXTENDED_RAM_BASE: u32 = 0x100000;
@@ -96,7 +96,7 @@ impl XmsHandle {
 }
 
 pub(crate) struct MemoryManager {
-    allocator: TlsfAllocator,
+    allocator: BestFitAllocator,
     extended_memory_size: u32,
     allocator_base_offset: u32,
     hma_exists: bool,
@@ -146,7 +146,7 @@ impl MemoryManager {
             0
         };
         let allocator_size = extended_memory_size.saturating_sub(allocator_base_offset);
-        let allocator = TlsfAllocator::new(allocator_size);
+        let allocator = BestFitAllocator::new(allocator_size);
 
         if ems_enabled {
             mem.enable_ems_page_frame();
@@ -2545,6 +2545,44 @@ mod tests {
         let (largest, total) = mm.xms_query_free();
         assert!(total < 1024);
         assert!(largest <= total);
+    }
+
+    #[test]
+    fn test_xms_allocate_reported_largest_free_block() {
+        let (mut mm, _mem) = create_manager(16 * 1024);
+        let (largest, _total) = mm.xms_query_free();
+        let handle = mm.xms_allocate(largest).unwrap();
+        let (_, _, size_kb) = mm.xms_handle_info(handle).unwrap();
+        assert_eq!(size_kb, largest);
+    }
+
+    #[test]
+    fn test_xms_allocate_reported_largest_fragmented_free_block() {
+        let (mut mm, _mem) = create_manager(1024);
+        let initial_free = mm.xms_query_free();
+
+        let first = mm.xms_allocate(128).unwrap();
+        let middle = mm.xms_allocate(256).unwrap();
+        let second = mm.xms_allocate(128).unwrap();
+        let third = mm.xms_allocate(448).unwrap();
+        assert_eq!(mm.xms_query_free(), (0, 0));
+
+        mm.xms_free(middle).unwrap();
+        assert_eq!(mm.xms_query_free(), (256, 256));
+
+        let largest = mm.xms_query_free().0;
+        let exact = mm.xms_allocate(largest).unwrap();
+        let (_, _, size_kb) = mm.xms_handle_info(exact).unwrap();
+        assert_eq!(size_kb, largest);
+        assert_eq!(mm.xms_query_free(), (0, 0));
+
+        mm.xms_free(exact).unwrap();
+        assert_eq!(mm.xms_query_free(), (256, 256));
+
+        mm.xms_free(first).unwrap();
+        mm.xms_free(second).unwrap();
+        mm.xms_free(third).unwrap();
+        assert_eq!(mm.xms_query_free(), initial_free);
     }
 
     #[test]

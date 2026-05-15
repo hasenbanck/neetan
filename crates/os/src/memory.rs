@@ -1,7 +1,7 @@
 //! Memory Control block (MCB) chain management (allocate, free, resize).
 
+mod best_fit;
 pub(crate) mod memory_manager;
-mod tlsf;
 
 use crate::{MemoryAccess, OsState, tables::*};
 
