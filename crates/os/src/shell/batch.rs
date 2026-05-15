@@ -154,6 +154,61 @@ impl BatchState {
         None
     }
 
+    fn jump_to_label(&mut self, io: &mut IoAccess, label_args: &[u8]) -> BatchStepResult {
+        let label = first_label_word(label_args);
+        if let Some(target) = self.find_label(label) {
+            self.current_line = target + 1;
+            BatchStepResult::Continue
+        } else {
+            io.println(b"Label not found");
+            BatchStepResult::Finished
+        }
+    }
+
+    fn run_conditional_command(
+        &mut self,
+        shell: &mut super::Shell,
+        state: &mut OsState,
+        io: &mut IoAccess,
+        disk: &mut dyn DriveIo,
+        command: &[u8],
+    ) -> BatchStepResult {
+        let command = command.trim_ascii();
+        let (command_name, command_args) = super::split_command(command);
+        let command_upper: Vec<u8> = command_name
+            .iter()
+            .map(|byte| byte.to_ascii_uppercase())
+            .collect();
+        if command_upper == b"GOTO" {
+            return self.jump_to_label(io, command_args);
+        }
+
+        let phase = shell.dispatch_single(state, io, disk, command);
+        match phase {
+            super::ShellPhase::ExecutingCommand(cmd) => {
+                self.running_command = Some(cmd);
+                if shell.redirect_buffer.is_some() {
+                    self.redirect_buffer = shell.redirect_buffer.take();
+                    self.current_redirect = shell.current_redirect.take();
+                }
+            }
+            super::ShellPhase::WaitingForChild => {
+                self.running_command = Some(Box::new(WaitingForChildCommand::new(shell.owner_psp)));
+            }
+            super::ShellPhase::ExecutingBatch(new_batch) => {
+                self.lines = new_batch.lines;
+                self.current_line = 0;
+                self.params = new_batch.params;
+                self.bat_path = new_batch.bat_path;
+                self.echo_on = new_batch.echo_on;
+            }
+            _ => {
+                self.current_line += 1;
+            }
+        }
+        BatchStepResult::Continue
+    }
+
     pub(crate) fn step_batch(
         &mut self,
         shell: &mut super::Shell,
@@ -279,26 +334,12 @@ impl BatchState {
 
         // GOTO
         if upper.starts_with(b"GOTO ") || upper.starts_with(b"GOTO\t") {
-            let label = effective_line[5..].trim_ascii();
-            // Strip leading colon if present
-            let label = if label.starts_with(b":") {
-                &label[1..]
-            } else {
-                label
-            };
-            if let Some(target) = self.find_label(label) {
-                self.current_line = target + 1; // skip the label line itself
-            } else {
-                io.println(b"Label not found");
-                return BatchStepResult::Finished;
-            }
-            return BatchStepResult::Continue;
+            return self.jump_to_label(io, &effective_line[5..]);
         }
 
         // IF
         if upper.starts_with(b"IF ") {
-            self.handle_if(shell, state, io, disk, &effective_line[3..]);
-            return BatchStepResult::Continue;
+            return self.handle_if(shell, state, io, disk, &effective_line[3..]);
         }
 
         // CALL
@@ -347,7 +388,7 @@ impl BatchState {
         io: &mut IoAccess,
         disk: &mut dyn DriveIo,
         args: &[u8],
-    ) {
+    ) -> BatchStepResult {
         let trimmed = args.trim_ascii();
         let upper: Vec<u8> = trimmed.iter().map(|b| b.to_ascii_uppercase()).collect();
 
@@ -370,52 +411,27 @@ impl BatchState {
                 let condition = if negated { !exists } else { exists };
 
                 if condition && !command.is_empty() {
-                    let phase = shell.dispatch_parsed(state, io, disk, command);
-                    if let super::ShellPhase::ExecutingCommand(cmd) = phase {
-                        self.running_command = Some(cmd);
-                        if shell.redirect_buffer.is_some() {
-                            self.redirect_buffer = shell.redirect_buffer.take();
-                            self.current_redirect = shell.current_redirect.take();
-                        }
-                        return;
-                    }
+                    return self.run_conditional_command(shell, state, io, disk, command);
                 }
             }
             self.current_line += 1;
-        } else if rest_upper.starts_with(b"ERRORLEVEL ") {
-            let after_el = rest[11..].trim_ascii();
-            // Parse the errorlevel number
-            let mut i = 0;
-            while i < after_el.len() && after_el[i].is_ascii_digit() {
-                i += 1;
-            }
-            if i > 0 {
-                let level_str = std::str::from_utf8(&after_el[..i]).unwrap_or("0");
-                let level: u8 = level_str.parse().unwrap_or(0);
-                let command = after_el[i..].trim_ascii();
+            BatchStepResult::Continue
+        } else if let Some((level, command)) = parse_errorlevel_condition(rest) {
+            let condition_met = shell.last_exit_code >= level;
+            let condition = if negated {
+                !condition_met
+            } else {
+                condition_met
+            };
 
-                let condition_met = shell.last_exit_code >= level;
-                let condition = if negated {
-                    !condition_met
-                } else {
-                    condition_met
-                };
-
-                if condition && !command.is_empty() {
-                    let phase = shell.dispatch_parsed(state, io, disk, command);
-                    if let super::ShellPhase::ExecutingCommand(cmd) = phase {
-                        self.running_command = Some(cmd);
-                        if shell.redirect_buffer.is_some() {
-                            self.redirect_buffer = shell.redirect_buffer.take();
-                            self.current_redirect = shell.current_redirect.take();
-                        }
-                        return;
-                    }
-                }
+            if condition && !command.is_empty() {
+                return self.run_conditional_command(shell, state, io, disk, command);
             }
             self.current_line += 1;
+            BatchStepResult::Continue
         } else {
             self.current_line += 1;
+            BatchStepResult::Continue
         }
     }
 
@@ -501,6 +517,67 @@ impl BatchState {
 pub(crate) enum BatchStepResult {
     Continue,
     Finished,
+}
+
+fn first_label_word(label_args: &[u8]) -> &[u8] {
+    let label = label_args.trim_ascii();
+    let label = if label.starts_with(b":") {
+        &label[1..]
+    } else {
+        label
+    };
+    match label.iter().position(|&byte| byte == b' ' || byte == b'\t') {
+        Some(position) => &label[..position],
+        None => label,
+    }
+}
+
+fn parse_errorlevel_condition(rest: &[u8]) -> Option<(u8, &[u8])> {
+    const KEYWORD: &[u8] = b"ERRORLEVEL";
+
+    if rest.len() <= KEYWORD.len() || !ascii_eq_ignore_case(&rest[..KEYWORD.len()], KEYWORD) {
+        return None;
+    }
+
+    let mut index = KEYWORD.len();
+    if rest[index].is_ascii_whitespace() {
+        while index < rest.len() && rest[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if rest.get(index..index + 2) == Some(b"==") {
+            index += 2;
+        }
+    } else if rest.get(index..index + 2) == Some(b"==") {
+        index += 2;
+    } else {
+        return None;
+    }
+
+    while index < rest.len() && rest[index].is_ascii_whitespace() {
+        index += 1;
+    }
+
+    let start = index;
+    while index < rest.len() && rest[index].is_ascii_digit() {
+        index += 1;
+    }
+    if start == index {
+        return None;
+    }
+
+    let level = std::str::from_utf8(&rest[start..index])
+        .ok()?
+        .parse()
+        .ok()?;
+    Some((level, rest[index..].trim_ascii()))
+}
+
+fn ascii_eq_ignore_case(left: &[u8], right: &[u8]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left_byte, right_byte)| left_byte.eq_ignore_ascii_case(right_byte))
 }
 
 pub(crate) fn load_bat_file(

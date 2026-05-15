@@ -1,11 +1,80 @@
 use crate::harness::*;
 
-fn boot_with_bat(bat_content: &[u8]) -> machine::Pc9801Ra {
-    let floppy = create_test_floppy_with_program(b"TEST    BAT", bat_content);
-    boot_hle_with_floppy_image(floppy)
+fn boot_with_batch_file(batch_content: &[u8]) -> machine::Pc9801Ra {
+    let floppy_image = create_test_floppy_with_program(b"TEST    BAT", batch_content);
+    boot_hle_with_floppy_image(floppy_image)
 }
 
-fn current_shell_psp(machine: &mut machine::Pc9801Ra) -> u16 {
+fn submit_command(machine: &mut machine::Pc9801Ra, command: &[u8]) {
+    type_string(&mut machine.bus, command);
+    run_until_prompt(machine);
+}
+
+fn submit_long_command(machine: &mut machine::Pc9801Ra, command: &[u8]) {
+    type_string_long(machine, command);
+    run_until_prompt(machine);
+}
+
+fn prepare_test_batch(machine: &mut machine::Pc9801Ra) {
+    submit_command(machine, b"A:\r");
+    submit_command(machine, b"CLS\r");
+}
+
+fn run_batch_command(mut machine: machine::Pc9801Ra, command: &[u8]) -> machine::Pc9801Ra {
+    prepare_test_batch(&mut machine);
+    submit_command(&mut machine, command);
+    machine
+}
+
+fn run_test_batch(batch_content: &[u8]) -> machine::Pc9801Ra {
+    run_batch_command(boot_with_batch_file(batch_content), b"TEST\r")
+}
+
+fn run_test_batch_with_long_command(batch_content: &[u8], command: &[u8]) -> machine::Pc9801Ra {
+    let mut machine = boot_with_batch_file(batch_content);
+    prepare_test_batch(&mut machine);
+    submit_long_command(&mut machine, command);
+    machine
+}
+
+fn run_test_batch_with_two_floppy_images(
+    first_floppy_image: device::floppy::FloppyImage,
+    second_floppy_image: device::floppy::FloppyImage,
+) -> machine::Pc9801Ra {
+    run_batch_command(
+        boot_hle_with_two_floppy_images(first_floppy_image, second_floppy_image),
+        b"TEST\r",
+    )
+}
+
+fn screen_contains(machine: &machine::Pc9801Ra, text: &str) -> bool {
+    assert!(text.is_ascii(), "screen text helper only supports ASCII");
+    let characters = text.bytes().map(u16::from).collect::<Vec<_>>();
+    find_string_in_text_vram(&machine.bus, &characters)
+}
+
+fn assert_screen_contains(machine: &machine::Pc9801Ra, text: &str, message: &str) {
+    assert!(screen_contains(machine, text), "{message}");
+}
+
+fn assert_screen_lacks(machine: &machine::Pc9801Ra, text: &str, message: &str) {
+    assert!(!screen_contains(machine, text), "{message}");
+}
+
+fn run_until_screen_contains(machine: &mut machine::Pc9801Ra, text: &str, message: &str) {
+    let max_cycles: u64 = 500_000_000;
+    let check_interval: u64 = 100_000;
+    let mut total_cycles = 0u64;
+    loop {
+        total_cycles += machine.run_for(check_interval);
+        if screen_contains(machine, text) {
+            break;
+        }
+        assert!(total_cycles < max_cycles, "{message}");
+    }
+}
+
+fn current_shell_program_segment_prefix(machine: &mut machine::Pc9801Ra) -> u16 {
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x62,                         // MOV AH, 62h
@@ -19,379 +88,369 @@ fn current_shell_psp(machine: &mut machine::Pc9801Ra) -> u16 {
 
 #[test]
 fn batch_echo() {
-    let mut machine = boot_with_bat(b"ECHO BATCH OUTPUT\r\n");
-    type_string(&mut machine.bus, b"A:\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"CLS\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"TEST\r");
-    run_until_prompt(&mut machine);
-
-    let output = [
-        0x0042, 0x0041, 0x0054, 0x0043, 0x0048, 0x0020, 0x004F, 0x0055, 0x0054, 0x0050, 0x0055,
-        0x0054,
-    ]; // "BATCH OUTPUT"
-    assert!(
-        find_string_in_text_vram(&machine.bus, &output),
-        "batch file should display 'BATCH OUTPUT'"
+    let machine = run_test_batch(b"ECHO BATCH OUTPUT\r\n");
+    assert_screen_contains(
+        &machine,
+        "BATCH OUTPUT",
+        "batch file should display 'BATCH OUTPUT'",
     );
 }
 
 #[test]
 fn batch_multi_line() {
-    let mut machine = boot_with_bat(b"ECHO ALPHA\r\nECHO BETA\r\n");
-    type_string(&mut machine.bus, b"A:\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"CLS\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"TEST\r");
-    run_until_prompt(&mut machine);
-
-    let alpha = [0x0041, 0x004C, 0x0050, 0x0048, 0x0041]; // "ALPHA"
-    let beta = [0x0042, 0x0045, 0x0054, 0x0041]; // "BETA"
-    assert!(
-        find_string_in_text_vram(&machine.bus, &alpha),
-        "batch should display 'ALPHA'"
-    );
-    assert!(
-        find_string_in_text_vram(&machine.bus, &beta),
-        "batch should display 'BETA'"
-    );
+    let machine = run_test_batch(b"ECHO ALPHA\r\nECHO BETA\r\n");
+    assert_screen_contains(&machine, "ALPHA", "batch should display 'ALPHA'");
+    assert_screen_contains(&machine, "BETA", "batch should display 'BETA'");
 }
 
 #[test]
 fn batch_echo_off() {
-    let mut machine = boot_with_bat(b"@ECHO OFF\r\nECHO QUIET\r\n");
-    type_string(&mut machine.bus, b"A:\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"CLS\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"TEST\r");
-    run_until_prompt(&mut machine);
-
-    let quiet = [0x0051, 0x0055, 0x0049, 0x0045, 0x0054]; // "QUIET"
-    assert!(
-        find_string_in_text_vram(&machine.bus, &quiet),
-        "batch should display 'QUIET'"
-    );
+    let machine = run_test_batch(b"@ECHO OFF\r\nECHO QUIET\r\n");
+    assert_screen_contains(&machine, "QUIET", "batch should display 'QUIET'");
 }
 
 #[test]
 fn batch_goto() {
-    let mut machine = boot_with_bat(b"GOTO SKIP\r\nECHO BAD\r\n:SKIP\r\nECHO GOOD\r\n");
-    type_string(&mut machine.bus, b"A:\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"CLS\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"TEST\r");
-    run_until_prompt(&mut machine);
-
-    let good = [0x0047, 0x004F, 0x004F, 0x0044]; // "GOOD"
-    let bad = [0x0042, 0x0041, 0x0044]; // "BAD"
-    assert!(
-        find_string_in_text_vram(&machine.bus, &good),
-        "GOTO should skip to label and display 'GOOD'"
+    let machine = run_test_batch(b"GOTO SKIP\r\nECHO BAD\r\n:SKIP\r\nECHO GOOD\r\n");
+    assert_screen_contains(
+        &machine,
+        "GOOD",
+        "GOTO should skip to label and display 'GOOD'",
     );
-    assert!(
-        !find_string_in_text_vram(&machine.bus, &bad),
-        "'BAD' should not be displayed after GOTO"
+    assert_screen_lacks(&machine, "BAD", "'BAD' should not be displayed after GOTO");
+}
+
+#[test]
+fn batch_goto_accepts_colon_and_label_comments() {
+    let machine = run_test_batch(
+        b"GOTO :SKIP trailing note\r\nECHO BAD\r\n:SKIP target label\r\nECHO GOOD\r\n",
     );
+    assert_screen_contains(
+        &machine,
+        "GOOD",
+        "GOTO should accept a leading colon and ignore text after the label",
+    );
+    assert_screen_lacks(&machine, "BAD", "GOTO should skip the false branch");
+}
+
+#[test]
+fn batch_goto_missing_label_reports_error() {
+    let machine = run_test_batch(b"GOTO NOWHERE\r\nECHO BAD\r\n");
+    assert_screen_contains(
+        &machine,
+        "Label not found",
+        "missing GOTO labels should report an error",
+    );
+    assert_screen_lacks(&machine, "BAD", "batch should stop after a missing label");
 }
 
 #[test]
 fn batch_if_exist() {
-    let mut machine = boot_with_bat(b"IF EXIST TESTFILE.TXT ECHO FOUND\r\n");
-    type_string(&mut machine.bus, b"A:\r");
-    run_until_prompt(&mut machine);
+    let machine = run_test_batch(b"IF EXIST TESTFILE.TXT ECHO FOUND\r\n");
+    assert_screen_contains(
+        &machine,
+        "FOUND",
+        "IF EXIST should detect TESTFILE.TXT and display 'FOUND'",
+    );
+}
 
-    type_string(&mut machine.bus, b"CLS\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"TEST\r");
-    run_until_prompt(&mut machine);
-
-    let found = [0x0046, 0x004F, 0x0055, 0x004E, 0x0044]; // "FOUND"
-    assert!(
-        find_string_in_text_vram(&machine.bus, &found),
-        "IF EXIST should detect TESTFILE.TXT and display 'FOUND'"
+#[test]
+fn batch_if_exist_false_skips_command() {
+    let machine = run_test_batch(b"@ECHO OFF\r\nIF EXIST NOFILE.TXT ECHO BAD\r\nECHO AFTER\r\n");
+    assert_screen_contains(
+        &machine,
+        "AFTER",
+        "false IF EXIST should continue with the next line",
+    );
+    assert_screen_lacks(
+        &machine,
+        "BAD",
+        "false IF EXIST should skip the conditional command",
     );
 }
 
 #[test]
 fn batch_if_not_exist() {
-    let mut machine = boot_with_bat(b"IF NOT EXIST NOFILE.TXT ECHO MISSING\r\n");
-    type_string(&mut machine.bus, b"A:\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"CLS\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"TEST\r");
-    run_until_prompt(&mut machine);
-
-    let missing = [0x004D, 0x0049, 0x0053, 0x0053, 0x0049, 0x004E, 0x0047]; // "MISSING"
-    assert!(
-        find_string_in_text_vram(&machine.bus, &missing),
-        "IF NOT EXIST should display 'MISSING' for nonexistent file"
+    let machine = run_test_batch(b"IF NOT EXIST NOFILE.TXT ECHO MISSING\r\n");
+    assert_screen_contains(
+        &machine,
+        "MISSING",
+        "IF NOT EXIST should display 'MISSING' for nonexistent file",
     );
 }
 
 #[test]
 fn batch_if_errorlevel() {
-    let mut machine = boot_with_bat(b"NOSUCHCMD\r\nIF ERRORLEVEL 1 ECHO ERROR\r\n");
-    type_string(&mut machine.bus, b"A:\r");
-    run_until_prompt(&mut machine);
+    let machine = run_test_batch(b"NOSUCHCMD\r\nIF ERRORLEVEL 1 ECHO ERROR\r\n");
+    assert_screen_contains(
+        &machine,
+        "ERROR",
+        "IF ERRORLEVEL should detect non-zero exit code and display 'ERROR'",
+    );
+}
 
-    type_string(&mut machine.bus, b"CLS\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"TEST\r");
-    run_until_prompt(&mut machine);
-
-    let error = [0x0045, 0x0052, 0x0052, 0x004F, 0x0052]; // "ERROR"
-    assert!(
-        find_string_in_text_vram(&machine.bus, &error),
-        "IF ERRORLEVEL should detect non-zero exit code and display 'ERROR'"
+#[test]
+fn batch_if_not_errorlevel_equals_with_spaces() {
+    let machine = run_test_batch(
+        b"NOSUCHCMD\r\nIF NOT ERRORLEVEL == 2 ECHO BELOW\r\nIF ERRORLEVEL == 1 ECHO HIT\r\n",
+    );
+    assert_screen_contains(
+        &machine,
+        "BELOW",
+        "IF NOT ERRORLEVEL == n should accept spaces around ==",
+    );
+    assert_screen_contains(
+        &machine,
+        "HIT",
+        "IF ERRORLEVEL == n should accept spaces around ==",
     );
 }
 
 #[test]
 fn batch_if_errorlevel_after_external_program() {
-    let floppy_a = create_test_floppy_with_program(
+    let first_floppy_image = create_test_floppy_with_program(
         b"TEST    BAT",
         b"B:\\RUNME\r\nIF ERRORLEVEL 66 ECHO EXITOK\r\n",
     );
-    let floppy_b = create_test_floppy_with_program(b"RUNME   COM", TEST_COM_PROGRAM);
-    let mut machine = boot_hle_with_two_floppy_images(floppy_a, floppy_b);
-    type_string(&mut machine.bus, b"A:\r");
-    run_until_prompt(&mut machine);
+    let second_floppy_image = create_test_floppy_with_program(b"RUNME   COM", TEST_COM_PROGRAM);
+    let machine = run_test_batch_with_two_floppy_images(first_floppy_image, second_floppy_image);
+    assert_screen_contains(
+        &machine,
+        "EXITOK",
+        "batch should wait for external programs before evaluating following lines",
+    );
+}
 
-    type_string(&mut machine.bus, b"CLS\r");
-    run_until_prompt(&mut machine);
+#[test]
+fn batch_if_errorlevel_equals_goto_after_external_program() {
+    let first_floppy_image = create_test_floppy_with_program(
+        b"TEST    BAT",
+        b"B:\\RUNME\r\nIF ERRORLEVEL==66 GOTO EXITOK   66=EXTERNAL\r\nECHO BAD\r\n:EXITOK\r\nECHO EXITOK\r\n",
+    );
+    let second_floppy_image = create_test_floppy_with_program(b"RUNME   COM", TEST_COM_PROGRAM);
+    let machine = run_test_batch_with_two_floppy_images(first_floppy_image, second_floppy_image);
+    assert_screen_contains(
+        &machine,
+        "EXITOK",
+        "IF ERRORLEVEL==n should jump to a batch label after an external program",
+    );
+    assert_screen_lacks(&machine, "BAD", "inline GOTO should skip the false branch");
+}
 
-    type_string(&mut machine.bus, b"TEST\r");
-    run_until_prompt(&mut machine);
+#[test]
+fn batch_if_can_run_external_program() {
+    let first_floppy_image = create_test_floppy_with_program(
+        b"TEST    BAT",
+        b"IF EXIST TESTFILE.TXT B:\\RUNME\r\nIF ERRORLEVEL 66 ECHO EXITOK\r\n",
+    );
+    let second_floppy_image = create_test_floppy_with_program(b"RUNME   COM", TEST_COM_PROGRAM);
+    let machine = run_test_batch_with_two_floppy_images(first_floppy_image, second_floppy_image);
+    assert_screen_contains(
+        &machine,
+        "EXITOK",
+        "IF should wait for external programs before continuing",
+    );
+}
 
-    let exitok = [0x0045, 0x0058, 0x0049, 0x0054, 0x004F, 0x004B]; // "EXITOK"
-    assert!(
-        find_string_in_text_vram(&machine.bus, &exitok),
-        "batch should wait for external programs before evaluating following lines"
+#[test]
+fn batch_if_can_replace_with_another_batch() {
+    let first_floppy_image = create_test_floppy_with_program(
+        b"TEST    BAT",
+        b"IF EXIST B:\\CHILD.BAT B:\\CHILD\r\nECHO BAD\r\n",
+    );
+    let second_floppy_image = create_test_floppy_with_program(b"CHILD   BAT", b"ECHO CHILD\r\n");
+    let machine = run_test_batch_with_two_floppy_images(first_floppy_image, second_floppy_image);
+    assert_screen_contains(
+        &machine,
+        "CHILD",
+        "IF should be able to replace the current batch with another batch",
+    );
+    assert_screen_lacks(
+        &machine,
+        "BAD",
+        "batch replacement should not return to the parent without CALL",
+    );
+}
+
+#[test]
+fn batch_call_runs_child_and_returns_to_parent_batch() {
+    let first_floppy_image =
+        create_test_floppy_with_program(b"TEST    BAT", b"CALL B:\\CHILD ARG\r\nECHO PARENT\r\n");
+    let second_floppy_image = create_test_floppy_with_program(b"CHILD   BAT", b"ECHO CHILD %1\r\n");
+    let machine = run_test_batch_with_two_floppy_images(first_floppy_image, second_floppy_image);
+    assert_screen_contains(&machine, "CHILD", "CALL should run the child batch");
+    assert_screen_contains(
+        &machine,
+        "ARG",
+        "CALL should pass arguments to the child batch",
+    );
+    assert_screen_contains(&machine, "PARENT", "CALL should return to the parent batch");
+}
+
+#[test]
+fn batch_call_missing_child_reports_error_and_continues() {
+    let machine = run_test_batch(b"CALL NOFILE\r\nECHO AFTER\r\n");
+    assert_screen_contains(
+        &machine,
+        "Batch file not found",
+        "CALL should report a missing batch file",
+    );
+    assert_screen_contains(
+        &machine,
+        "AFTER",
+        "CALL should continue after a missing child batch",
+    );
+}
+
+#[test]
+fn batch_if_can_run_immediate_shell_command() {
+    let machine = run_test_batch(b"IF EXIST TESTFILE.TXT A:\r\nECHO AFTER\r\n");
+    assert_screen_contains(
+        &machine,
+        "AFTER",
+        "IF should advance after immediate shell commands",
+    );
+}
+
+#[test]
+fn batch_if_command_supports_redirection() {
+    let machine = run_test_batch(b"IF EXIST TESTFILE.TXT ECHO REDIR > OUT.TXT\r\nTYPE OUT.TXT\r\n");
+    assert_screen_contains(
+        &machine,
+        "REDIR",
+        "IF command output redirection should be written and readable",
+    );
+}
+
+#[test]
+fn batch_if_unknown_condition_continues() {
+    let machine = run_test_batch(b"@ECHO OFF\r\nIF UNKNOWN ECHO BAD\r\nECHO AFTER\r\n");
+    assert_screen_contains(
+        &machine,
+        "AFTER",
+        "unknown IF conditions should continue with the next line",
+    );
+    assert_screen_lacks(
+        &machine,
+        "BAD",
+        "unknown IF conditions should not run their command",
     );
 }
 
 #[test]
 fn batch_params() {
-    let mut machine = boot_with_bat(b"ECHO %1 %2\r\n");
-    type_string(&mut machine.bus, b"A:\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"CLS\r");
-    run_until_prompt(&mut machine);
-
-    type_string_long(&mut machine, b"TEST FOO BAR\r");
-    run_until_prompt(&mut machine);
-
-    let foo = [0x0046, 0x004F, 0x004F]; // "FOO"
-    let bar = [0x0042, 0x0041, 0x0052]; // "BAR"
-    assert!(
-        find_string_in_text_vram(&machine.bus, &foo),
-        "batch params should substitute 'FOO'"
-    );
-    assert!(
-        find_string_in_text_vram(&machine.bus, &bar),
-        "batch params should substitute 'BAR'"
-    );
+    let machine = run_test_batch_with_long_command(b"ECHO %1 %2\r\n", b"TEST FOO BAR\r");
+    assert_screen_contains(&machine, "FOO", "batch params should substitute 'FOO'");
+    assert_screen_contains(&machine, "BAR", "batch params should substitute 'BAR'");
 }
 
 #[test]
 fn batch_env_var() {
-    let mut machine = boot_with_bat(b"ECHO %COMSPEC%\r\n");
-    type_string(&mut machine.bus, b"A:\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"CLS\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"TEST\r");
-    run_until_prompt(&mut machine);
-
-    // COMSPEC should contain "COMMAND"
-    let command = [0x0043, 0x004F, 0x004D, 0x004D, 0x0041, 0x004E, 0x0044]; // "COMMAND"
-    assert!(
-        find_string_in_text_vram(&machine.bus, &command),
-        "batch %COMSPEC% should display COMMAND.COM path"
+    let machine = run_test_batch(b"ECHO %COMSPEC%\r\n");
+    assert_screen_contains(
+        &machine,
+        "COMMAND",
+        "batch %COMSPEC% should display COMMAND.COM path",
     );
 }
 
 #[test]
 fn batch_rem() {
-    let mut machine = boot_with_bat(b"REM This is a comment\r\nECHO VISIBLE\r\n");
-    type_string(&mut machine.bus, b"A:\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"CLS\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"TEST\r");
-    run_until_prompt(&mut machine);
-
-    let visible = [0x0056, 0x0049, 0x0053, 0x0049, 0x0042, 0x004C, 0x0045]; // "VISIBLE"
-    assert!(
-        find_string_in_text_vram(&machine.bus, &visible),
-        "batch should display 'VISIBLE' after REM"
+    let machine = run_test_batch(b"REM This is a comment\r\nECHO VISIBLE\r\n");
+    assert_screen_contains(
+        &machine,
+        "VISIBLE",
+        "batch should display 'VISIBLE' after REM",
     );
 }
 
 #[test]
 fn batch_pause() {
-    let mut machine = boot_with_bat(b"ECHO BEFORE\r\nPAUSE\r\nECHO AFTER\r\n");
-    type_string(&mut machine.bus, b"A:\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"CLS\r");
-    run_until_prompt(&mut machine);
-
+    let mut machine = boot_with_batch_file(b"ECHO BEFORE\r\nPAUSE\r\nECHO AFTER\r\n");
+    prepare_test_batch(&mut machine);
     type_string(&mut machine.bus, b"TEST\r");
 
-    // Run until "Press any key" appears
-    let press = [0x0050, 0x0072, 0x0065, 0x0073, 0x0073]; // "Press"
-    let max_cycles: u64 = 500_000_000;
-    let check_interval: u64 = 100_000;
-    let mut total_cycles = 0u64;
-    loop {
-        total_cycles += machine.run_for(check_interval);
-        if find_string_in_text_vram(&machine.bus, &press) {
-            break;
-        }
-        assert!(
-            total_cycles < max_cycles,
-            "PAUSE should display 'Press any key'"
-        );
-    }
+    run_until_screen_contains(
+        &mut machine,
+        "Press",
+        "PAUSE should display 'Press any key'",
+    );
+    submit_command(&mut machine, b" ");
 
-    // Send a keypress
-    type_string(&mut machine.bus, b" ");
-    run_until_prompt(&mut machine);
-
-    let after = [0x0041, 0x0046, 0x0054, 0x0045, 0x0052]; // "AFTER"
-    assert!(
-        find_string_in_text_vram(&machine.bus, &after),
-        "batch should continue after PAUSE and display 'AFTER'"
+    assert_screen_contains(
+        &machine,
+        "AFTER",
+        "batch should continue after PAUSE and display 'AFTER'",
     );
 }
 
 #[test]
 fn batch_drive_change_applies_before_following_lines() {
-    let floppy_a = create_test_floppy_with_program(
+    let first_floppy_image = create_test_floppy_with_program(
         b"SWITCH  BAT",
         b"B:\r\nIF EXIST TARGET.TXT ECHO FOUND\r\n",
     );
-    let floppy_b = create_test_floppy_with_program(b"TARGET  TXT", b"B-ONLY\r\n");
-    let mut machine = boot_hle_with_two_floppy_images(floppy_a, floppy_b);
-
-    type_string(&mut machine.bus, b"A:\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"CLS\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"SWITCH\r");
-    run_until_prompt(&mut machine);
-
-    let found = [0x0046, 0x004F, 0x0055, 0x004E, 0x0044]; // "FOUND"
-    assert!(
-        find_string_in_text_vram(&machine.bus, &found),
-        "batch drive change should affect relative paths used by following lines"
+    let second_floppy_image = create_test_floppy_with_program(b"TARGET  TXT", b"B-ONLY\r\n");
+    let machine = run_batch_command(
+        boot_hle_with_two_floppy_images(first_floppy_image, second_floppy_image),
+        b"SWITCH\r",
+    );
+    assert_screen_contains(
+        &machine,
+        "FOUND",
+        "batch drive change should affect relative paths used by following lines",
     );
 }
 
 #[test]
 fn batch_command_c_resumes_parent_batch() {
-    let mut machine = boot_with_bat(b"COMMAND /C ECHO CHILD\r\nECHO PARENT\r\n");
-    type_string(&mut machine.bus, b"A:\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"CLS\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"TEST\r");
-    run_until_prompt(&mut machine);
-
-    let child = [0x0043, 0x0048, 0x0049, 0x004C, 0x0044]; // "CHILD"
-    let parent = [0x0050, 0x0041, 0x0052, 0x0045, 0x004E, 0x0054]; // "PARENT"
-    assert!(
-        find_string_in_text_vram(&machine.bus, &child),
-        "COMMAND /C inside a batch file should execute the child command"
+    let machine = run_test_batch(b"COMMAND /C ECHO CHILD\r\nECHO PARENT\r\n");
+    assert_screen_contains(
+        &machine,
+        "CHILD",
+        "COMMAND /C inside a batch file should execute the child command",
     );
-    assert!(
-        find_string_in_text_vram(&machine.bus, &parent),
-        "batch execution should resume after COMMAND /C returns"
+    assert_screen_contains(
+        &machine,
+        "PARENT",
+        "batch execution should resume after COMMAND /C returns",
     );
 }
 
 #[test]
 fn batch_command_c_preserves_external_program_errorlevel() {
-    let mut machine = boot_with_bat(b"COMMAND /C A:\\TEST.COM\r\nIF ERRORLEVEL 66 ECHO EXITOK\r\n");
-    type_string(&mut machine.bus, b"A:\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"CLS\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"TEST\r");
-    run_until_prompt(&mut machine);
-
-    let exitok = [0x0045, 0x0058, 0x0049, 0x0054, 0x004F, 0x004B]; // "EXITOK"
-    assert!(
-        find_string_in_text_vram(&machine.bus, &exitok),
-        "COMMAND /C should preserve the external program exit code for the parent batch"
+    let machine = run_test_batch(b"COMMAND /C A:\\TEST.COM\r\nIF ERRORLEVEL 66 ECHO EXITOK\r\n");
+    assert_screen_contains(
+        &machine,
+        "EXITOK",
+        "COMMAND /C should preserve the external program exit code for the parent batch",
     );
 }
 
 #[test]
 fn batch_command_c_bomb_reports_oom_and_returns_to_root_shell() {
-    let mut machine = boot_with_bat(b"COMMAND /C TEST\r\n");
-    let root_psp = current_shell_psp(&mut machine);
+    let mut machine = boot_with_batch_file(b"COMMAND /C TEST\r\n");
+    let root_program_segment_prefix = current_shell_program_segment_prefix(&mut machine);
 
-    type_string(&mut machine.bus, b"A:\r");
-    run_until_prompt(&mut machine);
+    prepare_test_batch(&mut machine);
+    submit_command(&mut machine, b"TEST\r");
 
-    type_string(&mut machine.bus, b"CLS\r");
-    run_until_prompt(&mut machine);
-
-    type_string(&mut machine.bus, b"TEST\r");
-    run_until_prompt(&mut machine);
-
-    let oom = [
-        0x0045, 0x0072, 0x0072, 0x006F, 0x0072, 0x0020, 0x006C, 0x006F, 0x0061, 0x0064, 0x0069,
-        0x006E, 0x0067, 0x0020, 0x0070, 0x0072, 0x006F, 0x0067, 0x0072, 0x0061, 0x006D, 0x0020,
-        0x0028, 0x0038, 0x0029,
-    ]; // "Error loading program (8)"
-    assert!(
-        find_string_in_text_vram(&machine.bus, &oom),
-        "Recursive COMMAND /C should stop with insufficient-memory error"
+    assert_screen_contains(
+        &machine,
+        "Error loading program (8)",
+        "Recursive COMMAND /C should stop with insufficient-memory error",
     );
 
-    let restored_psp = current_shell_psp(&mut machine);
+    let restored_program_segment_prefix = current_shell_program_segment_prefix(&mut machine);
     assert_eq!(
-        restored_psp, root_psp,
+        restored_program_segment_prefix, root_program_segment_prefix,
         "COMMAND /C bomb should unwind back to the root shell after OOM"
     );
 
-    type_string(&mut machine.bus, b"VER\r");
-    run_until_prompt(&mut machine);
-
-    let version = [0x0036, 0x002E, 0x0032, 0x0030]; // "6.20"
-    assert!(
-        find_string_in_text_vram(&machine.bus, &version),
-        "Root shell should still accept commands after recursive COMMAND /C OOM"
+    submit_command(&mut machine, b"VER\r");
+    assert_screen_contains(
+        &machine,
+        "6.20",
+        "Root shell should still accept commands after recursive COMMAND /C OOM",
     );
 }
