@@ -12,8 +12,8 @@ Currently, we aim to support all 16-bit era DOS games and emulate them accuratel
 |-----------|----------|-------------|-----------|--------------|----------|-----------|--------|
 | PC-9801F  | 8086     | 5 / 8 MHz   | No        | None         | GDC      | SASI      | No     |
 | PC-9801VM | V30      | 8 / 10 MHz  | No        | None         | GRCG     | SASI      | No     |
-| PC-9801VX | 80286    | 8 / 10 MHz  | No        | 4 MiB        | ECG      | SASI      | No     |
-| PC-9801RA | 80386DX  | 16 / 20 MHz | Yes       | 12 MiB       | ECG      | SASI      | No     |
+| PC-9801VX | 80286    | 8 / 10 MHz  | No        | 4 MiB        | EGC      | SASI      | No     |
+| PC-9801RA | 80386DX  | 16 / 20 MHz | Yes       | 12 MiB       | EGC      | SASI      | No     |
 | PC-9821AS | 80486DX  | 33 MHz      | Yes       | 14 MiB       | PEGC     | IDE       | Yes    |
 | PC-9821AP | 80486DX2 | 66 MHz      | Yes       | 14 MiB       | PEGC     | IDE       | Yes    |
 
