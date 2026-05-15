@@ -119,20 +119,28 @@ fn pegc_mode_2_packed_256color_640x480() {
     }
 }
 
+/// Palette indices for the 8 horizontal strips rendered by PEGC plane
+/// modes 3 and 4. Matches `strip_color_table` in `debug_pegc.asm`.
+const PEGC_STRIP_INDICES: [u8; 8] = [0x11, 0x33, 0x55, 0x77, 0x99, 0xBB, 0xDD, 0xFF];
+
 #[test]
 fn pegc_mode_3_plane_quadrants_640x400() {
     let (framebuffer, height) = run_mode(3);
     assert_eq!(height, 400, "mode 3 should render 400 lines");
 
-    let tl = hsv_rgb(0x33);
-    let tr = hsv_rgb(0x66);
-    let bl = hsv_rgb(0x99);
-    let br = hsv_rgb(0xCC);
-
-    assert_pixel(&framebuffer, 160, 100, tl, "mode 3 TL");
-    assert_pixel(&framebuffer, 480, 100, tr, "mode 3 TR");
-    assert_pixel(&framebuffer, 160, 300, bl, "mode 3 BL");
-    assert_pixel(&framebuffer, 480, 300, br, "mode 3 BR");
+    // 8 horizontal strips of 50 lines each, palette indices 0x11..0xFF.
+    // Sample center column at middle of each strip.
+    for (strip, &index) in PEGC_STRIP_INDICES.iter().enumerate() {
+        let y = (strip as u32) * 50 + 25;
+        let expected = hsv_rgb(index);
+        assert_pixel(
+            &framebuffer,
+            320,
+            y,
+            expected,
+            &format!("mode 3 strip {strip} (index 0x{index:02X})"),
+        );
+    }
 }
 
 #[test]
@@ -143,13 +151,16 @@ fn pegc_mode_4_plane_quadrants_640x480() {
         "mode 4 should render 480 lines (port 09A8h + GDC AL=480)",
     );
 
-    let tl = hsv_rgb(0x33);
-    let tr = hsv_rgb(0x66);
-    let bl = hsv_rgb(0x99);
-    let br = hsv_rgb(0xCC);
-
-    assert_pixel(&framebuffer, 160, 120, tl, "mode 4 TL");
-    assert_pixel(&framebuffer, 480, 120, tr, "mode 4 TR");
-    assert_pixel(&framebuffer, 160, 360, bl, "mode 4 BL");
-    assert_pixel(&framebuffer, 480, 360, br, "mode 4 BR");
+    // 8 horizontal strips of 60 lines each, same palette indices as mode 3.
+    for (strip, &index) in PEGC_STRIP_INDICES.iter().enumerate() {
+        let y = (strip as u32) * 60 + 30;
+        let expected = hsv_rgb(index);
+        assert_pixel(
+            &framebuffer,
+            320,
+            y,
+            expected,
+            &format!("mode 4 strip {strip} (index 0x{index:02X})"),
+        );
+    }
 }

@@ -7,8 +7,10 @@
 ;   0  Interactive: cycle through modes 1..4 with Enter
 ;   1  PEGC 256-color packed, 640x400 two-screen
 ;   2  PEGC 256-color packed, 640x480 one-screen (port 09A8h + GDC SYNC 480)
-;   3  PEGC 256-color plane mode quadrant fill, 640x400 two-screen
-;   4  PEGC 256-color plane mode quadrant fill, 640x480 one-screen
+;   3  PEGC 256-color plane mode, 640x400; 8 full-width horizontal strips
+;      covering palette indices 0x11, 0x33, 0x55, 0x77, 0x99, 0xBB, 0xDD, 0xFF
+;   4  PEGC 256-color plane mode, 640x480; same 8-strip palette layout as
+;      mode 3
 ;
 ; Non-zero mode values render the page once and HLT, for integration tests.
 ; Zero (the default for zero-initialized RAM) keeps the original interactive UX.
@@ -42,12 +44,6 @@ CELL_WIDTH      equ 40
 
 ; Mode-selector byte at physical 0x00500 (zero-initialized RAM => interactive).
 MODE_BYTE_ADDR  equ 0x0500
-
-; Plane-mode quadrant colors (256-color palette indices).
-PLANE_COLOR_TL  equ 0x33
-PLANE_COLOR_TR  equ 0x66
-PLANE_COLOR_BL  equ 0x99
-PLANE_COLOR_BR  equ 0xCC
 
 ; Bank 0 - mapped to F8000-FFFFF. Reset vector only.
 section bank0 start=0 vstart=0
@@ -163,7 +159,9 @@ render_mode_2_packed_480:
     call fill_screen_packed
     ret
 
-; Mode 3 - PEGC plane-mode quadrant fill, 640x400 two-screen.
+; Mode 3 - PEGC plane-mode strip fill, 640x400. 8 horizontal strips of 50
+;   lines each cover palette indices 0x11, 0x33, 0x55, 0x77, 0x99, 0xBB,
+;   0xDD, 0xFF (top to bottom).
 render_mode_3_plane_400:
     call crt_400_line
 
@@ -174,11 +172,12 @@ render_mode_3_plane_400:
     mov al, 0x68
     out 0x6A, al
 
-    mov bp, 200
-    call fill_quadrants_plane
+    mov bp, 50
+    call fill_strips_plane
     ret
 
-; Mode 4 - PEGC plane-mode quadrant fill, 640x480 one-screen.
+; Mode 4 - PEGC plane-mode strip fill, 640x480. 8 horizontal strips of 60
+;   lines each, same palette indices as mode 3.
 render_mode_4_plane_480:
     mov al, 0x21
     out 0x6A, al
@@ -190,8 +189,8 @@ render_mode_4_plane_480:
     mov al, 0x69
     out 0x6A, al
 
-    mov bp, 240
-    call fill_quadrants_plane
+    mov bp, 60
+    call fill_strips_plane
     ret
 
 ; crt_400_line - Write port 09A8h bit 0 = 0 (24.823 kHz scan).
@@ -336,41 +335,37 @@ set_bank_a8:
     pop es
     ret
 
-; fill_quadrants_plane - Fill 4 quadrants (320 x BP pixels each) via plane
-; mode using pattern register + ROP. Input: BP = rows per quadrant.
-fill_quadrants_plane:
+; fill_strips_plane - Render 8 full-width horizontal strips via plane-mode
+; pattern fill. Each strip is BP rows tall and uses a distinct palette index
+; from strip_color_table. Input: BP = rows per strip.
+fill_strips_plane:
     call pegc_plane_setup
 
-    mov al, PLANE_COLOR_TL
+    xor si, si              ; SI = strip index (0..7)
+.strip_loop:
+    ; Set pattern color from strip_color_table[SI].
+    mov bx, strip_color_table
+    add bx, si
+    mov al, [cs:bx]
     call pattern_broadcast_color
-    xor ax, ax
-    mov cx, bp
-    call fill_strip_plane
 
-    mov al, PLANE_COLOR_TR
-    call pattern_broadcast_color
-    mov ax, 40
-    mov cx, bp
-    call fill_strip_plane
+    ; AX = SI * BP * BYTES_PER_LINE (starting byte offset for this strip).
+    mov ax, si
+    mul bp                  ; DX:AX = SI * BP (fits in AX for our values)
+    mov bx, BYTES_PER_LINE
+    mul bx                  ; DX:AX = AX * 80
 
-    mov al, PLANE_COLOR_BL
-    call pattern_broadcast_color
-    mov ax, bp
-    mov dx, BYTES_PER_LINE
-    mul dx
+    ; Fill BP rows starting at offset AX.
     mov cx, bp
-    call fill_strip_plane
+    call fill_full_strip_plane
 
-    mov al, PLANE_COLOR_BR
-    call pattern_broadcast_color
-    mov ax, bp
-    mov dx, BYTES_PER_LINE
-    mul dx
-    add ax, 40
-    mov cx, bp
-    call fill_strip_plane
-
+    inc si
+    cmp si, 8
+    jb .strip_loop
     ret
+
+strip_color_table:
+    db 0x11, 0x33, 0x55, 0x77, 0x99, 0xBB, 0xDD, 0xFF
 
 ; pegc_plane_setup - Configure MMIO for plane-mode pattern-fill writes.
 ; ROP register layout: bit 15 = transposed pattern access, bit 12 = ROP enabled,
@@ -419,24 +414,24 @@ pattern_broadcast_color:
     pop es
     ret
 
-; fill_strip_plane - Issue plane-mode word writes for a 320-pixel-wide strip.
-; Input: AX = starting byte offset (= y_start*80 + x_start/8),
-;        CX = rows.
-; Strip width is 320 pixels = 20 word writes per row.
-fill_strip_plane:
+; fill_full_strip_plane - Issue plane-mode word writes for a 640-pixel-wide
+; (full-screen-width) strip. Input: AX = starting byte offset,
+; CX = rows. Each row is 40 word writes = 80 bytes = 640 pixels.
+fill_full_strip_plane:
     push es
     push bx
-    push si
+    push di
+    push ax
+    push cx
 
     mov bx, PEGC_VRAM_A
     mov es, bx
-
     mov di, ax
 
 .row_loop:
     push cx
     push di
-    mov cx, 20
+    mov cx, 40
     mov ax, 0xFFFF
 .word_loop:
     mov [es:di], ax
@@ -447,7 +442,9 @@ fill_strip_plane:
     pop cx
     loop .row_loop
 
-    pop si
+    pop cx
+    pop ax
+    pop di
     pop bx
     pop es
     ret
