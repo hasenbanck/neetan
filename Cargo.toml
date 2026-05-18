@@ -55,6 +55,7 @@ cpu = { workspace = true }
 common = { workspace = true }
 device = { workspace = true }
 machine = { workspace = true }
+os = { workspace = true }
 sdl3 = { workspace = true }
 sdl3_backend = { workspace = true }
 software_renderer = { workspace = true }

@@ -32,6 +32,7 @@ use crate::{
 
 pub mod config;
 pub mod convert;
+pub mod copy;
 pub mod create;
 mod errors;
 mod image_selector;

@@ -378,3 +378,82 @@ fn dir_sectors(vol: &FatVolume, dir_cluster: u16, disk: &mut dyn DiskIo) -> Resu
         Ok(sectors)
     }
 }
+
+/// Creates a new subdirectory under `parent_cluster`. Allocates a fresh cluster,
+/// zeroes it, writes `.` and `..` entries, and links the directory entry into
+/// the parent. Flushes the FAT on success; rolls back the cluster allocation
+/// on failure. `parent_cluster == 0` means the root directory.
+pub(crate) fn create_subdirectory(
+    vol: &mut FatVolume,
+    parent_cluster: u16,
+    fcb_name: [u8; 11],
+    time: u16,
+    date: u16,
+    disk: &mut dyn DiskIo,
+) -> Result<DirEntry, u16> {
+    if find_entry(vol, parent_cluster, &fcb_name, disk)?.is_some() {
+        return Err(0x0005);
+    }
+
+    let new_cluster = vol.allocate_cluster(0).ok_or(0x0005u16)?;
+    let cluster_size = vol.bpb.sectors_per_cluster as usize * vol.bpb.bytes_per_sector as usize;
+    let zeros = vec![0u8; cluster_size];
+    vol.write_cluster(new_cluster, &zeros, disk).map_err(|_| {
+        vol.free_chain(new_cluster);
+        0x001Fu16
+    })?;
+
+    let dot_entry = DirEntry {
+        name: *b".          ",
+        attribute: ATTR_DIRECTORY,
+        time,
+        date,
+        start_cluster: new_cluster,
+        file_size: 0,
+        dir_sector: 0,
+        dir_offset: 0,
+    };
+    if let Err(error) = create_entry(vol, new_cluster, &dot_entry, disk) {
+        vol.free_chain(new_cluster);
+        let _ = vol.flush_fat(disk);
+        return Err(error);
+    }
+
+    let dotdot_entry = DirEntry {
+        name: *b"..         ",
+        attribute: ATTR_DIRECTORY,
+        time,
+        date,
+        start_cluster: parent_cluster,
+        file_size: 0,
+        dir_sector: 0,
+        dir_offset: 0,
+    };
+    if let Err(error) = create_entry(vol, new_cluster, &dotdot_entry, disk) {
+        vol.free_chain(new_cluster);
+        let _ = vol.flush_fat(disk);
+        return Err(error);
+    }
+
+    let dir_entry = DirEntry {
+        name: fcb_name,
+        attribute: ATTR_DIRECTORY,
+        time,
+        date,
+        start_cluster: new_cluster,
+        file_size: 0,
+        dir_sector: 0,
+        dir_offset: 0,
+    };
+    let created = match create_entry(vol, parent_cluster, &dir_entry, disk) {
+        Ok(entry) => entry,
+        Err(error) => {
+            vol.free_chain(new_cluster);
+            let _ = vol.flush_fat(disk);
+            return Err(error);
+        }
+    };
+
+    vol.flush_fat(disk).map_err(|_| 0x001Fu16)?;
+    Ok(created)
+}

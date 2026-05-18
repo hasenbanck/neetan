@@ -31,6 +31,7 @@ Commands:
   create-fdd <PATH>             Create an empty floppy disk image (D88)
   create-hdd <PATH>             Create an empty hard disk image (HDI)
   convert-hdd <INPUT> <OUTPUT>  Convert HDD image between SASI and IDE
+  copy <SOURCE> <DEST>          Copy files between host and FAT disk images
 
 Options:
   -c, --config <PATH>           Load configuration from file
@@ -123,6 +124,39 @@ IDE types:
     );
 }
 
+fn print_copy_help() {
+    println!(
+        "\
+Copy files and directories between the host filesystem and FAT-formatted
+PC-98 disk images.
+
+Usage: neetan copy <SOURCE> <DEST>
+
+Arguments:
+  <SOURCE>  Source path. Either a host path, or IMAGE:DOSPATH
+            (e.g. roms/dos620.hdi:A:\\PROGS\\FILE.EXE).
+  <DEST>    Destination path with the same syntax.
+
+Options:
+  -h, --help  Print help
+
+Examples:
+  neetan copy ./readme.txt roms/disk.hdi:A:\\README.TXT
+  neetan copy roms/disk.hdi:A:\\PROGS\\FOO.EXE ./extracted/
+  neetan copy ./mydir roms/disk.hdi:A:\\BACKUP
+  neetan copy roms/disk.hdi:A:\\DOCS ./local_docs
+  neetan copy src.hdi:A:\\FOO.EXE dst.hdi:A:\\FOO.EXE
+
+Image formats: HDI, NHD, THD (HDD); D88, D98, 88D, 98D, HDM, NFD (FDD).
+
+Notes:
+  - Directories are copied recursively (no -r flag).
+  - DOS paths must use 8.3 ASCII filenames; longer names are rejected
+    before any file is written.
+  - The destination image file is rewritten atomically on success."
+    );
+}
+
 fn print_convert_hdd_help() {
     println!(
         "\
@@ -178,6 +212,50 @@ pub enum Action {
         input: PathBuf,
         output: PathBuf,
     },
+    Copy {
+        source: CopyArg,
+        dest: CopyArg,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum CopyArg {
+    Host(PathBuf),
+    Image {
+        image_path: PathBuf,
+        dos_path: Vec<u8>,
+    },
+}
+
+/// File extensions that identify a disk image when looking for the
+/// `IMAGE:DOSPATH` separator. The substring up to a colon must end with one
+/// of these (case-insensitive) for the argument to be treated as an image
+/// reference; otherwise the colon is part of a host path.
+const IMAGE_EXTENSIONS: &[&str] = &[
+    "hdi", "nhd", "thd", "d88", "d98", "88d", "98d", "hdm", "nfd",
+];
+
+fn parse_copy_arg(raw: &str) -> CopyArg {
+    for (idx, byte) in raw.as_bytes().iter().enumerate() {
+        if *byte != b':' {
+            continue;
+        }
+        let head = &raw[..idx];
+        let Some(dot) = head.rfind('.') else {
+            continue;
+        };
+        let ext = &head[dot + 1..];
+        if IMAGE_EXTENSIONS
+            .iter()
+            .any(|known| ext.eq_ignore_ascii_case(known))
+        {
+            return CopyArg::Image {
+                image_path: PathBuf::from(head),
+                dos_path: raw.as_bytes()[idx + 1..].to_vec(),
+            };
+        }
+    }
+    CopyArg::Host(PathBuf::from(raw))
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -306,6 +384,29 @@ fn parse_create_hdd_args(args: &mut impl Iterator<Item = String>) -> crate::Resu
     Ok(Action::CreateHdd { path, hdd_type })
 }
 
+fn parse_copy_args(args: &mut impl Iterator<Item = String>) -> crate::Result<Action> {
+    let mut positional: Vec<String> = Vec::new();
+    for arg in args {
+        match arg.as_str() {
+            "--help" | "-h" => {
+                print_copy_help();
+                std::process::exit(0);
+            }
+            other if other.starts_with("--") => bail!("unknown argument: {other}"),
+            other => positional.push(other.to_owned()),
+        }
+    }
+    if positional.len() != 2 {
+        bail!("copy expects exactly two arguments: <SOURCE> <DEST>");
+    }
+    let source = parse_copy_arg(&positional[0]);
+    let dest = parse_copy_arg(&positional[1]);
+    if matches!(&source, CopyArg::Host(_)) && matches!(&dest, CopyArg::Host(_)) {
+        bail!("neither argument refers to a disk image; use a host filesystem copy tool instead");
+    }
+    Ok(Action::Copy { source, dest })
+}
+
 fn parse_convert_hdd_args(args: &mut impl Iterator<Item = String>) -> crate::Result<Action> {
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
@@ -363,6 +464,9 @@ fn parse_args_from(
         }
         if arg == "convert-hdd" {
             return parse_convert_hdd_args(&mut args);
+        }
+        if arg == "copy" {
+            return parse_copy_args(&mut args);
         }
         let (flag, inline_value) = match arg.split_once('=') {
             Some((f, v)) => (f.to_owned(), Some(v.to_owned())),
