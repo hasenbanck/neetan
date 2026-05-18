@@ -5,6 +5,7 @@ use common::is_shift_jis_lead_byte;
 use crate::{DiskIo, DriveIo, MemoryAccess, OsState, dos, process::COMMAND_COM_STUB, tables};
 
 pub mod fat;
+pub mod fat_api;
 pub(crate) mod fat_bpb;
 pub(crate) mod fat_dir;
 pub(crate) mod fat_file;
@@ -992,69 +993,8 @@ fn create_directory_in_parent(
         .as_mut()
         .ok_or(0x000Fu16)?;
 
-    if fat_dir::find_entry(volume, parent_cluster, &fcb_name, disk)?.is_some() {
-        return Err(0x0005);
-    }
+    fat_dir::create_subdirectory(volume, parent_cluster, fcb_name, time, date, disk)?;
 
-    let new_cluster = volume.allocate_cluster(0).ok_or(0x0005u16)?;
-    let cluster_size = volume.sectors_per_cluster() as usize * volume.bytes_per_sector() as usize;
-    let zeros = vec![0u8; cluster_size];
-    volume
-        .write_cluster(new_cluster, &zeros, disk)
-        .map_err(|_| {
-            volume.free_chain(new_cluster);
-            0x001Fu16
-        })?;
-
-    let dot_entry = fat_dir::DirEntry {
-        name: *b".          ",
-        attribute: fat_dir::ATTR_DIRECTORY,
-        time,
-        date,
-        start_cluster: new_cluster,
-        file_size: 0,
-        dir_sector: 0,
-        dir_offset: 0,
-    };
-    if let Err(error) = fat_dir::create_entry(volume, new_cluster, &dot_entry, disk) {
-        volume.free_chain(new_cluster);
-        let _ = volume.flush_fat(disk);
-        return Err(error);
-    }
-
-    let dotdot_entry = fat_dir::DirEntry {
-        name: *b"..         ",
-        attribute: fat_dir::ATTR_DIRECTORY,
-        time,
-        date,
-        start_cluster: parent_cluster,
-        file_size: 0,
-        dir_sector: 0,
-        dir_offset: 0,
-    };
-    if let Err(error) = fat_dir::create_entry(volume, new_cluster, &dotdot_entry, disk) {
-        volume.free_chain(new_cluster);
-        let _ = volume.flush_fat(disk);
-        return Err(error);
-    }
-
-    let dir_entry = fat_dir::DirEntry {
-        name: fcb_name,
-        attribute: fat_dir::ATTR_DIRECTORY,
-        time,
-        date,
-        start_cluster: new_cluster,
-        file_size: 0,
-        dir_sector: 0,
-        dir_offset: 0,
-    };
-    if let Err(error) = fat_dir::create_entry(volume, parent_cluster, &dir_entry, disk) {
-        volume.free_chain(new_cluster);
-        let _ = volume.flush_fat(disk);
-        return Err(error);
-    }
-
-    volume.flush_fat(disk).map_err(|_| 0x001Fu16)?;
     Ok(())
 }
 

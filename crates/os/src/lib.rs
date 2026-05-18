@@ -11,6 +11,7 @@ mod config;
 mod console;
 mod console_adapter;
 mod console_esc;
+pub mod copy_common;
 mod country;
 mod dos;
 mod file_io;

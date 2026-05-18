@@ -97,6 +97,7 @@ dependencies = [
  "cpu",
  "device",
  "machine",
+ "os",
  "sdl3",
  "sdl3_backend",
  "software_renderer",

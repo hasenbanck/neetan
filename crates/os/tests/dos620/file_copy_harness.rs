@@ -31,6 +31,13 @@ struct BpbInfo {
     is_fat16: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct DirectoryEntryInfo {
+    attribute: u8,
+    start_cluster: u16,
+    file_size: u32,
+}
+
 pub fn prng_bytes(len: usize) -> Vec<u8> {
     let mut state = 0x1234_5678u32;
     let mut out = Vec::with_capacity(len);
@@ -420,80 +427,251 @@ fn read_fat_entry(fat: &[u8], cluster: u16, is_fat16: bool) -> u16 {
     }
 }
 
-pub fn extract_root_file(hdd_path: &Path, fcb_name: &[u8; 11]) -> Result<Vec<u8>, String> {
-    let hdd = load_hdd_from_path(hdd_path);
-    let bpb = read_bpb(&hdd);
-    let root_dir_sectors = (bpb.root_entry_count as u32 * 32).div_ceil(bpb.bytes_per_sector as u32);
-    let fat_start = bpb.reserved_sectors as u32;
-    let root_start = fat_start + bpb.num_fats as u32 * bpb.sectors_per_fat as u32;
-    let data_start = root_start + root_dir_sectors;
+fn root_directory_sectors(bpb: &BpbInfo) -> u32 {
+    (bpb.root_entry_count as u32 * 32).div_ceil(bpb.bytes_per_sector as u32)
+}
 
+fn fat_start_sector(bpb: &BpbInfo) -> u32 {
+    bpb.reserved_sectors as u32
+}
+
+fn root_start_sector(bpb: &BpbInfo) -> u32 {
+    fat_start_sector(bpb) + bpb.num_fats as u32 * bpb.sectors_per_fat as u32
+}
+
+fn data_start_sector(bpb: &BpbInfo) -> u32 {
+    root_start_sector(bpb) + root_directory_sectors(bpb)
+}
+
+fn fat_end_of_chain(bpb: &BpbInfo) -> u16 {
+    if bpb.is_fat16 { 0xFFF8 } else { 0x0FF8 }
+}
+
+fn read_file_allocation_table(hard_disk: &HddImage, bpb: &BpbInfo) -> Result<Vec<u8>, String> {
+    let fat_start = fat_start_sector(bpb);
     let mut fat = Vec::with_capacity(bpb.sectors_per_fat as usize * bpb.bytes_per_sector as usize);
     for sector in 0..bpb.sectors_per_fat as u32 {
-        let bytes = read_logical_sector(&hdd, &bpb, fat_start + sector)
+        let bytes = read_logical_sector(hard_disk, bpb, fat_start + sector)
             .ok_or_else(|| format!("failed to read FAT logical sector {}", fat_start + sector))?;
         fat.extend_from_slice(&bytes);
     }
+    Ok(fat)
+}
 
-    let mut root = Vec::with_capacity(root_dir_sectors as usize * bpb.bytes_per_sector as usize);
-    for sector in 0..root_dir_sectors {
-        let bytes = read_logical_sector(&hdd, &bpb, root_start + sector).ok_or_else(|| {
+fn read_root_directory(hard_disk: &HddImage, bpb: &BpbInfo) -> Result<Vec<u8>, String> {
+    let root_start = root_start_sector(bpb);
+    let root_sectors = root_directory_sectors(bpb);
+    let mut directory = Vec::with_capacity(root_sectors as usize * bpb.bytes_per_sector as usize);
+    for sector in 0..root_sectors {
+        let bytes = read_logical_sector(hard_disk, bpb, root_start + sector).ok_or_else(|| {
             format!(
                 "failed to read root directory logical sector {}",
                 root_start + sector
             )
         })?;
-        root.extend_from_slice(&bytes);
+        directory.extend_from_slice(&bytes);
     }
+    Ok(directory)
+}
 
-    let mut start_cluster = None;
-    let mut file_size = None;
-    for entry in root.chunks_exact(32) {
+fn find_directory_entry(directory: &[u8], name: &[u8; 11]) -> Option<DirectoryEntryInfo> {
+    for entry in directory.chunks_exact(32) {
         if entry[0] == 0x00 {
             break;
         }
         if entry[0] == 0xE5 {
             continue;
         }
-        if entry[0..11] == fcb_name[..] {
-            start_cluster = Some(u16::from_le_bytes([entry[26], entry[27]]));
-            file_size = Some(u32::from_le_bytes([
-                entry[28], entry[29], entry[30], entry[31],
-            ]));
-            break;
+        if entry[0..11] == name[..] {
+            return Some(DirectoryEntryInfo {
+                attribute: entry[11],
+                start_cluster: u16::from_le_bytes([entry[26], entry[27]]),
+                file_size: u32::from_le_bytes([entry[28], entry[29], entry[30], entry[31]]),
+            });
         }
     }
+    None
+}
 
-    let mut cluster = start_cluster.ok_or_else(|| "destination file not found".to_string())?;
-    let file_size = file_size.ok_or_else(|| "destination file size missing".to_string())?;
-    let mut data = Vec::with_capacity(file_size as usize);
+fn fcb_name_from_component(component: &str) -> Result<[u8; 11], String> {
+    let (stem, extension) = match component.split_once('.') {
+        Some((stem, extension)) => (stem, extension),
+        None => (component, ""),
+    };
+    if stem.is_empty() || stem.len() > 8 || extension.len() > 3 {
+        return Err(format!("invalid 8.3 component {component}"));
+    }
+
+    let mut name = [b' '; 11];
+    for (index, byte) in stem.bytes().enumerate() {
+        if !byte.is_ascii() {
+            return Err(format!("non-ASCII component {component}"));
+        }
+        name[index] = byte.to_ascii_uppercase();
+    }
+    for (index, byte) in extension.bytes().enumerate() {
+        if !byte.is_ascii() {
+            return Err(format!("non-ASCII component {component}"));
+        }
+        name[8 + index] = byte.to_ascii_uppercase();
+    }
+    Ok(name)
+}
+
+fn read_cluster_chain(
+    hard_disk: &HddImage,
+    bpb: &BpbInfo,
+    fat: &[u8],
+    start_cluster: u16,
+    expected_size: Option<u32>,
+) -> Result<Vec<u8>, String> {
+    if start_cluster < 2 {
+        if expected_size == Some(0) {
+            return Ok(Vec::new());
+        }
+        return Err("cluster chain has no start cluster".to_string());
+    }
+
+    let data_start = data_start_sector(bpb);
+    let expected_len = expected_size.map(|size| size as usize);
+    let mut cluster = start_cluster;
+    let mut data = Vec::with_capacity(expected_len.unwrap_or(0));
     let mut chain = Vec::new();
+    let end_of_chain = fat_end_of_chain(bpb);
 
-    let eoc = if bpb.is_fat16 { 0xFFF8 } else { 0x0FF8 };
-    while cluster >= 2 && cluster < eoc && data.len() < file_size as usize {
+    while cluster >= 2 && cluster < end_of_chain {
         chain.push(cluster);
         let first_sector = data_start + (cluster as u32 - 2) * bpb.sectors_per_cluster as u32;
         for sector in 0..bpb.sectors_per_cluster as u32 {
             let logical_sector = first_sector + sector;
-            let bytes = read_logical_sector(&hdd, &bpb, logical_sector).ok_or_else(|| {
+            let bytes = read_logical_sector(hard_disk, bpb, logical_sector).ok_or_else(|| {
                 format!(
                     "cluster chain left disk: cluster={cluster:04X} logical_sector={logical_sector} chain={chain:?}"
                 )
             })?;
             data.extend_from_slice(&bytes);
+            if let Some(expected_len) = expected_len
+                && data.len() >= expected_len
+            {
+                data.truncate(expected_len);
+                return Ok(data);
+            }
         }
-        if data.len() >= file_size as usize {
-            break;
-        }
-        let next = read_fat_entry(&fat, cluster, bpb.is_fat16);
+        let next = read_fat_entry(fat, cluster, bpb.is_fat16);
         if next == 0 || next == cluster {
             break;
         }
         cluster = next;
     }
 
-    data.truncate(file_size as usize);
+    if let Some(expected_len) = expected_len {
+        if data.len() < expected_len {
+            return Err(format!(
+                "cluster chain ended early: expected {expected_len} bytes, got {} bytes, chain={chain:?}",
+                data.len()
+            ));
+        }
+        data.truncate(expected_len);
+    }
     Ok(data)
+}
+
+fn read_subdirectory(
+    hard_disk: &HddImage,
+    bpb: &BpbInfo,
+    fat: &[u8],
+    entry: DirectoryEntryInfo,
+) -> Result<Vec<u8>, String> {
+    if entry.attribute & 0x10 == 0 {
+        return Err("path component is not a directory".to_string());
+    }
+    read_cluster_chain(hard_disk, bpb, fat, entry.start_cluster, None)
+}
+
+fn find_hard_disk_entry(
+    hard_disk_path: &Path,
+    components: &[&str],
+) -> Result<DirectoryEntryInfo, String> {
+    if components.is_empty() {
+        return Err("path must contain at least one component".to_string());
+    }
+
+    let hard_disk = load_hdd_from_path(hard_disk_path);
+    let bpb = read_bpb(&hard_disk);
+    let fat = read_file_allocation_table(&hard_disk, &bpb)?;
+    let mut directory = read_root_directory(&hard_disk, &bpb)?;
+    let mut found = None;
+
+    for (index, component) in components.iter().enumerate() {
+        let name = fcb_name_from_component(component)?;
+        let entry = find_directory_entry(&directory, &name)
+            .ok_or_else(|| format!("path component not found: {component}"))?;
+        if index + 1 == components.len() {
+            found = Some(entry);
+            break;
+        }
+        directory = read_subdirectory(&hard_disk, &bpb, &fat, entry)?;
+    }
+
+    found.ok_or_else(|| "path not found".to_string())
+}
+
+pub fn extract_hard_disk_file(
+    hard_disk_path: &Path,
+    components: &[&str],
+) -> Result<Vec<u8>, String> {
+    let hard_disk = load_hdd_from_path(hard_disk_path);
+    let bpb = read_bpb(&hard_disk);
+    let fat = read_file_allocation_table(&hard_disk, &bpb)?;
+    let mut directory = read_root_directory(&hard_disk, &bpb)?;
+
+    for (index, component) in components.iter().enumerate() {
+        let name = fcb_name_from_component(component)?;
+        let entry = find_directory_entry(&directory, &name)
+            .ok_or_else(|| format!("path component not found: {component}"))?;
+        if index + 1 == components.len() {
+            if entry.attribute & 0x10 != 0 {
+                return Err(format!("path component is a directory: {component}"));
+            }
+            return read_cluster_chain(
+                &hard_disk,
+                &bpb,
+                &fat,
+                entry.start_cluster,
+                Some(entry.file_size),
+            );
+        }
+        directory = read_subdirectory(&hard_disk, &bpb, &fat, entry)?;
+    }
+
+    Err("path must contain at least one component".to_string())
+}
+
+pub fn hard_disk_directory_exists(
+    hard_disk_path: &Path,
+    components: &[&str],
+) -> Result<bool, String> {
+    match find_hard_disk_entry(hard_disk_path, components) {
+        Ok(entry) => Ok(entry.attribute & 0x10 != 0),
+        Err(error) if error.starts_with("path component not found:") => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+pub fn extract_root_file(hdd_path: &Path, fcb_name: &[u8; 11]) -> Result<Vec<u8>, String> {
+    let hard_disk = load_hdd_from_path(hdd_path);
+    let bpb = read_bpb(&hard_disk);
+    let fat = read_file_allocation_table(&hard_disk, &bpb)?;
+    let root = read_root_directory(&hard_disk, &bpb)?;
+    let entry = find_directory_entry(&root, fcb_name)
+        .ok_or_else(|| "destination file not found".to_string())?;
+    read_cluster_chain(
+        &hard_disk,
+        &bpb,
+        &fat,
+        entry.start_cluster,
+        Some(entry.file_size),
+    )
 }
 
 pub fn mismatch_offsets(lhs: &[u8], rhs: &[u8], limit: usize) -> Vec<usize> {

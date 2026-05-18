@@ -51,5 +51,11 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Action::Copy { source, dest } => {
+            if let Err(error) = neetan::copy::copy(source, dest) {
+                error!("{error:#}");
+                std::process::exit(1);
+            }
+        }
     }
 }
